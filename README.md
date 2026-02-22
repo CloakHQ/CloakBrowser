@@ -1,24 +1,25 @@
+<p align="center">
+<img src="images/logo.png" width="500" alt="CloakBrowser">
+</p>
+
 # CloakBrowser
 
 [![PyPI](https://img.shields.io/pypi/v/cloakbrowser)](https://pypi.org/project/cloakbrowser/)
 [![Python](https://img.shields.io/pypi/pyversions/cloakbrowser)](https://pypi.org/project/cloakbrowser/)
 [![License](https://img.shields.io/github/license/CloakHQ/CloakBrowser)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/CloakHQ/CloakBrowser)](https://github.com/CloakHQ/CloakBrowser)
+[![Last Commit](https://img.shields.io/github/last-commit/CloakHQ/CloakBrowser)](https://github.com/CloakHQ/CloakBrowser)
 
 **Stealth Chromium that passes every bot detection test.**
 
 Drop-in Playwright replacement. Same API, same code — just swap the import. Your browser now scores **0.9 on reCAPTCHA v3**, passes **Cloudflare Turnstile**, and clears **14 out of 14** stealth detection tests.
 
-> CloakBrowser is an open-source Python library that gives you an undetectable browser for web automation and data collection. It wraps a custom-built Chromium binary with 16 source-level fingerprint patches — modifications compiled directly into the browser's C++ code, not bolted on via JavaScript injection or config flags.
->
-> Most stealth tools (playwright-stealth, undetected-chromedriver, puppeteer-extra) work at the config level: they override JavaScript properties, set browser flags, or inject scripts to mask automation signals. These approaches break every time Chrome updates its detection surface — and Cloudflare, reCAPTCHA, and other bot detection systems update constantly.
->
-> CloakBrowser takes a fundamentally different approach. The fingerprint patches modify Chromium's rendering pipeline at the source level: canvas output, WebGL renderer strings, audio processing fingerprints, font enumeration, hardware concurrency, client rectangles, GPU info, timezone handling, and the WebDriver flag are all patched in C++ before compilation. The resulting binary produces fingerprints indistinguishable from a real user's Chrome installation. TLS fingerprints (ja3n, ja4, akamai hash) match genuine Chrome exactly because the browser IS Chrome — just with different fingerprint values compiled in.
->
-> The result: a 0.9 score on Google's reCAPTCHA v3 (human-level, versus 0.1 for stock Playwright), clean passes on Cloudflare Turnstile managed challenges, zero bot flags on FingerprintJS, BrowserScan, and deviceandbrowserinfo.com, and undetected CDP (Chrome DevTools Protocol) usage. 14 out of 14 major detection tests passed.
->
-> CloakBrowser fills the vacuum left by Camoufox (the popular Firefox-based stealth browser whose maintainer stepped down in 2025). Unlike Camoufox, CloakBrowser is Chromium-based — meaning native Playwright API support, a massive ecosystem of existing tools and scripts, and TLS fingerprints that match the browser 65%+ of the internet actually uses.
->
-> Install with pip, write standard Playwright code, and let the binary handle the stealth. No new API to learn. No configuration to tune. No CAPTCHA-solving services to pay for. Just a browser that works on sites where others get blocked.
+- 🔒 **16 source-level C++ patches** — not JS injection, not config flags
+- 🎯 **0.9 reCAPTCHA v3 score** — human-level, server-verified
+- ☁️ **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — 14/14 tests
+- 🔄 **Drop-in Playwright replacement** — same API, swap one import
+- 📦 **`pip install cloakbrowser`** — binary auto-downloads, zero config
+- 🦊 **Fills the Camoufox vacuum** — Chromium-based, actively maintained
 
 ```python
 from cloakbrowser import launch
@@ -39,15 +40,13 @@ On first run, the stealth Chromium binary is automatically downloaded (~200MB, c
 
 ## Why CloakBrowser?
 
-Every bot detection system — reCAPTCHA, Cloudflare Turnstile, ShieldSquare, FingerprintJS — identifies automation browsers through **browser fingerprinting**: canvas rendering, WebGL output, audio processing, font enumeration, and dozens of other signals.
-
-Tools like `playwright-stealth` or `undetected-chromedriver` try to fix this with **config-level patches** — JavaScript overrides, flag tweaks, UA spoofing. These work until the next Chrome update breaks them.
-
-CloakBrowser patches **Chromium source code** — the fingerprint signals are modified at the C++ level, compiled into the binary. Detection sites see a real browser because, at the binary level, it *is* a real browser with different fingerprint values.
+- **Config-level patches break** — `playwright-stealth`, `undetected-chromedriver`, and `puppeteer-extra` inject JavaScript or tweak flags. Every Chrome update breaks them. Antibot systems detect the patches themselves.
+- **CloakBrowser patches Chromium source code** — fingerprints are modified at the C++ level, compiled into the binary. Detection sites see a real browser because it *is* a real browser.
+- **One line to switch** — same Playwright API, no new abstractions, no CAPTCHA-solving services.
 
 ## Test Results
 
-All tests verified against live detection services. Last tested: Feb 2026 (Chromium 145).
+All tests verified against live detection services. Last tested: Feb 2026 (Chromium 142).
 
 | Detection Service | Stock Playwright | CloakBrowser | Notes |
 |---|---|---|---|
@@ -62,7 +61,7 @@ All tests verified against live detection services. Last tested: Feb 2026 (Chrom
 | `navigator.webdriver` | `true` | **`false`** | Source-level patch |
 | `navigator.plugins.length` | 0 | **5** | Real plugin list |
 | `window.chrome` | `undefined` | **`object`** | Present like real Chrome |
-| UA string | `HeadlessChrome` | **`Chrome/145.0.0.0`** | No headless leak |
+| UA string | `HeadlessChrome` | **`Chrome/142.0.0.0`** | No headless leak |
 | CDP detection | Detected | **Not detected** | `isAutomatedWithCDP: false` |
 | TLS fingerprint | Mismatch | **Identical to Chrome** | ja3n/ja4/akamai match |
 
@@ -177,7 +176,7 @@ from cloakbrowser import binary_info, clear_cache, ensure_binary
 
 # Check binary installation status
 print(binary_info())
-# {'version': '145.0.7723.116', 'platform': 'darwin-arm64', 'installed': True, ...}
+# {'version': '142.0.7444.175', 'platform': 'linux-x64', 'installed': True, ...}
 
 # Force re-download
 clear_cache()
@@ -237,6 +236,47 @@ See the [`examples/`](examples/) directory:
 - [`basic.py`](examples/basic.py) — Launch and load a page
 - [`recaptcha_score.py`](examples/recaptcha_score.py) — Check your reCAPTCHA v3 score
 - [`stealth_test.py`](examples/stealth_test.py) — Run against all detection services
+
+## Roadmap
+
+| Feature | Status |
+|---------|--------|
+| Linux x64 binary | ✅ Released |
+| macOS arm64 (Apple Silicon) | 🔜 In progress |
+| Chromium 145 build | 🔜 In progress |
+| Fingerprint rotation per session | 📋 Planned |
+| Built-in proxy rotation | 📋 Planned |
+| Windows support | 📋 Planned |
+
+> ⭐ **Star this repo** to get notified when Chromium 145 and macOS builds drop.
+
+## Troubleshooting
+
+**Binary download fails / timeout**
+Set a custom download URL or use a local binary:
+```bash
+export CLOAKBROWSER_BINARY_PATH=/path/to/your/chrome
+```
+
+**"playwright install" vs CloakBrowser binary**
+You do NOT need `playwright install chromium`. CloakBrowser downloads its own binary. You only need Playwright's system deps:
+```bash
+playwright install-deps chromium
+```
+
+**Missing system libraries on Linux (Docker)**
+If you see errors about `libgbm`, `libnss3`, etc.:
+```bash
+apt-get install -y libgbm1 libnss3 libatk-bridge2.0-0 libxkbcommon0 libgtk-3-0
+```
+Or use `playwright install-deps chromium` which handles this automatically.
+
+**Pre-download binary in Docker**
+```python
+# In your Dockerfile or entrypoint:
+from cloakbrowser import ensure_binary
+ensure_binary()
+```
 
 ## FAQ
 
