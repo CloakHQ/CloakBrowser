@@ -71,6 +71,11 @@ All tests verified against live detection services. Last tested: Feb 2026 (Chrom
 ### Proof
 
 <p align="center">
+<img src="images/recaptcha_v3_score_09.png" width="600" alt="reCAPTCHA v3 — Score 0.9">
+<br><em>reCAPTCHA v3 score 0.9 — server-side verified (human-level)</em>
+</p>
+
+<p align="center">
 <img src="images/turnstile_non_interactive.png" width="600" alt="Cloudflare Turnstile — Success">
 <br><em>Cloudflare Turnstile non-interactive challenge — auto-resolved</em>
 </p>
