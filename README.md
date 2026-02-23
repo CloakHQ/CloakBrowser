@@ -244,6 +244,7 @@ See the [`examples/`](examples/) directory:
 | Linux x64 binary | ✅ Released |
 | macOS arm64 (Apple Silicon) | 🔜 In progress |
 | Chromium 145 build | 🔜 In progress |
+| JavaScript/Puppeteer support (`cloakbrowser-js`) | 📋 Planned |
 | Fingerprint rotation per session | 📋 Planned |
 | Built-in proxy rotation | 📋 Planned |
 | Windows support | 📋 Planned |
@@ -273,6 +274,33 @@ CMD ["python", "your_script.py"]
 ```
 
 **Note:** If you run CloakBrowser inside a web server with uvloop (e.g., `uvicorn[standard]`), use `--loop asyncio` to avoid subprocess pipe hangs.
+
+## Headed Mode (for aggressive bot detection)
+
+Some sites using advanced bot detection (e.g., DataDome, Cloudflare Turnstile) can detect headless mode even with our C++ patches. For these sites, run in **headed mode** with a virtual display:
+
+```bash
+# Install Xvfb (virtual framebuffer)
+sudo apt install xvfb
+
+# Start virtual display
+Xvfb :99 -screen 0 1920x1080x24 &
+export DISPLAY=:99
+```
+
+```python
+from cloakbrowser import launch
+
+# Headed mode + residential proxy for maximum stealth
+browser = launch(headless=False, proxy="http://your-residential-proxy:port")
+page = browser.new_page()
+page.goto("https://heavily-protected-site.com")  # passes DataDome, etc.
+browser.close()
+```
+
+This runs a real headed browser rendered on a virtual display — no physical monitor needed. Combined with a residential proxy, this passes even the most aggressive detection services.
+
+> **Tip:** Datacenter IPs are often flagged by IP reputation databases regardless of browser fingerprint. For sites with strict bot detection, a residential proxy makes the difference.
 
 ## Troubleshooting
 
