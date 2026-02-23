@@ -5,6 +5,7 @@
 # CloakBrowser
 
 [![PyPI](https://img.shields.io/pypi/v/cloakbrowser)](https://pypi.org/project/cloakbrowser/)
+[![npm](https://img.shields.io/npm/v/cloakbrowser)](https://www.npmjs.com/package/cloakbrowser)
 [![Python](https://img.shields.io/pypi/pyversions/cloakbrowser)](https://pypi.org/project/cloakbrowser/)
 [![License](https://img.shields.io/github/license/CloakHQ/CloakBrowser)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/CloakHQ/CloakBrowser)](https://github.com/CloakHQ/CloakBrowser)
@@ -12,15 +13,16 @@
 
 **Stealth Chromium that passes every bot detection test.**
 
-Drop-in Playwright replacement. Same API, same code — just swap the import. Your browser now scores **0.9 on reCAPTCHA v3**, passes **Cloudflare Turnstile**, and clears **14 out of 14** stealth detection tests.
+Drop-in Playwright/Puppeteer replacement for Python and JavaScript. Same API, same code — just swap the import. Your browser now scores **0.9 on reCAPTCHA v3**, passes **Cloudflare Turnstile**, and clears **14 out of 14** stealth detection tests.
 
 - 🔒 **16 source-level C++ patches** — not JS injection, not config flags
 - 🎯 **0.9 reCAPTCHA v3 score** — human-level, server-verified
 - ☁️ **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — 14/14 tests
-- 🔄 **Drop-in Playwright replacement** — same API, swap one import
-- 📦 **`pip install cloakbrowser`** — binary auto-downloads, zero config
+- 🔄 **Drop-in replacement** — works with Playwright (Python & JS) and Puppeteer (JS)
+- 📦 **`pip install cloakbrowser`** or **`npm install cloakbrowser`** — binary auto-downloads, zero config
 - 🦊 **Fills the Camoufox vacuum** — Chromium-based, actively maintained
 
+**Python:**
 ```python
 from cloakbrowser import launch
 
@@ -30,10 +32,40 @@ page.goto("https://protected-site.com")  # no more blocks
 browser.close()
 ```
 
+**JavaScript (Playwright):**
+```javascript
+import { launch } from 'cloakbrowser';
+
+const browser = await launch();
+const page = await browser.newPage();
+await page.goto('https://protected-site.com');
+await browser.close();
+```
+
+**JavaScript (Puppeteer):**
+```javascript
+import { launch } from 'cloakbrowser/puppeteer';
+
+const browser = await launch();
+const page = await browser.newPage();
+await page.goto('https://protected-site.com');
+await browser.close();
+```
+
 ## Install
 
+**Python:**
 ```bash
 pip install cloakbrowser
+```
+
+**JavaScript / Node.js:**
+```bash
+# With Playwright
+npm install cloakbrowser playwright-core
+
+# With Puppeteer
+npm install cloakbrowser puppeteer-core
 ```
 
 On first run, the stealth Chromium binary is automatically downloaded (~200MB, cached locally).
@@ -91,12 +123,12 @@ All tests verified against live detection services. Last tested: Feb 2026 (Chrom
 
 ## How It Works
 
-CloakBrowser is a thin Python wrapper around a custom-built Chromium binary:
+CloakBrowser is a thin wrapper (Python + JavaScript) around a custom-built Chromium binary:
 
-1. **You install** → `pip install cloakbrowser`
+1. **You install** → `pip install cloakbrowser` or `npm install cloakbrowser`
 2. **First launch** → binary auto-downloads for your platform (Linux x64 / macOS arm64)
-3. **Every launch** → Playwright starts with our binary + stealth args
-4. **You write code** → standard Playwright API, nothing new to learn
+3. **Every launch** → Playwright or Puppeteer starts with our binary + stealth args
+4. **You write code** → standard Playwright/Puppeteer API, nothing new to learn
 
 The binary includes 16 source-level patches that modify:
 - Canvas fingerprint generation
@@ -185,6 +217,63 @@ clear_cache()
 ensure_binary()
 ```
 
+## JavaScript / Node.js API
+
+CloakBrowser ships a TypeScript package with full type definitions. Choose Playwright or Puppeteer — same stealth binary underneath.
+
+### Playwright (default)
+
+```javascript
+import { launch, launchContext } from 'cloakbrowser';
+
+// Basic
+const browser = await launch();
+
+// With options
+const browser = await launch({
+  headless: false,
+  proxy: 'http://user:pass@proxy:8080',
+  args: ['--window-size=1920,1080'],
+});
+
+// Convenience: browser + context in one call
+const context = await launchContext({
+  userAgent: 'Custom UA',
+  viewport: { width: 1920, height: 1080 },
+  locale: 'en-US',
+  timezoneId: 'America/New_York',
+});
+const page = await context.newPage();
+```
+
+> **Note:** Each example above is standalone — not meant to run as one block.
+
+### Puppeteer
+
+```javascript
+import { launch } from 'cloakbrowser/puppeteer';
+
+const browser = await launch({ headless: true });
+const page = await browser.newPage();
+await page.goto('https://example.com');
+await browser.close();
+```
+
+### Utility Functions (JS)
+
+```javascript
+import { ensureBinary, clearCache, binaryInfo } from 'cloakbrowser';
+
+// Pre-download binary (e.g., during Docker build)
+await ensureBinary();
+
+// Check installation status
+console.log(binaryInfo());
+
+// Force re-download
+clearCache();
+```
+
 ## Configuration
 
 | Env Variable | Default | Description |
@@ -232,10 +321,15 @@ page.goto("https://example.com")
 
 ## Examples
 
-See the [`examples/`](examples/) directory:
+**Python** — see [`examples/`](examples/):
 - [`basic.py`](examples/basic.py) — Launch and load a page
 - [`recaptcha_score.py`](examples/recaptcha_score.py) — Check your reCAPTCHA v3 score
 - [`stealth_test.py`](examples/stealth_test.py) — Run against all detection services
+
+**JavaScript** — see [`js/examples/`](js/examples/):
+- [`basic-playwright.ts`](js/examples/basic-playwright.ts) — Playwright launch and load
+- [`basic-puppeteer.ts`](js/examples/basic-puppeteer.ts) — Puppeteer launch and load
+- [`stealth-test.ts`](js/examples/stealth-test.ts) — Full 6-site detection test suite
 
 ## Roadmap
 
@@ -244,7 +338,7 @@ See the [`examples/`](examples/) directory:
 | Linux x64 binary | ✅ Released |
 | macOS arm64 (Apple Silicon) | 🔜 In progress |
 | Chromium 145 build | 🔜 In progress |
-| JavaScript/Puppeteer support (`cloakbrowser-js`) | 📋 Planned |
+| JavaScript/Puppeteer + Playwright support | ✅ Released |
 | Fingerprint rotation per session | 📋 Planned |
 | Built-in proxy rotation | 📋 Planned |
 | Windows support | 📋 Planned |

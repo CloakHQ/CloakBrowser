@@ -37,6 +37,10 @@ htmlcov/
 CLAUDE.md
 .claude/
 
+# JavaScript / Node.js
+js/node_modules/
+js/dist/
+
 # Distribution
 *.tar.gz
 *.whl
@@ -48,4 +52,5 @@ docs/
 
 # Release scripts
 publish.sh
+deploy.sh
 .env
