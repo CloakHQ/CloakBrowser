@@ -250,6 +250,30 @@ See the [`examples/`](examples/) directory:
 
 > ⭐ **Star this repo** to get notified when Chromium 145 and macOS builds drop.
 
+## Docker
+
+A ready-to-use [`Dockerfile`](Dockerfile) is included. It installs system deps, the package, and pre-downloads the stealth binary during build:
+
+```bash
+docker build -t cloakbrowser .
+docker run --rm cloakbrowser python examples/basic.py
+```
+
+The key steps in the Dockerfile:
+1. **System deps** — Chromium requires ~15 shared libraries (`libnss3`, `libgbm1`, etc.)
+2. **`pip install .`** — installs CloakBrowser + Playwright
+3. **`ensure_binary()`** — downloads the stealth Chromium binary at build time (~200MB), so containers start instantly
+
+To extend with your own script, just add a `COPY` + `CMD`:
+
+```dockerfile
+FROM cloakbrowser
+COPY your_script.py /app/
+CMD ["python", "your_script.py"]
+```
+
+**Note:** If you run CloakBrowser inside a web server with uvloop (e.g., `uvicorn[standard]`), use `--loop asyncio` to avoid subprocess pipe hangs.
+
 ## Troubleshooting
 
 **Binary download fails / timeout**
@@ -262,20 +286,6 @@ export CLOAKBROWSER_BINARY_PATH=/path/to/your/chrome
 You do NOT need `playwright install chromium`. CloakBrowser downloads its own binary. You only need Playwright's system deps:
 ```bash
 playwright install-deps chromium
-```
-
-**Missing system libraries on Linux (Docker)**
-If you see errors about `libgbm`, `libnss3`, etc.:
-```bash
-apt-get install -y libgbm1 libnss3 libatk-bridge2.0-0 libxkbcommon0 libgtk-3-0
-```
-Or use `playwright install-deps chromium` which handles this automatically.
-
-**Pre-download binary in Docker**
-```python
-# In your Dockerfile or entrypoint:
-from cloakbrowser import ensure_binary
-ensure_binary()
 ```
 
 ## FAQ
@@ -293,7 +303,7 @@ A: Possibly. Bot detection is an arms race. Source-level patches are harder to d
 A: Yes. Pass `proxy="http://user:pass@host:port"` to `launch()`.
 
 **Q: Can I use this with Docker?**
-A: Yes. Use `ensure_binary()` in your Dockerfile to pre-download the binary during image build.
+A: Yes. A ready-to-use Dockerfile is included — see the [Docker](#docker) section above.
 
 ## License
 
