@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .config import DEFAULT_STEALTH_ARGS
+from .config import get_default_stealth_args
 from .download import ensure_binary
 
 logger = logging.getLogger("cloakbrowser")
@@ -63,6 +63,7 @@ def launch(
         executable_path=binary_path,
         headless=headless,
         args=chrome_args,
+        ignore_default_args=["--enable-automation"],
         **_build_proxy_kwargs(proxy),
         **kwargs,
     )
@@ -123,6 +124,7 @@ async def launch_async(
         executable_path=binary_path,
         headless=headless,
         args=chrome_args,
+        ignore_default_args=["--enable-automation"],
         **_build_proxy_kwargs(proxy),
         **kwargs,
     )
@@ -209,7 +211,7 @@ def _build_args(stealth_args: bool, extra_args: list[str] | None) -> list[str]:
     """Combine stealth args with user-provided args."""
     result = []
     if stealth_args:
-        result.extend(DEFAULT_STEALTH_ARGS)
+        result.extend(get_default_stealth_args())
     if extra_args:
         result.extend(extra_args)
     return result

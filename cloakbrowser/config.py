@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import random
 from pathlib import Path
 
 from ._version import __version__
@@ -17,16 +18,18 @@ CHROMIUM_VERSION = "142.0.7444.175"
 # Default stealth arguments passed to the patched Chromium binary.
 # These activate source-level fingerprint patches compiled into the binary.
 # ---------------------------------------------------------------------------
-DEFAULT_STEALTH_ARGS: list[str] = [
-    "--no-sandbox",
-    "--disable-blink-features=AutomationControlled",
-    # Fingerprint overrides (activate compiled C++ patches)
-    "--fingerprint=98765",
-    "--fingerprint-platform=windows",
-    "--fingerprint-hardware-concurrency=8",
-    "--fingerprint-gpu-vendor=NVIDIA Corporation",
-    "--fingerprint-gpu-renderer=NVIDIA GeForce RTX 4070",
-]
+def get_default_stealth_args() -> list[str]:
+    """Build stealth args with a random fingerprint seed per launch."""
+    seed = random.randint(10000, 99999)
+    return [
+        "--no-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        f"--fingerprint={seed}",
+        "--fingerprint-platform=windows",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-gpu-vendor=NVIDIA Corporation",
+        "--fingerprint-gpu-renderer=NVIDIA GeForce RTX 3070",
+    ]
 
 # ---------------------------------------------------------------------------
 # Platform detection

@@ -45,3 +45,7 @@ AGENTS.md
 
 # Private docs (launch posts, strategy)
 docs/
+
+# Release scripts
+publish.sh
+.env

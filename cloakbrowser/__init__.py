@@ -12,7 +12,7 @@ Usage:
 """
 
 from .browser import launch, launch_async, launch_context
-from .config import CHROMIUM_VERSION, DEFAULT_STEALTH_ARGS
+from .config import CHROMIUM_VERSION, get_default_stealth_args
 from .download import binary_info, clear_cache, ensure_binary
 from ._version import __version__
 
@@ -24,6 +24,6 @@ __all__ = [
     "clear_cache",
     "binary_info",
     "CHROMIUM_VERSION",
-    "DEFAULT_STEALTH_ARGS",
+    "get_default_stealth_args",
     "__version__",
 ]
