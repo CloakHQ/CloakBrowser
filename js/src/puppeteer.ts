@@ -7,6 +7,7 @@ import type { Browser } from "puppeteer-core";
 import type { LaunchOptions } from "./types.js";
 import { getDefaultStealthArgs } from "./config.js";
 import { ensureBinary } from "./download.js";
+import { parseProxyUrl } from "./proxy.js";
 
 /**
  * Launch stealth Chromium browser via Puppeteer.
@@ -27,9 +28,16 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
   const args = buildArgs(options);
 
-  // Puppeteer handles proxy via CLI args, not a separate option
+  // Puppeteer handles proxy via CLI args, not a separate option.
+  // Chromium's --proxy-server does NOT support inline credentials,
+  // so we strip them and use page.authenticate() instead.
+  let proxyAuth: { username: string; password: string } | undefined;
   if (options.proxy) {
-    args.push(`--proxy-server=${options.proxy}`);
+    const { server, username, password } = parseProxyUrl(options.proxy);
+    args.push(`--proxy-server=${server}`);
+    if (username) {
+      proxyAuth = { username, password: password || "" };
+    }
   }
 
   const browser = await puppeteer.default.launch({
@@ -39,6 +47,17 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     ignoreDefaultArgs: ["--enable-automation"],
     ...options.launchOptions,
   });
+
+  // Monkey-patch newPage() to auto-authenticate proxy credentials
+  if (proxyAuth) {
+    const origNewPage = browser.newPage.bind(browser);
+    const auth = proxyAuth;
+    browser.newPage = async (...pageArgs: Parameters<typeof origNewPage>) => {
+      const page = await origNewPage(...pageArgs);
+      await page.authenticate(auth);
+      return page;
+    };
+  }
 
   return browser;
 }

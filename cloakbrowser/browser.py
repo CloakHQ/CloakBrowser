@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import unquote, urlparse, urlunparse
 
 from .config import get_default_stealth_args
 from .download import ensure_binary
@@ -217,8 +218,34 @@ def _build_args(stealth_args: bool, extra_args: list[str] | None) -> list[str]:
     return result
 
 
+def _parse_proxy_url(proxy: str) -> dict[str, Any]:
+    """Parse proxy URL, extracting credentials into separate Playwright fields.
+
+    Handles: http://user:pass@host:port -> {server: "http://host:port", username: "user", password: "pass"}
+    Also handles: no credentials, URL-encoded special chars, socks5://, missing port.
+    """
+    parsed = urlparse(proxy)
+
+    if not parsed.username:
+        return {"server": proxy}
+
+    # Rebuild server URL without credentials
+    netloc = parsed.hostname or ""
+    if parsed.port:
+        netloc += f":{parsed.port}"
+
+    server = urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+
+    result: dict[str, Any] = {"server": server}
+    result["username"] = unquote(parsed.username)
+    if parsed.password:
+        result["password"] = unquote(parsed.password)
+
+    return result
+
+
 def _build_proxy_kwargs(proxy: str | None) -> dict[str, Any]:
     """Build proxy kwargs for Playwright launch."""
     if proxy is None:
         return {}
-    return {"proxy": {"server": proxy}}
+    return {"proxy": _parse_proxy_url(proxy)}

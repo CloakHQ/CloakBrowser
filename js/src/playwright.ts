@@ -7,6 +7,7 @@ import type { Browser, BrowserContext } from "playwright-core";
 import type { LaunchOptions, LaunchContextOptions } from "./types.js";
 import { getDefaultStealthArgs } from "./config.js";
 import { ensureBinary } from "./download.js";
+import { parseProxyUrl } from "./proxy.js";
 
 /**
  * Launch stealth Chromium browser via Playwright.
@@ -32,7 +33,7 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     headless: options.headless ?? true,
     args,
     ignoreDefaultArgs: ["--enable-automation"],
-    ...(options.proxy ? { proxy: { server: options.proxy } } : {}),
+    ...(options.proxy ? { proxy: parseProxyUrl(options.proxy) } : {}),
     ...options.launchOptions,
   });
 

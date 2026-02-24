@@ -50,6 +50,9 @@ AGENTS.md
 # Private docs (launch posts, strategy)
 docs/
 
+# Internal test infrastructure (Docker, VPS-specific)
+test-infra/
+
 # Release scripts
 publish.sh
 deploy.sh
