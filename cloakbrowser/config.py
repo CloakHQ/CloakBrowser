@@ -41,6 +41,10 @@ SUPPORTED_PLATFORMS: dict[tuple[str, str], str] = {
     ("Darwin", "x86_64"): "darwin-x64",
 }
 
+# Platforms with pre-built binaries available for download.
+# Update this set as new platform builds are released.
+AVAILABLE_PLATFORMS: set[str] = {"linux-x64"}
+
 
 def get_platform_tag() -> str:
     """Return the platform tag for binary download (e.g. 'linux-x64', 'darwin-arm64')."""
@@ -70,15 +74,15 @@ def get_cache_dir() -> Path:
     return Path.home() / ".cloakbrowser"
 
 
-def get_binary_dir() -> Path:
-    """Return the directory for the current Chromium version binary."""
-    return get_cache_dir() / f"chromium-{CHROMIUM_VERSION}"
+def get_binary_dir(version: str | None = None) -> Path:
+    """Return the directory for a Chromium version binary."""
+    v = version or CHROMIUM_VERSION
+    return get_cache_dir() / f"chromium-{v}"
 
 
-def get_binary_path() -> Path:
+def get_binary_path(version: str | None = None) -> Path:
     """Return the expected path to the chrome executable."""
-    platform_tag = get_platform_tag()
-    binary_dir = get_binary_dir()
+    binary_dir = get_binary_dir(version)
 
     if platform.system() == "Darwin":
         # macOS: Chromium.app bundle
@@ -88,19 +92,71 @@ def get_binary_path() -> Path:
         return binary_dir / "chrome"
 
 
+def check_platform_available() -> None:
+    """Raise a clear error if no pre-built binary exists for this platform.
+
+    Skipped when CLOAKBROWSER_BINARY_PATH is set (user has their own build).
+    """
+    if get_local_binary_override():
+        return
+
+    tag = get_platform_tag()  # raises if platform unsupported entirely
+    if tag not in AVAILABLE_PLATFORMS:
+        available = ", ".join(sorted(AVAILABLE_PLATFORMS))
+        import sys
+        sys.exit(
+            f"\n\033[1mCloakBrowser\033[0m — Pre-built binaries are currently only available for: {available}.\n"
+            f"macOS and Windows builds are coming soon.\n\n"
+            f"To use CloakBrowser now, run in Docker (see README)."
+        )
+
+
+def get_effective_version() -> str:
+    """Return the best available version: auto-updated if available, else hardcoded.
+
+    Reads the latest_version marker file from the cache directory.
+    Returns CHROMIUM_VERSION if no update has been downloaded.
+    """
+    marker = get_cache_dir() / "latest_version"
+    if marker.exists():
+        try:
+            version = marker.read_text().strip()
+            if version and _version_newer(version, CHROMIUM_VERSION):
+                # Verify the binary actually exists
+                binary = get_binary_path(version)
+                if binary.exists():
+                    return version
+        except (ValueError, OSError):
+            pass
+    return CHROMIUM_VERSION
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Parse '145.0.7718.0' into (145, 0, 7718, 0) for comparison."""
+    return tuple(int(x) for x in v.split("."))
+
+
+def _version_newer(a: str, b: str) -> bool:
+    """Return True if version a is strictly newer than version b."""
+    return _version_tuple(a) > _version_tuple(b)
+
+
 # ---------------------------------------------------------------------------
 # Download URL
 # ---------------------------------------------------------------------------
 DOWNLOAD_BASE_URL = os.environ.get(
     "CLOAKBROWSER_DOWNLOAD_URL",
-    "https://github.com/CloakHQ/chromium-stealth-builds/releases/download",
+    "https://github.com/CloakHQ/cloakbrowser/releases/download",
 )
 
+GITHUB_API_URL = "https://api.github.com/repos/CloakHQ/cloakbrowser/releases"
 
-def get_download_url() -> str:
+
+def get_download_url(version: str | None = None) -> str:
     """Return the full download URL for the current platform's binary archive."""
+    v = version or CHROMIUM_VERSION
     tag = get_platform_tag()
-    return f"{DOWNLOAD_BASE_URL}/v{CHROMIUM_VERSION}/cloakbrowser-{tag}.tar.gz"
+    return f"{DOWNLOAD_BASE_URL}/chromium-v{v}/cloakbrowser-{tag}.tar.gz"
 
 
 # ---------------------------------------------------------------------------

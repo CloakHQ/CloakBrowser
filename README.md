@@ -284,6 +284,7 @@ clearCache();
 | `CLOAKBROWSER_BINARY_PATH` | — | Skip download, use a local Chromium binary |
 | `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
 | `CLOAKBROWSER_DOWNLOAD_URL` | GitHub Releases | Custom download URL for binary |
+| `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
 
 ## Use With Existing Playwright Code
 
@@ -315,12 +316,16 @@ page.goto("https://example.com")
 
 ## Platforms
 
+> **CloakBrowser is in active development.** Pre-built binaries are currently Linux-only. macOS and Windows builds are coming soon.
+
 | Platform | Status |
 |---|---|
-| Linux x86_64 | Supported |
+| Linux x86_64 | ✅ Available |
 | macOS arm64 (Apple Silicon) | Coming soon |
 | macOS x86_64 (Intel) | Coming soon |
 | Windows | Planned |
+
+**On macOS/Windows?** You can still use CloakBrowser via Docker or with your own Chromium binary by setting `CLOAKBROWSER_BINARY_PATH=/path/to/chrome`.
 
 ## Examples
 

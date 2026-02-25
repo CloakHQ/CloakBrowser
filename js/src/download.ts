@@ -13,15 +13,20 @@ import { extract as tarExtract } from "tar";
 import type { BinaryInfo } from "./types.js";
 import {
   CHROMIUM_VERSION,
+  GITHUB_API_URL,
+  checkPlatformAvailable,
   getBinaryDir,
   getBinaryPath,
+  getCacheDir,
   getDownloadUrl,
+  getEffectiveVersion,
   getLocalBinaryOverride,
   getPlatformTag,
-  getCacheDir,
+  versionNewer,
 } from "./config.js";
 
 const DOWNLOAD_TIMEOUT_MS = 600_000; // 10 minutes
+const UPDATE_CHECK_INTERVAL_MS = 3_600_000; // 1 hour
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -44,27 +49,44 @@ export async function ensureBinary(): Promise<string> {
     return localOverride;
   }
 
-  // Check if binary is cached
-  const binaryPath = getBinaryPath();
+  // Fail fast if no binary available for this platform
+  checkPlatformAvailable();
+
+  // Check for auto-updated version first, then fall back to hardcoded
+  const effective = getEffectiveVersion();
+  const binaryPath = getBinaryPath(effective);
+
   if (fs.existsSync(binaryPath) && isExecutable(binaryPath)) {
+    maybeTriggerUpdateCheck();
     return binaryPath;
   }
 
-  // Download
+  // Fall back to hardcoded version if effective version binary doesn't exist
+  if (effective !== CHROMIUM_VERSION) {
+    const fallbackPath = getBinaryPath();
+    if (fs.existsSync(fallbackPath) && isExecutable(fallbackPath)) {
+      maybeTriggerUpdateCheck();
+      return fallbackPath;
+    }
+  }
+
+  // Download hardcoded version
   console.log(
     `[cloakbrowser] Stealth Chromium ${CHROMIUM_VERSION} not found. Downloading for ${getPlatformTag()}...`
   );
   await downloadAndExtract();
 
-  if (!fs.existsSync(binaryPath)) {
+  const downloadedPath = getBinaryPath();
+  if (!fs.existsSync(downloadedPath)) {
     throw new Error(
-      `Download completed but binary not found at expected path: ${binaryPath}. ` +
+      `Download completed but binary not found at expected path: ${downloadedPath}. ` +
         `This may indicate a packaging issue. Please report at ` +
         `https://github.com/CloakHQ/cloakbrowser/issues`
     );
   }
 
-  return binaryPath;
+  maybeTriggerUpdateCheck();
+  return downloadedPath;
 }
 
 /** Remove all cached binaries. Forces re-download on next launch. */
@@ -78,24 +100,43 @@ export function clearCache(): void {
 
 /** Return info about the current binary installation. */
 export function binaryInfo(): BinaryInfo {
-  const binaryPath = getBinaryPath();
+  const effective = getEffectiveVersion();
+  const binaryPath = getBinaryPath(effective);
   return {
-    version: CHROMIUM_VERSION,
+    version: effective,
     platform: getPlatformTag(),
     binaryPath,
     installed: fs.existsSync(binaryPath),
-    cacheDir: getBinaryDir(),
-    downloadUrl: getDownloadUrl(),
+    cacheDir: getBinaryDir(effective),
+    downloadUrl: getDownloadUrl(effective),
   };
+}
+
+/** Manually check for a newer Chromium version. Returns new version or null. */
+export async function checkForUpdate(): Promise<string | null> {
+  const latest = await getLatestChromiumVersion();
+  if (!latest || !versionNewer(latest, CHROMIUM_VERSION)) return null;
+
+  const binaryDir = getBinaryDir(latest);
+  if (fs.existsSync(binaryDir)) {
+    writeVersionMarker(latest);
+    return latest;
+  }
+
+  console.log(`[cloakbrowser] Downloading Chromium ${latest}...`);
+  await downloadAndExtract(latest);
+  writeVersionMarker(latest);
+  return latest;
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-async function downloadAndExtract(): Promise<void> {
-  const url = getDownloadUrl();
-  const binaryDir = getBinaryDir();
+async function downloadAndExtract(version?: string): Promise<void> {
+  const url = getDownloadUrl(version);
+  const binaryDir = getBinaryDir(version);
+  const binaryPath = getBinaryPath(version);
 
   // Create cache dir
   fs.mkdirSync(path.dirname(binaryDir), { recursive: true });
@@ -108,7 +149,7 @@ async function downloadAndExtract(): Promise<void> {
 
   try {
     await downloadFile(url, tmpPath);
-    await extractArchive(tmpPath, binaryDir);
+    await extractArchive(tmpPath, binaryDir, binaryPath);
   } finally {
     // Clean up temp file
     if (fs.existsSync(tmpPath)) {
@@ -180,7 +221,8 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 
 async function extractArchive(
   archivePath: string,
-  destDir: string
+  destDir: string,
+  binaryPath?: string
 ): Promise<void> {
   console.log(`[cloakbrowser] Extracting to ${destDir}`);
 
@@ -212,10 +254,10 @@ async function extractArchive(
   flattenSingleSubdir(destDir);
 
   // Make binary executable
-  const binaryPath = getBinaryPath();
-  if (fs.existsSync(binaryPath)) {
-    fs.chmodSync(binaryPath, 0o755);
-    console.log(`[cloakbrowser] Binary ready: ${binaryPath}`);
+  const bp = binaryPath || getBinaryPath();
+  if (fs.existsSync(bp)) {
+    fs.chmodSync(bp, 0o755);
+    console.log(`[cloakbrowser] Binary ready: ${bp}`);
   }
 }
 
@@ -247,4 +289,95 @@ function isExecutable(filePath: string): boolean {
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-update
+// ---------------------------------------------------------------------------
+
+function shouldCheckForUpdate(): boolean {
+  if (process.env.CLOAKBROWSER_AUTO_UPDATE?.toLowerCase() === "false")
+    return false;
+  if (getLocalBinaryOverride()) return false;
+  if (process.env.CLOAKBROWSER_DOWNLOAD_URL) return false;
+
+  const checkFile = path.join(getCacheDir(), ".last_update_check");
+  try {
+    const lastCheck = Number(fs.readFileSync(checkFile, "utf-8").trim());
+    if (Date.now() - lastCheck < UPDATE_CHECK_INTERVAL_MS) return false;
+  } catch {
+    /* file doesn't exist or unreadable */
+  }
+  return true;
+}
+
+async function getLatestChromiumVersion(): Promise<string | null> {
+  try {
+    const resp = await fetch(`${GITHUB_API_URL}?per_page=10`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) return null;
+    const releases = (await resp.json()) as Array<{
+      tag_name: string;
+      draft: boolean;
+    }>;
+    for (const release of releases) {
+      if (release.tag_name.startsWith("chromium-v") && !release.draft) {
+        return release.tag_name.replace("chromium-v", "");
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeVersionMarker(version: string): void {
+  const cacheDir = getCacheDir();
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const marker = path.join(cacheDir, "latest_version");
+  const tmp = `${marker}.tmp`;
+  fs.writeFileSync(tmp, version);
+  fs.renameSync(tmp, marker);
+}
+
+async function checkAndDownloadUpdate(): Promise<void> {
+  try {
+    // Record check timestamp first (rate limiting)
+    const cacheDir = getCacheDir();
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cacheDir, ".last_update_check"),
+      String(Date.now())
+    );
+
+    const latest = await getLatestChromiumVersion();
+    if (!latest || !versionNewer(latest, CHROMIUM_VERSION)) return;
+
+    // Already downloaded?
+    if (fs.existsSync(getBinaryDir(latest))) {
+      writeVersionMarker(latest);
+      return;
+    }
+
+    console.log(
+      `[cloakbrowser] Newer Chromium available: ${latest} (current: ${CHROMIUM_VERSION}). Downloading in background...`
+    );
+    await downloadAndExtract(latest);
+    writeVersionMarker(latest);
+    console.log(
+      `[cloakbrowser] Background update complete: Chromium ${latest} ready. Will use on next launch.`
+    );
+  } catch (err) {
+    // Background update failed — don't disrupt the user
+    if (process.env.DEBUG) {
+      console.error("[cloakbrowser] Background update failed:", err);
+    }
+  }
+}
+
+function maybeTriggerUpdateCheck(): void {
+  if (!shouldCheckForUpdate()) return;
+  // Fire-and-forget — don't await
+  checkAndDownloadUpdate().catch(() => {});
 }

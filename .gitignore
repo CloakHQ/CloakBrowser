@@ -57,3 +57,4 @@ test-infra/
 publish.sh
 deploy.sh
 .env
+debug

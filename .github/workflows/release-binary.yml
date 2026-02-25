@@ -1,0 +1,40 @@
+name: Release Binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. chromium-v145.0.7718.0)'
+        required: true
+      platform:
+        description: 'Platform label (e.g. Linux x64)'
+        required: true
+        default: 'Linux x64'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: "${{ github.event.inputs.platform }} — ${{ github.event.inputs.tag }}"
+          body: |
+            ## Stealth Chromium Build
+
+            Pre-built Chromium with 16 source-level fingerprint patches.
+
+            ### Install
+            ```bash
+            pip install cloakbrowser    # Python
+            npm install cloakbrowser    # JavaScript
+            # Binary auto-downloads on first launch
+            ```
+
+            ### Platforms
+            - ${{ github.event.inputs.platform }}

@@ -3,6 +3,7 @@
  * Mirrors Python cloakbrowser/config.py.
  */
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -20,6 +21,10 @@ const SUPPORTED_PLATFORMS: Record<string, string> = {
   "darwin-arm64": "darwin-arm64",
   "darwin-x64": "darwin-x64",
 };
+
+// Platforms with pre-built binaries available for download.
+// Update this set as new platform builds are released.
+const AVAILABLE_PLATFORMS = new Set(["linux-x64"]);
 
 export function getPlatformTag(): string {
   const platform = process.platform;
@@ -50,28 +55,79 @@ export function getCacheDir(): string {
   return path.join(os.homedir(), ".cloakbrowser");
 }
 
-export function getBinaryDir(): string {
-  return path.join(getCacheDir(), `chromium-${CHROMIUM_VERSION}`);
+export function getBinaryDir(version?: string): string {
+  return path.join(getCacheDir(), `chromium-${version || CHROMIUM_VERSION}`);
 }
 
-export function getBinaryPath(): string {
-  const binaryDir = getBinaryDir();
+export function getBinaryPath(version?: string): string {
+  const binaryDir = getBinaryDir(version);
   if (process.platform === "darwin") {
     return path.join(binaryDir, "Chromium.app", "Contents", "MacOS", "Chromium");
   }
   return path.join(binaryDir, "chrome");
 }
 
+export function checkPlatformAvailable(): void {
+  if (getLocalBinaryOverride()) return;
+
+  const tag = getPlatformTag(); // throws if unsupported entirely
+  if (!AVAILABLE_PLATFORMS.has(tag)) {
+    const available = [...AVAILABLE_PLATFORMS].sort().join(", ");
+    throw new Error(
+      `CloakBrowser is in active development. ` +
+        `Pre-built binaries are currently only available for: ${available}.\n` +
+        `macOS and Windows builds are coming soon.\n\n` +
+        `To use CloakBrowser now, run in Docker (see README).`
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Download URL
 // ---------------------------------------------------------------------------
-const DOWNLOAD_BASE_URL =
+export const DOWNLOAD_BASE_URL =
   process.env.CLOAKBROWSER_DOWNLOAD_URL ||
-  "https://github.com/CloakHQ/chromium-stealth-builds/releases/download";
+  "https://github.com/CloakHQ/cloakbrowser/releases/download";
 
-export function getDownloadUrl(): string {
+export const GITHUB_API_URL =
+  "https://api.github.com/repos/CloakHQ/cloakbrowser/releases";
+
+export function getDownloadUrl(version?: string): string {
+  const v = version || CHROMIUM_VERSION;
   const tag = getPlatformTag();
-  return `${DOWNLOAD_BASE_URL}/v${CHROMIUM_VERSION}/cloakbrowser-${tag}.tar.gz`;
+  return `${DOWNLOAD_BASE_URL}/chromium-v${v}/cloakbrowser-${tag}.tar.gz`;
+}
+
+export function getEffectiveVersion(): string {
+  const marker = path.join(getCacheDir(), "latest_version");
+  try {
+    if (fs.existsSync(marker)) {
+      const version = fs.readFileSync(marker, "utf-8").trim();
+      if (version && versionNewer(version, CHROMIUM_VERSION)) {
+        const binary = getBinaryPath(version);
+        if (fs.existsSync(binary)) {
+          return version;
+        }
+      }
+    }
+  } catch {
+    // Marker unreadable — fall back to hardcoded
+  }
+  return CHROMIUM_VERSION;
+}
+
+export function parseVersion(v: string): number[] {
+  return v.split(".").map(Number);
+}
+
+export function versionNewer(a: string, b: string): boolean {
+  const va = parseVersion(a);
+  const vb = parseVersion(b);
+  for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+    if ((va[i] ?? 0) > (vb[i] ?? 0)) return true;
+    if ((va[i] ?? 0) < (vb[i] ?? 0)) return false;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------

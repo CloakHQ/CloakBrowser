@@ -19,7 +19,7 @@
 export { launch, launchContext } from "./playwright.js";
 
 // Binary management
-export { ensureBinary, clearCache, binaryInfo } from "./download.js";
+export { ensureBinary, clearCache, binaryInfo, checkForUpdate } from "./download.js";
 
 // Config
 export { CHROMIUM_VERSION, getDefaultStealthArgs } from "./config.js";

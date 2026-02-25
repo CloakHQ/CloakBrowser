@@ -45,6 +45,8 @@ await browser.close();
 
 ### Puppeteer
 
+> **Note:** Playwright is recommended for sites with reCAPTCHA Enterprise. Puppeteer's CDP protocol leaks automation signals that reCAPTCHA Enterprise can detect. This is a known Puppeteer limitation, not specific to CloakBrowser.
+
 ```javascript
 import { launch } from 'cloakbrowser/puppeteer';
 
@@ -85,7 +87,7 @@ const context = await launchContext({
 ### Utilities
 
 ```javascript
-import { ensureBinary, clearCache, binaryInfo } from 'cloakbrowser';
+import { ensureBinary, clearCache, binaryInfo, checkForUpdate } from 'cloakbrowser';
 
 // Pre-download binary (e.g., during Docker build)
 await ensureBinary();
@@ -95,6 +97,10 @@ console.log(binaryInfo());
 
 // Force re-download
 clearCache();
+
+// Manually check for newer Chromium version
+const newVersion = await checkForUpdate();
+if (newVersion) console.log(`Updated to ${newVersion}`);
 ```
 
 ## Test Results
@@ -115,6 +121,7 @@ clearCache();
 | `CLOAKBROWSER_BINARY_PATH` | — | Skip download, use a local Chromium binary |
 | `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
 | `CLOAKBROWSER_DOWNLOAD_URL` | GitHub Releases | Custom download URL |
+| `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
 
 ## Migrate From Playwright
 
@@ -130,12 +137,16 @@ const page = await browser.newPage();
 
 ## Platforms
 
+> **CloakBrowser is in active development.** Pre-built binaries are currently Linux-only. macOS and Windows builds are coming soon.
+
 | Platform | Status |
 |---|---|
-| Linux x86_64 | ✅ Supported |
+| Linux x86_64 | ✅ Available |
 | macOS arm64 (Apple Silicon) | Coming soon |
 | macOS x86_64 (Intel) | Coming soon |
 | Windows | Planned |
+
+**On macOS/Windows?** You can still use CloakBrowser via Docker or with your own Chromium binary by setting `CLOAKBROWSER_BINARY_PATH=/path/to/chrome`.
 
 ## Requirements
 

@@ -11,15 +11,23 @@ import os
 import stat
 import tarfile
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import httpx
 
 from .config import (
     CHROMIUM_VERSION,
+    DOWNLOAD_BASE_URL,
+    GITHUB_API_URL,
+    _version_newer,
+    check_platform_available,
     get_binary_dir,
     get_binary_path,
+    get_cache_dir,
     get_download_url,
+    get_effective_version,
     get_local_binary_override,
     get_platform_tag,
 )
@@ -28,6 +36,9 @@ logger = logging.getLogger("cloakbrowser")
 
 # Timeout for download (large binary, allow 10 min)
 DOWNLOAD_TIMEOUT = 600.0
+
+# Auto-update check interval (1 hour)
+UPDATE_CHECK_INTERVAL = 3600
 
 
 def ensure_binary() -> str:
@@ -48,13 +59,27 @@ def ensure_binary() -> str:
         logger.info("Using local binary override: %s", local_override)
         return str(path)
 
-    # Check if binary is already cached
-    binary_path = get_binary_path()
+    # Fail fast if no binary available for this platform
+    check_platform_available()
+
+    # Check for auto-updated version first, then fall back to hardcoded
+    effective = get_effective_version()
+    binary_path = get_binary_path(effective)
+
     if binary_path.exists() and _is_executable(binary_path):
-        logger.debug("Binary found in cache: %s", binary_path)
+        logger.debug("Binary found in cache: %s (version %s)", binary_path, effective)
+        _maybe_trigger_update_check()
         return str(binary_path)
 
-    # Download
+    # Fall back to hardcoded version if effective version binary doesn't exist
+    if effective != CHROMIUM_VERSION:
+        fallback_path = get_binary_path()
+        if fallback_path.exists() and _is_executable(fallback_path):
+            logger.debug("Binary found in cache: %s", fallback_path)
+            _maybe_trigger_update_check()
+            return str(fallback_path)
+
+    # Download hardcoded version
     logger.info(
         "Stealth Chromium %s not found. Downloading for %s...",
         CHROMIUM_VERSION,
@@ -62,6 +87,7 @@ def ensure_binary() -> str:
     )
     _download_and_extract()
 
+    binary_path = get_binary_path()
     if not binary_path.exists():
         raise RuntimeError(
             f"Download completed but binary not found at expected path: {binary_path}. "
@@ -69,13 +95,15 @@ def ensure_binary() -> str:
             f"https://github.com/CloakHQ/cloakbrowser/issues"
         )
 
+    _maybe_trigger_update_check()
     return str(binary_path)
 
 
-def _download_and_extract() -> None:
+def _download_and_extract(version: str | None = None) -> None:
     """Download the binary archive and extract to cache directory."""
-    url = get_download_url()
-    binary_dir = get_binary_dir()
+    url = get_download_url(version)
+    binary_dir = get_binary_dir(version)
+    binary_path = get_binary_path(version)
 
     # Create cache dir
     binary_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +114,7 @@ def _download_and_extract() -> None:
 
     try:
         _download_file(url, tmp_path)
-        _extract_archive(tmp_path, binary_dir)
+        _extract_archive(tmp_path, binary_dir, binary_path)
     finally:
         # Clean up temp file
         tmp_path.unlink(missing_ok=True)
@@ -123,7 +151,9 @@ def _download_file(url: str, dest: Path) -> None:
     logger.info("Download complete: %d MB", dest.stat().st_size // (1024 * 1024))
 
 
-def _extract_archive(archive_path: Path, dest_dir: Path) -> None:
+def _extract_archive(
+    archive_path: Path, dest_dir: Path, binary_path: Path | None = None
+) -> None:
     """Extract tar.gz archive to destination directory."""
     logger.info("Extracting to %s", dest_dir)
 
@@ -153,10 +183,10 @@ def _extract_archive(archive_path: Path, dest_dir: Path) -> None:
     _flatten_single_subdir(dest_dir)
 
     # Make binary executable
-    binary_path = get_binary_path()
-    if binary_path.exists():
-        _make_executable(binary_path)
-        logger.info("Binary ready: %s", binary_path)
+    bp = binary_path or get_binary_path()
+    if bp.exists():
+        _make_executable(bp)
+        logger.info("Binary ready: %s", bp)
 
 
 def _flatten_single_subdir(dest_dir: Path) -> None:
@@ -200,12 +230,132 @@ def clear_cache() -> None:
 
 def binary_info() -> dict:
     """Return info about the current binary installation."""
-    binary_path = get_binary_path()
+    effective = get_effective_version()
+    binary_path = get_binary_path(effective)
     return {
-        "version": CHROMIUM_VERSION,
+        "version": effective,
+        "bundled_version": CHROMIUM_VERSION,
         "platform": get_platform_tag(),
         "binary_path": str(binary_path),
         "installed": binary_path.exists(),
-        "cache_dir": str(get_binary_dir()),
-        "download_url": get_download_url(),
+        "cache_dir": str(get_binary_dir(effective)),
+        "download_url": get_download_url(effective),
     }
+
+
+# ---------------------------------------------------------------------------
+# Auto-update
+# ---------------------------------------------------------------------------
+
+def check_for_update() -> str | None:
+    """Manually check for a newer Chromium version. Returns new version or None.
+
+    This is the public API for triggering an update check. Unlike the
+    background check in ensure_binary(), this blocks until complete.
+    """
+    latest = _get_latest_chromium_version()
+    if latest is None:
+        return None
+    if not _version_newer(latest, CHROMIUM_VERSION):
+        return None
+
+    binary_dir = get_binary_dir(latest)
+    if binary_dir.exists():
+        # Already downloaded
+        _write_version_marker(latest)
+        return latest
+
+    logger.info("Downloading Chromium %s...", latest)
+    _download_and_extract(version=latest)
+    _write_version_marker(latest)
+    return latest
+
+
+def _should_check_for_update() -> bool:
+    """Check if auto-update is enabled and rate limit hasn't been hit."""
+    if os.environ.get("CLOAKBROWSER_AUTO_UPDATE", "").lower() == "false":
+        return False
+    if get_local_binary_override():
+        return False
+    if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
+        return False
+
+    check_file = get_cache_dir() / ".last_update_check"
+    if check_file.exists():
+        try:
+            last_check = float(check_file.read_text().strip())
+            if time.time() - last_check < UPDATE_CHECK_INTERVAL:
+                return False
+        except (ValueError, OSError):
+            pass
+    return True
+
+
+def _get_latest_chromium_version() -> str | None:
+    """Hit GitHub Releases API, return latest chromium-v* version string or None."""
+    try:
+        resp = httpx.get(
+            GITHUB_API_URL, params={"per_page": 10}, timeout=10.0
+        )
+        resp.raise_for_status()
+        for release in resp.json():
+            tag = release.get("tag_name", "")
+            if tag.startswith("chromium-v") and not release.get("draft"):
+                return tag.removeprefix("chromium-v")
+        return None
+    except Exception:
+        logger.debug("Auto-update check failed", exc_info=True)
+        return None
+
+
+def _write_version_marker(version: str) -> None:
+    """Write the latest version marker to cache dir."""
+    cache_dir = get_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    marker = cache_dir / "latest_version"
+    # Write to temp file then rename for atomicity
+    tmp = marker.with_suffix(".tmp")
+    tmp.write_text(version)
+    tmp.rename(marker)
+
+
+def _check_and_download_update() -> None:
+    """Background task: check for newer binary, download if available."""
+    try:
+        # Record check timestamp first (rate limiting)
+        check_file = get_cache_dir() / ".last_update_check"
+        check_file.parent.mkdir(parents=True, exist_ok=True)
+        check_file.write_text(str(time.time()))
+
+        latest = _get_latest_chromium_version()
+        if latest is None:
+            return
+        if not _version_newer(latest, CHROMIUM_VERSION):
+            return
+
+        # Already downloaded?
+        if get_binary_dir(latest).exists():
+            _write_version_marker(latest)
+            return
+
+        logger.info(
+            "Newer Chromium available: %s (current: %s). Downloading in background...",
+            latest,
+            CHROMIUM_VERSION,
+        )
+        _download_and_extract(version=latest)
+        _write_version_marker(latest)
+        logger.info(
+            "Background update complete: Chromium %s ready. Will use on next launch.",
+            latest,
+        )
+    except Exception:
+        logger.debug("Background update failed", exc_info=True)
+
+
+def _maybe_trigger_update_check() -> None:
+    """Fire-and-forget update check in a daemon thread."""
+    if not _should_check_for_update():
+        return
+    t = threading.Thread(target=_check_and_download_update, daemon=True)
+    t.start()
