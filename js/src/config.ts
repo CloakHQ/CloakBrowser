@@ -91,10 +91,19 @@ export const DOWNLOAD_BASE_URL =
 export const GITHUB_API_URL =
   "https://api.github.com/repos/CloakHQ/cloakbrowser/releases";
 
+export const GITHUB_DOWNLOAD_BASE_URL =
+  "https://github.com/CloakHQ/cloakbrowser/releases/download";
+
 export function getDownloadUrl(version?: string): string {
   const v = version || CHROMIUM_VERSION;
   const tag = getPlatformTag();
   return `${DOWNLOAD_BASE_URL}/chromium-v${v}/cloakbrowser-${tag}.tar.gz`;
+}
+
+export function getFallbackDownloadUrl(version?: string): string {
+  const v = version || CHROMIUM_VERSION;
+  const tag = getPlatformTag();
+  return `${GITHUB_DOWNLOAD_BASE_URL}/chromium-v${v}/cloakbrowser-${tag}.tar.gz`;
 }
 
 export function getEffectiveVersion(): string {

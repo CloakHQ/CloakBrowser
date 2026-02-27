@@ -21,6 +21,7 @@ import {
   getCacheDir,
   getDownloadUrl,
   getEffectiveVersion,
+  getFallbackDownloadUrl,
   getLocalBinaryOverride,
   getPlatformTag,
   versionNewer,
@@ -135,7 +136,8 @@ export async function checkForUpdate(): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 async function downloadAndExtract(version?: string): Promise<void> {
-  const url = getDownloadUrl(version);
+  const primaryUrl = getDownloadUrl(version);
+  const fallbackUrl = getFallbackDownloadUrl(version);
   const binaryDir = getBinaryDir(version);
   const binaryPath = getBinaryPath(version);
 
@@ -149,7 +151,16 @@ async function downloadAndExtract(version?: string): Promise<void> {
   );
 
   try {
-    await downloadFile(url, tmpPath);
+    // Try primary server, fall back to GitHub Releases
+    try {
+      await downloadFile(primaryUrl, tmpPath);
+    } catch (primaryErr) {
+      console.warn(
+        `[cloakbrowser] Primary download failed (${primaryErr instanceof Error ? primaryErr.message : primaryErr}), trying GitHub Releases...`
+      );
+      await downloadFile(fallbackUrl, tmpPath);
+    }
+
     await extractArchive(tmpPath, binaryDir, binaryPath);
     console.log(
       `[cloakbrowser] Visit https://cloakbrowser.dev for docs and release notifications.`

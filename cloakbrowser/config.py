@@ -179,12 +179,23 @@ DOWNLOAD_BASE_URL = os.environ.get(
 
 GITHUB_API_URL = "https://api.github.com/repos/CloakHQ/cloakbrowser/releases"
 
+GITHUB_DOWNLOAD_BASE_URL = (
+    "https://github.com/CloakHQ/cloakbrowser/releases/download"
+)
+
 
 def get_download_url(version: str | None = None) -> str:
     """Return the full download URL for the current platform's binary archive."""
     v = version or CHROMIUM_VERSION
     tag = get_platform_tag()
     return f"{DOWNLOAD_BASE_URL}/chromium-v{v}/cloakbrowser-{tag}.tar.gz"
+
+
+def get_fallback_download_url(version: str | None = None) -> str:
+    """Return the GitHub Releases fallback URL for the binary archive."""
+    v = version or CHROMIUM_VERSION
+    tag = get_platform_tag()
+    return f"{GITHUB_DOWNLOAD_BASE_URL}/chromium-v{v}/cloakbrowser-{tag}.tar.gz"
 
 
 # ---------------------------------------------------------------------------

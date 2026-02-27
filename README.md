@@ -535,6 +535,12 @@ Set a custom download URL or use a local binary:
 export CLOAKBROWSER_BINARY_PATH=/path/to/your/chrome
 ```
 
+**macOS: "App is damaged" or Gatekeeper blocks launch**
+The binary is ad-hoc signed. macOS quarantines downloaded files. Run once to clear it:
+```bash
+xattr -cr ~/.cloakbrowser/chromium-*/Chromium.app
+```
+
 **"playwright install" vs CloakBrowser binary**
 You do NOT need `playwright install chromium`. CloakBrowser downloads its own binary. You only need Playwright's system deps:
 ```bash

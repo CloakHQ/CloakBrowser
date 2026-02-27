@@ -30,6 +30,7 @@ from .config import (
     get_cache_dir,
     get_download_url,
     get_effective_version,
+    get_fallback_download_url,
     get_local_binary_override,
     get_platform_tag,
 )
@@ -102,8 +103,13 @@ def ensure_binary() -> str:
 
 
 def _download_and_extract(version: str | None = None) -> None:
-    """Download the binary archive and extract to cache directory."""
-    url = get_download_url(version)
+    """Download the binary archive and extract to cache directory.
+
+    Tries the primary server (cloakbrowser.dev) first, falls back to
+    GitHub Releases if the primary is unreachable or returns an error.
+    """
+    primary_url = get_download_url(version)
+    fallback_url = get_fallback_download_url(version)
     binary_dir = get_binary_dir(version)
     binary_path = get_binary_path(version)
 
@@ -115,7 +121,16 @@ def _download_and_extract(version: str | None = None) -> None:
         tmp_path = Path(tmp.name)
 
     try:
-        _download_file(url, tmp_path)
+        # Try primary, fall back to GitHub Releases
+        try:
+            _download_file(primary_url, tmp_path)
+        except Exception as primary_err:
+            logger.warning(
+                "Primary download failed (%s), trying GitHub Releases...",
+                primary_err,
+            )
+            _download_file(fallback_url, tmp_path)
+
         _extract_archive(tmp_path, binary_dir, binary_path)
         logger.info("Visit https://cloakbrowser.dev for docs and release notifications.")
         logger.info("Issues? https://github.com/CloakHQ/CloakBrowser/issues")
