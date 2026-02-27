@@ -5,7 +5,7 @@
 
 import type { Browser, BrowserContext } from "playwright-core";
 import type { LaunchOptions, LaunchContextOptions } from "./types.js";
-import { getDefaultStealthArgs } from "./config.js";
+import { DEFAULT_VIEWPORT, getDefaultStealthArgs } from "./config.js";
 import { ensureBinary } from "./download.js";
 import { parseProxyUrl } from "./proxy.js";
 
@@ -68,7 +68,7 @@ export async function launchContext(
   try {
     context = await browser.newContext({
       ...(options.userAgent ? { userAgent: options.userAgent } : {}),
-      ...(options.viewport ? { viewport: options.viewport } : {}),
+      viewport: options.viewport ?? DEFAULT_VIEWPORT,
       ...(resolved.locale ? { locale: resolved.locale } : {}),
       ...(resolved.timezone ? { timezoneId: resolved.timezone } : {}),
     });

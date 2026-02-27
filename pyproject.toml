@@ -42,7 +42,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "playwright>=1.40",
+    "patchright>=1.40",
     "httpx>=0.24",
 ]
 

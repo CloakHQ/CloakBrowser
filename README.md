@@ -20,7 +20,8 @@
 
 Drop-in Playwright/Puppeteer replacement for Python and JavaScript. Same API, same code — just swap the import. Your browser now scores **0.9 on reCAPTCHA v3**, passes **Cloudflare Turnstile**, and clears **30 out of 30** stealth detection tests.
 
-- 🔒 **16 source-level C++ patches** — not JS injection, not config flags
+- 🔒 **22 source-level C++ patches** — not JS injection, not config flags
+- 🛡️ **CDP stealth built-in** — powered by [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright), hides Playwright's automation signals
 - 🎯 **0.9 reCAPTCHA v3 score** — human-level, server-verified
 - ☁️ **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — 30/30 tests
 - 🔄 **Drop-in replacement** — works with Playwright (Python & JS) and Puppeteer (JS)
@@ -79,11 +80,12 @@ On first run, the stealth Chromium binary is automatically downloaded (~200MB, c
 
 - **Config-level patches break** — `playwright-stealth`, `undetected-chromedriver`, and `puppeteer-extra` inject JavaScript or tweak flags. Every Chrome update breaks them. Antibot systems detect the patches themselves.
 - **CloakBrowser patches Chromium source code** — fingerprints are modified at the C++ level, compiled into the binary. Detection sites see a real browser because it *is* a real browser.
+- **Two layers of stealth** — C++ patches handle fingerprints (GPU, screen, UA, voices, media devices), while the Patchright driver eliminates CDP automation leaks (Runtime.enable, Chrome flags, console detection). Most stealth tools only do one or the other.
 - **One line to switch** — same Playwright API, no new abstractions, no CAPTCHA-solving services.
 
 ## Test Results
 
-All tests verified against live detection services. Last tested: Feb 2026 (Chromium 142).
+All tests verified against live detection services. Last tested: Feb 2026 (Chromium 145).
 
 | Detection Service | Stock Playwright | CloakBrowser | Notes |
 |---|---|---|---|
@@ -98,7 +100,7 @@ All tests verified against live detection services. Last tested: Feb 2026 (Chrom
 | `navigator.webdriver` | `true` | **`false`** | Source-level patch |
 | `navigator.plugins.length` | 0 | **5** | Real plugin list |
 | `window.chrome` | `undefined` | **`object`** | Present like real Chrome |
-| UA string | `HeadlessChrome` | **`Chrome/142.0.0.0`** | No headless leak |
+| UA string | `HeadlessChrome` | **`Chrome/145.0.0.0`** | No headless leak |
 | CDP detection | Detected | **Not detected** | `isAutomatedWithCDP: false` |
 | TLS fingerprint | Mismatch | **Identical to Chrome** | ja3n/ja4/akamai match |
 
@@ -140,17 +142,7 @@ CloakBrowser is a thin wrapper (Python + JavaScript) around a custom-built Chrom
 3. **Every launch** → Playwright or Puppeteer starts with our binary + stealth args
 4. **You write code** → standard Playwright/Puppeteer API, nothing new to learn
 
-The binary includes 16 source-level patches that modify:
-- Canvas fingerprint generation
-- WebGL renderer output
-- Audio processing fingerprint
-- Font enumeration results
-- Hardware concurrency reporting
-- Client rect measurements
-- GPU vendor/renderer strings
-- WebDriver flag
-- Headless detection signals
-- And more...
+The binary includes 26 source-level patches covering canvas, WebGL, audio, fonts, GPU, screen properties, hardware reporting, and automation signal removal.
 
 These are compiled into the Chromium binary — not injected via JavaScript, not set via flags.
 
@@ -462,7 +454,7 @@ page.goto("https://example.com")
 | Linux x64 binary | ✅ Released |
 | macOS arm64 (Apple Silicon) | ✅ Released |
 | macOS x64 (Intel) | ✅ Released |
-| Chromium 145 build | 🔜 In progress |
+| Chromium 145 build | ✅ Released |
 | JavaScript/Puppeteer + Playwright support | ✅ Released |
 | Fingerprint rotation per session | ✅ Released |
 | Built-in proxy rotation | 📋 Planned |
@@ -523,6 +515,20 @@ This runs a real headed browser rendered on a virtual display — no physical mo
 
 ## Troubleshooting
 
+**Reddit or similar sites show CAPTCHA / "Prove your humanity"**
+
+Some sites (notably Reddit homepage) use HTTP/2 fingerprinting that detects Playwright's connection layer. Pass `--disable-http2` to fall back to HTTP/1.1:
+
+```python
+browser = launch(args=["--disable-http2"])
+```
+
+```javascript
+const browser = await launch({ args: ['--disable-http2'] });
+```
+
+Only use this flag for sites that require it — most sites work fine with HTTP/2.
+
 **Binary download fails / timeout**
 Set a custom download URL or use a local binary:
 ```bash
@@ -532,7 +538,7 @@ export CLOAKBROWSER_BINARY_PATH=/path/to/your/chrome
 **"playwright install" vs CloakBrowser binary**
 You do NOT need `playwright install chromium`. CloakBrowser downloads its own binary. You only need Playwright's system deps:
 ```bash
-playwright install-deps chromium
+patchright install-deps chromium
 ```
 
 **reCAPTCHA v3 scores are low (0.1–0.3)**

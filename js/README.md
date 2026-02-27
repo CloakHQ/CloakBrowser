@@ -11,7 +11,7 @@
 
 Drop-in Playwright/Puppeteer replacement. Same API — just swap the import. Scores **0.9 on reCAPTCHA v3**, passes **Cloudflare Turnstile**, and clears **30/30** stealth detection tests.
 
-- 🔒 **16 source-level C++ patches** — not JS injection, not config flags
+- 🔒 **22 source-level C++ patches** — not JS injection, not config flags
 - 🎯 **0.9 reCAPTCHA v3 score** — human-level, server-verified
 - ☁️ **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — 30/30 tests
 - 🔄 **Drop-in replacement** — works with both Playwright and Puppeteer

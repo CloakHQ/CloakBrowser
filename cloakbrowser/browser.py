@@ -18,7 +18,7 @@ import logging
 from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 
-from .config import get_default_stealth_args
+from .config import DEFAULT_VIEWPORT, get_default_stealth_args
 from .download import ensure_binary
 
 logger = logging.getLogger("cloakbrowser")
@@ -61,7 +61,7 @@ def launch(
         >>> print(page.title())
         >>> browser.close()
     """
-    from playwright.sync_api import sync_playwright
+    from patchright.sync_api import sync_playwright
 
     binary_path = ensure_binary()
     timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
@@ -129,7 +129,7 @@ async def launch_async(
         >>>
         >>> asyncio.run(main())
     """
-    from playwright.async_api import async_playwright
+    from patchright.async_api import async_playwright
 
     binary_path = ensure_binary()
     timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
@@ -168,6 +168,7 @@ def launch_context(
     viewport: dict | None = None,
     locale: str | None = None,
     timezone_id: str | None = None,
+    color_scheme: str | None = None,
     geoip: bool = False,
     **kwargs: Any,
 ) -> Any:
@@ -185,6 +186,9 @@ def launch_context(
         viewport: Viewport size dict, e.g. {"width": 1920, "height": 1080}.
         locale: Browser locale, e.g. "en-US".
         timezone_id: Timezone, e.g. "America/New_York".
+        color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
+            Default: None (uses Chromium default, which is 'light').
+            Note: 'no-preference' doesn't work in Patchright (falls back to 'light').
         geoip: Auto-detect timezone/locale from proxy IP (default False).
         **kwargs: Passed to browser.new_context().
 
@@ -200,12 +204,13 @@ def launch_context(
     context_kwargs: dict[str, Any] = {}
     if user_agent:
         context_kwargs["user_agent"] = user_agent
-    if viewport:
-        context_kwargs["viewport"] = viewport
+    context_kwargs["viewport"] = viewport or DEFAULT_VIEWPORT
     if locale:
         context_kwargs["locale"] = locale
     if timezone_id:
         context_kwargs["timezone_id"] = timezone_id
+    if color_scheme:
+        context_kwargs["color_scheme"] = color_scheme
     context_kwargs.update(kwargs)
 
     try:
