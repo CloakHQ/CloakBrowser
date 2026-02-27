@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import stat
+import subprocess
 import tarfile
 import tempfile
 import threading
@@ -168,27 +170,39 @@ def _extract_archive(
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     with tarfile.open(archive_path, "r:gz") as tar:
-        # Security: prevent path traversal and symlink attacks
+        # Security: prevent path traversal
         safe_members = []
         for member in tar.getmembers():
+            # Allow symlinks — macOS .app bundles require them (Framework layout)
             if member.issym() or member.islnk():
-                logger.warning("Skipping symlink in archive: %s", member.name)
-                continue
-            member_path = (dest_dir / member.name).resolve()
-            if not str(member_path).startswith(str(dest_dir.resolve())):
-                raise RuntimeError(f"Archive contains path traversal: {member.name}")
+                link_target = member.linkname
+                # Reject symlinks that escape the dest dir
+                if os.path.isabs(link_target) or ".." in link_target.split("/"):
+                    logger.warning("Skipping suspicious symlink: %s -> %s", member.name, link_target)
+                    continue
+            else:
+                member_path = (dest_dir / member.name).resolve()
+                if not str(member_path).startswith(str(dest_dir.resolve())):
+                    raise RuntimeError(f"Archive contains path traversal: {member.name}")
             safe_members.append(member)
 
         tar.extractall(dest_dir, members=safe_members)
 
     # If tar extracted into a single subdirectory, flatten it
     # (e.g. fingerprint-chromium-142-custom-v2/chrome → chrome)
+    # But never flatten .app bundles — macOS needs the bundle structure intact
     _flatten_single_subdir(dest_dir)
 
     # Make binary executable
     bp = binary_path or get_binary_path()
     if bp.exists():
         _make_executable(bp)
+
+    # macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
+    if platform.system() == "Darwin":
+        _remove_quarantine(dest_dir)
+
+    if bp.exists():
         logger.info("Binary ready: %s", bp)
 
 
@@ -203,6 +217,10 @@ def _flatten_single_subdir(dest_dir: Path) -> None:
     entries = list(dest_dir.iterdir())
     if len(entries) == 1 and entries[0].is_dir():
         subdir = entries[0]
+        # Never flatten .app bundles — macOS needs the bundle structure
+        if subdir.name.endswith(".app"):
+            logger.debug("Keeping .app bundle intact: %s", subdir.name)
+            return
         logger.debug("Flattening single subdirectory: %s", subdir.name)
         for item in subdir.iterdir():
             shutil.move(str(item), str(dest_dir / item.name))
@@ -218,6 +236,19 @@ def _make_executable(path: Path) -> None:
     """Make a file executable (chmod +x)."""
     current = path.stat().st_mode
     path.chmod(current | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _remove_quarantine(path: Path) -> None:
+    """Remove macOS quarantine/provenance xattrs so Gatekeeper doesn't block the binary."""
+    try:
+        subprocess.run(
+            ["xattr", "-cr", str(path)],
+            capture_output=True,
+            timeout=30,
+        )
+        logger.debug("Removed quarantine attributes from %s", path)
+    except Exception:
+        logger.debug("Failed to remove quarantine attributes", exc_info=True)
 
 
 def clear_cache() -> None:

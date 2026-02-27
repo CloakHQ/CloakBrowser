@@ -4,6 +4,7 @@
  * Mirrors Python cloakbrowser/download.py.
  */
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -266,6 +267,14 @@ async function extractArchive(
   const bp = binaryPath || getBinaryPath();
   if (fs.existsSync(bp)) {
     fs.chmodSync(bp, 0o755);
+  }
+
+  // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
+  if (process.platform === "darwin") {
+    removeQuarantine(destDir);
+  }
+
+  if (fs.existsSync(bp)) {
     console.log(`[cloakbrowser] Binary ready: ${bp}`);
   }
 }
@@ -278,6 +287,8 @@ function flattenSingleSubdir(destDir: string): void {
   const entries = fs.readdirSync(destDir);
   if (entries.length === 1) {
     const subdir = path.join(destDir, entries[0]!);
+    // Never flatten .app bundles — macOS needs the bundle structure
+    if (entries[0]!.endsWith(".app")) return;
     if (fs.statSync(subdir).isDirectory()) {
       const children = fs.readdirSync(subdir);
       for (const child of children) {
@@ -288,6 +299,15 @@ function flattenSingleSubdir(destDir: string): void {
       }
       fs.rmdirSync(subdir);
     }
+  }
+}
+
+/** Remove macOS quarantine/provenance xattrs so Gatekeeper doesn't block the binary. */
+function removeQuarantine(dirPath: string): void {
+  try {
+    execFileSync("xattr", ["-cr", dirPath], { timeout: 30_000 });
+  } catch {
+    // Non-fatal — user can manually run: xattr -cr ~/.cloakbrowser/
   }
 }
 

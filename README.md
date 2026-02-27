@@ -107,6 +107,11 @@ All tests verified against live detection services. Last tested: Feb 2026 (Chrom
 ### Proof
 
 <p align="center">
+<img src="https://i.imgur.com/IvB0It7.gif" width="600" alt="Cloudflare Turnstile — 3 Tests Passing (Headed Mode)">
+<br><em>Cloudflare Turnstile — 3 live tests passing in headed mode (macOS)</em>
+</p>
+
+<p align="center">
 <img src="https://i.imgur.com/hvIQyMv.png" width="600" alt="reCAPTCHA v3 — Score 0.9">
 <br><em>reCAPTCHA v3 score 0.9 — server-side verified (human-level)</em>
 </p>
