@@ -99,7 +99,7 @@ jobs:
         run: npm run build
 
   # ---------------------------------------------------------------------------
-  # Lint
+  # Lint (Python only - no JS lint script in package.json)
   # ---------------------------------------------------------------------------
   lint:
     runs-on: ubuntu-latest
@@ -114,25 +114,6 @@ jobs:
         run: pip install ruff
       - name: Run ruff
         run: ruff check cloakbrowser/ tests/
-
-      - name: JS lint
-        uses: actions/setup-node@v4
-      - name: Install deps
-        working-directory: ./js
-        run: npm ci
-      # JS lint - no lint script in package.json, using typecheck instead
-      # - name: Run ESLint
-      #   working-directory: ./js
-      #   run: npm run lint
-
-  # ---------------------------------------------------------------------------
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Install deps
-        working-directory: ./js
-        run: npm ci
-      - name: Run ESLint
-        working-directory: ./js
-        run: npm run lint
 
   # ---------------------------------------------------------------------------
   # Build Windows Binary (win32-x64) - Manual trigger only
