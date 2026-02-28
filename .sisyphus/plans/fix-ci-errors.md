@@ -23,7 +23,7 @@ Fix ruff lint errors (unused imports) and investigate Windows test failures in t
 
 ## TODOs
 
-- [ ] 1. **Fix ruff lint errors**
+- [x] 1. **Fix ruff lint errors**
 
   What to do:
   - Run `ruff check cloakbrowser/ tests/ --fix`
@@ -32,7 +32,7 @@ Fix ruff lint errors (unused imports) and investigate Windows test failures in t
   Acceptance Criteria:
   - [ ] ruff passes with no errors
 
-- [ ] 2. **Investigate Windows test failures**
+- [x] 2. **Investigate Windows test failures**
 
   What to do:
   - Check what failed in Windows tests
@@ -41,7 +41,7 @@ Fix ruff lint errors (unused imports) and investigate Windows test failures in t
   Acceptance Criteria:
   - [ ] Windows tests pass
 
-- [ ] 3. **Re-run CI**
+- [x] 3. **Re-run CI**
 
   What to do:
   - Push fixes
