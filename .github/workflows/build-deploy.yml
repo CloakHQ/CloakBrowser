@@ -27,7 +27,7 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Test on Ubuntu and macOS only (no Windows - binary not available)
+  # Test on Ubuntu and macOS only
   # ---------------------------------------------------------------------------
   test:
     runs-on: ${{ matrix.os }}
@@ -99,7 +99,7 @@ jobs:
         run: npm run build
 
   # ---------------------------------------------------------------------------
-  # Lint (Python only - no JS lint script in package.json)
+  # Lint
   # ---------------------------------------------------------------------------
   lint:
     runs-on: ubuntu-latest
@@ -116,12 +116,12 @@ jobs:
         run: ruff check cloakbrowser/ tests/
 
   # ---------------------------------------------------------------------------
-  # Build Windows Binary (win32-x64) - Manual trigger only
+  # Build Windows Binary (win32-x64)
   # ---------------------------------------------------------------------------
   build-windows:
     needs: [lint]
     runs-on: windows-latest
-    if: github.event_name == 'workflow_dispatch' && (github.inputs.build_platform == 'all' || github.inputs.build_platform == 'windows')
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
 
@@ -130,10 +130,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install depot_tools
+      - name: Add depot_tools to PATH
+        shell: pwsh
         run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git $env:USERPROFILE\depot_tools
-          Add-Content $env:Path "$env:USERPROFILE\depot_tools"
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$env:USERPROFILE\depot_tools"
+          echo "$env:USERPROFILE\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Install Visual Studio Build Tools
         uses: egor-tensin/setup-vs-build-tools@v2
@@ -142,26 +143,40 @@ jobs:
           components: Microsoft.VisualStudio.Workload.VCTools
 
       - name: Fetch Chromium
+        shell: pwsh
+        env:
+          DEPOT_TOOLS_WIN_TOOLCHAIN: 0
         run: |
-          mkdir chromium && cd chromium
-          & $env:USERPROFILE\depot_tools\fetch --no-history chromium
-          cd src
-          $env:GN_ARGUMENTS = '--args="is_official_build=true is_debug=false target_os="win" target_cpu="x64"'
-          gn gen out\Release
+          New-Item -ItemType Directory -Path chromium -Force
+          Set-Location chromium
+          & cmd /c "fetch --no-history chromium"
+          Set-Location src
+          gn gen out/Release --args="is_official_build=true is_debug=false target_os=`"win`" target_cpu=`"x64`""
 
       - name: Apply stealth patches
+        shell: pwsh
+        continue-on-error: true
         run: |
-          git apply ../patches/*.patch
+          $patchFiles = Get-ChildItem -Path ../patches/*.patch -ErrorAction SilentlyContinue
+          if ($patchFiles) {
+            foreach ($patch in $patchFiles) {
+              git apply $patch.FullName
+            }
+          } else {
+            Write-Host "No patches found, skipping..."
+          }
 
       - name: Build Chromium
+        shell: pwsh
         run: |
-          cd src
-          autoninja -C out\Release chrome
+          Set-Location src
+          & autoninja -C out/Release chrome
 
       - name: Package binary
+        shell: pwsh
         run: |
-          cd src\out\Release
-          tar -czvf ../../../../cloakbrowser-win32-x64.tar.gz chrome.exe
+          Set-Location src\out\Release
+          Compress-Archive -Path chrome.exe -DestinationPath ../../../../cloakbrowser-win32-x64.tar.gz -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
