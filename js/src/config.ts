@@ -173,6 +173,7 @@ export function getDefaultStealthArgs(): string[] {
     ...base,
     "--fingerprint-platform=windows",
     "--fingerprint-hardware-concurrency=8",
+    "--fingerprint-device-memory=8",
     "--fingerprint-gpu-vendor=NVIDIA Corporation",
     "--fingerprint-gpu-renderer=NVIDIA GeForce RTX 3070",
     "--fingerprint-taskbar-height=40",
