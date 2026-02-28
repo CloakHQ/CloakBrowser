@@ -117,7 +117,15 @@ jobs:
 
       - name: JS lint
         uses: actions/setup-node@v4
-        with:
+      - name: Install deps
+        working-directory: ./js
+        run: npm ci
+      # JS lint - no lint script in package.json, using typecheck instead
+      # - name: Run ESLint
+      #   working-directory: ./js
+      #   run: npm run lint
+
+  # ---------------------------------------------------------------------------
           node-version: ${{ env.NODE_VERSION }}
       - name: Install deps
         working-directory: ./js
