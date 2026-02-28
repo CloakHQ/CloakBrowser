@@ -299,6 +299,14 @@ clearCache();
 
 Every launch automatically generates a **unique fingerprint**. A random seed (10000–99999) drives all seed-based patches — canvas, WebGL, audio, fonts, and client rects all produce consistent, correlated values derived from that single seed.
 
+> **Tip: Use a fixed seed when revisiting the same site.** A random seed makes every session look like a different device — which can be suspicious when hitting the same site repeatedly from the same IP. For reCAPTCHA v3 Enterprise and similar scoring systems, a fixed seed produces a consistent fingerprint across sessions, making you look like a returning visitor:
+> ```python
+> browser = launch(args=["--fingerprint=12345"])
+> ```
+> ```javascript
+> const browser = await launch({ args: ['--fingerprint=12345'] });
+> ```
+
 ### Default Fingerprint
 
 Every `launch()` call sets these automatically. Defaults are **platform-aware** — macOS runs as a native Mac browser, Linux spoofs Windows:
