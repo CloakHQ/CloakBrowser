@@ -137,10 +137,9 @@ jobs:
           echo "$env:USERPROFILE\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Install Visual Studio Build Tools
-        uses: egor-tensin/setup-vs-build-tools@v2
-        with:
-          vs-version: 2022
-          components: Microsoft.VisualStudio.Workload.VCTools
+        shell: pwsh
+        run: |
+          choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --includeRecommended" -y
 
       - name: Fetch Chromium
         shell: pwsh
