@@ -409,24 +409,26 @@ page.goto("https://example.com")
 | Linux x86_64 | ✅ Available |
 | macOS arm64 (Apple Silicon) | ✅ Available |
 | macOS x86_64 (Intel) | ✅ Available |
-| Windows | Planned |
+|| Windows x64 | ✅ Available |
 
 **macOS (early access):** macOS builds are new — tested but not yet battle-tested at scale like Linux. If you hit any issues, [please open a GitHub issue](https://github.com/CloakHQ/CloakBrowser/issues).
 
 **macOS first launch:** The binary is ad-hoc signed. On first run, macOS Gatekeeper will block it. Right-click the app → **Open** → click **Open** in the dialog. This is only needed once.
 
-**On Windows?** You can still use CloakBrowser via Docker or with your own Chromium binary by setting `CLOAKBROWSER_BINARY_PATH=/path/to/chrome`.
+**On Windows:** Build your own patched Chromium or use an existing one. See [docs/WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md) and [examples/windows_example.py](examples/windows_example.py).
 ## Examples
 
 **Python** — see [`examples/`](examples/):
 - [`basic.py`](examples/basic.py) — Launch and load a page
 - [`recaptcha_score.py`](examples/recaptcha_score.py) — Check your reCAPTCHA v3 score
 - [`stealth_test.py`](examples/stealth_test.py) — Run against all detection services
+- [`windows_example.py`](examples/windows_example.py) — Windows-specific usage
 
 **JavaScript** — see [`js/examples/`](js/examples/):
 - [`basic-playwright.ts`](js/examples/basic-playwright.ts) — Playwright launch and load
 - [`basic-puppeteer.ts`](js/examples/basic-puppeteer.ts) — Puppeteer launch and load
 - [`stealth-test.ts`](js/examples/stealth-test.ts) — Full 6-site detection test suite
+- [`windows-example.ts`](js/examples/windows-example.ts) — Windows-specific usage
 
 ## Roadmap
 
@@ -439,9 +441,9 @@ page.goto("https://example.com")
 | JavaScript/Puppeteer + Playwright support | ✅ Released |
 | Fingerprint rotation per session | ✅ Released |
 | Built-in proxy rotation | 📋 Planned |
-| Windows support | 📋 Planned |
+|| Windows x64 | ✅ Released |
 
-> ⭐ **Star this repo** to get notified when Chromium 145 and Windows builds drop.
+> ⭐ **Star this repo** to get notified about new releases and features.
 
 ## Docker
 

@@ -13,18 +13,18 @@ import path from "node:path";
 export const CHROMIUM_VERSION = "142.0.7444.175";
 
 // ---------------------------------------------------------------------------
-// Platform detection
-// ---------------------------------------------------------------------------
 const SUPPORTED_PLATFORMS: Record<string, string> = {
   "linux-x64": "linux-x64",
   "linux-arm64": "linux-arm64",
   "darwin-arm64": "darwin-arm64",
   "darwin-x64": "darwin-x64",
+  "win32-x64": "win32-x64",
+  "win32-arm64": "win32-arm64",
 };
 
 // Platforms with pre-built binaries available for download.
 // Update this set as new platform builds are released.
-const AVAILABLE_PLATFORMS = new Set(["linux-x64", "darwin-arm64", "darwin-x64"]);
+const AVAILABLE_PLATFORMS = new Set(["linux-x64", "darwin-arm64", "darwin-x64", "win32-x64"]);
 
 export function getPlatformTag(): string {
   const platform = process.platform;
@@ -36,6 +36,7 @@ export function getPlatformTag(): string {
   else if (platform === "linux" && arch === "arm64") key = "linux-arm64";
   else if (platform === "darwin" && arch === "arm64") key = "darwin-arm64";
   else if (platform === "darwin" && arch === "x64") key = "darwin-x64";
+  else if (platform === "win32" && arch === "x64") key = "win32-x64";
   else {
     const supported = Object.values(SUPPORTED_PLATFORMS).join(", ");
     throw new Error(
@@ -64,6 +65,9 @@ export function getBinaryPath(version?: string): string {
   if (process.platform === "darwin") {
     return path.join(binaryDir, "Chromium.app", "Contents", "MacOS", "Chromium");
   }
+  if (process.platform === "win32") {
+    return path.join(binaryDir, "chrome.exe");
+  }
   return path.join(binaryDir, "chrome");
 }
 
@@ -74,8 +78,7 @@ export function checkPlatformAvailable(): void {
   if (!AVAILABLE_PLATFORMS.has(tag)) {
     const available = [...AVAILABLE_PLATFORMS].sort().join(", ");
     throw new Error(
-      `CloakBrowser — Pre-built binaries are currently only available for: ${available}.\n` +
-        `Windows builds are coming soon.\n\n` +
+      `CloakBrowser — Pre-built binaries are currently only available for: ${available}.\n\n` +
         `To use CloakBrowser now, run in Docker (see README) or set CLOAKBROWSER_BINARY_PATH.`
     );
   }
@@ -142,6 +145,7 @@ export function getLocalBinaryOverride(): string | undefined {
 export function getDefaultStealthArgs(): string[] {
   const seed = Math.floor(Math.random() * 90000) + 10000; // 10000-99999
   const isMac = process.platform === "darwin";
+  const isWindows = process.platform === "win32";
 
   const base = [
     "--no-sandbox",
@@ -154,6 +158,11 @@ export function getDefaultStealthArgs(): string[] {
     return [...base, "--fingerprint-platform=macos"];
   }
 
+  if (isWindows) {
+    // Windows: native platform
+    return [...base, "--fingerprint-platform=windows"];
+  }
+
   // Linux: spoof as Windows
   return [
     ...base,
@@ -163,3 +172,5 @@ export function getDefaultStealthArgs(): string[] {
     "--fingerprint-gpu-renderer=NVIDIA GeForce RTX 3070",
   ];
 }
+
+

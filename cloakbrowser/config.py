@@ -55,11 +55,13 @@ SUPPORTED_PLATFORMS: dict[tuple[str, str], str] = {
     ("Linux", "aarch64"): "linux-arm64",
     ("Darwin", "arm64"): "darwin-arm64",
     ("Darwin", "x86_64"): "darwin-x64",
+    ("Windows", "AMD64"): "win32-x64",
+    ("Windows", "ARM64"): "win32-arm64",
 }
 
 # Platforms with pre-built binaries available for download.
 # Update this set as new platform builds are released.
-AVAILABLE_PLATFORMS: set[str] = {"linux-x64", "darwin-arm64", "darwin-x64"}
+AVAILABLE_PLATFORMS: set[str] = {"linux-x64", "darwin-arm64", "darwin-x64", "win32-x64"}
 
 
 def get_platform_tag() -> str:
@@ -103,6 +105,9 @@ def get_binary_path(version: str | None = None) -> Path:
     if platform.system() == "Darwin":
         # macOS: Chromium.app bundle
         return binary_dir / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
+    elif platform.system() == "Windows":
+        # Windows: chrome.exe
+        return binary_dir / "chrome.exe"
     else:
         # Linux: flat binary
         return binary_dir / "chrome"
