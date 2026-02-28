@@ -6,6 +6,7 @@ import {
   getBinaryDir,
   getDownloadUrl,
 } from "../src/config.js";
+import { _buildArgsForTest } from "../src/playwright.js";
 
 describe("config", () => {
   it("CHROMIUM_VERSION matches expected format", () => {
@@ -63,5 +64,36 @@ describe("config", () => {
     expect(url).toContain("cloakbrowser-");
     expect(url).toContain(".tar.gz");
     expect(url).toContain("cloakbrowser.dev");
+  });
+});
+
+describe("buildArgs timezone/locale", () => {
+  it("injects --timezone when timezone is set", () => {
+    const args = _buildArgsForTest({ timezone: "America/New_York" });
+    expect(args).toContain("--timezone=America/New_York");
+  });
+
+  it("injects --lang when locale is set", () => {
+    const args = _buildArgsForTest({ locale: "en-US" });
+    expect(args).toContain("--lang=en-US");
+  });
+
+  it("injects both when both are set", () => {
+    const args = _buildArgsForTest({ timezone: "Europe/Berlin", locale: "de-DE" });
+    expect(args).toContain("--timezone=Europe/Berlin");
+    expect(args).toContain("--lang=de-DE");
+  });
+
+  it("injects timezone/locale even when stealthArgs=false", () => {
+    const args = _buildArgsForTest({ stealthArgs: false, timezone: "America/New_York", locale: "en-US" });
+    expect(args).toContain("--timezone=America/New_York");
+    expect(args).toContain("--lang=en-US");
+    expect(args.some(a => a.startsWith("--fingerprint="))).toBe(false);
+  });
+
+  it("does not inject flags when not set", () => {
+    const args = _buildArgsForTest({});
+    expect(args.some(a => a.startsWith("--timezone="))).toBe(false);
+    expect(args.some(a => a.startsWith("--lang="))).toBe(false);
   });
 });
