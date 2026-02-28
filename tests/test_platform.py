@@ -56,7 +56,7 @@ class TestGetBinaryPath:
         """Test that Windows returns .exe path for binary."""
         mock_system.return_value = "Windows"
 
-        from cloakbrowser.config import get_binary_path, get_cache_dir
+        from cloakbrowser.config import get_binary_path
 
         # Create mock cache dir that will return a Path with / operator
         mock_cache = MagicMock(spec=Path)
@@ -66,7 +66,7 @@ class TestGetBinaryPath:
         mock_cache.__truediv__ = MagicMock(return_value=mock_result)
 
         with patch("cloakbrowser.config.get_cache_dir", return_value=mock_cache):
-            result = get_binary_path()
+            get_binary_path()
             # Verify chrome.exe was requested - get_cache_dir() was called once
             mock_cache.__truediv__.assert_called()
 
@@ -85,7 +85,7 @@ class TestGetBinaryPath:
             mock_cache.__truediv__ = MagicMock(return_value=mock_chrome)
             mock_get_cache.return_value = mock_cache
 
-            result = get_binary_path()
+            _ = get_binary_path()
             # The result should be the chrome.exe path
             assert mock_cache.__truediv__.called
 

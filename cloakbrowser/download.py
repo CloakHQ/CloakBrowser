@@ -21,7 +21,6 @@ import httpx
 
 from .config import (
     CHROMIUM_VERSION,
-    DOWNLOAD_BASE_URL,
     GITHUB_API_URL,
     _version_newer,
     check_platform_available,

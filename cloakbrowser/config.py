@@ -7,7 +7,6 @@ import platform
 import random
 from pathlib import Path
 
-from ._version import __version__
 
 # ---------------------------------------------------------------------------
 # Chromium version shipped with this release

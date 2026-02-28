@@ -27,19 +27,17 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Test on Multiple Platforms
+  # Test on Ubuntu and macOS only (no Windows - binary not available)
   # ---------------------------------------------------------------------------
   test:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         python-version: ['3.10', '3.11', '3.12']
         exclude:
           - os: macos-latest
-            python-version: '3.10'
-          - os: windows-latest
             python-version: '3.10'
     steps:
       - uses: actions/checkout@v4
@@ -129,10 +127,10 @@ jobs:
         run: npm run lint
 
   # ---------------------------------------------------------------------------
-  # Build Windows Binary (win32-x64)
+  # Build Windows Binary (win32-x64) - Manual trigger only
   # ---------------------------------------------------------------------------
   build-windows:
-    needs: [test, lint]
+    needs: [lint]
     runs-on: windows-latest
     if: github.event_name == 'workflow_dispatch' && (github.inputs.build_platform == 'all' || github.inputs.build_platform == 'windows')
     steps:
@@ -184,10 +182,10 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
-  # Build macOS ARM64 Binary (darwin-arm64)
+  # Build macOS ARM64 Binary (darwin-arm64) - Manual trigger only
   # ---------------------------------------------------------------------------
   build-macos-arm64:
-    needs: [test, lint]
+    needs: [lint]
     runs-on: macos-latest
     if: github.event_name == 'workflow_dispatch' && (github.inputs.build_platform == 'all' || github.inputs.build_platform == 'macos')
     steps:
@@ -232,10 +230,10 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
-  # Build macOS x64 Binary (darwin-x64)
+  # Build macOS x64 Binary (darwin-x64) - Manual trigger only
   # ---------------------------------------------------------------------------
   build-macos-x64:
-    needs: [test, lint]
+    needs: [lint]
     runs-on: macos-13
     if: github.event_name == 'workflow_dispatch' && (github.inputs.build_platform == 'all' || github.inputs.build_platform == 'macos')
     steps:

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from cloakbrowser.config import (
     CHROMIUM_VERSION,
