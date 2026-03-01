@@ -5,6 +5,8 @@ Expected: 0.9 (human-level) with cloakbrowser.
 Default Playwright typically scores 0.1-0.3.
 """
 
+import time
+
 from cloakbrowser import launch
 
 browser = launch(headless=True)
@@ -18,7 +20,7 @@ page.wait_for_load_state("networkidle")
 button = page.query_selector("button")
 if button:
     button.click()
-    page.wait_for_timeout(3000)
+    time.sleep(3)
 
 # Extract score from page
 content = page.content()

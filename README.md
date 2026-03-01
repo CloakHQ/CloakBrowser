@@ -535,6 +535,39 @@ You do NOT need `playwright install chromium`. CloakBrowser downloads its own bi
 playwright install-deps chromium
 ```
 
+**reCAPTCHA v3 scores are low (0.1–0.3)**
+
+Avoid `page.wait_for_timeout()` — it sends CDP protocol commands that reCAPTCHA detects. Use native sleep instead:
+
+```python
+# Bad — sends CDP commands, reCAPTCHA detects this
+page.wait_for_timeout(3000)
+
+# Good — invisible to the browser
+import time
+time.sleep(3)
+```
+
+```javascript
+// Bad — sends CDP commands
+await page.waitForTimeout(3000);
+
+// Good — invisible to the browser
+await new Promise(r => setTimeout(r, 3000));
+```
+
+Other tips for maximizing reCAPTCHA scores:
+- **Use Playwright, not Puppeteer** — Puppeteer sends more CDP protocol traffic that reCAPTCHA detects ([details](#puppeteer))
+- **Use residential proxies** — datacenter IPs are flagged by IP reputation, not browser fingerprint
+- **Spend 15+ seconds on the page** before triggering reCAPTCHA — short visits score lower
+- **Space out requests** — back-to-back `grecaptcha.execute()` calls from the same session get penalized. Wait 30+ seconds between pages with reCAPTCHA
+- **Use a fixed fingerprint seed** (`--fingerprint=12345`) for consistent device identity across sessions
+- **Use `page.type()` instead of `page.fill()`** for form filling — `fill()` sets values directly without keyboard events, which reCAPTCHA's behavioral analysis flags. `type()` with a delay simulates real keystrokes:
+  ```python
+  page.type("#email", "user@example.com", delay=50)
+  ```
+- **Minimize `page.evaluate()` calls** before the reCAPTCHA check fires — each one sends CDP traffic
+
 ## FAQ
 
 **Q: Is this legal?**

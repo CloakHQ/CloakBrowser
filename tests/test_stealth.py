@@ -5,6 +5,7 @@ bot detection checks. They require network access.
 """
 
 import os
+import time
 
 import pytest
 from cloakbrowser import launch
@@ -89,7 +90,7 @@ class TestBotDetectionSites:
     def test_bot_sannysoft(self, page):
         """bot.sannysoft.com — all checks should pass (0 failures)."""
         page.goto("https://bot.sannysoft.com", wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(3000)
+        time.sleep(3)
 
         results = page.evaluate("""() => {
             const rows = document.querySelectorAll('table tr');
@@ -115,7 +116,7 @@ class TestBotDetectionSites:
     def test_bot_incolumitas(self, page):
         """bot.incolumitas.com — max 1 failure (WEBDRIVER false positive expected)."""
         page.goto("https://bot.incolumitas.com", wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(12000)
+        time.sleep(12)
 
         # Known acceptable failures (not browser fingerprint issues):
         # - WEBDRIVER: spec-level false positive across all builds
@@ -138,7 +139,7 @@ class TestBotDetectionSites:
     def test_browserscan(self, page):
         """BrowserScan bot detection — 0 abnormal checks."""
         page.goto("https://www.browserscan.net/bot-detection", wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(5000)
+        time.sleep(5)
 
         results = page.evaluate("""() => {
             const text = document.body.innerText;
@@ -157,7 +158,7 @@ class TestBotDetectionSites:
     def test_device_and_browser_info(self, page):
         """deviceandbrowserinfo.com — isBot must be false."""
         page.goto("https://deviceandbrowserinfo.com/are_you_a_bot", wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(8000)
+        time.sleep(8)
 
         results = page.evaluate("""() => {
             const text = document.body.innerText;
@@ -179,11 +180,11 @@ class TestBotDetectionSites:
     def test_fingerprintjs(self, page):
         """FingerprintJS — must not be blocked, should see flight data."""
         page.goto("https://demo.fingerprint.com/web-scraping", wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(8000)
+        time.sleep(8)
 
         try:
             page.click("button:has-text('Search')", timeout=5000)
-            page.wait_for_timeout(5000)
+            time.sleep(5)
         except Exception:
             pass
 
@@ -205,7 +206,7 @@ class TestBotDetectionSites:
             wait_until="domcontentloaded",
             timeout=60000,
         )
-        page.wait_for_timeout(8000)
+        time.sleep(8)
 
         results = page.evaluate("""() => {
             const text = document.body.innerText;

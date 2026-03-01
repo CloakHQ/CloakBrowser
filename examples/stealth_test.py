@@ -27,7 +27,7 @@ for i, arg in enumerate(sys.argv):
 def test_bot_sannysoft(page):
     """bot.sannysoft.com — classic bot detection checks."""
     page.goto("https://bot.sannysoft.com", wait_until="networkidle", timeout=30000)
-    page.wait_for_timeout(3000)
+    time.sleep(3)
 
     results = page.evaluate("""() => {
         const rows = document.querySelectorAll('table tr');
@@ -53,7 +53,7 @@ def test_bot_sannysoft(page):
 def test_bot_incolumitas(page):
     """bot.incolumitas.com — comprehensive 30+ check bot detection."""
     page.goto("https://bot.incolumitas.com", wait_until="networkidle", timeout=30000)
-    page.wait_for_timeout(12000)  # needs time to run all detection tests
+    time.sleep(12)  # needs time to run all detection tests
 
     # Site outputs JSON blocks in page text, not HTML tables
     results = page.evaluate("""() => {
@@ -74,7 +74,7 @@ def test_bot_incolumitas(page):
 def test_browserscan(page):
     """browserscan.net/bot-detection — WebDriver, UA, CDP, Navigator checks."""
     page.goto("https://www.browserscan.net/bot-detection", wait_until="networkidle", timeout=30000)
-    page.wait_for_timeout(5000)
+    time.sleep(5)
 
     results = page.evaluate("""() => {
         const items = document.querySelectorAll('[class*="result"], [class*="item"], [class*="check"]');
@@ -95,7 +95,7 @@ def test_browserscan(page):
 def test_deviceandbrowserinfo(page):
     """deviceandbrowserinfo.com/are_you_a_bot — fingerprint + behavioral detection."""
     page.goto("https://deviceandbrowserinfo.com/are_you_a_bot", wait_until="domcontentloaded", timeout=30000)
-    page.wait_for_timeout(8000)
+    time.sleep(8)
 
     results = page.evaluate("""() => {
         const text = document.body.innerText;
@@ -120,12 +120,12 @@ def test_deviceandbrowserinfo(page):
 def test_fingerprintjs(page):
     """demo.fingerprint.com/web-scraping — industry-standard bot detection."""
     page.goto("https://demo.fingerprint.com/web-scraping", wait_until="domcontentloaded", timeout=30000)
-    page.wait_for_timeout(8000)
+    time.sleep(8)
 
     # Click search to trigger bot detection — bots get blocked, humans see flights
     try:
         page.click("button:has-text('Search')", timeout=5000)
-        page.wait_for_timeout(5000)
+        time.sleep(5)
     except Exception:
         pass
 
@@ -147,7 +147,7 @@ def test_recaptcha(page):
         timeout=30000,
     )
     # Page auto-submits via grecaptcha.execute() — wait for backend response
-    page.wait_for_timeout(8000)
+    time.sleep(8)
 
     results = page.evaluate("""() => {
         const text = document.body.innerText;

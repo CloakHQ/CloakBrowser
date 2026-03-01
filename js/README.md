@@ -184,6 +184,28 @@ const page = await browser.newPage();
 - Node.js >= 18
 - One of: `playwright-core` >= 1.40 or `puppeteer-core` >= 21
 
+## Troubleshooting
+
+**reCAPTCHA v3 scores are low (0.1–0.3)**
+
+Avoid `page.waitForTimeout()` — it sends CDP protocol commands that reCAPTCHA detects. Use native sleep instead:
+
+```javascript
+// Bad — sends CDP commands, reCAPTCHA detects this
+await page.waitForTimeout(3000);
+
+// Good — invisible to the browser
+await new Promise(r => setTimeout(r, 3000));
+```
+
+Other tips for maximizing reCAPTCHA scores:
+- **Use Playwright, not Puppeteer** — Puppeteer sends more CDP protocol traffic that reCAPTCHA detects ([details](#puppeteer))
+- **Use residential proxies** — datacenter IPs are flagged by IP reputation, not browser fingerprint
+- **Spend 15+ seconds on the page** before triggering reCAPTCHA — short visits score lower
+- **Space out requests** — back-to-back `grecaptcha.execute()` calls from the same session get penalized. Wait 30+ seconds between pages with reCAPTCHA
+- **Use a fixed fingerprint seed** (`--fingerprint=12345`) for consistent device identity across sessions
+- **Minimize `page.evaluate()` calls** before the reCAPTCHA check fires — each one sends CDP traffic
+
 ## Links
 
 - 🌐 [Website](https://cloakbrowser.dev)
