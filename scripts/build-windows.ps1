@@ -94,6 +94,6 @@ autoninja -C out\Release chrome
 # ============================================================================
 
 cd out\Release
-tar -czvf cloakbrowser-win32-x64.tar.gz chrome.exe
+tar -czvf cloakbrowser-win32-x64.tar.gz chrome.exe *.dll *.bin *.pak *.dat locales\
 
 # Output: C:\CloakBrowserBuild\chromium\src\out\Release\cloakbrowser-win32-x64.tar.gz

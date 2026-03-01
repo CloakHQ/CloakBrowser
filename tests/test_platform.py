@@ -101,18 +101,6 @@ class TestGetBinaryPath:
 
         get_binary_path("142.0.7444.175")
 
-    @patch("cloakbrowser.config.platform.system")
-    @patch("cloakbrowser.config.get_binary_dir")
-    def test_windows_binary_path_with_version(self, mock_binary_dir, mock_system):
-        """Test that Windows binary path includes version."""
-        mock_system.return_value = "Windows"
-        mock_dir = MagicMock()
-        mock_binary_dir.return_value = mock_dir
-
-        from cloakbrowser.config import get_binary_path
-
-        get_binary_path("142.0.7444.175")
-
         mock_binary_dir.assert_called_with("142.0.7444.175")
 
 

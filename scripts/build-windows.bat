@@ -39,7 +39,7 @@ autoninja -C out\Release chrome
 REM STEP 7: Package
 echo [7/7] Packaging...
 cd out\Release
-tar -czvf cloakbrowser-win32-x64.tar.gz chrome.exe
+tar -czvf cloakbrowser-win32-x64.tar.gz chrome.exe *.dll *.bin *.pak *.dat locales\
 
 echo Done! Output: out\Release\cloakbrowser-win32-x64.tar.gz
 pause
