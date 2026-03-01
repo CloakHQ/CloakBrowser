@@ -21,7 +21,8 @@ def get_default_stealth_args() -> list[str]:
     """Build stealth args with a random fingerprint seed per launch.
 
     On macOS, skips platform/GPU spoofing — runs as a native Mac browser.
-    Spoofing Windows on Mac creates detectable mismatches (fonts, GPU, etc.).
+    On Windows, no spoofing needed — runs as native Windows browser.
+    On Linux, spoofs as Windows to avoid detection.
     """
     seed = random.randint(10000, 99999)
     system = platform.system()
@@ -38,6 +39,10 @@ def get_default_stealth_args() -> list[str]:
             "--fingerprint-platform=macos",
         ]
 
+    if system == "Windows":
+        # Windows: native platform — no GPU/concurrency spoofing needed
+        return base + ["--fingerprint-platform=windows"]
+
     # Linux: spoof as Windows
     return base + [
         "--fingerprint-platform=windows",
@@ -45,6 +50,7 @@ def get_default_stealth_args() -> list[str]:
         "--fingerprint-gpu-vendor=NVIDIA Corporation",
         "--fingerprint-gpu-renderer=NVIDIA GeForce RTX 3070",
     ]
+
 
 # ---------------------------------------------------------------------------
 # Platform detection

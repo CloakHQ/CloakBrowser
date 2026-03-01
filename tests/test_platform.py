@@ -101,4 +101,65 @@ class TestGetBinaryPath:
 
         get_binary_path("142.0.7444.175")
 
+    @patch("cloakbrowser.config.platform.system")
+    @patch("cloakbrowser.config.get_binary_dir")
+    def test_windows_binary_path_with_version(self, mock_binary_dir, mock_system):
+        """Test that Windows binary path includes version."""
+        mock_system.return_value = "Windows"
+        mock_dir = MagicMock()
+        mock_binary_dir.return_value = mock_dir
+
+        from cloakbrowser.config import get_binary_path
+
+        get_binary_path("142.0.7444.175")
+
         mock_binary_dir.assert_called_with("142.0.7444.175")
+
+
+class TestWindowsStealthArgs:
+    """Tests for get_default_stealth_args() on Windows."""
+
+    @patch("cloakbrowser.config.platform.system")
+    def test_windows_returns_platform_flag(self, mock_system):
+        """Test that Windows returns --fingerprint-platform=windows."""
+        mock_system.return_value = "Windows"
+
+        from cloakbrowser.config import get_default_stealth_args
+
+        args = get_default_stealth_args()
+        assert "--fingerprint-platform=windows" in args
+
+    @patch("cloakbrowser.config.platform.system")
+    def test_windows_no_hardware_concurrency_spoofing(self, mock_system):
+        """Test that Windows does NOT spoof hardware-concurrency."""
+        mock_system.return_value = "Windows"
+
+        from cloakbrowser.config import get_default_stealth_args
+
+        args = get_default_stealth_args()
+        concurrency_args = [a for a in args if "hardware-concurrency" in a]
+        assert len(concurrency_args) == 0, "Windows should not spoof hardware-concurrency"
+
+    @patch("cloakbrowser.config.platform.system")
+    def test_windows_no_gpu_spoofing(self, mock_system):
+        """Test that Windows does NOT spoof GPU vendor/renderer."""
+        mock_system.return_value = "Windows"
+
+        from cloakbrowser.config import get_default_stealth_args
+
+        args = get_default_stealth_args()
+        gpu_args = [a for a in args if "gpu" in a.lower()]
+        assert len(gpu_args) == 0, "Windows should not spoof GPU"
+
+    @patch("cloakbrowser.config.platform.system")
+    def test_windows_has_base_args(self, mock_system):
+        """Test that Windows has base stealth args."""
+        mock_system.return_value = "Windows"
+
+        from cloakbrowser.config import get_default_stealth_args
+
+        args = get_default_stealth_args()
+        assert "--no-sandbox" in args
+        assert "--disable-blink-features=AutomationControlled" in args
+        fingerprint_args = [a for a in args if a.startswith("--fingerprint=")]
+        assert len(fingerprint_args) == 1

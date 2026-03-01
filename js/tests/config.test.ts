@@ -15,6 +15,7 @@ describe("config", () => {
   it("getDefaultStealthArgs returns expected flags", () => {
     const args = getDefaultStealthArgs();
     const isMac = process.platform === "darwin";
+    const isWindows = process.platform === "win32";
 
     expect(args).toContain("--no-sandbox");
     expect(args).toContain("--disable-blink-features=AutomationControlled");
@@ -23,7 +24,12 @@ describe("config", () => {
       expect(args).toContain("--fingerprint-platform=macos");
       // macOS: no hardware-concurrency or GPU spoofing (uses native values)
       expect(args.some((a) => a.includes("hardware-concurrency"))).toBe(false);
+    } else if (isWindows) {
+      // Windows: native platform - no spoofing needed
+      expect(args).toContain("--fingerprint-platform=windows");
+      expect(args.some((a) => a.includes("hardware-concurrency"))).toBe(false);
     } else {
+      // Linux: spoof as Windows
       expect(args).toContain("--fingerprint-platform=windows");
       expect(args).toContain("--fingerprint-hardware-concurrency=8");
     }
