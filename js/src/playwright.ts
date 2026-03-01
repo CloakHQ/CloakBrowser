@@ -26,7 +26,8 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright-core");
 
   const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
-  const args = buildArgs(options);
+  const resolved = await maybeResolveGeoip(options);
+  const args = buildArgs({ ...options, ...resolved });
 
   const browser = await chromium.launch({
     executablePath: binaryPath,
@@ -59,15 +60,17 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
 export async function launchContext(
   options: LaunchContextOptions = {}
 ): Promise<BrowserContext> {
-  const browser = await launch(options);
+  // Resolve geoip BEFORE launch() to avoid double-resolution
+  const resolved = await maybeResolveGeoip(options);
+  const browser = await launch({ ...options, ...resolved, geoip: false });
 
   let context: BrowserContext;
   try {
     context = await browser.newContext({
       ...(options.userAgent ? { userAgent: options.userAgent } : {}),
       ...(options.viewport ? { viewport: options.viewport } : {}),
-      ...(options.locale ? { locale: options.locale } : {}),
-      ...(options.timezoneId ? { timezoneId: options.timezoneId } : {}),
+      ...(resolved.locale ? { locale: resolved.locale } : {}),
+      ...(resolved.timezone ? { timezoneId: resolved.timezone } : {}),
     });
   } catch (err) {
     await browser.close();
@@ -88,6 +91,25 @@ export async function launchContext(
 // Internal
 // ---------------------------------------------------------------------------
 
+async function maybeResolveGeoip(
+  options: LaunchOptions
+): Promise<{ timezone?: string; locale?: string }> {
+  if (!options.geoip || !options.proxy) return { timezone: options.timezone, locale: options.locale };
+  if (options.timezone && options.locale) return { timezone: options.timezone, locale: options.locale };
+
+  const { resolveProxyGeo } = await import("./geoip.js");
+  const { timezone: geoTz, locale: geoLocale } = await resolveProxyGeo(options.proxy);
+  return {
+    timezone: options.timezone ?? geoTz ?? undefined,
+    locale: options.locale ?? geoLocale ?? undefined,
+  };
+}
+
+/** @internal Exposed for unit tests only. */
+export function _buildArgsForTest(options: LaunchOptions): string[] {
+  return buildArgs(options);
+}
+
 function buildArgs(options: LaunchOptions): string[] {
   const args: string[] = [];
   if (options.stealthArgs !== false) {
@@ -95,6 +117,13 @@ function buildArgs(options: LaunchOptions): string[] {
   }
   if (options.args) {
     args.push(...options.args);
+  }
+  // Timezone/locale flags — always inject when set
+  if (options.timezone) {
+    args.push(`--timezone=${options.timezone}`);
+  }
+  if (options.locale) {
+    args.push(`--lang=${options.locale}`);
   }
   return args;
 }

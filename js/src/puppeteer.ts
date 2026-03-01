@@ -26,7 +26,8 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const puppeteer = await import("puppeteer-core");
 
   const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
-  const args = buildArgs(options);
+  const resolved = await maybeResolveGeoip(options);
+  const args = buildArgs({ ...options, ...resolved });
 
   // Puppeteer handles proxy via CLI args, not a separate option.
   // Chromium's --proxy-server does NOT support inline credentials,
@@ -66,6 +67,20 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
 // Internal
 // ---------------------------------------------------------------------------
 
+async function maybeResolveGeoip(
+  options: LaunchOptions
+): Promise<{ timezone?: string; locale?: string }> {
+  if (!options.geoip || !options.proxy) return { timezone: options.timezone, locale: options.locale };
+  if (options.timezone && options.locale) return { timezone: options.timezone, locale: options.locale };
+
+  const { resolveProxyGeo } = await import("./geoip.js");
+  const { timezone: geoTz, locale: geoLocale } = await resolveProxyGeo(options.proxy);
+  return {
+    timezone: options.timezone ?? geoTz ?? undefined,
+    locale: options.locale ?? geoLocale ?? undefined,
+  };
+}
+
 function buildArgs(options: LaunchOptions): string[] {
   const args: string[] = [];
   if (options.stealthArgs !== false) {
@@ -73,6 +88,12 @@ function buildArgs(options: LaunchOptions): string[] {
   }
   if (options.args) {
     args.push(...options.args);
+  }
+  if (options.timezone) {
+    args.push(`--timezone=${options.timezone}`);
+  }
+  if (options.locale) {
+    args.push(`--lang=${options.locale}`);
   }
   return args;
 }

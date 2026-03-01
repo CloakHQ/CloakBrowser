@@ -173,6 +173,12 @@ browser = launch(proxy="http://user:pass@proxy:8080")
 # With extra Chrome args
 browser = launch(args=["--disable-gpu", "--window-size=1920,1080"])
 
+# With timezone and locale (sets both binary flags and Playwright context)
+browser = launch(timezone="America/New_York", locale="en-US")
+
+# Auto-detect timezone/locale from proxy IP (requires: pip install cloakbrowser[geoip])
+browser = launch(proxy="http://proxy:8080", geoip=True)
+
 # Without default stealth args (bring your own fingerprint flags)
 browser = launch(stealth_args=False, args=["--fingerprint=12345"])
 ```
@@ -210,6 +216,27 @@ context = launch_context(
 )
 page = context.new_page()
 ```
+
+### Auto Timezone/Locale from Proxy IP
+
+When using a proxy, antibot systems check that your browser's timezone and locale match the proxy's geographic location. CloakBrowser can auto-detect these from the proxy IP using an offline GeoIP database:
+
+```bash
+pip install cloakbrowser[geoip]   # installs geoip2 + downloads ~70 MB database on first use
+```
+
+```python
+# Timezone and locale auto-set from proxy's IP geolocation
+browser = launch(proxy="http://proxy:8080", geoip=True)
+
+# Works with launch_context too — sets both binary flags AND Playwright context
+context = launch_context(proxy="http://proxy:8080", geoip=True)
+
+# Explicit values always win over auto-detection
+browser = launch(proxy="http://proxy:8080", geoip=True, timezone="Europe/London")
+```
+
+> **Note:** For rotating residential proxies, the DNS-resolved IP may differ from the exit IP. Pass explicit `timezone`/`locale` in those cases.
 
 ### Utility Functions
 

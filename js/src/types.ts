@@ -11,6 +11,12 @@ export interface LaunchOptions {
   args?: string[];
   /** Include default stealth fingerprint args (default: true). Set false to use custom --fingerprint flags. */
   stealthArgs?: boolean;
+  /** IANA timezone, e.g. "America/New_York". Sets --timezone binary flag. */
+  timezone?: string;
+  /** BCP 47 locale, e.g. "en-US". Sets --lang binary flag. */
+  locale?: string;
+  /** Auto-detect timezone/locale from proxy IP (requires: npm install mmdb-lib). */
+  geoip?: boolean;
   /** Raw options passed directly to playwright/puppeteer launch(). */
   launchOptions?: Record<string, unknown>;
 }

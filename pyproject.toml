@@ -46,6 +46,9 @@ dependencies = [
     "httpx>=0.24",
 ]
 
+[project.optional-dependencies]
+geoip = ["geoip2>=4.0"]
+
 [project.urls]
 Homepage = "https://github.com/CloakHQ/CloakBrowser"
 Documentation = "https://github.com/CloakHQ/CloakBrowser#readme"

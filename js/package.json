@@ -1,6 +1,6 @@
 {
   "name": "cloakbrowser",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Stealth Chromium that passes every bot detection test. Drop-in Playwright/Puppeteer replacement with source-level fingerprint patches.",
   "type": "module",
   "main": "dist/index.js",
@@ -43,6 +43,7 @@
     "node": ">=18.0.0"
   },
   "peerDependencies": {
+    "mmdb-lib": ">=2.0.0",
     "playwright-core": ">=1.40.0",
     "puppeteer-core": ">=21.0.0"
   },
@@ -52,6 +53,9 @@
     },
     "puppeteer-core": {
       "optional": true
+    },
+    "mmdb-lib": {
+      "optional": true
     }
   },
   "dependencies": {
@@ -59,6 +63,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
+    "mmdb-lib": "^3.0.2",
     "playwright-core": "^1.40.0",
     "puppeteer-core": "^21.0.0",
     "typescript": "^5.3.0",

@@ -75,7 +75,19 @@ const browser = await launch({
   args: ['--window-size=1920,1080'],
 });
 
-// Browser + context in one call
+// With timezone and locale (sets --timezone and --lang binary flags)
+const browser = await launch({
+  timezone: 'America/New_York',
+  locale: 'en-US',
+});
+
+// Auto-detect timezone/locale from proxy IP (requires: npm install mmdb-lib)
+const browser = await launch({
+  proxy: 'http://proxy:8080',
+  geoip: true,
+});
+
+// Browser + context in one call (timezone/locale set both binary flags AND context)
 const context = await launchContext({
   userAgent: 'Custom UA',
   viewport: { width: 1920, height: 1080 },
@@ -83,6 +95,27 @@ const context = await launchContext({
   timezoneId: 'America/New_York',
 });
 ```
+
+### Auto Timezone/Locale from Proxy IP
+
+When using a proxy, antibot systems check that your browser's timezone and locale match the proxy's location. Install `mmdb-lib` to enable auto-detection from an offline GeoIP database (~70 MB, downloaded on first use):
+
+```bash
+npm install mmdb-lib
+```
+
+```javascript
+// Auto-detect — timezone and locale set from proxy's IP geolocation
+const browser = await launch({ proxy: 'http://proxy:8080', geoip: true });
+
+// Works with launchContext too
+const context = await launchContext({ proxy: 'http://proxy:8080', geoip: true });
+
+// Explicit values always win over auto-detection
+const browser = await launch({ proxy: 'http://proxy:8080', geoip: true, timezone: 'Europe/London' });
+```
+
+> **Note:** For rotating residential proxies, the DNS-resolved IP may differ from the exit IP. Pass explicit `timezone`/`locale` in those cases.
 
 ### Utilities
 

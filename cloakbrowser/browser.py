@@ -29,6 +29,9 @@ def launch(
     proxy: str | None = None,
     args: list[str] | None = None,
     stealth_args: bool = True,
+    timezone: str | None = None,
+    locale: str | None = None,
+    geoip: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth Chromium browser. Returns a Playwright Browser object.
@@ -39,6 +42,12 @@ def launch(
         args: Additional Chromium CLI arguments to pass.
         stealth_args: Include default stealth fingerprint args (default True).
             Set to False if you want to pass your own --fingerprint flags.
+        timezone: IANA timezone (e.g. 'America/New_York'). Sets --timezone binary flag.
+        locale: BCP 47 locale (e.g. 'en-US'). Sets --lang binary flag.
+        geoip: Auto-detect timezone/locale from proxy IP (default False).
+            Requires ``pip install cloakbrowser[geoip]``. Downloads ~70 MB
+            GeoLite2-City database on first use.  Explicit timezone/locale
+            always override geoip results.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -55,7 +64,8 @@ def launch(
     from playwright.sync_api import sync_playwright
 
     binary_path = ensure_binary()
-    chrome_args = _build_args(stealth_args, args)
+    timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    chrome_args = _build_args(stealth_args, args, timezone=timezone, locale=locale)
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
 
@@ -86,6 +96,9 @@ async def launch_async(
     proxy: str | None = None,
     args: list[str] | None = None,
     stealth_args: bool = True,
+    timezone: str | None = None,
+    locale: str | None = None,
+    geoip: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch(). Returns a Playwright Browser object.
@@ -95,6 +108,9 @@ async def launch_async(
         proxy: Proxy server URL (e.g. 'http://proxy:8080' or 'socks5://proxy:1080').
         args: Additional Chromium CLI arguments to pass.
         stealth_args: Include default stealth fingerprint args (default True).
+        timezone: IANA timezone (e.g. 'America/New_York'). Sets --timezone binary flag.
+        locale: BCP 47 locale (e.g. 'en-US'). Sets --lang binary flag.
+        geoip: Auto-detect timezone/locale from proxy IP (default False).
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -116,7 +132,8 @@ async def launch_async(
     from playwright.async_api import async_playwright
 
     binary_path = ensure_binary()
-    chrome_args = _build_args(stealth_args, args)
+    timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    chrome_args = _build_args(stealth_args, args, timezone=timezone, locale=locale)
 
     logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(chrome_args))
 
@@ -151,6 +168,7 @@ def launch_context(
     viewport: dict | None = None,
     locale: str | None = None,
     timezone_id: str | None = None,
+    geoip: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser and return a BrowserContext with common options pre-set.
@@ -167,12 +185,17 @@ def launch_context(
         viewport: Viewport size dict, e.g. {"width": 1920, "height": 1080}.
         locale: Browser locale, e.g. "en-US".
         timezone_id: Timezone, e.g. "America/New_York".
+        geoip: Auto-detect timezone/locale from proxy IP (default False).
         **kwargs: Passed to browser.new_context().
 
     Returns:
         Playwright BrowserContext object.
     """
-    browser = launch(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args)
+    # Resolve geoip BEFORE launch() to avoid double-resolution and ensure
+    # resolved values flow to both binary flags AND context params
+    timezone_id, locale = _maybe_resolve_geoip(geoip, proxy, timezone_id, locale)
+    browser = launch(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
+                     timezone=timezone_id, locale=locale)
 
     context_kwargs: dict[str, Any] = {}
     if user_agent:
@@ -208,13 +231,43 @@ def launch_context(
 # ---------------------------------------------------------------------------
 
 
-def _build_args(stealth_args: bool, extra_args: list[str] | None) -> list[str]:
-    """Combine stealth args with user-provided args."""
+def _maybe_resolve_geoip(
+    geoip: bool,
+    proxy: str | None,
+    timezone: str | None,
+    locale: str | None,
+) -> tuple[str | None, str | None]:
+    """Auto-fill timezone/locale from proxy IP when geoip is enabled."""
+    if not geoip or not proxy or (timezone is not None and locale is not None):
+        return timezone, locale
+
+    from .geoip import resolve_proxy_geo
+
+    geo_tz, geo_locale = resolve_proxy_geo(proxy)
+    if timezone is None:
+        timezone = geo_tz
+    if locale is None:
+        locale = geo_locale
+    return timezone, locale
+
+
+def _build_args(
+    stealth_args: bool,
+    extra_args: list[str] | None,
+    timezone: str | None = None,
+    locale: str | None = None,
+) -> list[str]:
+    """Combine stealth args with user-provided args and locale flags."""
     result = []
     if stealth_args:
         result.extend(get_default_stealth_args())
     if extra_args:
         result.extend(extra_args)
+    # Timezone/locale flags are independent of stealth_args — always inject when set
+    if timezone:
+        result.append(f"--timezone={timezone}")
+    if locale:
+        result.append(f"--lang={locale}")
     return result
 
 
