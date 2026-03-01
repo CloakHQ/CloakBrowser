@@ -121,7 +121,7 @@ jobs:
   build-windows:
     needs: [lint]
     runs-on: windows-latest
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
