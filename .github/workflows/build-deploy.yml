@@ -60,7 +60,7 @@ jobs:
           COVERALLS_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload coverage
-        if: success()
+        if: always()
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.xml
@@ -154,7 +154,6 @@ jobs:
 
       - name: Apply stealth patches
         shell: pwsh
-        continue-on-error: true
         run: |
           $patchFiles = Get-ChildItem -Path ../patches/*.patch -ErrorAction SilentlyContinue
           if ($patchFiles) {
@@ -175,7 +174,7 @@ jobs:
         shell: pwsh
         run: |
           Set-Location src\out\Release
-          Compress-Archive -Path chrome.exe -DestinationPath ../../../../cloakbrowser-win32-x64.tar.gz -Force
+          tar -czvf ../../../cloakbrowser-win32-x64.tar.gz chrome.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -190,7 +189,7 @@ jobs:
   build-macos-arm64:
     needs: [lint]
     runs-on: macos-latest
-    if: github.event_name == 'workflow_dispatch' && (github.inputs.build_platform == 'all' || github.inputs.build_platform == 'macos')
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.build_platform == 'all' || github.event.inputs.build_platform == 'macos')
     steps:
       - uses: actions/checkout@v4
 
@@ -238,7 +237,7 @@ jobs:
   build-macos-x64:
     needs: [lint]
     runs-on: macos-13
-    if: github.event_name == 'workflow_dispatch' && (github.inputs.build_platform == 'all' || github.inputs.build_platform == 'macos')
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.build_platform == 'all' || github.event.inputs.build_platform == 'macos')
     steps:
       - uses: actions/checkout@v4
 
@@ -284,7 +283,7 @@ jobs:
   # Publish to PyPI
   # ---------------------------------------------------------------------------
   publish-pypi:
-    needs: [test, lint]
+    needs: [test, test-js, lint]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: pypi
@@ -350,15 +349,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           body_path: CHANGELOG.md
-          files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

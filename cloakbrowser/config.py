@@ -60,7 +60,7 @@ SUPPORTED_PLATFORMS: dict[tuple[str, str], str] = {
 
 # Platforms with pre-built binaries available for download.
 # Update this set as new platform builds are released.
-AVAILABLE_PLATFORMS: set[str] = {"linux-x64", "darwin-arm64", "darwin-x64", "win32-x64"}
+AVAILABLE_PLATFORMS: set[str] = {"linux-x64", "darwin-arm64", "darwin-x64"}
 
 
 def get_platform_tag() -> str:
@@ -126,8 +126,7 @@ def check_platform_available() -> None:
         import sys
         sys.exit(
             f"\n\033[1mCloakBrowser\033[0m — Pre-built binaries are currently only available for: {available}.\n"
-            f"Windows builds are coming soon.\n\n"
-            f"To use CloakBrowser now, run in Docker (see README) or set CLOAKBROWSER_BINARY_PATH."
+            f"\nSet CLOAKBROWSER_BINARY_PATH to use your own Chromium build."
         )
 
 

@@ -409,13 +409,13 @@ page.goto("https://example.com")
 | Linux x86_64 | ✅ Available |
 | macOS arm64 (Apple Silicon) | ✅ Available |
 | macOS x86_64 (Intel) | ✅ Available |
-|| Windows x64 | ✅ Available |
+|| Windows x64 | ⚠️ Bring your own binary |
 
 **macOS (early access):** macOS builds are new — tested but not yet battle-tested at scale like Linux. If you hit any issues, [please open a GitHub issue](https://github.com/CloakHQ/CloakBrowser/issues).
 
 **macOS first launch:** The binary is ad-hoc signed. On first run, macOS Gatekeeper will block it. Right-click the app → **Open** → click **Open** in the dialog. This is only needed once.
 
-**On Windows:** Build your own patched Chromium or use an existing one. See [docs/WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md) and [examples/windows_example.py](examples/windows_example.py).
+**On Windows:** Build your own patched Chromium or use an existing one. See [scripts/WINDOWS_BUILD.md](scripts/WINDOWS_BUILD.md) and [examples/windows_example.py](examples/windows_example.py).
 ## Examples
 
 **Python** — see [`examples/`](examples/):
@@ -441,7 +441,7 @@ page.goto("https://example.com")
 | JavaScript/Puppeteer + Playwright support | ✅ Released |
 | Fingerprint rotation per session | ✅ Released |
 | Built-in proxy rotation | 📋 Planned |
-|| Windows x64 | ✅ Released |
+|| Windows x64 pre-built binary | 🔜 Planned |
 
 > ⭐ **Star this repo** to get notified about new releases and features.
 

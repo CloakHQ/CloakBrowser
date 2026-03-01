@@ -39,7 +39,7 @@ autoninja -C out\Release chrome
 REM STEP 7: Package
 echo [7/7] Packaging...
 cd out\Release
-powershell -Command "Compress-Archive -Path chrome.exe -DestinationPath cloakbrowser-win32-x64.tar.gz"
+tar -czvf cloakbrowser-win32-x64.tar.gz chrome.exe
 
 echo Done! Output: out\Release\cloakbrowser-win32-x64.tar.gz
 pause

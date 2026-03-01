@@ -24,7 +24,7 @@ const SUPPORTED_PLATFORMS: Record<string, string> = {
 
 // Platforms with pre-built binaries available for download.
 // Update this set as new platform builds are released.
-const AVAILABLE_PLATFORMS = new Set(["linux-x64", "darwin-arm64", "darwin-x64", "win32-x64"]);
+const AVAILABLE_PLATFORMS = new Set(["linux-x64", "darwin-arm64", "darwin-x64"]);
 
 export function getPlatformTag(): string {
   const platform = process.platform;
@@ -172,5 +172,4 @@ export function getDefaultStealthArgs(): string[] {
     "--fingerprint-gpu-renderer=NVIDIA GeForce RTX 3070",
   ];
 }
-
 

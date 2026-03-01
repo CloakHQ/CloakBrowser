@@ -83,7 +83,7 @@ autoninja -C out\Release chrome
 
 ```cmd
 cd out\Release
-powershell -Command "Compress-Archive -Path chrome.exe -DestinationPath cloakbrowser-win32-x64.tar.gz"
+tar -czvf cloakbrowser-win32-x64.tar.gz chrome.exe
 ```
 
 ## Output
