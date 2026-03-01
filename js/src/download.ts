@@ -151,10 +151,13 @@ async function downloadAndExtract(version?: string): Promise<void> {
   );
 
   try {
-    // Try primary server, fall back to GitHub Releases
+    // Try primary server, fall back to GitHub Releases (skip fallback if custom URL)
     try {
       await downloadFile(primaryUrl, tmpPath);
     } catch (primaryErr) {
+      if (process.env.CLOAKBROWSER_DOWNLOAD_URL) {
+        throw primaryErr;
+      }
       console.warn(
         `[cloakbrowser] Primary download failed (${primaryErr instanceof Error ? primaryErr.message : primaryErr}), trying GitHub Releases...`
       );

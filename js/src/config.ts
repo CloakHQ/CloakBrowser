@@ -10,7 +10,7 @@ import path from "node:path";
 // ---------------------------------------------------------------------------
 // Chromium version shipped with this release
 // ---------------------------------------------------------------------------
-export const CHROMIUM_VERSION = "142.0.7444.175";
+export const CHROMIUM_VERSION = "145.0.7632.109";
 
 // ---------------------------------------------------------------------------
 // Platform detection

@@ -71,6 +71,7 @@ export async function launchContext(
       viewport: options.viewport ?? DEFAULT_VIEWPORT,
       ...(resolved.locale ? { locale: resolved.locale } : {}),
       ...(resolved.timezone ? { timezoneId: resolved.timezone } : {}),
+      ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
     });
   } catch (err) {
     await browser.close();

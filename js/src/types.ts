@@ -30,6 +30,8 @@ export interface LaunchContextOptions extends LaunchOptions {
   locale?: string;
   /** Timezone, e.g. "America/New_York". */
   timezoneId?: string;
+  /** Color scheme preference — 'light', 'dark', or 'no-preference'. */
+  colorScheme?: "light" | "dark" | "no-preference";
 }
 
 export interface BinaryInfo {

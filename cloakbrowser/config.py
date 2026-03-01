@@ -12,7 +12,7 @@ from ._version import __version__
 # ---------------------------------------------------------------------------
 # Chromium version shipped with this release
 # ---------------------------------------------------------------------------
-CHROMIUM_VERSION = "142.0.7444.175"
+CHROMIUM_VERSION = "145.0.7632.109"
 
 # ---------------------------------------------------------------------------
 # Default stealth arguments passed to the patched Chromium binary.

@@ -15,7 +15,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse, urlunparse
 
 from .config import DEFAULT_VIEWPORT, get_default_stealth_args
@@ -168,7 +168,7 @@ def launch_context(
     viewport: dict | None = None,
     locale: str | None = None,
     timezone_id: str | None = None,
-    color_scheme: str | None = None,
+    color_scheme: Literal["light", "dark", "no-preference"] | None = None,
     geoip: bool = False,
     **kwargs: Any,
 ) -> Any:

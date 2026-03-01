@@ -121,10 +121,12 @@ def _download_and_extract(version: str | None = None) -> None:
         tmp_path = Path(tmp.name)
 
     try:
-        # Try primary, fall back to GitHub Releases
+        # Try primary, fall back to GitHub Releases (skip fallback if custom URL)
         try:
             _download_file(primary_url, tmp_path)
         except Exception as primary_err:
+            if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
+                raise
             logger.warning(
                 "Primary download failed (%s), trying GitHub Releases...",
                 primary_err,
