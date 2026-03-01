@@ -6,6 +6,7 @@ Similar to how Playwright downloads its own bundled Chromium.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import platform
@@ -23,6 +24,7 @@ from .config import (
     CHROMIUM_VERSION,
     DOWNLOAD_BASE_URL,
     GITHUB_API_URL,
+    GITHUB_DOWNLOAD_BASE_URL,
     _version_newer,
     check_platform_available,
     get_binary_dir,
@@ -107,6 +109,7 @@ def _download_and_extract(version: str | None = None) -> None:
 
     Tries the primary server (cloakbrowser.dev) first, falls back to
     GitHub Releases if the primary is unreachable or returns an error.
+    Verifies SHA-256 checksum before extraction when available.
     """
     primary_url = get_download_url(version)
     fallback_url = get_fallback_download_url(version)
@@ -133,6 +136,10 @@ def _download_and_extract(version: str | None = None) -> None:
             )
             _download_file(fallback_url, tmp_path)
 
+        # Verify checksum before extraction
+        if os.environ.get("CLOAKBROWSER_SKIP_CHECKSUM", "").lower() != "true":
+            _verify_download_checksum(tmp_path, version)
+
         _extract_archive(tmp_path, binary_dir, binary_path)
         logger.info("Visit https://cloakbrowser.dev for docs and release notifications.")
         logger.info("Issues? https://github.com/CloakHQ/CloakBrowser/issues")
@@ -140,6 +147,76 @@ def _download_and_extract(version: str | None = None) -> None:
     finally:
         # Clean up temp file
         tmp_path.unlink(missing_ok=True)
+
+
+def _verify_download_checksum(file_path: Path, version: str | None = None) -> None:
+    """Fetch SHA256SUMS and verify the downloaded file. Warn if unavailable, fail on mismatch."""
+    checksums = _fetch_checksums(version)
+    tarball_name = f"cloakbrowser-{get_platform_tag()}.tar.gz"
+
+    if checksums is None:
+        logger.warning("SHA256SUMS not available for this release — skipping checksum verification")
+        return
+
+    expected = checksums.get(tarball_name)
+    if expected is None:
+        logger.warning("SHA256SUMS found but no entry for %s — skipping verification", tarball_name)
+        return
+
+    _verify_checksum(file_path, expected)
+
+
+def _fetch_checksums(version: str | None = None) -> dict[str, str] | None:
+    """Fetch SHA256SUMS file for a version. Returns {filename: hash} or None."""
+    v = version or CHROMIUM_VERSION
+    has_custom_url = os.environ.get("CLOAKBROWSER_DOWNLOAD_URL")
+
+    # Build URL list — respect custom URL contract (no GitHub fallback)
+    urls = [f"{DOWNLOAD_BASE_URL}/chromium-v{v}/SHA256SUMS"]
+    if not has_custom_url:
+        urls.append(f"{GITHUB_DOWNLOAD_BASE_URL}/chromium-v{v}/SHA256SUMS")
+
+    for url in urls:
+        try:
+            resp = httpx.get(url, follow_redirects=True, timeout=10.0)
+            resp.raise_for_status()
+            return _parse_checksums(resp.text)
+        except Exception:
+            continue
+    return None
+
+
+def _parse_checksums(text: str) -> dict[str, str]:
+    """Parse SHA256SUMS format: 'hash  filename' per line."""
+    result = {}
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            hash_val, filename = parts
+            filename = filename.lstrip("*")
+            result[filename] = hash_val.lower()
+    return result
+
+
+def _verify_checksum(file_path: Path, expected_hash: str) -> None:
+    """Verify SHA-256 of a file. Raises RuntimeError on mismatch."""
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            sha256.update(chunk)
+    actual = sha256.hexdigest().lower()
+    if actual != expected_hash:
+        raise RuntimeError(
+            f"Checksum verification failed!\n"
+            f"  Expected: {expected_hash}\n"
+            f"  Got:      {actual}\n"
+            f"  File may be corrupted or tampered with. "
+            f"Please retry or report at https://github.com/CloakHQ/cloakbrowser/issues"
+        )
+    logger.info("Checksum verified: SHA-256 OK")
 
 
 def _download_file(url: str, dest: Path) -> None:

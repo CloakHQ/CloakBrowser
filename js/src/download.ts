@@ -5,6 +5,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -14,7 +15,9 @@ import { extract as tarExtract } from "tar";
 import type { BinaryInfo } from "./types.js";
 import {
   CHROMIUM_VERSION,
+  DOWNLOAD_BASE_URL,
   GITHUB_API_URL,
+  GITHUB_DOWNLOAD_BASE_URL,
   checkPlatformAvailable,
   getBinaryDir,
   getBinaryPath,
@@ -164,6 +167,11 @@ async function downloadAndExtract(version?: string): Promise<void> {
       await downloadFile(fallbackUrl, tmpPath);
     }
 
+    // Verify checksum before extraction
+    if (process.env.CLOAKBROWSER_SKIP_CHECKSUM?.toLowerCase() !== "true") {
+      await verifyDownloadChecksum(tmpPath, version);
+    }
+
     await extractArchive(tmpPath, binaryDir, binaryPath);
     console.log(
       `[cloakbrowser] Visit https://cloakbrowser.dev for docs and release notifications.`
@@ -180,6 +188,81 @@ async function downloadAndExtract(version?: string): Promise<void> {
       fs.unlinkSync(tmpPath);
     }
   }
+}
+
+async function verifyDownloadChecksum(filePath: string, version?: string): Promise<void> {
+  const checksums = await fetchChecksums(version);
+  const tarballName = `cloakbrowser-${getPlatformTag()}.tar.gz`;
+
+  if (!checksums) {
+    console.warn("[cloakbrowser] SHA256SUMS not available for this release — skipping checksum verification");
+    return;
+  }
+
+  const expected = checksums.get(tarballName);
+  if (!expected) {
+    console.warn(`[cloakbrowser] SHA256SUMS found but no entry for ${tarballName} — skipping verification`);
+    return;
+  }
+
+  await verifyChecksum(filePath, expected);
+}
+
+async function fetchChecksums(version?: string): Promise<Map<string, string> | null> {
+  const v = version || CHROMIUM_VERSION;
+  const hasCustomUrl = !!process.env.CLOAKBROWSER_DOWNLOAD_URL;
+
+  // Respect custom URL contract — no GitHub fallback when custom URL is set
+  const urls = [`${DOWNLOAD_BASE_URL}/chromium-v${v}/SHA256SUMS`];
+  if (!hasCustomUrl) {
+    urls.push(`${GITHUB_DOWNLOAD_BASE_URL}/chromium-v${v}/SHA256SUMS`);
+  }
+
+  for (const url of urls) {
+    try {
+      const resp = await fetch(url, {
+        redirect: "follow",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!resp.ok) continue;
+      return parseChecksums(await resp.text());
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function parseChecksums(text: string): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const line of text.trim().split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^([a-f0-9]{64})\s+\*?(.+)$/);
+    if (match) {
+      result.set(match[2]!, match[1]!.toLowerCase());
+    }
+  }
+  return result;
+}
+
+async function verifyChecksum(filePath: string, expectedHash: string): Promise<void> {
+  const hash = createHash("sha256");
+  const stream = fs.createReadStream(filePath);
+  for await (const chunk of stream) {
+    hash.update(chunk);
+  }
+  const actual = hash.digest("hex").toLowerCase();
+  if (actual !== expectedHash) {
+    throw new Error(
+      `Checksum verification failed!\n` +
+      `  Expected: ${expectedHash}\n` +
+      `  Got:      ${actual}\n` +
+      `  File may be corrupted or tampered with. ` +
+      `Please retry or report at https://github.com/CloakHQ/cloakbrowser/issues`
+    );
+  }
+  console.log("[cloakbrowser] Checksum verified: SHA-256 OK");
 }
 
 async function downloadFile(url: string, dest: string): Promise<void> {

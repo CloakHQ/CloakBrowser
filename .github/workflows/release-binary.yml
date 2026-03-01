@@ -40,6 +40,6 @@ jobs:
             # Binary auto-downloads on first launch
             ```
 
-            > Checksums and platform list will be added after binary uploads.
+            > Binary integrity is verified automatically via SHA-256 checksums on download.
             >
             > Release signed with CloakHQ GPG key: `C60C0DDC9D0DE2DD`

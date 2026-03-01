@@ -20,7 +20,7 @@
 
 Drop-in Playwright/Puppeteer replacement for Python and JavaScript. Same API, same code — just swap the import. Your browser now scores **0.9 on reCAPTCHA v3**, passes **Cloudflare Turnstile**, and clears **30 out of 30** stealth detection tests.
 
-- 🔒 **22 source-level C++ patches** — not JS injection, not config flags
+- 🔒 **26 source-level C++ patches** — not JS injection, not config flags
 - 🛡️ **CDP stealth built-in** — powered by [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright), hides Playwright's automation signals
 - 🎯 **0.9 reCAPTCHA v3 score** — human-level, server-verified
 - ☁️ **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — 30/30 tests
