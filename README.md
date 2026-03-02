@@ -2,8 +2,6 @@
 <img src="https://i.imgur.com/cqkp6fG.png" width="500" alt="CloakBrowser">
 </p>
 
-# CloakBrowser
-
 <p align="center">
 <a href="https://pypi.org/project/cloakbrowser/"><img src="https://img.shields.io/pypi/v/cloakbrowser" alt="PyPI"></a>
 <a href="https://www.npmjs.com/package/cloakbrowser"><img src="https://img.shields.io/npm/v/cloakbrowser" alt="npm"></a>
@@ -16,9 +14,34 @@
 <a href="https://github.com/CloakHQ/CloakBrowser"><img src="https://img.shields.io/github/last-commit/CloakHQ/CloakBrowser" alt="Last Commit"></a>
 </p>
 
-**Stealth Chromium that passes every bot detection test.**
+<br>
 
-Drop-in Playwright/Puppeteer replacement for Python and JavaScript. Same API, same code — just swap the import. Your browser now scores **0.9 on reCAPTCHA v3**, passes **Cloudflare Turnstile**, and clears **30 out of 30** stealth detection tests.
+<h3 align="center">Stealth Chromium that passes every bot detection test.</h3>
+
+Not a patched config. Not a JS injection. A real Chromium binary with fingerprints modified at the C++ source level. Antibot systems score it as a normal browser — because it *is* a normal browser.
+
+<br>
+
+<p align="center">
+<img src="https://i.imgur.com/IvB0It7.gif" width="600" alt="Cloudflare Turnstile — 3 Tests Passing">
+<br><em>Cloudflare Turnstile — 3 live tests passing (headed mode, macOS)</em>
+</p>
+
+<div align="center">
+
+| | Stock Playwright | CloakBrowser |
+|---|---|---|
+| reCAPTCHA v3 | 0.1 (bot) | **0.9 (human)** |
+| Cloudflare Turnstile | FAIL | **PASS** |
+
+| Bot detection (30 tests) | 13 fails | **30/30 pass** |
+
+</div>
+
+<p align="center">
+Drop-in Playwright/Puppeteer replacement for Python and JavaScript.<br>
+Same API, same code — just swap the import. <strong>3 lines of code, 30 seconds to unblock.</strong>
+</p>
 
 - 🔒 **26 source-level C++ patches** — not JS injection, not config flags
 - 🛡️ **CDP stealth built-in** — powered by [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright), hides Playwright's automation signals
@@ -26,7 +49,7 @@ Drop-in Playwright/Puppeteer replacement for Python and JavaScript. Same API, sa
 - ☁️ **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — 30/30 tests
 - 🔄 **Drop-in replacement** — works with Playwright (Python & JS) and Puppeteer (JS)
 - 📦 **`pip install cloakbrowser`** or **`npm install cloakbrowser`** — binary auto-downloads, zero config
-- 🦊 **Fills the Camoufox vacuum** — Chromium-based, actively maintained
+- 💸 **Enterprise results, zero cost** — anti-detect browsers charge $49–299/month for the same results. CloakBrowser is free
 
 **Python:**
 ```python
@@ -48,15 +71,7 @@ await page.goto('https://protected-site.com');
 await browser.close();
 ```
 
-**JavaScript (Puppeteer):**
-```javascript
-import { launch } from 'cloakbrowser/puppeteer';
-
-const browser = await launch();
-const page = await browser.newPage();
-await page.goto('https://protected-site.com');
-await browser.close();
-```
+Also works with Puppeteer: `import { launch } from 'cloakbrowser/puppeteer'` ([details](#puppeteer))
 
 ## Install
 
@@ -76,14 +91,34 @@ npm install cloakbrowser puppeteer-core
 
 On first run, the stealth Chromium binary is automatically downloaded (~200MB, cached locally).
 
+**Optional:** Auto-detect timezone/locale from proxy IP:
+```bash
+pip install cloakbrowser[geoip]
+```
+
+**Migrating from Playwright?** One-line change:
+
+```diff
+- from playwright.sync_api import sync_playwright
+- pw = sync_playwright().start()
+- browser = pw.chromium.launch()
++ from cloakbrowser import launch
++ browser = launch()
+
+page = browser.new_page()
+page.goto("https://example.com")
+# ... rest of your code works unchanged
+```
+
+> ⭐ **Like what you see?** [Star this repo](https://github.com/CloakHQ/CloakBrowser) to get notified when new builds drop.
+
 ## What's New in v0.3.0
 
-- **Chromium 145** — latest stable, 26 fingerprint patches
-- **10 new patches** — screen dimensions, audio, WebGL, and more
+- **Chromium 145** — latest stable, 26 fingerprint patches (up from 16)
+- **10 new patches** — screen dimensions, device memory, audio, WebGL, and more
+- **SHA-256 checksum verification** — binary downloads are verified for integrity
 - **CDP hardening** — audited and patched known automation detection vectors
 - **Timezone & locale from proxy IP** — `launch(proxy="...", geoip=True)` auto-detects timezone and locale
-- **Improved cross-platform spoofing** — fixed edge cases in font rendering and GPU reporting
-- **Automated test matrix** — 41+ tests across 8 groups (stealth, fingerprint, reCAPTCHA, Turnstile, TLS, enterprise) running in Docker
 
 See the full [CHANGELOG.md](CHANGELOG.md) for details.
 
@@ -92,11 +127,15 @@ See the full [CHANGELOG.md](CHANGELOG.md) for details.
 - **Config-level patches break** — `playwright-stealth`, `undetected-chromedriver`, and `puppeteer-extra` inject JavaScript or tweak flags. Every Chrome update breaks them. Antibot systems detect the patches themselves.
 - **CloakBrowser patches Chromium source code** — fingerprints are modified at the C++ level, compiled into the binary. Detection sites see a real browser because it *is* a real browser.
 - **Two layers of stealth** — C++ patches handle fingerprints (GPU, screen, UA, hardware reporting), while the Patchright driver eliminates CDP automation leaks. Most stealth tools only do one or the other.
+- **Same behavior everywhere** — works identically local, in Docker, and on VPS. No environment-specific patches or config needed.
+- **Works with AI browser agents** — drop-in stealth binary for [browser-use](https://github.com/browser-use/browser-use), [agent-browser](https://github.com/nichochar/agent-browser), Claude computer use, and OpenAI Operator
 - **One line to switch** — same Playwright API, no new abstractions, no CAPTCHA-solving services.
+
+CloakBrowser doesn't solve CAPTCHAs — it prevents them from appearing. Antibot systems score it as a normal browser because it *is* a normal browser, just with your fingerprints instead of theirs. No CAPTCHA services, no proxy rotation built in — bring your own proxies, use the Playwright API you already know.
 
 ## Test Results
 
-All tests verified against live detection services. Last tested: Feb 2026 (Chromium 145).
+All tests verified against live detection services. Last tested: Mar 2026 (Chromium 145).
 
 | Detection Service | Stock Playwright | CloakBrowser | Notes |
 |---|---|---|---|
@@ -118,11 +157,6 @@ All tests verified against live detection services. Last tested: Feb 2026 (Chrom
 **30/30 tests passed.**
 
 ### Proof
-
-<p align="center">
-<img src="https://i.imgur.com/IvB0It7.gif" width="600" alt="Cloudflare Turnstile — 3 Tests Passing (Headed Mode)">
-<br><em>Cloudflare Turnstile — 3 live tests passing in headed mode (macOS)</em>
-</p>
 
 <p align="center">
 <img src="https://i.imgur.com/hvIQyMv.png" width="600" alt="reCAPTCHA v3 — Score 0.9">
@@ -157,6 +191,8 @@ The binary includes 26 source-level patches covering canvas, WebGL, audio, fonts
 
 These are compiled into the Chromium binary — not injected via JavaScript, not set via flags.
 
+Binary downloads are verified with SHA-256 checksums to ensure integrity.
+
 ## API
 
 ### `launch()`
@@ -181,6 +217,9 @@ browser = launch(timezone="America/New_York", locale="en-US")
 
 # Auto-detect timezone/locale from proxy IP (requires: pip install cloakbrowser[geoip])
 browser = launch(proxy="http://proxy:8080", geoip=True)
+
+# Explicit timezone/locale always win over auto-detection
+browser = launch(proxy="http://proxy:8080", geoip=True, timezone="Europe/London")
 
 # Without default stealth args (bring your own fingerprint flags)
 browser = launch(stealth_args=False, args=["--fingerprint=12345"])
@@ -220,27 +259,6 @@ context = launch_context(
 page = context.new_page()
 ```
 
-### Auto Timezone/Locale from Proxy IP
-
-When using a proxy, antibot systems check that your browser's timezone and locale match the proxy's geographic location. CloakBrowser can auto-detect these from the proxy IP using an offline GeoIP database:
-
-```bash
-pip install cloakbrowser[geoip]   # installs geoip2 + downloads ~70 MB database on first use
-```
-
-```python
-# Timezone and locale auto-set from proxy's IP geolocation
-browser = launch(proxy="http://proxy:8080", geoip=True)
-
-# Works with launch_context too — sets both binary flags AND Playwright context
-context = launch_context(proxy="http://proxy:8080", geoip=True)
-
-# Explicit values always win over auto-detection
-browser = launch(proxy="http://proxy:8080", geoip=True, timezone="Europe/London")
-```
-
-> **Note:** For rotating residential proxies, the DNS-resolved IP may differ from the exit IP. Pass explicit `timezone`/`locale` in those cases.
-
 ### Utility Functions
 
 ```python
@@ -248,7 +266,7 @@ from cloakbrowser import binary_info, clear_cache, ensure_binary
 
 # Check binary installation status
 print(binary_info())
-# {'version': '142.0.7444.175', 'platform': 'linux-x64', 'installed': True, ...}
+# {'version': '145.0.7632.109', 'platform': 'linux-x64', 'installed': True, ...}
 
 # Force re-download
 clear_cache()
@@ -274,6 +292,8 @@ const browser = await launch({
   headless: false,
   proxy: 'http://user:pass@proxy:8080',
   args: ['--window-size=1920,1080'],
+  timezone: 'America/New_York',
+  locale: 'en-US',
 });
 
 // Convenience: browser + context in one call
@@ -287,6 +307,8 @@ const page = await context.newPage();
 ```
 
 > **Note:** Each example above is standalone — not meant to run as one block.
+
+All Python options work in JS: `stealthArgs: false` to disable defaults, `geoip: true` to auto-detect timezone/locale from proxy IP.
 
 ### Puppeteer
 
@@ -349,6 +371,11 @@ Every `launch()` call sets these automatically. Defaults are **platform-aware** 
 | `--fingerprint-hardware-concurrency` | `8` | *(not set — uses real value)* | `navigator.hardwareConcurrency` |
 | `--fingerprint-gpu-vendor` | `NVIDIA Corporation` | *(not set — native Apple GPU)* | WebGL `UNMASKED_VENDOR_WEBGL` |
 | `--fingerprint-gpu-renderer` | `NVIDIA GeForce RTX 3070` | *(not set — native Metal renderer)* | WebGL `UNMASKED_RENDERER_WEBGL` |
+| `--fingerprint-device-memory` | `8` | *(not set)* | `navigator.deviceMemory` |
+| `--fingerprint-screen-width` | `1920` | *(not set)* | Screen width reporting |
+| `--fingerprint-screen-height` | `1080` | *(not set)* | Screen height reporting |
+| `--fingerprint-taskbar-height` | `40` | *(not set)* | Windows taskbar height |
+| `--window-size` | `1920,1080` | *(not set)* | Browser window dimensions |
 
 > **Important:** `--fingerprint-platform` must always be set. The binary defaults to `windows` internally when this flag is missing, which causes GPU/UA mismatches on non-Windows systems. The wrapper handles this automatically.
 
@@ -369,9 +396,6 @@ Supported by the binary but **not set by default** — pass via `args` to custom
 ### Examples
 
 ```python
-# Default — unique fingerprint every launch
-browser = launch()
-
 # Pin a seed for a persistent identity
 browser = launch(args=["--fingerprint=42069"])
 
@@ -384,41 +408,11 @@ browser = launch(stealth_args=False, args=[
     "--fingerprint-gpu-renderer=NVIDIA GeForce RTX 3070",
 ])
 
-# Add timezone and location on top of defaults
-browser = launch(args=[
-    "--timezone=America/New_York",
-    "--fingerprint-location=40.7128,-74.0060",
-])
-
 # Override GPU to look like a different machine
 browser = launch(args=[
     "--fingerprint-gpu-vendor=Intel Inc.",
     "--fingerprint-gpu-renderer=Intel Iris OpenGL Engine",
 ])
-```
-
-```javascript
-// JavaScript — same flags
-const browser = await launch({
-  args: ['--fingerprint=42069', '--timezone=Europe/London'],
-});
-```
-
-
-## Use With Existing Playwright Code
-
-If you have existing Playwright scripts, migration is one line:
-
-```diff
-- from playwright.sync_api import sync_playwright
-- pw = sync_playwright().start()
-- browser = pw.chromium.launch()
-+ from cloakbrowser import launch
-+ browser = launch()
-
-page = browser.new_page()
-page.goto("https://example.com")
-# ... rest of your code works unchanged
 ```
 
 ## Comparison
@@ -429,7 +423,7 @@ page.goto("https://example.com")
 | Cloudflare Turnstile | Fail | Sometimes | Sometimes | Pass | **Pass** |
 | Patch level | None | JS injection | Config patches | C++ (Firefox) | **C++ (Chromium)** |
 | Survives Chrome updates | N/A | Breaks often | Breaks often | Yes | **Yes** |
-| Maintained | Yes | Stale | Stale | Dead (2025) | **Active** |
+| Maintained | Yes | Stale | Stale | Unstable (2026 beta) | **Active** |
 | Browser engine | Chromium | Chromium | Chrome | Firefox | **Chromium** |
 | Playwright API | Native | Native | No (Selenium) | No | **Native** |
 
@@ -447,12 +441,14 @@ page.goto("https://example.com")
 **macOS first launch:** The binary is ad-hoc signed. On first run, macOS Gatekeeper will block it. Right-click the app → **Open** → click **Open** in the dialog. This is only needed once.
 
 **On Windows?** You can still use CloakBrowser via Docker or with your own Chromium binary by setting `CLOAKBROWSER_BINARY_PATH=/path/to/chrome`.
+
 ## Examples
 
 **Python** — see [`examples/`](examples/):
 - [`basic.py`](examples/basic.py) — Launch and load a page
 - [`recaptcha_score.py`](examples/recaptcha_score.py) — Check your reCAPTCHA v3 score
 - [`stealth_test.py`](examples/stealth_test.py) — Run against all detection services
+- [`fingerprint_scan_test.py`](examples/fingerprint_scan_test.py) — Test against fingerprint-scan.com and CreepJS
 
 **JavaScript** — see [`js/examples/`](js/examples/):
 - [`basic-playwright.ts`](js/examples/basic-playwright.ts) — Playwright launch and load
@@ -466,13 +462,11 @@ page.goto("https://example.com")
 | Linux x64 binary | ✅ Released |
 | macOS arm64 (Apple Silicon) | ✅ Released |
 | macOS x64 (Intel) | ✅ Released |
-| Chromium 145 build (26 patches) | 🔧 In progress |
+| Chromium 145 build (26 patches) | ✅ Released |
 | JavaScript/Puppeteer + Playwright support | ✅ Released |
 | Fingerprint rotation per session | ✅ Released |
 | Built-in proxy rotation | 📋 Planned |
 | Windows support | 📋 Planned |
-
-> ⭐ **Star this repo** to get notified when new builds drop.
 
 ## Docker
 
@@ -495,6 +489,21 @@ FROM cloakbrowser
 COPY your_script.py /app/
 CMD ["python", "your_script.py"]
 ```
+
+**With a proxy** (the most common production setup):
+
+```bash
+docker run --rm cloakbrowser python -c "
+from cloakbrowser import launch
+browser = launch(proxy='http://user:pass@proxy:8080')
+page = browser.new_page()
+page.goto('https://example.com')
+print(page.title())
+browser.close()
+"
+```
+
+CloakBrowser works identically local, in Docker, and on VPS. No environment-specific config needed.
 
 **Note:** If you run CloakBrowser inside a web server with uvloop (e.g., `uvicorn[standard]`), use `--loop asyncio` to avoid subprocess pipe hangs.
 
@@ -585,7 +594,7 @@ Other tips for maximizing reCAPTCHA scores:
 - **Use residential proxies** — datacenter IPs are flagged by IP reputation, not browser fingerprint
 - **Spend 15+ seconds on the page** before triggering reCAPTCHA — short visits score lower
 - **Space out requests** — back-to-back `grecaptcha.execute()` calls from the same session get penalized. Wait 30+ seconds between pages with reCAPTCHA
-- **Use a fixed fingerprint seed** (`--fingerprint=12345`) for consistent device identity across sessions
+- **Use a fixed fingerprint seed** for consistent device identity across sessions (see [Fingerprint Management](#fingerprint-management))
 - **Use `page.type()` instead of `page.fill()`** for form filling — `fill()` sets values directly without keyboard events, which reCAPTCHA's behavioral analysis flags. `type()` with a delay simulates real keystrokes:
   ```python
   page.type("#email", "user@example.com", delay=50)
@@ -598,16 +607,13 @@ Other tips for maximizing reCAPTCHA scores:
 A: CloakBrowser is a browser. Using it is legal. What you do with it is your responsibility, just like with Chrome, Firefox, or any browser. We do not endorse violating website terms of service.
 
 **Q: How is this different from Camoufox?**
-A: Camoufox patched Firefox. We patch Chromium. Chromium means native Playwright support, larger ecosystem, and TLS fingerprints that match real Chrome. Also, Camoufox is no longer maintained (since March 2025).
+A: Camoufox patches Firefox. We patch Chromium. Chromium means native Playwright support, larger ecosystem, and TLS fingerprints that match real Chrome. Camoufox returned in early 2026 but is in unstable beta — CloakBrowser is production-ready.
 
 **Q: Will detection sites eventually catch this?**
 A: Possibly. Bot detection is an arms race. Source-level patches are harder to detect than config-level patches, but not impossible. We actively monitor and update when detection evolves.
 
 **Q: Can I use my own proxy?**
 A: Yes. Pass `proxy="http://user:pass@host:port"` to `launch()`.
-
-**Q: Can I use this with Docker?**
-A: Yes. A ready-to-use Dockerfile is included — see the [Docker](#docker) section above.
 
 ## Links
 
