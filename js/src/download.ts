@@ -14,7 +14,6 @@ import { extract as tarExtract } from "tar";
 
 import type { BinaryInfo } from "./types.js";
 import {
-  CHROMIUM_VERSION,
   DOWNLOAD_BASE_URL,
   GITHUB_API_URL,
   GITHUB_DOWNLOAD_BASE_URL,
@@ -22,6 +21,7 @@ import {
   getBinaryDir,
   getBinaryPath,
   getCacheDir,
+  getChromiumVersion,
   getDownloadUrl,
   getEffectiveVersion,
   getFallbackDownloadUrl,
@@ -66,8 +66,9 @@ export async function ensureBinary(): Promise<string> {
     return binaryPath;
   }
 
-  // Fall back to hardcoded version if effective version binary doesn't exist
-  if (effective !== CHROMIUM_VERSION) {
+  // Fall back to platform's hardcoded version if effective version binary doesn't exist
+  const platformVersion = getChromiumVersion();
+  if (effective !== platformVersion) {
     const fallbackPath = getBinaryPath();
     if (fs.existsSync(fallbackPath) && isExecutable(fallbackPath)) {
       maybeTriggerUpdateCheck();
@@ -75,9 +76,9 @@ export async function ensureBinary(): Promise<string> {
     }
   }
 
-  // Download hardcoded version
+  // Download platform's hardcoded version
   console.log(
-    `[cloakbrowser] Stealth Chromium ${CHROMIUM_VERSION} not found. Downloading for ${getPlatformTag()}...`
+    `[cloakbrowser] Stealth Chromium ${platformVersion} not found. Downloading for ${getPlatformTag()}...`
   );
   await downloadAndExtract();
 
@@ -120,7 +121,7 @@ export function binaryInfo(): BinaryInfo {
 /** Manually check for a newer Chromium version. Returns new version or null. */
 export async function checkForUpdate(): Promise<string | null> {
   const latest = await getLatestChromiumVersion();
-  if (!latest || !versionNewer(latest, CHROMIUM_VERSION)) return null;
+  if (!latest || !versionNewer(latest, getChromiumVersion())) return null;
 
   const binaryDir = getBinaryDir(latest);
   if (fs.existsSync(binaryDir)) {
@@ -209,7 +210,7 @@ async function verifyDownloadChecksum(filePath: string, version?: string): Promi
 }
 
 async function fetchChecksums(version?: string): Promise<Map<string, string> | null> {
-  const v = version || CHROMIUM_VERSION;
+  const v = version || getChromiumVersion();
   const hasCustomUrl = !!process.env.CLOAKBROWSER_DOWNLOAD_URL;
 
   // Respect custom URL contract — no GitHub fallback when custom URL is set
@@ -437,7 +438,8 @@ function shouldCheckForUpdate(): boolean {
   return true;
 }
 
-async function getLatestChromiumVersion(): Promise<string | null> {
+/** @internal Exported for testing only. */
+export async function getLatestChromiumVersion(): Promise<string | null> {
   try {
     const resp = await fetch(`${GITHUB_API_URL}?per_page=10`, {
       signal: AbortSignal.timeout(10_000),
@@ -446,10 +448,17 @@ async function getLatestChromiumVersion(): Promise<string | null> {
     const releases = (await resp.json()) as Array<{
       tag_name: string;
       draft: boolean;
+      assets: Array<{ name: string }>;
     }>;
+    const platformTarball = `cloakbrowser-${getPlatformTag()}.tar.gz`;
     for (const release of releases) {
       if (release.tag_name.startsWith("chromium-v") && !release.draft) {
-        return release.tag_name.replace("chromium-v", "");
+        const assetNames = new Set(
+          (release.assets ?? []).map((a) => a.name)
+        );
+        if (assetNames.has(platformTarball)) {
+          return release.tag_name.replace(/^chromium-v/, "");
+        }
       }
     }
     return null;
@@ -461,7 +470,7 @@ async function getLatestChromiumVersion(): Promise<string | null> {
 function writeVersionMarker(version: string): void {
   const cacheDir = getCacheDir();
   fs.mkdirSync(cacheDir, { recursive: true });
-  const marker = path.join(cacheDir, "latest_version");
+  const marker = path.join(cacheDir, `latest_version_${getPlatformTag()}`);
   const tmp = `${marker}.tmp`;
   fs.writeFileSync(tmp, version);
   fs.renameSync(tmp, marker);
@@ -477,8 +486,9 @@ async function checkAndDownloadUpdate(): Promise<void> {
       String(Date.now())
     );
 
+    const platformVersion = getChromiumVersion();
     const latest = await getLatestChromiumVersion();
-    if (!latest || !versionNewer(latest, CHROMIUM_VERSION)) return;
+    if (!latest || !versionNewer(latest, platformVersion)) return;
 
     // Already downloaded?
     if (fs.existsSync(getBinaryDir(latest))) {
@@ -487,7 +497,7 @@ async function checkAndDownloadUpdate(): Promise<void> {
     }
 
     console.log(
-      `[cloakbrowser] Newer Chromium available: ${latest} (current: ${CHROMIUM_VERSION}). Downloading in background...`
+      `[cloakbrowser] Newer Chromium available: ${latest} (current: ${platformVersion}). Downloading in background...`
     );
     await downloadAndExtract(latest);
     writeVersionMarker(latest);

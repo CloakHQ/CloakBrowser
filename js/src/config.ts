@@ -8,9 +8,19 @@ import os from "node:os";
 import path from "node:path";
 
 // ---------------------------------------------------------------------------
-// Chromium version shipped with this release
+// Chromium version shipped with this release.
+// Different platforms may ship different versions (e.g. Linux gets v145 first,
+// macOS stays on v142 until Mac builds are ready).
+// CHROMIUM_VERSION is the latest across all platforms (for display/reference).
+// Use getChromiumVersion() for the current platform's actual version.
 // ---------------------------------------------------------------------------
 export const CHROMIUM_VERSION = "145.0.7632.109";
+
+export const PLATFORM_CHROMIUM_VERSIONS: Record<string, string> = {
+  "linux-x64": "145.0.7632.109",
+  "darwin-arm64": "142.0.7444.175",
+  "darwin-x64": "142.0.7444.175",
+};
 
 // ---------------------------------------------------------------------------
 // Platform detection
@@ -22,9 +32,13 @@ const SUPPORTED_PLATFORMS: Record<string, string> = {
   "darwin-x64": "darwin-x64",
 };
 
-// Platforms with pre-built binaries available for download.
-// Update this set as new platform builds are released.
-const AVAILABLE_PLATFORMS = new Set(["linux-x64", "darwin-arm64", "darwin-x64"]);
+// Platforms with pre-built binaries available for download (derived from version map).
+const AVAILABLE_PLATFORMS = new Set(Object.keys(PLATFORM_CHROMIUM_VERSIONS));
+
+export function getChromiumVersion(): string {
+  const tag = getPlatformTag();
+  return PLATFORM_CHROMIUM_VERSIONS[tag] ?? CHROMIUM_VERSION;
+}
 
 export function getPlatformTag(): string {
   const platform = process.platform;
@@ -56,7 +70,7 @@ export function getCacheDir(): string {
 }
 
 export function getBinaryDir(version?: string): string {
-  return path.join(getCacheDir(), `chromium-${version || CHROMIUM_VERSION}`);
+  return path.join(getCacheDir(), `chromium-${version || getChromiumVersion()}`);
 }
 
 export function getBinaryPath(version?: string): string {
@@ -95,23 +109,24 @@ export const GITHUB_DOWNLOAD_BASE_URL =
   "https://github.com/CloakHQ/cloakbrowser/releases/download";
 
 export function getDownloadUrl(version?: string): string {
-  const v = version || CHROMIUM_VERSION;
+  const v = version || getChromiumVersion();
   const tag = getPlatformTag();
   return `${DOWNLOAD_BASE_URL}/chromium-v${v}/cloakbrowser-${tag}.tar.gz`;
 }
 
 export function getFallbackDownloadUrl(version?: string): string {
-  const v = version || CHROMIUM_VERSION;
+  const v = version || getChromiumVersion();
   const tag = getPlatformTag();
   return `${GITHUB_DOWNLOAD_BASE_URL}/chromium-v${v}/cloakbrowser-${tag}.tar.gz`;
 }
 
 export function getEffectiveVersion(): string {
-  const marker = path.join(getCacheDir(), "latest_version");
+  const base = getChromiumVersion();
+  const marker = path.join(getCacheDir(), `latest_version_${getPlatformTag()}`);
   try {
     if (fs.existsSync(marker)) {
       const version = fs.readFileSync(marker, "utf-8").trim();
-      if (version && versionNewer(version, CHROMIUM_VERSION)) {
+      if (version && versionNewer(version, base)) {
         const binary = getBinaryPath(version);
         if (fs.existsSync(binary)) {
           return version;
@@ -121,7 +136,7 @@ export function getEffectiveVersion(): string {
   } catch {
     // Marker unreadable — fall back to hardcoded
   }
-  return CHROMIUM_VERSION;
+  return base;
 }
 
 export function parseVersion(v: string): number[] {

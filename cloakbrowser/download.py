@@ -30,6 +30,7 @@ from .config import (
     get_binary_dir,
     get_binary_path,
     get_cache_dir,
+    get_chromium_version,
     get_download_url,
     get_effective_version,
     get_fallback_download_url,
@@ -76,18 +77,19 @@ def ensure_binary() -> str:
         _maybe_trigger_update_check()
         return str(binary_path)
 
-    # Fall back to hardcoded version if effective version binary doesn't exist
-    if effective != CHROMIUM_VERSION:
+    # Fall back to platform's hardcoded version if effective version binary doesn't exist
+    platform_version = get_chromium_version()
+    if effective != platform_version:
         fallback_path = get_binary_path()
         if fallback_path.exists() and _is_executable(fallback_path):
             logger.debug("Binary found in cache: %s", fallback_path)
             _maybe_trigger_update_check()
             return str(fallback_path)
 
-    # Download hardcoded version
+    # Download platform's hardcoded version
     logger.info(
         "Stealth Chromium %s not found. Downloading for %s...",
-        CHROMIUM_VERSION,
+        platform_version,
         get_platform_tag(),
     )
     _download_and_extract()
@@ -168,7 +170,7 @@ def _verify_download_checksum(file_path: Path, version: str | None = None) -> No
 
 def _fetch_checksums(version: str | None = None) -> dict[str, str] | None:
     """Fetch SHA256SUMS file for a version. Returns {filename: hash} or None."""
-    v = version or CHROMIUM_VERSION
+    v = version or get_chromium_version()
     has_custom_url = os.environ.get("CLOAKBROWSER_DOWNLOAD_URL")
 
     # Build URL list — respect custom URL contract (no GitHub fallback)
@@ -384,7 +386,7 @@ def check_for_update() -> str | None:
     latest = _get_latest_chromium_version()
     if latest is None:
         return None
-    if not _version_newer(latest, CHROMIUM_VERSION):
+    if not _version_newer(latest, get_chromium_version()):
         return None
 
     binary_dir = get_binary_dir(latest)
@@ -420,16 +422,23 @@ def _should_check_for_update() -> bool:
 
 
 def _get_latest_chromium_version() -> str | None:
-    """Hit GitHub Releases API, return latest chromium-v* version string or None."""
+    """Hit GitHub Releases API, return latest chromium-v* version for this platform.
+
+    Checks that the release has a binary asset for the current platform,
+    so Linux-only releases won't be offered to macOS users.
+    """
     try:
         resp = httpx.get(
             GITHUB_API_URL, params={"per_page": 10}, timeout=10.0
         )
         resp.raise_for_status()
+        platform_tarball = f"cloakbrowser-{get_platform_tag()}.tar.gz"
         for release in resp.json():
             tag = release.get("tag_name", "")
             if tag.startswith("chromium-v") and not release.get("draft"):
-                return tag.removeprefix("chromium-v")
+                asset_names = {a["name"] for a in release.get("assets", [])}
+                if platform_tarball in asset_names:
+                    return tag.removeprefix("chromium-v")
         return None
     except Exception:
         logger.debug("Auto-update check failed", exc_info=True)
@@ -437,10 +446,10 @@ def _get_latest_chromium_version() -> str | None:
 
 
 def _write_version_marker(version: str) -> None:
-    """Write the latest version marker to cache dir."""
+    """Write the latest version marker for this platform to cache dir."""
     cache_dir = get_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    marker = cache_dir / "latest_version"
+    marker = cache_dir / f"latest_version_{get_platform_tag()}"
     # Write to temp file then rename for atomicity
     tmp = marker.with_suffix(".tmp")
     tmp.write_text(version)
@@ -455,10 +464,11 @@ def _check_and_download_update() -> None:
         check_file.parent.mkdir(parents=True, exist_ok=True)
         check_file.write_text(str(time.time()))
 
+        platform_version = get_chromium_version()
         latest = _get_latest_chromium_version()
         if latest is None:
             return
-        if not _version_newer(latest, CHROMIUM_VERSION):
+        if not _version_newer(latest, platform_version):
             return
 
         # Already downloaded?
@@ -469,7 +479,7 @@ def _check_and_download_update() -> None:
         logger.info(
             "Newer Chromium available: %s (current: %s). Downloading in background...",
             latest,
-            CHROMIUM_VERSION,
+            platform_version,
         )
         _download_and_extract(version=latest)
         _write_version_marker(latest)

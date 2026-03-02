@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   CHROMIUM_VERSION,
+  getChromiumVersion,
   getDefaultStealthArgs,
   getCacheDir,
   getBinaryDir,
@@ -10,7 +11,7 @@ import { _buildArgsForTest } from "../src/playwright.js";
 
 describe("config", () => {
   it("CHROMIUM_VERSION matches expected format", () => {
-    expect(CHROMIUM_VERSION).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+    expect(CHROMIUM_VERSION).toMatch(/^\d+\.\d+\.\d+\.\d+(\.\d+)?$/);
   });
 
   it("getDefaultStealthArgs returns expected flags", () => {
@@ -53,14 +54,14 @@ describe("config", () => {
     expect(dir).toContain(".cloakbrowser");
   });
 
-  it("getBinaryDir includes version", () => {
+  it("getBinaryDir includes platform version", () => {
     const dir = getBinaryDir();
-    expect(dir).toContain(`chromium-${CHROMIUM_VERSION}`);
+    expect(dir).toContain(`chromium-${getChromiumVersion()}`);
   });
 
-  it("getDownloadUrl contains version and platform tag", () => {
+  it("getDownloadUrl contains platform version and platform tag", () => {
     const url = getDownloadUrl();
-    expect(url).toContain(CHROMIUM_VERSION);
+    expect(url).toContain(getChromiumVersion());
     expect(url).toContain("cloakbrowser-");
     expect(url).toContain(".tar.gz");
     expect(url).toContain("cloakbrowser.dev");

@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { binaryInfo } from "../src/download.js";
-import { CHROMIUM_VERSION } from "../src/config.js";
+import { getChromiumVersion } from "../src/config.js";
 
 describe("binaryInfo", () => {
   it("returns correct structure", () => {
     const info = binaryInfo();
 
-    expect(info.version).toBe(CHROMIUM_VERSION);
+    expect(info.version).toBe(getChromiumVersion());
     expect(info.platform).toMatch(/^(linux|darwin)-(x64|arm64)$/);
     expect(info.binaryPath).toBeTruthy();
     expect(typeof info.installed).toBe("boolean");

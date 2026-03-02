@@ -12,8 +12,10 @@ from cloakbrowser.config import (
     CHROMIUM_VERSION,
     _version_newer,
     _version_tuple,
+    get_chromium_version,
     get_download_url,
     get_effective_version,
+    get_platform_tag,
 )
 from cloakbrowser.download import (
     _get_latest_chromium_version,
@@ -41,12 +43,27 @@ class TestVersionComparison:
     def test_major_bump(self):
         assert _version_newer("143.0.0.0", "142.9.9999.999") is True
 
+    def test_5th_segment_parsing(self):
+        assert _version_tuple("145.0.7632.109.2") == (145, 0, 7632, 109, 2)
+
+    def test_build_bump(self):
+        assert _version_newer("145.0.7632.109.3", "145.0.7632.109.2") is True
+
+    def test_build_suffix_newer_than_no_suffix(self):
+        assert _version_newer("145.0.7632.109.2", "145.0.7632.109") is True
+
+    def test_no_suffix_older_than_build_suffix(self):
+        assert _version_newer("145.0.7632.109", "145.0.7632.109.2") is False
+
+    def test_new_chromium_beats_old_build(self):
+        assert _version_newer("146.0.0.0", "145.0.7632.109.2") is True
+
 
 class TestDownloadUrl:
     def test_default_url_format(self):
         url = get_download_url()
         assert "cloakbrowser.dev" in url
-        assert f"chromium-v{CHROMIUM_VERSION}" in url
+        assert f"chromium-v{get_chromium_version()}" in url
         assert url.endswith(".tar.gz")
 
     def test_custom_version_url(self):
@@ -111,30 +128,42 @@ class TestShouldCheckForUpdate:
 
 
 class TestEffectiveVersion:
-    def test_no_marker_returns_hardcoded(self, tmp_path):
+    def test_no_marker_returns_platform_version(self, tmp_path):
         with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}):
-            assert get_effective_version() == CHROMIUM_VERSION
+            assert get_effective_version() == get_chromium_version()
 
     def test_marker_with_newer_version(self, tmp_path):
         with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}):
-            marker = tmp_path / "latest_version"
+            marker = tmp_path / f"latest_version_{get_platform_tag()}"
             marker.write_text("999.0.0.0")
             # Binary doesn't exist, so should fall back
-            assert get_effective_version() == CHROMIUM_VERSION
+            assert get_effective_version() == get_chromium_version()
 
     def test_marker_with_older_version_ignored(self, tmp_path):
         with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}):
-            marker = tmp_path / "latest_version"
+            marker = tmp_path / f"latest_version_{get_platform_tag()}"
             marker.write_text("100.0.0.0")
-            assert get_effective_version() == CHROMIUM_VERSION
+            assert get_effective_version() == get_chromium_version()
 
 
 class TestGetLatestVersion:
-    def test_parses_chromium_tag(self):
+    """Tests for _get_latest_chromium_version with platform-aware asset checking."""
+
+    def _make_assets(self, platforms: list[str]) -> list[dict]:
+        """Helper to build asset list from platform tags."""
+        return [{"name": f"cloakbrowser-{p}.tar.gz"} for p in platforms]
+
+    def _platform_tarball(self) -> str:
+        return f"cloakbrowser-{get_platform_tag()}.tar.gz"
+
+    def test_parses_chromium_tag_with_platform_asset(self):
         mock_response = MagicMock()
         mock_response.json.return_value = [
-            {"tag_name": "chromium-v145.0.7718.0", "draft": False},
-            {"tag_name": "chromium-v142.0.7444.175", "draft": False},
+            {
+                "tag_name": "chromium-v145.0.7718.0",
+                "draft": False,
+                "assets": self._make_assets(["linux-x64", "darwin-arm64", "darwin-x64"]),
+            },
         ]
         mock_response.raise_for_status = MagicMock()
 
@@ -142,11 +171,37 @@ class TestGetLatestVersion:
             result = _get_latest_chromium_version()
             assert result == "145.0.7718.0"
 
-    def test_skips_draft_releases(self):
+    def test_skips_release_without_platform_asset(self):
+        """If latest release has no asset for our platform, fall back to older release."""
         mock_response = MagicMock()
         mock_response.json.return_value = [
-            {"tag_name": "chromium-v999.0.0.0", "draft": True},
-            {"tag_name": "chromium-v145.0.7718.0", "draft": False},
+            {
+                "tag_name": "chromium-v145.0.7718.0",
+                "draft": False,
+                "assets": self._make_assets(["linux-x64"]),  # Linux only
+            },
+            {
+                "tag_name": "chromium-v142.0.7444.175",
+                "draft": False,
+                "assets": self._make_assets(["linux-x64", "darwin-arm64", "darwin-x64"]),
+            },
+        ]
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("cloakbrowser.download.httpx.get", return_value=mock_response):
+            result = _get_latest_chromium_version()
+            tag = get_platform_tag()
+            if tag == "linux-x64":
+                assert result == "145.0.7718.0"
+            else:
+                assert result == "142.0.7444.175"
+
+    def test_skips_draft_releases(self):
+        mock_response = MagicMock()
+        all_platforms = ["linux-x64", "darwin-arm64", "darwin-x64"]
+        mock_response.json.return_value = [
+            {"tag_name": "chromium-v999.0.0.0", "draft": True, "assets": self._make_assets(all_platforms)},
+            {"tag_name": "chromium-v145.0.7718.0", "draft": False, "assets": self._make_assets(all_platforms)},
         ]
         mock_response.raise_for_status = MagicMock()
 
@@ -156,15 +211,32 @@ class TestGetLatestVersion:
 
     def test_skips_non_chromium_tags(self):
         mock_response = MagicMock()
+        all_platforms = ["linux-x64", "darwin-arm64", "darwin-x64"]
         mock_response.json.return_value = [
-            {"tag_name": "v0.2.0", "draft": False},
-            {"tag_name": "chromium-v145.0.7718.0", "draft": False},
+            {"tag_name": "v0.2.0", "draft": False, "assets": self._make_assets(all_platforms)},
+            {"tag_name": "chromium-v145.0.7718.0", "draft": False, "assets": self._make_assets(all_platforms)},
         ]
         mock_response.raise_for_status = MagicMock()
 
         with patch("cloakbrowser.download.httpx.get", return_value=mock_response):
             result = _get_latest_chromium_version()
             assert result == "145.0.7718.0"
+
+    def test_returns_none_when_no_platform_assets(self):
+        """If no release has our platform, return None."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = [
+            {
+                "tag_name": "chromium-v145.0.7718.0",
+                "draft": False,
+                "assets": [{"name": "cloakbrowser-windows-x64.tar.gz"}],
+            },
+        ]
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("cloakbrowser.download.httpx.get", return_value=mock_response):
+            result = _get_latest_chromium_version()
+            assert result is None
 
     def test_network_error_returns_none(self):
         with patch("cloakbrowser.download.httpx.get", side_effect=Exception("timeout")):

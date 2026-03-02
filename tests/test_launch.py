@@ -1,7 +1,8 @@
 """Basic launch tests for cloakbrowser."""
 
 import pytest
-from cloakbrowser import launch, launch_async, binary_info, CHROMIUM_VERSION
+from cloakbrowser import launch, launch_async, binary_info
+from cloakbrowser.config import get_chromium_version
 
 
 def test_binary_info():
@@ -11,7 +12,7 @@ def test_binary_info():
     assert "platform" in info
     assert "binary_path" in info
     assert "installed" in info
-    assert info["version"] == CHROMIUM_VERSION
+    assert info["version"] == get_chromium_version()
 
 
 def test_launch_and_close():

@@ -10,9 +10,19 @@ from pathlib import Path
 from ._version import __version__
 
 # ---------------------------------------------------------------------------
-# Chromium version shipped with this release
+# Chromium version shipped with this release.
+# Different platforms may ship different versions (e.g. Linux gets v145 first,
+# macOS stays on v142 until Mac builds are ready).
+# CHROMIUM_VERSION is the latest across all platforms (for display/reference).
+# Use get_chromium_version() for the current platform's actual version.
 # ---------------------------------------------------------------------------
 CHROMIUM_VERSION = "145.0.7632.109"
+
+PLATFORM_CHROMIUM_VERSIONS: dict[str, str] = {
+    "linux-x64": "145.0.7632.109",
+    "darwin-arm64": "142.0.7444.175",
+    "darwin-x64": "142.0.7444.175",
+}
 
 # ---------------------------------------------------------------------------
 # Default stealth arguments passed to the patched Chromium binary.
@@ -70,9 +80,14 @@ SUPPORTED_PLATFORMS: dict[tuple[str, str], str] = {
     ("Darwin", "x86_64"): "darwin-x64",
 }
 
-# Platforms with pre-built binaries available for download.
-# Update this set as new platform builds are released.
-AVAILABLE_PLATFORMS: set[str] = {"linux-x64", "darwin-arm64", "darwin-x64"}
+# Platforms with pre-built binaries available for download (derived from version map).
+AVAILABLE_PLATFORMS: set[str] = set(PLATFORM_CHROMIUM_VERSIONS.keys())
+
+
+def get_chromium_version() -> str:
+    """Return the Chromium version for the current platform."""
+    tag = get_platform_tag()
+    return PLATFORM_CHROMIUM_VERSIONS.get(tag, CHROMIUM_VERSION)
 
 
 def get_platform_tag() -> str:
@@ -105,7 +120,7 @@ def get_cache_dir() -> Path:
 
 def get_binary_dir(version: str | None = None) -> Path:
     """Return the directory for a Chromium version binary."""
-    v = version or CHROMIUM_VERSION
+    v = version or get_chromium_version()
     return get_cache_dir() / f"chromium-{v}"
 
 
@@ -141,23 +156,24 @@ def check_platform_available() -> None:
 
 
 def get_effective_version() -> str:
-    """Return the best available version: auto-updated if available, else hardcoded.
+    """Return the best available version: auto-updated if available, else platform default.
 
-    Reads the latest_version marker file from the cache directory.
-    Returns CHROMIUM_VERSION if no update has been downloaded.
+    Reads a platform-scoped marker file from the cache directory.
+    Returns the platform's hardcoded version if no update has been downloaded.
     """
-    marker = get_cache_dir() / "latest_version"
+    base = get_chromium_version()
+    marker = get_cache_dir() / f"latest_version_{get_platform_tag()}"
     if marker.exists():
         try:
             version = marker.read_text().strip()
-            if version and _version_newer(version, CHROMIUM_VERSION):
+            if version and _version_newer(version, base):
                 # Verify the binary actually exists
                 binary = get_binary_path(version)
                 if binary.exists():
                     return version
         except (ValueError, OSError):
             pass
-    return CHROMIUM_VERSION
+    return base
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
@@ -187,14 +203,14 @@ GITHUB_DOWNLOAD_BASE_URL = (
 
 def get_download_url(version: str | None = None) -> str:
     """Return the full download URL for the current platform's binary archive."""
-    v = version or CHROMIUM_VERSION
+    v = version or get_chromium_version()
     tag = get_platform_tag()
     return f"{DOWNLOAD_BASE_URL}/chromium-v{v}/cloakbrowser-{tag}.tar.gz"
 
 
 def get_fallback_download_url(version: str | None = None) -> str:
     """Return the GitHub Releases fallback URL for the binary archive."""
-    v = version or CHROMIUM_VERSION
+    v = version or get_chromium_version()
     tag = get_platform_tag()
     return f"{GITHUB_DOWNLOAD_BASE_URL}/chromium-v{v}/cloakbrowser-{tag}.tar.gz"
 
