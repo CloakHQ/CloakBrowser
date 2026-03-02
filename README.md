@@ -76,11 +76,22 @@ npm install cloakbrowser puppeteer-core
 
 On first run, the stealth Chromium binary is automatically downloaded (~200MB, cached locally).
 
+## What's New in v0.3.0
+
+- **Chromium 145** — latest stable, 26 fingerprint patches
+- **10 new patches** — screen dimensions, audio, WebGL, and more
+- **CDP hardening** — audited and patched known automation detection vectors
+- **Timezone & locale from proxy IP** — `launch(proxy="...", geoip=True)` auto-detects timezone and locale
+- **Improved cross-platform spoofing** — fixed edge cases in font rendering and GPU reporting
+- **Automated test matrix** — 41+ tests across 8 groups (stealth, fingerprint, reCAPTCHA, Turnstile, TLS, enterprise) running in Docker
+
+See the full [CHANGELOG.md](CHANGELOG.md) for details.
+
 ## Why CloakBrowser?
 
 - **Config-level patches break** — `playwright-stealth`, `undetected-chromedriver`, and `puppeteer-extra` inject JavaScript or tweak flags. Every Chrome update breaks them. Antibot systems detect the patches themselves.
 - **CloakBrowser patches Chromium source code** — fingerprints are modified at the C++ level, compiled into the binary. Detection sites see a real browser because it *is* a real browser.
-- **Two layers of stealth** — C++ patches handle fingerprints (GPU, screen, UA, voices, media devices), while the Patchright driver eliminates CDP automation leaks (Runtime.enable, Chrome flags, console detection). Most stealth tools only do one or the other.
+- **Two layers of stealth** — C++ patches handle fingerprints (GPU, screen, UA, hardware reporting), while the Patchright driver eliminates CDP automation leaks. Most stealth tools only do one or the other.
 - **One line to switch** — same Playwright API, no new abstractions, no CAPTCHA-solving services.
 
 ## Test Results
@@ -454,13 +465,13 @@ page.goto("https://example.com")
 | Linux x64 binary | ✅ Released |
 | macOS arm64 (Apple Silicon) | ✅ Released |
 | macOS x64 (Intel) | ✅ Released |
-| Chromium 145 build | ✅ Released |
+| Chromium 145 build (26 patches) | 🔧 In progress |
 | JavaScript/Puppeteer + Playwright support | ✅ Released |
 | Fingerprint rotation per session | ✅ Released |
 | Built-in proxy rotation | 📋 Planned |
 | Windows support | 📋 Planned |
 
-> ⭐ **Star this repo** to get notified when Chromium 145 and Windows builds drop.
+> ⭐ **Star this repo** to get notified when new builds drop.
 
 ## Docker
 
@@ -599,6 +610,7 @@ A: Yes. A ready-to-use Dockerfile is included — see the [Docker](#docker) sect
 
 ## Links
 
+- 📋 **Changelog** — [CHANGELOG.md](CHANGELOG.md)
 - 🌐 **Website** — [cloakbrowser.dev](https://cloakbrowser.dev)
 - 🐛 **Bug reports & feature requests** — [GitHub Issues](https://github.com/CloakHQ/CloakBrowser/issues)
 - 📦 **PyPI** — [pypi.org/project/cloakbrowser](https://pypi.org/project/cloakbrowser/)
