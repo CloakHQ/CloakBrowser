@@ -11,8 +11,8 @@
 <a href="LICENSE"><img src="https://img.shields.io/github/license/CloakHQ/CloakBrowser" alt="License"></a>
 <br>
 <a href="https://github.com/CloakHQ/CloakBrowser"><img src="https://img.shields.io/github/stars/CloakHQ/CloakBrowser" alt="Stars"></a>
-<a href="https://pypi.org/project/cloakbrowser/"><img src="https://img.shields.io/pypi/dm/cloakbrowser" alt="PyPI Downloads"></a>
-<a href="https://www.npmjs.com/package/cloakbrowser"><img src="https://img.shields.io/npm/dm/cloakbrowser" alt="npm Downloads"></a>
+<a href="https://pepy.tech/projects/cloakbrowser"><img src="https://img.shields.io/pepy/dt/cloakbrowser?label=pypi&logo=pypi&logoColor=white" alt="PyPI Downloads"></a>
+<a href="https://www.npmjs.com/package/cloakbrowser"><img src="https://img.shields.io/npm/dt/cloakbrowser?label=npm&logo=npm&logoColor=white" alt="npm Downloads"></a>
 <a href="https://github.com/CloakHQ/CloakBrowser"><img src="https://img.shields.io/github/last-commit/CloakHQ/CloakBrowser" alt="Last Commit"></a>
 </p>
 
