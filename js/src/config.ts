@@ -122,19 +122,23 @@ export function getFallbackDownloadUrl(version?: string): string {
 
 export function getEffectiveVersion(): string {
   const base = getChromiumVersion();
-  const marker = path.join(getCacheDir(), `latest_version_${getPlatformTag()}`);
-  try {
-    if (fs.existsSync(marker)) {
-      const version = fs.readFileSync(marker, "utf-8").trim();
-      if (version && versionNewer(version, base)) {
-        const binary = getBinaryPath(version);
-        if (fs.existsSync(binary)) {
-          return version;
+  const cacheDir = getCacheDir();
+  // Try platform-scoped marker first, fall back to legacy marker for upgrades from <0.3.0
+  for (const name of [`latest_version_${getPlatformTag()}`, "latest_version"]) {
+    const marker = path.join(cacheDir, name);
+    try {
+      if (fs.existsSync(marker)) {
+        const version = fs.readFileSync(marker, "utf-8").trim();
+        if (version && versionNewer(version, base)) {
+          const binary = getBinaryPath(version);
+          if (fs.existsSync(binary)) {
+            return version;
+          }
         }
       }
+    } catch {
+      // Marker unreadable — try next
     }
-  } catch {
-    // Marker unreadable — fall back to hardcoded
   }
   return base;
 }

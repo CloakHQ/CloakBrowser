@@ -234,12 +234,13 @@ async function fetchChecksums(version?: string): Promise<Map<string, string> | n
   return null;
 }
 
-function parseChecksums(text: string): Map<string, string> {
+/** @internal Exported for testing only. */
+export function parseChecksums(text: string): Map<string, string> {
   const result = new Map<string, string>();
   for (const line of text.trim().split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const match = trimmed.match(/^([a-f0-9]{64})\s+\*?(.+)$/);
+    const match = trimmed.match(/^([a-f0-9]{64})\s+\*?(.+)$/i);
     if (match) {
       result.set(match[2]!, match[1]!.toLowerCase());
     }

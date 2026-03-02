@@ -324,6 +324,7 @@ clearCache();
 | `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
 | `CLOAKBROWSER_DOWNLOAD_URL` | `cloakbrowser.dev` | Custom download URL for binary |
 | `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
+| `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Set to `true` to skip SHA-256 verification after download |
 
 ## Fingerprint Management
 

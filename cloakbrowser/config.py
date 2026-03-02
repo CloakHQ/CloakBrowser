@@ -162,17 +162,19 @@ def get_effective_version() -> str:
     Returns the platform's hardcoded version if no update has been downloaded.
     """
     base = get_chromium_version()
-    marker = get_cache_dir() / f"latest_version_{get_platform_tag()}"
-    if marker.exists():
-        try:
-            version = marker.read_text().strip()
-            if version and _version_newer(version, base):
-                # Verify the binary actually exists
-                binary = get_binary_path(version)
-                if binary.exists():
-                    return version
-        except (ValueError, OSError):
-            pass
+    # Try platform-scoped marker first, fall back to legacy marker for upgrades from <0.3.0
+    cache = get_cache_dir()
+    for name in (f"latest_version_{get_platform_tag()}", "latest_version"):
+        marker = cache / name
+        if marker.exists():
+            try:
+                version = marker.read_text().strip()
+                if version and _version_newer(version, base):
+                    binary = get_binary_path(version)
+                    if binary.exists():
+                        return version
+            except (ValueError, OSError):
+                pass
     return base
 
 

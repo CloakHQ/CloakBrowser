@@ -8,7 +8,7 @@ import {
   parseVersion,
   versionNewer,
 } from "../src/config.js";
-import { getLatestChromiumVersion } from "../src/download.js";
+import { getLatestChromiumVersion, parseChecksums } from "../src/download.js";
 
 describe("version comparison", () => {
   it("parseVersion handles 4-part versions", () => {
@@ -146,6 +146,38 @@ describe("latest version (platform-aware)", () => {
   it("returns null on network error", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("timeout"));
     expect(await getLatestChromiumVersion()).toBeNull();
+  });
+});
+
+describe("parseChecksums", () => {
+  // Valid 64-char hex strings for testing
+  const HASH_A = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const HASH_B = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+
+  it("parses standard SHA256SUMS format", () => {
+    const text = [
+      `${HASH_A}  cloakbrowser-linux-x64.tar.gz`,
+      `${HASH_B}  cloakbrowser-darwin-arm64.tar.gz`,
+    ].join("\n");
+    const result = parseChecksums(text);
+    expect(result.get("cloakbrowser-linux-x64.tar.gz")).toBe(HASH_A);
+    expect(result.get("cloakbrowser-darwin-arm64.tar.gz")).toBe(HASH_B);
+  });
+
+  it("handles binary-mode asterisk prefix", () => {
+    const text = `${HASH_A} *cloakbrowser-linux-x64.tar.gz`;
+    const result = parseChecksums(text);
+    expect(result.has("cloakbrowser-linux-x64.tar.gz")).toBe(true);
+  });
+
+  it("skips empty lines", () => {
+    const text = `\n\n${HASH_A}  file.tar.gz\n\n`;
+    expect(parseChecksums(text).size).toBe(1);
+  });
+
+  it("returns empty map for empty input", () => {
+    expect(parseChecksums("").size).toBe(0);
+    expect(parseChecksums("   \n  \n").size).toBe(0);
   });
 });
 

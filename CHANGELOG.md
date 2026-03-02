@@ -10,6 +10,11 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 Chromium v145 upgrade. 26 fingerprint patches (up from 16). New download verification and fallback system. Pending: macOS v145 binary builds.
 
+### Breaking
+
+- **[wrapper]** Python dependency changed from `playwright` to `patchright` (CDP stealth fork). Patchright is API-compatible, but if you import `playwright` directly elsewhere, add it as a separate dependency. Replace `from playwright.sync_api` with `from patchright.sync_api` (or keep using `cloakbrowser.launch()` which handles this automatically).
+- **[wrapper]** `launch_context()` / `launchContext()` now defaults viewport to 1920x955 (realistic maximized Chrome on 1080p Windows) instead of Playwright's default 1280x720. Pass `viewport={"width": 1280, "height": 720}` explicitly to restore old behavior.
+
 ### 2026-03-01
 
 - **[wrapper]** Upgrade wrapper to Chromium v145.0.7632.109

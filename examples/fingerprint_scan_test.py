@@ -13,6 +13,7 @@ Usage:
 """
 
 import sys
+import time
 
 from cloakbrowser import launch_context
 
@@ -27,7 +28,7 @@ def test_fingerprint_scan(page):
     """fingerprint-scan.com — bot risk score + headless detection signals."""
     print("=== fingerprint-scan.com ===")
     page.goto("https://fingerprint-scan.com/", wait_until="domcontentloaded", timeout=30000)
-    page.wait_for_timeout(20000)  # Castle.js needs time to compute score
+    time.sleep(20)  # Castle.js needs time to compute score
 
     # Check bot risk score
     score = page.evaluate(
@@ -92,7 +93,7 @@ def test_creepjs(page):
         "https://abrahamjuliot.github.io/creepjs/", wait_until="domcontentloaded", timeout=30000
     )
     print("Waiting 30s for CreepJS analysis...")
-    page.wait_for_timeout(30000)
+    time.sleep(30)
 
     # Extract % scores from page text (matches test-infra/matrix_tests/group3_bot_detection.py)
     scores = page.evaluate("""() => {

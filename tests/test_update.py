@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -19,7 +20,9 @@ from cloakbrowser.config import (
 )
 from cloakbrowser.download import (
     _get_latest_chromium_version,
+    _parse_checksums,
     _should_check_for_update,
+    _verify_checksum,
 )
 
 
@@ -242,3 +245,52 @@ class TestGetLatestVersion:
         with patch("cloakbrowser.download.httpx.get", side_effect=Exception("timeout")):
             result = _get_latest_chromium_version()
             assert result is None
+
+
+class TestParseChecksums:
+    HASH_A = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    HASH_B = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+
+    def test_standard_format(self):
+        text = (
+            f"{self.HASH_A}  cloakbrowser-linux-x64.tar.gz\n"
+            f"{self.HASH_B}  cloakbrowser-darwin-arm64.tar.gz\n"
+        )
+        result = _parse_checksums(text)
+        assert result["cloakbrowser-linux-x64.tar.gz"] == self.HASH_A
+        assert result["cloakbrowser-darwin-arm64.tar.gz"] == self.HASH_B
+
+    def test_binary_mode_asterisk(self):
+        text = f"{self.HASH_A} *cloakbrowser-linux-x64.tar.gz\n"
+        result = _parse_checksums(text)
+        assert "cloakbrowser-linux-x64.tar.gz" in result
+
+    def test_empty_lines_skipped(self):
+        text = f"\n\n{self.HASH_A}  file.tar.gz\n\n"
+        result = _parse_checksums(text)
+        assert len(result) == 1
+
+    def test_uppercase_lowered(self):
+        text = f"{self.HASH_A.upper()}  file.tar.gz\n"
+        result = _parse_checksums(text)
+        assert result["file.tar.gz"] == self.HASH_A
+
+    def test_empty_input(self):
+        assert _parse_checksums("") == {}
+        assert _parse_checksums("   \n  \n") == {}
+
+
+class TestVerifyChecksum:
+    def test_matching_checksum(self, tmp_path):
+        content = b"test binary content"
+        file = tmp_path / "test.tar.gz"
+        file.write_bytes(content)
+        expected = hashlib.sha256(content).hexdigest()
+        # Should not raise
+        _verify_checksum(file, expected)
+
+    def test_mismatched_checksum(self, tmp_path):
+        file = tmp_path / "test.tar.gz"
+        file.write_bytes(b"real content")
+        with pytest.raises(RuntimeError, match="Checksum verification failed"):
+            _verify_checksum(file, "0" * 64)
