@@ -6,6 +6,21 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [0.3.3] — 2026-03-03
+
+All platforms now run Chromium 145 v2 with 25 patches. Windows x64 added.
+
+- **[binary]** Auto-spoof by default — binary is stealthy with zero flags. Random fingerprint seed auto-generated at startup, no wrapper or configuration required
+- **[binary]** Platform-aware auto-detection — GPU, screen dimensions, and User-Agent automatically match the real OS (macOS, Linux, Windows) without explicit flags
+- **[binary]** Expanded GPU model database for realistic per-session diversity
+- **[binary]** First macOS v145 builds (arm64 + x64) — 25 patches, up from 16 on v142
+- **[binary]** First Windows x64 v145 build — 25 patches
+- **[wrapper]** Add Windows x64 platform support — auto-download, binary path resolution, and platform detection
+- **[wrapper]** Upgrade macOS (arm64 + x64) from Chromium 142 to 145 — all platforms now ship the same 25-patch build
+- **[wrapper]** Add explicit Mac GPU flags (`Apple M3 Metal` renderer) to default stealth args for consistent WebGL fingerprints
+- **[wrapper]** Improve reCAPTCHA stealth test — wait for score element instead of blind sleep
+- **[wrapper]** JS: add `win32-x64` platform mapping, Windows binary path (`chrome.exe`)
+
 ## [0.3.1] — 2026-03-03
 
 - **[wrapper]** Auto-check for wrapper updates on startup (PyPI/npm). Notifies users when a newer wrapper version is available. Runs once per process, respects `CLOAKBROWSER_AUTO_UPDATE=false`.

@@ -146,8 +146,12 @@ def test_recaptcha(page):
         wait_until="domcontentloaded",
         timeout=30000,
     )
-    # Page auto-submits via grecaptcha.execute() — wait for backend response
-    time.sleep(8)
+    # Wait for backend response (step3 element appears when score arrives)
+    try:
+        page.wait_for_selector("li.step3", timeout=20000)
+        time.sleep(1)
+    except Exception:
+        time.sleep(10)  # fallback
 
     results = page.evaluate("""() => {
         const text = document.body.innerText;

@@ -342,7 +342,17 @@ clearCache();
 
 ## Fingerprint Management
 
-Every launch automatically generates a **unique fingerprint**. A random seed (10000–99999) drives all seed-based patches — canvas, WebGL, audio, fonts, and client rects all produce consistent, correlated values derived from that single seed.
+The binary is **stealthy by default** — no flags needed. It auto-generates a random fingerprint seed at startup and spoofs all detectable values (GPU, hardware specs, screen dimensions, canvas, WebGL, audio, fonts). Every launch produces a fresh, coherent identity.
+
+**How fingerprinting works:**
+
+| Scenario | What happens |
+|----------|-------------|
+| **No flags** | Random seed auto-generated at startup. GPU, screen, hardware specs, and all noise patches are spoofed automatically. Fresh identity each launch. |
+| **`--fingerprint=seed`** | Deterministic identity from the seed. Same seed = same fingerprint across launches. Use this for session persistence (returning visitor). |
+| **`--fingerprint=seed` + explicit flags** | Explicit flags override individual auto-generated values. The seed fills in everything else. |
+
+The binary detects its platform at compile time — a macOS binary reports Apple GPU and macOS screen (1440x900), a Linux binary reports NVIDIA GPU and 1080p screen. Override with `--fingerprint-platform` for cross-platform spoofing (e.g. Linux binary appearing as Windows).
 
 > **Tip: Use a fixed seed when revisiting the same site.** A random seed makes every session look like a different device — which can be suspicious when hitting the same site repeatedly from the same IP. For reCAPTCHA v3 Enterprise and similar scoring systems, a fixed seed produces a consistent fingerprint across sessions, making you look like a returning visitor:
 > ```python
@@ -368,9 +378,9 @@ Every `launch()` call sets these automatically. Defaults are **platform-aware** 
 | `--fingerprint-screen-height` | `1080` | *(not set)* | Screen height reporting |
 | `--window-size` | `1920,1080` | *(not set)* | Browser window dimensions |
 
-> **Important:** `--fingerprint-platform` should always be set. Without it, platform-specific patches (GPU, UA, screen, taskbar) won't activate. The wrapper handles this automatically.
+> **Using the binary directly?** It works out of the box with zero flags — the binary auto-spoofs everything. Pass `--fingerprint=seed` for a persistent identity, or use explicit flags like `--fingerprint-gpu-renderer` to override any auto-generated value.
 
-> **⚠️ Using the binary directly (without the wrapper)?** The binary does not auto-spoof without flags. You must pass `--fingerprint`, `--fingerprint-platform`, and GPU flags explicitly. Without these, real device values pass through unmodified. See the table above for the full list of flags the wrapper sets automatically.
+> **Production tip:** For better stealth at scale, pass your own GPU, screen, and hardware values instead of relying on defaults. Custom parameters make your sessions harder to cluster by anti-bot systems that look for uniform fingerprint profiles.
 
 ### Additional Flags
 
