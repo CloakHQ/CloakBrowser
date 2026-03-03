@@ -159,6 +159,102 @@ async def launch_async(
     return browser
 
 
+def launch_persistent_context(
+    user_data_dir: str | os.PathLike,
+    headless: bool = True,
+    proxy: str | None = None,
+    args: list[str] | None = None,
+    stealth_args: bool = True,
+    user_agent: str | None = None,
+    viewport: dict | None = None,
+    locale: str | None = None,
+    timezone_id: str | None = None,
+    color_scheme: Literal["light", "dark", "no-preference"] | None = None,
+    geoip: bool = False,
+    **kwargs: Any,
+) -> Any:
+    """Launch stealth browser with a persistent profile and return a BrowserContext.
+
+    This persists cookies, localStorage, cache, and other
+    browser state across sessions by storing them in ``user_data_dir``.
+
+    Args:
+        user_data_dir: Path to the directory where browser profile data is stored.
+            Created automatically if it doesn't exist. Reuse the same path across
+            sessions to restore cookies, localStorage, cached credentials, etc.
+        headless: Run in headless mode (default True).
+        proxy: Proxy server URL (e.g. 'http://proxy:8080' or 'socks5://proxy:1080').
+        args: Additional Chromium CLI arguments.
+        stealth_args: Include default stealth fingerprint args (default True).
+        user_agent: Custom user agent string.
+        viewport: Viewport size dict, e.g. {"width": 1920, "height": 1080}.
+        locale: Browser locale, e.g. "en-US".
+        timezone_id: Timezone, e.g. "America/New_York".
+        color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
+            Default: None (uses Chromium default, which is 'light').
+        geoip: Auto-detect timezone/locale from proxy IP (default False).
+            Requires ``pip install cloakbrowser[geoip]``.
+        **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
+
+    Returns:
+        Playwright BrowserContext object backed by a persistent profile.
+        Call ``.close()`` when done — this also stops the Playwright instance.
+
+    Example:
+        >>> from cloakbrowser import launch_persistent_context
+        >>> ctx = launch_persistent_context("./my-profile", headless=False)
+        >>> page = ctx.new_page()
+        >>> page.goto("https://protected-site.com")
+        >>> ctx.close()  # Profile is saved; re-use path next run to restore state.
+    """
+    import os
+    from patchright.sync_api import sync_playwright
+
+    binary_path = ensure_binary()
+    timezone_id, locale = _maybe_resolve_geoip(geoip, proxy, timezone_id, locale)
+    chrome_args = _build_args(stealth_args, args, timezone=timezone_id, locale=locale)
+
+    logger.debug(
+        "Launching persistent stealth Chromium (headless=%s, user_data_dir=%s)",
+        headless,
+        user_data_dir,
+    )
+
+    context_kwargs: dict[str, Any] = {}
+    if user_agent:
+        context_kwargs["user_agent"] = user_agent
+    context_kwargs["viewport"] = viewport or DEFAULT_VIEWPORT
+    if locale:
+        context_kwargs["locale"] = locale
+    if timezone_id:
+        context_kwargs["timezone_id"] = timezone_id
+    if color_scheme:
+        context_kwargs["color_scheme"] = color_scheme
+    context_kwargs.update(kwargs)
+
+    pw = sync_playwright().start()
+    context = pw.chromium.launch_persistent_context(
+        user_data_dir=os.fspath(user_data_dir),
+        executable_path=binary_path,
+        headless=headless,
+        args=chrome_args,
+        ignore_default_args=["--enable-automation"],
+        **_build_proxy_kwargs(proxy),
+        **context_kwargs,
+    )
+
+    # Patch close() to also stop the Playwright instance
+    _original_close = context.close
+
+    def _close_with_cleanup() -> None:
+        _original_close()
+        pw.stop()
+
+    context.close = _close_with_cleanup
+
+    return context
+
+
 def launch_context(
     headless: bool = True,
     proxy: str | None = None,

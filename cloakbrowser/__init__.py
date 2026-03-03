@@ -11,7 +11,7 @@ Usage:
     browser.close()
 """
 
-from .browser import launch, launch_async, launch_context
+from .browser import launch, launch_async, launch_context, launch_persistent_context
 from .config import CHROMIUM_VERSION, get_default_stealth_args
 from .download import binary_info, check_for_update, clear_cache, ensure_binary
 from ._version import __version__
@@ -20,6 +20,7 @@ __all__ = [
     "launch",
     "launch_async",
     "launch_context",
+    "launch_persistent_context",
     "ensure_binary",
     "clear_cache",
     "binary_info",
