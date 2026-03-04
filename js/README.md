@@ -60,7 +60,7 @@ await browser.close();
 ### Options
 
 ```javascript
-import { launch, launchContext } from 'cloakbrowser';
+import { launch, launchContext, launchPersistentContext } from 'cloakbrowser';
 
 // With proxy
 const browser = await launch({
@@ -94,6 +94,16 @@ const context = await launchContext({
   locale: 'en-US',
   timezoneId: 'America/New_York',
 });
+
+// Persistent profile — cookies/localStorage survive restarts, avoids incognito detection
+const ctx = await launchPersistentContext({
+  userDataDir: './chrome-profile',
+  headless: false,
+  proxy: 'http://user:pass@proxy:8080',
+});
+const page = ctx.pages()[0] || await ctx.newPage();
+await page.goto('https://example.com');
+await ctx.close();  // profile saved — reuse same path to restore state
 ```
 
 ### Auto Timezone/Locale from Proxy IP

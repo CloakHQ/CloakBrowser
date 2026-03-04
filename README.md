@@ -239,7 +239,7 @@ asyncio.run(main())
 
 ### `launch_context()`
 
-Convenience function that creates browser + context with common options:
+Convenience function that creates browser + context in one call with user agent, viewport, locale, and timezone:
 
 ```python
 from cloakbrowser import launch_context
@@ -251,7 +251,30 @@ context = launch_context(
     timezone_id="America/New_York",
 )
 page = context.new_page()
+page.goto("https://protected-site.com")
+context.close()
 ```
+
+### `launch_persistent_context()`
+
+Same as `launch_context()`, but with a persistent user profile. Cookies, localStorage, and cache persist across sessions. Also avoids incognito detection by services like BrowserScan.
+
+```python
+from cloakbrowser import launch_persistent_context
+
+# First run — creates the profile
+ctx = launch_persistent_context("./my-profile", headless=False)
+page = ctx.new_page()
+page.goto("https://protected-site.com")
+ctx.close()  # profile saved
+
+# Next run — cookies, localStorage restored automatically
+ctx = launch_persistent_context("./my-profile", headless=False)
+```
+
+Supports all the same options as `launch_context()`: `proxy`, `user_agent`, `viewport`, `locale`, `timezone_id`, `color_scheme`, `geoip`.
+
+Async version: `launch_persistent_context_async()`.
 
 ### Utility Functions
 
@@ -276,7 +299,7 @@ CloakBrowser ships a TypeScript package with full type definitions. Choose Playw
 ### Playwright (default)
 
 ```javascript
-import { launch, launchContext } from 'cloakbrowser';
+import { launch, launchContext, launchPersistentContext } from 'cloakbrowser';
 
 // Basic
 const browser = await launch();
@@ -298,6 +321,13 @@ const context = await launchContext({
   timezoneId: 'America/New_York',
 });
 const page = await context.newPage();
+
+// Persistent profile — cookies/localStorage survive restarts, avoids incognito detection
+const ctx = await launchPersistentContext({
+  userDataDir: './chrome-profile',
+  headless: false,
+  proxy: 'http://user:pass@proxy:8080',
+});
 ```
 
 > **Note:** Each example above is standalone — not meant to run as one block.
@@ -452,12 +482,14 @@ The wrapper auto-downloads the correct binary for your platform.
 
 **Python** — see [`examples/`](examples/):
 - [`basic.py`](examples/basic.py) — Launch and load a page
+- [`persistent_context.py`](examples/persistent_context.py) — Persistent profile with cookie/localStorage persistence
 - [`recaptcha_score.py`](examples/recaptcha_score.py) — Check your reCAPTCHA v3 score
 - [`stealth_test.py`](examples/stealth_test.py) — Run against all detection services
 - [`fingerprint_scan_test.py`](examples/fingerprint_scan_test.py) — Test against fingerprint-scan.com and CreepJS
 
 **JavaScript** — see [`js/examples/`](js/examples/):
 - [`basic-playwright.ts`](js/examples/basic-playwright.ts) — Playwright launch and load
+- [`persistent-context.ts`](js/examples/persistent-context.ts) — Persistent profile with cookie/localStorage persistence
 - [`basic-puppeteer.ts`](js/examples/basic-puppeteer.ts) — Puppeteer launch and load
 - [`stealth-test.ts`](js/examples/stealth-test.ts) — Full 6-site detection test suite
 

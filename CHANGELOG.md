@@ -6,6 +6,12 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [0.3.5] — 2026-03-04
+
+- **[wrapper]** Add `launch_persistent_context()` and `launch_persistent_context_async()` (Python) — persistent browser profiles with cookie/localStorage persistence across sessions, avoids incognito detection (thanks [@evelaa123](https://github.com/evelaa123), [@yahooguntu](https://github.com/yahooguntu) — PRs #22, #17)
+- **[wrapper]** Add `launchPersistentContext()` (JS/TS) — same feature for JavaScript with full type support
+- **[wrapper]** Fix Windows zip extraction failure when primary download server is down — file handle leak caused `ERROR_SHARING_VIOLATION` on fallback download (thanks [@evelaa123](https://github.com/evelaa123) — PR #23)
+
 ## [0.3.4] — 2026-03-04
 
 Binary v14: auto-spoof restored with seed, wrapper simplified to match.
