@@ -6,7 +6,8 @@ Cursor visible from first interaction. Position logged at each step.
 """
 from cloakbrowser import launch
 import time
-
+import pytest
+pytestmark = pytest.mark.slow
 # Cursor hidden until first mousemove, then always visible
 CURSOR_JS = """
 () => {

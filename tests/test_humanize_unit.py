@@ -8,7 +8,8 @@ Run: python tests/test_humanize_unit.py
 import time
 import math
 import sys
-
+import pytest
+pytestmark = pytest.mark.slow
 PROXY = ''
 
 results = []
@@ -446,4 +447,5 @@ else:
     print(f"  *** {failed} TESTS FAILED ***")
 print("=" * 70)
 
-sys.exit(0 if failed == 0 else 1)
+if __name__ == "__main__":
+    sys.exit(0 if failed == 0 else 1)
