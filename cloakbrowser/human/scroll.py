@@ -26,6 +26,19 @@ def _get_element_box(page: Any, selector: str) -> Optional[dict]:
         return None
 
 
+def _smooth_wheel(raw: RawMouse, delta: int, cfg: HumanConfig) -> None:
+    """Send one logical scroll as a burst of small wheel events (like real inertia)."""
+    abs_d = abs(delta)
+    sign = 1 if delta > 0 else -1
+    sent = 0
+    while sent < abs_d:
+        step_size = rand(20, 40)
+        chunk = min(step_size, abs_d - sent)
+        raw.wheel(0, round(chunk) * sign)
+        sent += chunk
+        sleep_ms(rand(8, 20))
+
+
 def scroll_to_element(
     page: Any,
     raw: RawMouse,
@@ -50,6 +63,7 @@ def scroll_to_element(
     if _is_in_viewport(box, viewport_height, cfg):
         return box, cursor_x, cursor_y
 
+    # Move cursor into scroll area
     scroll_area_x = round(viewport_width * rand(0.3, 0.7))
     scroll_area_y = round(viewport_height * rand(0.3, 0.7))
     human_move(raw, cursor_x, cursor_y, scroll_area_x, scroll_area_y, cfg)
@@ -57,6 +71,7 @@ def scroll_to_element(
     cursor_y = scroll_area_y
     sleep_ms(rand_range(cfg.scroll_pre_move_delay))
 
+    # Calculate scroll distance
     target_y = viewport_height * rand(cfg.scroll_target_zone[0], cfg.scroll_target_zone[1])
     element_center = box["y"] + box["height"] / 2
     distance_to_scroll = element_center - target_y
@@ -68,6 +83,7 @@ def scroll_to_element(
     accel_steps = rand_int_range(cfg.scroll_accel_steps)
     decel_steps = rand_int_range(cfg.scroll_decel_steps)
 
+    # Scroll loop: accelerate → cruise → decelerate
     scrolled = 0
     for i in range(total_clicks):
         if i < accel_steps:
@@ -83,10 +99,11 @@ def scroll_to_element(
         delta *= 1 + (random.random() - 0.5) * 2 * cfg.scroll_delta_variance
         delta = round(delta) * direction
 
-        raw.wheel(0, delta)
+        _smooth_wheel(raw, delta, cfg)
         scrolled += abs(delta)
         sleep_ms(pause)
 
+        # Check visibility every 3 steps
         if i % 3 == 2 or i == total_clicks - 1:
             box = _get_element_box(page, selector)
             if box and _is_in_viewport(box, viewport_height, cfg):
@@ -94,16 +111,18 @@ def scroll_to_element(
         if scrolled >= abs_distance * 1.1:
             break
 
+    # Optional overshoot + correction
     if random.random() < cfg.scroll_overshoot_chance:
-        overshoot_px = rand_range(cfg.scroll_overshoot_px) * direction
-        raw.wheel(0, round(overshoot_px))
+        overshoot_px = round(rand_range(cfg.scroll_overshoot_px)) * direction
+        _smooth_wheel(raw, overshoot_px, cfg)
         sleep_ms(rand_range(cfg.scroll_settle_delay))
         corrections = rand_int_range((1, 2))
         for _ in range(corrections):
-            corr_delta = rand(40, 80) * -direction
-            raw.wheel(0, round(corr_delta))
+            corr_delta = round(rand(40, 80)) * -direction
+            _smooth_wheel(raw, corr_delta, cfg)
             sleep_ms(rand(100, 250))
 
+    # Settle
     sleep_ms(rand_range(cfg.scroll_settle_delay))
 
     box = _get_element_box(page, selector)

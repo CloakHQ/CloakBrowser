@@ -115,8 +115,8 @@ const DEFAULT_CONFIG: HumanConfig = {
   // Scroll
   scroll_delta_base: [80, 130],
   scroll_delta_variance: 0.2,
-  scroll_pause_fast: [60, 150],
-  scroll_pause_slow: [150, 400],
+  scroll_pause_fast: [30, 80],
+  scroll_pause_slow: [80, 200],
   scroll_accel_steps: [2, 3],
   scroll_decel_steps: [2, 3],
   scroll_overshoot_chance: 0.1,

@@ -68,8 +68,8 @@ class HumanConfig:
     # Scroll
     scroll_delta_base: Range = (80, 130)
     scroll_delta_variance: float = 0.2
-    scroll_pause_fast: Range = (60, 150)
-    scroll_pause_slow: Range = (150, 400)
+    scroll_pause_fast: Range = (30, 80)
+    scroll_pause_slow: Range = (80, 200)
     scroll_accel_steps: Range = (2, 3)
     scroll_decel_steps: Range = (2, 3)
     scroll_overshoot_chance: float = 0.1

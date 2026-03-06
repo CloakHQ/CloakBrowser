@@ -25,6 +25,19 @@ function isInViewport(
   return topEdge >= zoneTop && bottomEdge <= zoneBottom;
 }
 
+async function smoothWheel(raw: RawMouse, delta: number, cfg: HumanConfig): Promise<void> {
+  const absD = Math.abs(delta);
+  const sign = delta > 0 ? 1 : -1;
+  let sent = 0;
+  while (sent < absD) {
+    const stepSize = rand(20, 40);
+    const chunk = Math.min(stepSize, absD - sent);
+    await raw.wheel(0, Math.round(chunk) * sign);
+    sent += chunk;
+    await sleep(rand(8, 20));
+  }
+}
+
 export async function scrollToElement(
   page: Page,
   raw: RawMouse,
@@ -47,6 +60,7 @@ export async function scrollToElement(
     return { box, cursorX, cursorY };
   }
 
+  // Move cursor into scroll area
   const scrollAreaX = Math.round(viewport.width * rand(0.3, 0.7));
   const scrollAreaY = Math.round(viewport.height * rand(0.3, 0.7));
   await humanMove(raw, cursorX, cursorY, scrollAreaX, scrollAreaY, cfg);
@@ -54,6 +68,7 @@ export async function scrollToElement(
   cursorY = scrollAreaY;
   await sleep(randRange(cfg.scroll_pre_move_delay));
 
+  // Calculate scroll distance
   const targetY = viewport.height * rand(cfg.scroll_target_zone[0], cfg.scroll_target_zone[1]);
   const elementCenter = box.y + box.height / 2;
   const distanceToScroll = elementCenter - targetY;
@@ -67,6 +82,7 @@ export async function scrollToElement(
 
   let scrolled = 0;
 
+  // Scroll loop: accelerate → cruise → decelerate
   for (let i = 0; i < totalClicks; i++) {
     let delta: number;
     let pause: number;
@@ -85,10 +101,11 @@ export async function scrollToElement(
     delta *= 1 + (Math.random() - 0.5) * 2 * cfg.scroll_delta_variance;
     delta = Math.round(delta) * direction;
 
-    await raw.wheel(0, delta);
+    await smoothWheel(raw, delta, cfg);
     scrolled += Math.abs(delta);
     await sleep(pause);
 
+    // Check visibility every 3 steps
     if (i % 3 === 2 || i === totalClicks - 1) {
       box = await getElementBox(page, selector);
       if (box && isInViewport(box, viewport.height, cfg)) {
@@ -99,19 +116,21 @@ export async function scrollToElement(
     if (scrolled >= absDistance * 1.1) break;
   }
 
+  // Optional overshoot + correction
   if (Math.random() < cfg.scroll_overshoot_chance) {
-    const overshootPx = randRange(cfg.scroll_overshoot_px) * direction;
-    await raw.wheel(0, Math.round(overshootPx));
+    const overshootPx = Math.round(randRange(cfg.scroll_overshoot_px)) * direction;
+    await smoothWheel(raw, overshootPx, cfg);
     await sleep(randRange(cfg.scroll_settle_delay));
 
     const corrections = randIntRange([1, 2]);
     for (let c = 0; c < corrections; c++) {
-      const corrDelta = rand(40, 80) * -direction;
-      await raw.wheel(0, Math.round(corrDelta));
+      const corrDelta = Math.round(rand(40, 80)) * -direction;
+      await smoothWheel(raw, corrDelta, cfg);
       await sleep(rand(100, 250));
     }
   }
 
+  // Settle
   await sleep(randRange(cfg.scroll_settle_delay));
 
   box = await getElementBox(page, selector);
