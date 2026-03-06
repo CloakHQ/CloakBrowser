@@ -17,7 +17,16 @@ from .download import binary_info, check_for_update, clear_cache, ensure_binary
 from ._version import __version__
 
 # Human-like behavioral layer (optional)
-from .human.config import HumanConfig, resolve_config as resolve_human_config
+def __getattr__(name):
+    if name == "HumanConfig":
+        from .human.config import HumanConfig
+        globals()["HumanConfig"] = HumanConfig
+        return HumanConfig
+    if name == "resolve_human_config":
+        from .human.config import resolve_config
+        globals()["resolve_human_config"] = resolve_config
+        return resolve_config
+    raise AttributeError(f"module 'cloakbrowser' has no attribute {name}")
 
 __all__ = [
     "launch",

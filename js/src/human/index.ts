@@ -498,10 +498,17 @@ export function patchBrowser(browser: Browser, cfg: HumanConfig): void {
   (browser as any).newPage = async (options?: any) => {
     const page = await origNewPage(options);
     if (!(page as any)._original) {
+      // Also patch the implicit context so page.context().newPage() is covered
+      const ctx = page.context();
+      if (!(ctx as any)._humanPatched) {
+        patchContext(ctx, cfg);
+        (ctx as any)._humanPatched = true;
+      }
       patchPage(page, cfg, new CursorState());
     }
     return page;
   };
+
 }
 
 export { patchContext, patchPage };

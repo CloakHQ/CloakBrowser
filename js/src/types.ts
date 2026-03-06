@@ -27,7 +27,7 @@ export interface LaunchOptions {
   /** Enable human-like mouse, keyboard, and scroll behavior. */
   humanize?: boolean;
   /** Human behavior preset: 'default' or 'careful'. */
-  humanPreset?: string;
+  humanPreset?: 'default' | 'careful';
   /** Override individual human behavior parameters. */
   humanConfig?: Record<string, unknown>;
 }
