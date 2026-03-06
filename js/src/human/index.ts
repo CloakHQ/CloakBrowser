@@ -47,7 +47,10 @@ const COALESCED_PATCH = `
 `;
 
 async function injectCoalescedPatch(page: Page): Promise<void> {
-  try { await page.evaluate(COALESCED_PATCH); } catch {}
+  try {
+    await page.context().addInitScript(COALESCED_PATCH);
+    await page.evaluate(COALESCED_PATCH);
+  } catch {}
 }
 
 class CursorState {

@@ -59,6 +59,7 @@ _COALESCED_PATCH = """
 
 def _inject_coalesced_patch(page: Any) -> None:
     try:
+        page.context.add_init_script(_COALESCED_PATCH)
         page.evaluate(_COALESCED_PATCH)
     except Exception:
         pass
@@ -66,6 +67,7 @@ def _inject_coalesced_patch(page: Any) -> None:
 
 async def _async_inject_coalesced_patch(page: Any) -> None:
     try:
+        await page.context.add_init_script(_COALESCED_PATCH)
         await page.evaluate(_COALESCED_PATCH)
     except Exception:
         pass
