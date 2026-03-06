@@ -58,6 +58,9 @@ def launch(
     locale: str | None = None,
     geoip: bool = False,
     backend: str | None = None,
+    humanize: bool = False,
+    human_preset: str = "default",
+    human_config: dict | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth Chromium browser. Returns a Playwright Browser object.
@@ -81,6 +84,9 @@ def launch(
             Patchright suppresses CDP signals (helps reCAPTCHA v3 Enterprise)
             but breaks proxy auth and add_init_script.
             Override globally with CLOAKBROWSER_BACKEND env var.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config dict to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -121,10 +127,17 @@ def launch(
 
     browser.close = _close_with_cleanup
 
+    # Human-like behavioral patching
+    if humanize:
+        from .human import patch_browser
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_browser(browser, cfg)
+
     return browser
 
 
-async def launch_async(
+async def launch_async(  # noqa: C901
     headless: bool = True,
     proxy: str | ProxySettings | None = None,
     args: list[str] | None = None,
@@ -133,6 +146,9 @@ async def launch_async(
     locale: str | None = None,
     geoip: bool = False,
     backend: str | None = None,
+    humanize: bool = False,
+    human_preset: str = "default",
+    human_config: dict | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch(). Returns a Playwright Browser object.
@@ -146,6 +162,9 @@ async def launch_async(
         locale: BCP 47 locale (e.g. 'en-US'). Sets --lang binary flag.
         geoip: Auto-detect timezone/locale from proxy IP (default False).
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config dict to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -191,6 +210,13 @@ async def launch_async(
 
     browser.close = _close_with_cleanup
 
+    # Human-like behavioral patching (async variant)
+    if humanize:
+        from .human import patch_browser_async
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_browser_async(browser, cfg)
+
     return browser
 
 
@@ -207,6 +233,9 @@ def launch_persistent_context(
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
     geoip: bool = False,
     backend: str | None = None,
+    humanize: bool = False,
+    human_preset: str = "default",
+    human_config: dict | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser with a persistent profile and return a BrowserContext.
@@ -232,6 +261,9 @@ def launch_persistent_context(
         geoip: Auto-detect timezone/locale from proxy IP (default False).
             Requires ``pip install cloakbrowser[geoip]``.
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config dict to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -291,6 +323,13 @@ def launch_persistent_context(
 
     context.close = _close_with_cleanup
 
+    # Human-like behavioral patching
+    if humanize:
+        from .human import patch_context
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_context(context, cfg)
+
     return context
 
 
@@ -307,6 +346,9 @@ async def launch_persistent_context_async(
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
     geoip: bool = False,
     backend: str | None = None,
+    humanize: bool = False,
+    human_preset: str = "default",
+    human_config: dict | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_persistent_context().
@@ -329,6 +371,9 @@ async def launch_persistent_context_async(
         color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
         geoip: Auto-detect timezone/locale from proxy IP (default False).
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config dict to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -393,6 +438,13 @@ async def launch_persistent_context_async(
 
     context.close = _close_with_cleanup
 
+    # Human-like behavioral patching (async variant)
+    if humanize:
+        from .human import patch_context_async
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_context_async(context, cfg)
+
     return context
 
 
@@ -408,6 +460,9 @@ def launch_context(
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
     geoip: bool = False,
     backend: str | None = None,
+    humanize: bool = False,
+    human_preset: str = "default",
+    human_config: dict | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser and return a BrowserContext with common options pre-set.
@@ -428,6 +483,9 @@ def launch_context(
             Default: None (uses Chromium default, which is 'light').
         geoip: Auto-detect timezone/locale from proxy IP (default False).
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config dict to override preset values.
         **kwargs: Passed to browser.new_context().
 
     Returns:
@@ -470,6 +528,13 @@ def launch_context(
         browser.close()
 
     context.close = _close_context_with_cleanup
+
+    # Human-like behavioral patching
+    if humanize:
+        from .human import patch_context
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_context(context, cfg)
 
     return context
 
