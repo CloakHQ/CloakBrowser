@@ -362,6 +362,244 @@ if __name__ == "__main__":
     test("non-humanized page uses original methods", test_non_humanized)
 
     # =========================================================================
+    # 7. Focus check — press does not click when already focused
+    # =========================================================================
+    print("\n" + "=" * 60)
+    print("  FOCUS CHECK (press / clear / pressSequentially)")
+    print("=" * 60)
+
+    def test_press_skips_click_when_focused():
+        """press() should not move mouse if element is already focused."""
+        from cloakbrowser.human import _patch_locator_class_sync, _is_selector_focused
+        from unittest.mock import MagicMock, patch as mock_patch
+
+        page = MagicMock()
+        page._original = MagicMock()
+        page._human_cfg = MagicMock()
+        page._human_cfg.idle_between_actions = False
+
+        click_count = {"n": 0}
+        orig_click = page.click
+        def counting_click(*a, **kw):
+            click_count["n"] += 1
+            return orig_click(*a, **kw)
+        page.click = counting_click
+
+        # Simulate element already focused
+        with mock_patch("cloakbrowser.human._is_selector_focused", return_value=True):
+            from playwright.sync_api._generated import Locator
+            loc = MagicMock(spec=Locator)
+            loc.page = page
+            loc._impl_obj = MagicMock()
+            loc._impl_obj._selector = "#test"
+
+            # Call humanized press directly
+            Locator.press(loc, "Enter")
+
+        assert click_count["n"] == 0, f"press() clicked {click_count['n']} times when element was focused"
+
+    test("press skips click when element already focused", test_press_skips_click_when_focused)
+
+    def test_press_clicks_when_not_focused():
+        """press() should click if element is NOT focused."""
+        from unittest.mock import MagicMock, patch as mock_patch
+
+        page = MagicMock()
+        page._original = MagicMock()
+        page._human_cfg = MagicMock()
+        page._human_cfg.idle_between_actions = False
+
+        click_count = {"n": 0}
+        orig_click = page.click
+        def counting_click(*a, **kw):
+            click_count["n"] += 1
+        page.click = counting_click
+
+        with mock_patch("cloakbrowser.human._is_selector_focused", return_value=False):
+            from playwright.sync_api._generated import Locator
+            loc = MagicMock(spec=Locator)
+            loc.page = page
+            loc._impl_obj = MagicMock()
+            loc._impl_obj._selector = "#test"
+
+            Locator.press(loc, "Enter")
+
+        assert click_count["n"] == 1, f"press() should click once when not focused, got {click_count['n']}"
+
+    test("press clicks when element not focused", test_press_clicks_when_not_focused)
+
+    # =========================================================================
+    # 8. check/uncheck idle
+    # =========================================================================
+    print("\n" + "=" * 60)
+    print("  CHECK/UNCHECK IDLE")
+    print("=" * 60)
+
+    def test_check_calls_idle_when_enabled():
+        """Locator check() should call human_idle when idle_between_actions=True."""
+        from unittest.mock import MagicMock, patch as mock_patch
+        from cloakbrowser.human.config import resolve_config
+
+        cfg = resolve_config("default", {"idle_between_actions": True, "idle_between_duration": [50, 100]})
+
+        page = MagicMock()
+        page._original = MagicMock()
+        page._original.mouse_move = MagicMock()
+        page._human_cfg = cfg
+
+        idle_called = {"n": 0}
+        original_idle = None
+        def fake_idle(*a, **kw):
+            idle_called["n"] += 1
+
+        from playwright.sync_api._generated import Locator
+        loc = MagicMock(spec=Locator)
+        loc.page = page
+        loc._impl_obj = MagicMock()
+        loc._impl_obj._selector = "#checkbox"
+        loc.is_checked = MagicMock(return_value=False)
+
+        with mock_patch("cloakbrowser.human.human_idle", fake_idle):
+            Locator.check(loc)
+
+        assert idle_called["n"] >= 1, f"human_idle not called during check(), count={idle_called['n']}"
+
+    test("check() calls human_idle when idle_between_actions=True", test_check_calls_idle_when_enabled)
+
+    def test_uncheck_calls_idle_when_enabled():
+        """Locator uncheck() should call human_idle when idle_between_actions=True."""
+        from unittest.mock import MagicMock, patch as mock_patch
+        from cloakbrowser.human.config import resolve_config
+
+        cfg = resolve_config("default", {"idle_between_actions": True, "idle_between_duration": [50, 100]})
+
+        page = MagicMock()
+        page._original = MagicMock()
+        page._original.mouse_move = MagicMock()
+        page._human_cfg = cfg
+
+        idle_called = {"n": 0}
+        def fake_idle(*a, **kw):
+            idle_called["n"] += 1
+
+        from playwright.sync_api._generated import Locator
+        loc = MagicMock(spec=Locator)
+        loc.page = page
+        loc._impl_obj = MagicMock()
+        loc._impl_obj._selector = "#checkbox"
+        loc.is_checked = MagicMock(return_value=True)
+
+        with mock_patch("cloakbrowser.human.human_idle", fake_idle):
+            Locator.uncheck(loc)
+
+        assert idle_called["n"] >= 1, f"human_idle not called during uncheck(), count={idle_called['n']}"
+
+    test("uncheck() calls human_idle when idle_between_actions=True", test_uncheck_calls_idle_when_enabled)
+
+    # =========================================================================
+    # 9. Frame patching completeness
+    # =========================================================================
+    print("\n" + "=" * 60)
+    print("  FRAME PATCHING COMPLETENESS")
+    print("=" * 60)
+
+    def test_frame_all_methods_patched():
+        """All 11 frame-level methods should be patched after _patch_single_frame_sync."""
+        from cloakbrowser.human import _patch_single_frame_sync, _CursorState
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", None)
+        cursor = _CursorState()
+        page = MagicMock()
+        page._original = MagicMock()
+        frame = MagicMock()
+        frame._human_patched = False
+
+        raw_mouse = MagicMock()
+        raw_keyboard = MagicMock()
+
+        _patch_single_frame_sync(frame, page, cfg, cursor, raw_mouse, raw_keyboard, page._original)
+
+        expected = ['click', 'dblclick', 'hover', 'type', 'fill',
+                    'check', 'uncheck', 'select_option', 'press',
+                    'clear', 'drag_and_drop']
+        missing = []
+        for method in expected:
+            fn = getattr(frame, method, None)
+            if fn is None:
+                missing.append(method)
+            elif not callable(fn):
+                missing.append(f"{method} (not callable)")
+            elif 'MagicMock' in type(fn).__name__ and not hasattr(fn, '_mock_name'):
+                # Still original mock — not replaced
+                pass
+        # Verify they were reassigned (not the original MagicMock)
+        for method in expected:
+            fn = getattr(frame, method)
+            assert not isinstance(fn, MagicMock), f"frame.{method} was not patched (still MagicMock)"
+
+    test("frame has all 11 methods patched", test_frame_all_methods_patched)
+
+    # =========================================================================
+    # 10. drag_to safety check
+    # =========================================================================
+    print("\n" + "=" * 60)
+    print("  DRAG_TO SAFETY CHECK")
+    print("=" * 60)
+
+    def test_drag_to_without_original():
+        """drag_to should fall back to original when page._original is missing."""
+        from playwright.sync_api._generated import Locator
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        # Remove _original to simulate edge case
+        if hasattr(page, '_original'):
+            del page._original
+        page._original = None
+
+        source_loc = MagicMock(spec=Locator)
+        source_loc.page = page
+        source_loc._impl_obj = MagicMock()
+        source_loc._impl_obj._selector = "#src"
+        source_loc.bounding_box = MagicMock(return_value={"x": 10, "y": 10, "width": 50, "height": 50})
+
+        target_loc = MagicMock(spec=Locator)
+        target_loc.page = page
+        target_loc._impl_obj = MagicMock()
+        target_loc._impl_obj._selector = "#tgt"
+        target_loc.bounding_box = MagicMock(return_value={"x": 200, "y": 200, "width": 50, "height": 50})
+
+        # Should not raise — falls back to original
+        try:
+            Locator.drag_to(source_loc, target_loc)
+        except AttributeError:
+            raise AssertionError("drag_to crashed without page._original — safety check missing")
+
+    test("drag_to handles missing page._original", test_drag_to_without_original)
+
+    # =========================================================================
+    # 11. page._human_cfg is set
+    # =========================================================================
+    print("\n" + "=" * 60)
+    print("  PAGE CONFIG PERSISTENCE")
+    print("=" * 60)
+
+    def test_page_human_cfg_set():
+        """patch_page should set page._human_cfg for Locator access."""
+        from cloakbrowser import launch
+        browser = launch(headless=True, humanize=True)
+        page = browser.new_page()
+        assert hasattr(page, '_human_cfg'), "page._human_cfg not set"
+        assert page._human_cfg is not None, "page._human_cfg is None"
+        assert hasattr(page._human_cfg, 'idle_between_actions'), "cfg missing idle_between_actions"
+        browser.close()
+
+    test("page._human_cfg is set after patch", test_page_human_cfg_set)
+
+
+    # =========================================================================
     # SUMMARY
     # =========================================================================
     print("\n" + "=" * 70)

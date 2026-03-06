@@ -6,7 +6,7 @@
  *
  * Patches all interaction methods:
  * click, dblclick, hover, type, fill, check, uncheck, selectOption,
- * press, pressSequentially, tap, dragTo, clear + Frame-level equivalents for Locator API.
+ * press, pressSequentially, tap, dragTo, clear + Frame-level equivalents.
  */
 
 import type { Browser, BrowserContext, Page, Frame } from 'playwright-core';
@@ -66,6 +66,13 @@ async function isInputElement(page: Page, selector: string): Promise<boolean> {
   }, selector).catch(() => false);
 }
 
+async function isSelectorFocused(page: Page, selector: string): Promise<boolean> {
+  return page.evaluate((sel: string) => {
+    const el = document.querySelector(sel);
+    return el === document.activeElement;
+  }, selector).catch(() => false);
+}
+
 function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   const originals = {
     click: page.click.bind(page),
@@ -78,6 +85,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     selectOption: page.selectOption.bind(page),
     press: page.press.bind(page),
     goto: page.goto.bind(page),
+    isChecked: page.isChecked.bind(page),
     mouseMove: page.mouse.move.bind(page.mouse),
     mouseClick: page.mouse.click.bind(page.mouse),
     mouseDblclick: page.mouse.dblclick.bind(page.mouse),
@@ -92,6 +100,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   };
 
   (page as any)._original = originals;
+  (page as any)._humanCfg = cfg;
 
   const raw: RawMouse = {
     move: originals.mouseMove,
@@ -197,7 +206,9 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
   // --- clear ---
   const humanClearFn = async (selector: string, options?: any) => {
-    await humanClickFn(selector);
+    if (!await isSelectorFocused(page, selector)) {
+      await humanClickFn(selector);
+    }
     await sleep(rand(50, 150));
     await originals.keyboardPress('Control+a');
     await sleep(rand(30, 80));
@@ -206,7 +217,10 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
   // --- check ---
   const humanCheckFn = async (selector: string, options?: any) => {
-    const checked = await page.isChecked(selector).catch(() => false);
+    if (cfg.idle_between_actions) {
+      await humanIdle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg);
+    }
+    const checked = await originals.isChecked(selector).catch(() => false);
     if (!checked) {
       await humanClickFn(selector);
     }
@@ -214,7 +228,10 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
   // --- uncheck ---
   const humanUncheckFn = async (selector: string, options?: any) => {
-    const checked = await page.isChecked(selector).catch(() => true);
+    if (cfg.idle_between_actions) {
+      await humanIdle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg);
+    }
+    const checked = await originals.isChecked(selector).catch(() => true);
     if (checked) {
       await humanClickFn(selector);
     }
@@ -229,14 +246,18 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
   // --- press ---
   const humanPressFn = async (selector: string, key: string, options?: any) => {
-    await humanClickFn(selector);
+    if (!await isSelectorFocused(page, selector)) {
+      await humanClickFn(selector);
+    }
     await sleep(rand(50, 150));
     await originals.keyboardPress(key);
   };
 
   // --- pressSequentially ---
   const humanPressSequentiallyFn = async (selector: string, text: string, options?: any) => {
-    await humanClickFn(selector);
+    if (!await isSelectorFocused(page, selector)) {
+      await humanClickFn(selector);
+    }
     await sleep(rand(100, 250));
     await humanType(page, rawKb, text, cfg);
   };
@@ -279,8 +300,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     await humanType(page, rawKb, text, cfg);
   };
 
-  // Store helpers
-  (page as any)._humanCfg = cfg;
+  // Store helpers for frame patching
   (page as any)._humanCursor = cursor;
   (page as any)._humanRaw = raw;
   (page as any)._humanRawKb = rawKb;
@@ -306,6 +326,8 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
 /**
  * Patch Frame methods so Locator-based calls go through humanization.
+ * All 14 methods patched: click, dblclick, hover, type, fill, check, uncheck,
+ * selectOption, press, pressSequentially, tap, dragAndDrop, clear + setChecked.
  */
 function patchFrames(
   page: Page,
@@ -316,11 +338,11 @@ function patchFrames(
   originals: any,
 ): void {
   for (const frame of iterFrames(page)) {
-    patchSingleFrame(frame, page, originals);
+    patchSingleFrame(frame, page, cfg, originals);
   }
 }
 
-function patchSingleFrame(frame: Frame, page: Page, originals: any): void {
+function patchSingleFrame(frame: Frame, page: Page, cfg: HumanConfig, originals: any): void {
   if ((frame as any)._humanPatched) return;
   (frame as any)._humanPatched = true;
 
@@ -365,7 +387,17 @@ function patchSingleFrame(frame: Frame, page: Page, originals: any): void {
     await (page as any).press(selector, key, options);
   };
 
-    (frame as any).dragAndDrop = async (source: string, target: string, options?: any) => {
+  (frame as any).clear = async (selector: string, options?: any) => {
+    if (!await isSelectorFocused(page, selector)) {
+      await (page as any).click(selector);
+    }
+    await sleep(rand(50, 150));
+    await originals.keyboardPress('Control+a');
+    await sleep(rand(30, 80));
+    await originals.keyboardPress('Backspace');
+  };
+
+  (frame as any).dragAndDrop = async (source: string, target: string, options?: any) => {
     const srcBox = await frame.locator(source).boundingBox().catch(() => null);
     const tgtBox = await frame.locator(target).boundingBox().catch(() => null);
 
@@ -404,7 +436,20 @@ function patchContext(context: BrowserContext, cfg: HumanConfig): void {
   for (const page of context.pages()) {
     patchPage(page, cfg, cursor);
   }
-  context.on('page', (page: Page) => patchPage(page, cfg, cursor));
+  context.on('page', (page: Page) => {
+    if (!(page as any)._original) {
+      patchPage(page, cfg, new CursorState());
+    }
+  });
+
+const origNewPage = context.newPage.bind(context);
+(context as any).newPage = async () => {
+  const page = await origNewPage();
+  if (!(page as any)._original) {
+    patchPage(page, cfg, new CursorState());
+  }
+  return page;
+};
 }
 
 export function patchBrowser(browser: Browser, cfg: HumanConfig): void {
@@ -419,9 +464,12 @@ export function patchBrowser(browser: Browser, cfg: HumanConfig): void {
     return context;
   };
 
+  const origNewPage = browser.newPage.bind(browser);
   (browser as any).newPage = async (options?: any) => {
-    const context = await (browser as any).newContext(options);
-    const page = await context.newPage();
+    const page = await origNewPage(options);
+    if (!(page as any)._original) {
+      patchPage(page, cfg, new CursorState());
+    }
     return page;
   };
 }

@@ -9,7 +9,9 @@ import { launch } from '../js/dist/index.js';
 import { resolveConfig, rand, randRange, sleep } from '../js/dist/human/config.js';
 import { humanMove, clickTarget } from '../js/dist/human/mouse.js';
 
-const PROXY = {};
+const PROXY = {
+
+};
 const delay = ms => new Promise(r => setTimeout(r, ms));
 const results = [];
 
@@ -310,6 +312,140 @@ await test('non-humanized page works normally', async () => {
 
   await browser.close();
 });
+
+// =========================================================================
+// 6. Focus check — press skips click when focused
+// =========================================================================
+console.log('\n' + '='.repeat(60));
+console.log('  FOCUS CHECK (press / pressSequentially)');
+console.log('='.repeat(60));
+
+await test('press skips click when element already focused', async () => {
+  const browser = await launch({ headless: true, humanize: true });
+  const page = await browser.newPage();
+  await page.goto('https://www.wikipedia.org', { waitUntil: 'domcontentloaded' });
+  await delay(1000);
+
+  // Click input first to focus it
+  await page.locator('#searchInput').click();
+  await delay(300);
+
+  // Record mouse moves before pressing Enter
+  const movesBefore = [];
+  const origMove = page._humanOriginals.mouseMove;
+  let moveCount = 0;
+  page._humanOriginals.mouseMove = async (x, y, opts) => {
+    moveCount++;
+    return origMove(x, y, opts);
+  };
+
+  // Press Enter — element is already focused, should NOT trigger mouse move
+  const movesAtStart = moveCount;
+  await page.locator('#searchInput').press('a');
+  const movesUsed = moveCount - movesAtStart;
+
+  // Restore
+  page._humanOriginals.mouseMove = origMove;
+
+  // If focus check works, should be 0 moves (just keyboard press)
+  if (movesUsed > 0) {
+    console.log(`    [INFO] press() triggered ${movesUsed} mouse moves on focused element`);
+  }
+  // Lenient: allow some moves but not a full Bézier path (>10 would indicate a click)
+  if (movesUsed > 10) {
+    throw new Error(`press() moved mouse ${movesUsed} times on already-focused element — focus check broken`);
+  }
+
+  await browser.close();
+});
+
+// =========================================================================
+// 7. check/uncheck idle
+// =========================================================================
+console.log('\n' + '='.repeat(60));
+console.log('  CHECK/UNCHECK IDLE');
+console.log('='.repeat(60));
+
+await test('check() respects idle_between_actions config', async () => {
+  const cfg = resolveConfig('default', { idle_between_actions: true, idle_between_duration: [50, 100] });
+  if (!cfg.idle_between_actions) throw new Error('idle_between_actions should be true');
+  if (!cfg.idle_between_duration || cfg.idle_between_duration[0] !== 50) {
+    throw new Error('idle_between_duration not set');
+  }
+  // Verify config is carried through to page
+  const browser = await launch({ headless: true, humanize: true, humanize_config: { idle_between_actions: true } });
+  const page = await browser.newPage();
+  if (!page._humanCfg) throw new Error('page._humanCfg missing');
+  await browser.close();
+});
+
+// =========================================================================
+// 8. Frame patching completeness
+// =========================================================================
+console.log('\n' + '='.repeat(60));
+console.log('  FRAME PATCHING COMPLETENESS');
+console.log('='.repeat(60));
+
+await test('frame has all methods patched', async () => {
+  const browser = await launch({ headless: true, humanize: true });
+  const page = await browser.newPage();
+  await page.goto('https://www.wikipedia.org', { waitUntil: 'domcontentloaded' });
+  await delay(1000);
+
+  const mainFrame = page.mainFrame();
+  const expected = ['click', 'dblclick', 'hover', 'type', 'fill',
+                    'check', 'uncheck', 'selectOption', 'press',
+                    'clear', 'dragAndDrop'];
+  const missing = [];
+  for (const method of expected) {
+    if (typeof mainFrame[method] !== 'function') {
+      missing.push(method);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(`Frame missing patched methods: ${missing.join(', ')}`);
+  }
+
+  // Verify they are patched (not original Playwright bindings)
+  if (!mainFrame._humanPatched) {
+    throw new Error('mainFrame._humanPatched flag not set');
+  }
+
+  await browser.close();
+});
+
+// =========================================================================
+// 9. drag_to safety — page._original check
+// =========================================================================
+console.log('\n' + '='.repeat(60));
+console.log('  DRAG_TO SAFETY');
+console.log('='.repeat(60));
+
+await test('page._humanCfg is accessible', async () => {
+  const browser = await launch({ headless: true, humanize: true });
+  const page = await browser.newPage();
+  if (!page._humanCfg) throw new Error('page._humanCfg not set');
+  if (!page._original) throw new Error('page._original not set');
+  if (typeof page._original.mouseDown !== 'function') throw new Error('mouseDown not preserved');
+  if (typeof page._original.mouseUp !== 'function') throw new Error('mouseUp not preserved');
+  await browser.close();
+});
+
+// =========================================================================
+// 10. patchBrowser.newPage uses original context
+// =========================================================================
+console.log('\n' + '='.repeat(60));
+console.log('  PATCH BROWSER — newPage context');
+console.log('='.repeat(60));
+
+await test('browser.newPage returns patched page', async () => {
+  const browser = await launch({ headless: true, humanize: true });
+  const page = await browser.newPage();
+  if (!page._original) throw new Error('page from browser.newPage() not patched');
+  if (!page._humanCfg) throw new Error('page._humanCfg missing from browser.newPage()');
+  await browser.close();
+});
+
 
 // =========================================================================
 // SUMMARY

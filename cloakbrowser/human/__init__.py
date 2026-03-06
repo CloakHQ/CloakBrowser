@@ -112,11 +112,40 @@ async def _async_is_input_element(page: Any, selector: str) -> bool:
         return False
 
 
+def _is_selector_focused(page: Any, selector: str) -> bool:
+    """Check if the element matching selector is currently focused."""
+    try:
+        return page.evaluate(
+            """(sel) => {
+                const el = document.querySelector(sel);
+                return el === document.activeElement;
+            }""",
+            selector,
+        )
+    except Exception:
+        return False
+
+
+async def _async_is_selector_focused(page: Any, selector: str) -> bool:
+    """Check if the element matching selector is currently focused (async)."""
+    try:
+        return await page.evaluate(
+            """(sel) => {
+                const el = document.querySelector(sel);
+                return el === document.activeElement;
+            }""",
+            selector,
+        )
+    except Exception:
+        return False
+
+
 # ============================================================================
 # Locator class-level patching (sync)
 # ============================================================================
 
 _locator_sync_patched = False
+
 
 def _patch_locator_class_sync():
     """Patch all Locator interaction methods to go through humanized page methods."""
@@ -142,12 +171,14 @@ def _patch_locator_class_sync():
     _orig_drag_to = Locator.drag_to
     _orig_clear = Locator.clear
 
-
     def _get_selector(self):
         return self._impl_obj._selector
 
     def _is_humanized(self):
         return hasattr(self.page, '_original')
+
+    def _get_cfg(self):
+        return getattr(self.page, '_human_cfg', None)
 
     def _humanized_fill(self, value, **kwargs):
         if _is_humanized(self):
@@ -181,6 +212,9 @@ def _patch_locator_class_sync():
 
     def _humanized_check(self, **kwargs):
         if _is_humanized(self):
+            cfg = _get_cfg(self)
+            if cfg and cfg.idle_between_actions:
+                human_idle(self.page._original.mouse_move, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg)
             checked = self.is_checked()
             if not checked:
                 self.page.click(_get_selector(self))
@@ -189,6 +223,9 @@ def _patch_locator_class_sync():
 
     def _humanized_uncheck(self, **kwargs):
         if _is_humanized(self):
+            cfg = _get_cfg(self)
+            if cfg and cfg.idle_between_actions:
+                human_idle(self.page._original.mouse_move, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg)
             checked = self.is_checked()
             if checked:
                 self.page.click(_get_selector(self))
@@ -215,7 +252,9 @@ def _patch_locator_class_sync():
     def _humanized_press(self, key, **kwargs):
         if _is_humanized(self):
             selector = _get_selector(self)
-            self.page.click(selector)
+            # Only click if not already focused — avoids redundant mouse moves
+            if not _is_selector_focused(self.page, selector):
+                self.page.click(selector)
             sleep_ms(rand(50, 150))
             self.page.keyboard.press(key)
         else:
@@ -224,7 +263,8 @@ def _patch_locator_class_sync():
     def _humanized_press_sequentially(self, text, **kwargs):
         if _is_humanized(self):
             selector = _get_selector(self)
-            self.page.click(selector)
+            if not _is_selector_focused(self.page, selector):
+                self.page.click(selector)
             sleep_ms(rand(50, 150))
             self.page.keyboard.type(text)
         else:
@@ -238,36 +278,32 @@ def _patch_locator_class_sync():
 
     def _humanized_drag_to(self, target, **kwargs):
         if _is_humanized(self):
+            page = self.page
+            originals = getattr(page, '_original', None)
             src_box = self.bounding_box()
             tgt_box = target.bounding_box()
-            if src_box and tgt_box:
+            if src_box and tgt_box and originals:
                 sx = src_box['x'] + src_box['width'] / 2
                 sy = src_box['y'] + src_box['height'] / 2
                 tx = tgt_box['x'] + tgt_box['width'] / 2
                 ty = tgt_box['y'] + tgt_box['height'] / 2
-                # Humanized move to source
-                self.page.mouse.move(sx, sy)
+                page.mouse.move(sx, sy)
                 sleep_ms(rand(100, 200))
-                # Press
-                self.page._original.mouse_down()
+                originals.mouse_down()
                 sleep_ms(rand(80, 150))
-                # Humanized move to target
-                self.page.mouse.move(tx, ty)
+                page.mouse.move(tx, ty)
                 sleep_ms(rand(80, 150))
-                # Release
-                self.page._original.mouse_up()
+                originals.mouse_up()
             else:
                 _orig_drag_to(self, target, **kwargs)
         else:
             _orig_drag_to(self, target, **kwargs)
 
-
-
-
     def _humanized_clear(self, **kwargs):
         if _is_humanized(self):
             selector = _get_selector(self)
-            self.page.click(selector)
+            if not _is_selector_focused(self.page, selector):
+                self.page.click(selector)
             sleep_ms(rand(50, 100))
             self.page.keyboard.press("Control+a")
             sleep_ms(rand(30, 80))
@@ -328,6 +364,9 @@ def _patch_locator_class_async():
     def _is_humanized(self):
         return hasattr(self.page, '_original')
 
+    def _get_cfg(self):
+        return getattr(self.page, '_human_cfg', None)
+
     async def _humanized_fill(self, value, **kwargs):
         if _is_humanized(self):
             await self.page.fill(_get_selector(self), value)
@@ -360,6 +399,12 @@ def _patch_locator_class_async():
 
     async def _humanized_check(self, **kwargs):
         if _is_humanized(self):
+            cfg = _get_cfg(self)
+            if cfg and cfg.idle_between_actions:
+                await async_human_idle(
+                    type("_R", (), {"move": self.page._original.mouse_move})(),
+                    rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg,
+                )
             checked = await self.is_checked()
             if not checked:
                 await self.page.click(_get_selector(self))
@@ -368,6 +413,12 @@ def _patch_locator_class_async():
 
     async def _humanized_uncheck(self, **kwargs):
         if _is_humanized(self):
+            cfg = _get_cfg(self)
+            if cfg and cfg.idle_between_actions:
+                await async_human_idle(
+                    type("_R", (), {"move": self.page._original.mouse_move})(),
+                    rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg,
+                )
             checked = await self.is_checked()
             if checked:
                 await self.page.click(_get_selector(self))
@@ -391,10 +442,11 @@ def _patch_locator_class_async():
         else:
             await _orig_select_option(self, value, **kwargs)
 
-
     async def _humanized_press(self, key, **kwargs):
         if _is_humanized(self):
-            await self.page.click(_get_selector(self))
+            selector = _get_selector(self)
+            if not await _async_is_selector_focused(self.page, selector):
+                await self.page.click(selector)
             await async_sleep_ms(rand(50, 150))
             await self.page.keyboard.press(key)
         else:
@@ -402,7 +454,9 @@ def _patch_locator_class_async():
 
     async def _humanized_press_sequentially(self, text, **kwargs):
         if _is_humanized(self):
-            await self.page.click(_get_selector(self))
+            selector = _get_selector(self)
+            if not await _async_is_selector_focused(self.page, selector):
+                await self.page.click(selector)
             await async_sleep_ms(rand(50, 150))
             await self.page.keyboard.type(text)
         else:
@@ -416,31 +470,32 @@ def _patch_locator_class_async():
 
     async def _humanized_drag_to(self, target, **kwargs):
         if _is_humanized(self):
+            page = self.page
+            originals = getattr(page, '_original', None)
             src_box = await self.bounding_box()
             tgt_box = await target.bounding_box()
-            if src_box and tgt_box:
+            if src_box and tgt_box and originals:
                 sx = src_box['x'] + src_box['width'] / 2
                 sy = src_box['y'] + src_box['height'] / 2
                 tx = tgt_box['x'] + tgt_box['width'] / 2
                 ty = tgt_box['y'] + tgt_box['height'] / 2
-                await self.page.mouse.move(sx, sy)
+                await page.mouse.move(sx, sy)
                 await async_sleep_ms(rand(100, 200))
-                await self.page._original.mouse_down()
+                await originals.mouse_down()
                 await async_sleep_ms(rand(80, 150))
-                await self.page.mouse.move(tx, ty)
+                await page.mouse.move(tx, ty)
                 await async_sleep_ms(rand(80, 150))
-                await self.page._original.mouse_up()
+                await originals.mouse_up()
             else:
                 await _orig_drag_to(self, target, **kwargs)
         else:
             await _orig_drag_to(self, target, **kwargs)
 
-
-
-
     async def _humanized_clear(self, **kwargs):
         if _is_humanized(self):
-            await self.page.click(_get_selector(self))
+            selector = _get_selector(self)
+            if not await _async_is_selector_focused(self.page, selector):
+                await self.page.click(selector)
             await async_sleep_ms(rand(50, 100))
             await self.page.keyboard.press("Control+a")
             await async_sleep_ms(rand(30, 80))
@@ -491,6 +546,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     })()
 
     page._original = originals
+    page._human_cfg = cfg
 
     raw_mouse: RawMouse = type("_RawMouse", (), {
         "move": originals.mouse_move,
@@ -536,7 +592,6 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         human_click(raw_mouse, is_input, cfg)
 
     def _human_dblclick(selector: str, **kwargs: Any) -> None:
-        """Humanized move to element, then real dblclick via clickCount=2."""
         _ensure_cursor_init()
         if cfg.idle_between_actions:
             human_idle(raw_mouse, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg)
@@ -550,7 +605,6 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, cfg)
         cursor.x = target.x
         cursor.y = target.y
-        # Real dblclick at current cursor position — no teleport
         raw_mouse.down(click_count=2)
         sleep_ms(rand(30, 60))
         raw_mouse.up(click_count=2)
@@ -576,7 +630,6 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         human_type(page, raw_keyboard, text, cfg)
 
     def _human_fill(selector: str, value: str, **kwargs: Any) -> None:
-        """Intercept fill() -- redirect to humanized type() with field clearing."""
         sleep_ms(rand_range(cfg.field_switch_delay))
         _human_click(selector)
         sleep_ms(rand(100, 250))
@@ -585,6 +638,33 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         originals.keyboard_press("Backspace")
         sleep_ms(rand(50, 150))
         human_type(page, raw_keyboard, value, cfg)
+
+    def _human_check(selector: str, **kwargs: Any) -> None:
+        try:
+            checked = page.is_checked(selector)
+        except Exception:
+            checked = False
+        if not checked:
+            _human_click(selector)
+
+    def _human_uncheck(selector: str, **kwargs: Any) -> None:
+        try:
+            checked = page.is_checked(selector)
+        except Exception:
+            checked = True
+        if checked:
+            _human_click(selector)
+
+    def _human_select_option(selector: str, value: Any = None, **kwargs: Any) -> Any:
+        _human_hover(selector)
+        sleep_ms(rand(100, 300))
+        return originals.click(selector)  # fallback; real select done by Locator
+
+    def _human_press(selector: str, key: str, **kwargs: Any) -> None:
+        if not _is_selector_focused(page, selector):
+            _human_click(selector)
+        sleep_ms(rand(50, 150))
+        originals.keyboard_press(key)
 
     def _human_mouse_move(x: float, y: float, **kwargs: Any) -> None:
         _ensure_cursor_init()
@@ -608,6 +688,9 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     page.hover = _human_hover
     page.type = _human_type
     page.fill = _human_fill
+    page.check = _human_check
+    page.uncheck = _human_uncheck
+    page.press = _human_press
     page.mouse.move = _human_mouse_move
     page.mouse.click = _human_mouse_click
     page.keyboard.type = _human_keyboard_type
@@ -624,17 +707,14 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     except Exception:
         pass
 
-
     # --- Patch Locator class (class-level, runs once) ---
     _patch_locator_class_sync()
 
-    
 
 def _patch_frames_sync(
     page: Any, cfg: HumanConfig, cursor: _CursorState,
     raw_mouse: RawMouse, raw_keyboard: RawKeyboard, originals: Any,
 ) -> None:
-    """Patch Frame.click/type/fill so frame-based calls use humanization."""
     for frame in _iter_frames(page):
         _patch_single_frame_sync(frame, page, cfg, cursor, raw_mouse, raw_keyboard, originals)
 
@@ -662,35 +742,86 @@ def _patch_single_frame_sync(
     frame: Any, page: Any, cfg: HumanConfig, cursor: _CursorState,
     raw_mouse: RawMouse, raw_keyboard: RawKeyboard, originals: Any,
 ) -> None:
-    """Patch a single Frame object's methods for sync humanization."""
     if getattr(frame, "_human_patched", False):
         return
     frame._human_patched = True
 
+    # Save originals for methods that need fallback
+    _orig_frame_select_option = frame.select_option
+    _orig_frame_drag_and_drop = getattr(frame, 'drag_and_drop', None)
+
     def _frame_click(selector: str, **kwargs: Any) -> None:
-        page.click(selector, **kwargs)
+        page.click(selector)
 
     def _frame_dblclick(selector: str, **kwargs: Any) -> None:
-        page.dblclick(selector, **kwargs)
+        page.dblclick(selector)
 
     def _frame_hover(selector: str, **kwargs: Any) -> None:
-        page.hover(selector, **kwargs)
+        page.hover(selector)
 
     def _frame_type(selector: str, text: str, **kwargs: Any) -> None:
-        page.type(selector, text, **kwargs)
+        page.type(selector, text)
 
     def _frame_fill(selector: str, value: str, **kwargs: Any) -> None:
-        page.fill(selector, value, **kwargs)
+        page.fill(selector, value)
+
+    def _frame_check(selector: str, **kwargs: Any) -> None:
+        page.check(selector)
+
+    def _frame_uncheck(selector: str, **kwargs: Any) -> None:
+        page.uncheck(selector)
+
+    def _frame_select_option(selector: str, value: Any = None, **kwargs: Any) -> Any:
+        page.hover(selector)
+        sleep_ms(rand(100, 300))
+        return _orig_frame_select_option(selector, value, **kwargs)
+
+    def _frame_press(selector: str, key: str, **kwargs: Any) -> None:
+        page.press(selector, key)
+
+    def _frame_clear(selector: str, **kwargs: Any) -> None:
+        if not _is_selector_focused(page, selector):
+            page.click(selector)
+        sleep_ms(rand(50, 100))
+        originals.keyboard_press("Control+a")
+        sleep_ms(rand(30, 80))
+        originals.keyboard_press("Backspace")
+
+    def _frame_drag_and_drop(source: str, target: str, **kwargs: Any) -> None:
+        try:
+            src_box = frame.locator(source).bounding_box()
+            tgt_box = frame.locator(target).bounding_box()
+        except Exception:
+            src_box = tgt_box = None
+        if src_box and tgt_box:
+            sx = src_box['x'] + src_box['width'] / 2
+            sy = src_box['y'] + src_box['height'] / 2
+            tx = tgt_box['x'] + tgt_box['width'] / 2
+            ty = tgt_box['y'] + tgt_box['height'] / 2
+            page.mouse.move(sx, sy)
+            sleep_ms(rand(100, 200))
+            originals.mouse_down()
+            sleep_ms(rand(80, 150))
+            page.mouse.move(tx, ty)
+            sleep_ms(rand(80, 150))
+            originals.mouse_up()
+        elif _orig_frame_drag_and_drop:
+            _orig_frame_drag_and_drop(source, target, **kwargs)
 
     frame.click = _frame_click
     frame.dblclick = _frame_dblclick
     frame.hover = _frame_hover
     frame.type = _frame_type
     frame.fill = _frame_fill
+    frame.check = _frame_check
+    frame.uncheck = _frame_uncheck
+    frame.select_option = _frame_select_option
+    frame.press = _frame_press
+    frame.clear = _frame_clear
+    frame.drag_and_drop = _frame_drag_and_drop
 
 
 def _iter_frames(page: Any):
-    """Yield all frames from a page (main_frame + child frames)."""
     try:
         main = page.main_frame
         yield main
@@ -701,11 +832,9 @@ def _iter_frames(page: Any):
 
 
 def patch_context(context: Any, cfg: HumanConfig) -> None:
-    """Patch all existing and future pages in a context (sync)."""
     cursor = _CursorState()
     for page in context.pages:
         patch_page(page, cfg, cursor)
-    # Event callback for popups/new tabs
     context.on("page", lambda p: patch_page(p, cfg, _CursorState()) if not hasattr(p, '_original') else None)
 
     orig_new_page = context.new_page
@@ -719,9 +848,7 @@ def patch_context(context: Any, cfg: HumanConfig) -> None:
     context.new_page = _patched_new_page
 
 
-
 def patch_browser(browser: Any, cfg: HumanConfig) -> None:
-    """Patch browser: all contexts, new_context, and new_page (sync)."""
     for context in browser.contexts:
         patch_context(context, cfg)
 
@@ -738,13 +865,12 @@ def patch_browser(browser: Any, cfg: HumanConfig) -> None:
 
     def _patched_new_page(**kwargs: Any) -> Any:
         page = orig_new_page(**kwargs)
-        # patch_page directly — don't rely on event callback
-        cursor = _CursorState()
         if not hasattr(page, '_original'):
-            patch_page(page, cfg, cursor)
+            patch_page(page, cfg, _CursorState())
         return page
 
     browser.new_page = _patched_new_page
+
 
 # ============================================================================
 # ASYNC patching
@@ -752,7 +878,6 @@ def patch_browser(browser: Any, cfg: HumanConfig) -> None:
 
 
 def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
-    """Replace page methods with human-like implementations (async)."""
     originals = type("Originals", (), {
         "click": page.click,
         "type": page.type,
@@ -773,6 +898,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     })()
 
     page._original = originals
+    page._human_cfg = cfg
 
     raw_mouse: AsyncRawMouse = type("_AsyncRawMouse", (), {
         "move": originals.mouse_move,
@@ -818,7 +944,6 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await async_human_click(raw_mouse, is_input, cfg)
 
     async def _human_dblclick(selector: str, **kwargs: Any) -> None:
-        """Humanized move to element, then real dblclick via clickCount=2."""
         await _ensure_cursor_init()
         if cfg.idle_between_actions:
             await async_human_idle(raw_mouse, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg)
@@ -832,7 +957,6 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, cfg)
         cursor.x = target.x
         cursor.y = target.y
-        # Real dblclick at current cursor position — no teleport
         await raw_mouse.down(click_count=2)
         await async_sleep_ms(rand(30, 60))
         await raw_mouse.up(click_count=2)
@@ -858,7 +982,6 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await async_human_type(page, raw_keyboard, text, cfg)
 
     async def _human_fill(selector: str, value: str, **kwargs: Any) -> None:
-        """Intercept fill() -- redirect to humanized type() with field clearing."""
         await async_sleep_ms(rand_range(cfg.field_switch_delay))
         await _human_click(selector)
         await async_sleep_ms(rand(100, 250))
@@ -867,6 +990,28 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await originals.keyboard_press("Backspace")
         await async_sleep_ms(rand(50, 150))
         await async_human_type(page, raw_keyboard, value, cfg)
+
+    async def _human_check(selector: str, **kwargs: Any) -> None:
+        try:
+            checked = await page.is_checked(selector)
+        except Exception:
+            checked = False
+        if not checked:
+            await _human_click(selector)
+
+    async def _human_uncheck(selector: str, **kwargs: Any) -> None:
+        try:
+            checked = await page.is_checked(selector)
+        except Exception:
+            checked = True
+        if checked:
+            await _human_click(selector)
+
+    async def _human_press(selector: str, key: str, **kwargs: Any) -> None:
+        if not await _async_is_selector_focused(page, selector):
+            await _human_click(selector)
+        await async_sleep_ms(rand(50, 150))
+        await originals.keyboard_press(key)
 
     async def _human_mouse_move(x: float, y: float, **kwargs: Any) -> None:
         await _ensure_cursor_init()
@@ -890,6 +1035,9 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     page.hover = _human_hover
     page.type = _human_type
     page.fill = _human_fill
+    page.check = _human_check
+    page.uncheck = _human_uncheck
+    page.press = _human_press
     page.mouse.move = _human_mouse_move
     page.mouse.click = _human_mouse_click
     page.keyboard.type = _human_keyboard_type
@@ -905,7 +1053,6 @@ def _patch_frames_async(
     page: Any, cfg: HumanConfig, cursor: _CursorState,
     raw_mouse: AsyncRawMouse, raw_keyboard: AsyncRawKeyboard, originals: Any,
 ) -> None:
-    """Patch Frame methods for async humanization."""
     for frame in _iter_frames(page):
         _patch_single_frame_async(frame, page, cfg, cursor, raw_mouse, raw_keyboard, originals)
 
@@ -933,35 +1080,85 @@ def _patch_single_frame_async(
     frame: Any, page: Any, cfg: HumanConfig, cursor: _CursorState,
     raw_mouse: AsyncRawMouse, raw_keyboard: AsyncRawKeyboard, originals: Any,
 ) -> None:
-    """Patch a single Frame object's methods for async humanization."""
     if getattr(frame, "_human_patched", False):
         return
     frame._human_patched = True
 
+    _orig_frame_select_option = frame.select_option
+    _orig_frame_drag_and_drop = getattr(frame, 'drag_and_drop', None)
+
     async def _frame_click(selector: str, **kwargs: Any) -> None:
-        await page.click(selector, **kwargs)
+        await page.click(selector)
 
     async def _frame_dblclick(selector: str, **kwargs: Any) -> None:
-        await page.dblclick(selector, **kwargs)
+        await page.dblclick(selector)
 
     async def _frame_hover(selector: str, **kwargs: Any) -> None:
-        await page.hover(selector, **kwargs)
+        await page.hover(selector)
 
     async def _frame_type(selector: str, text: str, **kwargs: Any) -> None:
-        await page.type(selector, text, **kwargs)
+        await page.type(selector, text)
 
     async def _frame_fill(selector: str, value: str, **kwargs: Any) -> None:
-        await page.fill(selector, value, **kwargs)
+        await page.fill(selector, value)
+
+    async def _frame_check(selector: str, **kwargs: Any) -> None:
+        await page.check(selector)
+
+    async def _frame_uncheck(selector: str, **kwargs: Any) -> None:
+        await page.uncheck(selector)
+
+    async def _frame_select_option(selector: str, value: Any = None, **kwargs: Any) -> Any:
+        await page.hover(selector)
+        await async_sleep_ms(rand(100, 300))
+        return await _orig_frame_select_option(selector, value, **kwargs)
+
+    async def _frame_press(selector: str, key: str, **kwargs: Any) -> None:
+        await page.press(selector, key)
+
+    async def _frame_clear(selector: str, **kwargs: Any) -> None:
+        if not await _async_is_selector_focused(page, selector):
+            await page.click(selector)
+        await async_sleep_ms(rand(50, 100))
+        await originals.keyboard_press("Control+a")
+        await async_sleep_ms(rand(30, 80))
+        await originals.keyboard_press("Backspace")
+
+    async def _frame_drag_and_drop(source: str, target: str, **kwargs: Any) -> None:
+        try:
+            src_box = await frame.locator(source).bounding_box()
+            tgt_box = await frame.locator(target).bounding_box()
+        except Exception:
+            src_box = tgt_box = None
+        if src_box and tgt_box:
+            sx = src_box['x'] + src_box['width'] / 2
+            sy = src_box['y'] + src_box['height'] / 2
+            tx = tgt_box['x'] + tgt_box['width'] / 2
+            ty = tgt_box['y'] + tgt_box['height'] / 2
+            await page.mouse.move(sx, sy)
+            await async_sleep_ms(rand(100, 200))
+            await originals.mouse_down()
+            await async_sleep_ms(rand(80, 150))
+            await page.mouse.move(tx, ty)
+            await async_sleep_ms(rand(80, 150))
+            await originals.mouse_up()
+        elif _orig_frame_drag_and_drop:
+            await _orig_frame_drag_and_drop(source, target, **kwargs)
 
     frame.click = _frame_click
     frame.dblclick = _frame_dblclick
     frame.hover = _frame_hover
     frame.type = _frame_type
     frame.fill = _frame_fill
+    frame.check = _frame_check
+    frame.uncheck = _frame_uncheck
+    frame.select_option = _frame_select_option
+    frame.press = _frame_press
+    frame.clear = _frame_clear
+    frame.drag_and_drop = _frame_drag_and_drop
 
 
 def patch_context_async(context: Any, cfg: HumanConfig) -> None:
-    """Patch all existing and future pages in a context (async)."""
     cursor = _CursorState()
     for page in context.pages:
         patch_page_async(page, cfg, cursor)
@@ -979,7 +1176,6 @@ def patch_context_async(context: Any, cfg: HumanConfig) -> None:
 
 
 def patch_browser_async(browser: Any, cfg: HumanConfig) -> None:
-    """Patch browser: all contexts, new_context, and new_page (async)."""
     for context in browser.contexts:
         patch_context_async(context, cfg)
 
@@ -1001,4 +1197,3 @@ def patch_browser_async(browser: Any, cfg: HumanConfig) -> None:
         return page
 
     browser.new_page = _patched_new_page
-
