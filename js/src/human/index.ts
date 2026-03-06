@@ -20,6 +20,9 @@ export { humanMove, humanClick, clickTarget, humanIdle } from './mouse.js';
 export { humanType } from './keyboard.js';
 export { scrollToElement } from './scroll.js';
 
+// --- Platform-aware select-all shortcut (macOS uses Meta, others use Control) ---
+const SELECT_ALL = process.platform === 'darwin' ? 'Meta+a' : 'Control+a';
+
 const COALESCED_PATCH = `
 (() => {
   if (window.__coalescedPatched) return;
@@ -76,6 +79,13 @@ async function isSelectorFocused(page: Page, selector: string): Promise<boolean>
   }, selector).catch(() => false);
 }
 
+// ============================================================================
+// Page-level patching
+// ============================================================================
+
+/**
+ * Replace page methods with human-like implementations.
+ */
 function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   const originals = {
     click: page.click.bind(page),
@@ -132,6 +142,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   const humanGoto = async (url: string, options?: any) => {
     const response = await originals.goto(url, options);
     if (cfg.patch_coalesced) await injectCoalescedPatch(page);
+    // Patch any new frames after navigation
     patchFrames(page, cfg, cursor, raw, rawKb, originals);
     return response;
   };
@@ -195,12 +206,12 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     await humanType(page, rawKb, text, cfg);
   };
 
-  // --- fill ---
+  // --- fill (clears existing content first) ---
   const humanFillFn = async (selector: string, value: string, options?: any) => {
     await sleep(randRange(cfg.field_switch_delay));
     await humanClickFn(selector);
     await sleep(rand(100, 250));
-    await originals.keyboardPress('Control+a');
+    await originals.keyboardPress(SELECT_ALL);
     await sleep(rand(30, 80));
     await originals.keyboardPress('Backspace');
     await sleep(rand(50, 150));
@@ -213,7 +224,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
       await humanClickFn(selector);
     }
     await sleep(rand(50, 150));
-    await originals.keyboardPress('Control+a');
+    await originals.keyboardPress(SELECT_ALL);
     await sleep(rand(30, 80));
     await originals.keyboardPress('Backspace');
   };
@@ -247,7 +258,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     return originals.selectOption(selector, values, options);
   };
 
-  // --- press ---
+  // --- press (checks focus first — avoids redundant mouse moves) ---
   const humanPressFn = async (selector: string, key: string, options?: any) => {
     if (!await isSelectorFocused(page, selector)) {
       await humanClickFn(selector);
@@ -282,7 +293,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   (page as any).selectOption = humanSelectOptionFn;
   (page as any).press = humanPressFn;
 
-  // mouse patches
+  // --- mouse patches ---
   page.mouse.move = async (x: number, y: number, options?: any) => {
     await ensureCursorInit();
     await humanMove(raw, cursor.x, cursor.y, x, y, cfg);
@@ -298,7 +309,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     await humanClick(raw, false, cfg);
   };
 
-  // keyboard patches
+  // --- keyboard patches ---
   page.keyboard.type = async (text: string, options?: any) => {
     await humanType(page, rawKb, text, cfg);
   };
@@ -316,21 +327,26 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   (page as any)._humanTapFn = humanTapFn;
   (page as any)._ensureCursorInit = ensureCursorInit;
 
-  // Initialize cursor immediately so it doesn't jump from (0,0)
+  // Initialize cursor immediately so it doesn't visibly jump from (0,0)
   cursor.x = rand(cfg.initial_cursor_x[0], cfg.initial_cursor_x[1]);
   cursor.y = rand(cfg.initial_cursor_y[0], cfg.initial_cursor_y[1]);
   originals.mouseMove(cursor.x, cursor.y).then(() => {
     cursor.initialized = true;
   }).catch(() => {});
 
-  // Patch Frame-level methods for Locator API
+  // --- Patch Frame-level methods (for sub-frames) ---
   patchFrames(page, cfg, cursor, raw, rawKb, originals);
 }
 
+
+// ============================================================================
+// Frame-level patching
+// ============================================================================
+
 /**
  * Patch Frame methods so Locator-based calls go through humanization.
- * All 14 methods patched: click, dblclick, hover, type, fill, check, uncheck,
- * selectOption, press, pressSequentially, tap, dragAndDrop, clear + setChecked.
+ * All 11 methods patched: click, dblclick, hover, type, fill, check, uncheck,
+ * selectOption, press, clear, dragAndDrop.
  */
 function patchFrames(
   page: Page,
@@ -349,6 +365,7 @@ function patchSingleFrame(frame: Frame, page: Page, cfg: HumanConfig, originals:
   if ((frame as any)._humanPatched) return;
   (frame as any)._humanPatched = true;
 
+  // Save originals for methods that need fallback
   const origFrameSelectOption = frame.selectOption.bind(frame);
   const origFrameDragAndDrop = frame.dragAndDrop.bind(frame);
 
@@ -395,7 +412,7 @@ function patchSingleFrame(frame: Frame, page: Page, cfg: HumanConfig, originals:
       await (page as any).click(selector);
     }
     await sleep(rand(50, 150));
-    await originals.keyboardPress('Control+a');
+    await originals.keyboardPress(SELECT_ALL);
     await sleep(rand(30, 80));
     await originals.keyboardPress('Backspace');
   };
@@ -434,6 +451,11 @@ function* iterFrames(page: Page): Generator<Frame> {
   } catch {}
 }
 
+
+// ============================================================================
+// Context-level patching
+// ============================================================================
+
 function patchContext(context: BrowserContext, cfg: HumanConfig): void {
   const cursor = new CursorState();
   for (const page of context.pages()) {
@@ -445,15 +467,20 @@ function patchContext(context: BrowserContext, cfg: HumanConfig): void {
     }
   });
 
-const origNewPage = context.newPage.bind(context);
-(context as any).newPage = async () => {
-  const page = await origNewPage();
-  if (!(page as any)._original) {
-    patchPage(page, cfg, new CursorState());
-  }
-  return page;
-};
+  const origNewPage = context.newPage.bind(context);
+  (context as any).newPage = async () => {
+    const page = await origNewPage();
+    if (!(page as any)._original) {
+      patchPage(page, cfg, new CursorState());
+    }
+    return page;
+  };
 }
+
+
+// ============================================================================
+// Browser-level patching
+// ============================================================================
 
 export function patchBrowser(browser: Browser, cfg: HumanConfig): void {
   for (const context of browser.contexts()) {

@@ -36,6 +36,12 @@ class HumanConfig:
     shift_down_delay: Range = (30, 70)
     shift_up_delay: Range = (20, 50)
     key_hold: Range = (15, 35)
+    
+    # Mistype (typo simulation)
+    mistype_chance: float = 0.02
+    mistype_delay_notice: Range = (100, 300)
+    mistype_delay_correct: Range = (50, 150)
+
     field_switch_delay: Range = (800, 1500)
 
     # Mouse — movement
@@ -137,8 +143,16 @@ def resolve_config(
 
     Returns:
         A new HumanConfig instance.
+
+    Raises:
+        ValueError: If preset is not a recognized name.
     """
-    base = _PRESETS.get(preset, _PRESETS["default"])
+    if preset not in _PRESETS:
+        raise ValueError(
+            f"Unknown humanize preset {preset!r}. "
+            f"Valid presets: {', '.join(sorted(_PRESETS.keys()))}"
+        )
+    base = _PRESETS[preset]
     if not overrides:
         return HumanConfig(**{k: getattr(base, k) for k in base.__dataclass_fields__})
     merged = {k: getattr(base, k) for k in base.__dataclass_fields__}

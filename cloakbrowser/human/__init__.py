@@ -9,6 +9,7 @@ Supports both sync and async Playwright APIs.
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any
 
 from .config import HumanConfig, HumanPreset, resolve_config
@@ -19,6 +20,8 @@ from .scroll import scroll_to_element
 from .mouse_async import AsyncRawMouse, async_human_move, async_human_click, async_human_idle
 from .keyboard_async import AsyncRawKeyboard, async_human_type
 from .scroll_async import async_scroll_to_element
+
+_SELECT_ALL = "Meta+a" if sys.platform == "darwin" else "Control+a"
 
 __all__ = [
     "patch_browser", "patch_context", "patch_page",
@@ -216,7 +219,8 @@ def _patch_locator_class_sync():
         if _is_humanized(self):
             cfg = _get_cfg(self)
             if cfg and cfg.idle_between_actions:
-                human_idle(self.page._original.mouse_move, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg)
+                raw = type("_R", (), {"move": self.page._original.mouse_move})()
+                human_idle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg)
             checked = self.is_checked()
             if not checked:
                 self.page.click(_get_selector(self))
@@ -227,7 +231,8 @@ def _patch_locator_class_sync():
         if _is_humanized(self):
             cfg = _get_cfg(self)
             if cfg and cfg.idle_between_actions:
-                human_idle(self.page._original.mouse_move, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg)
+                raw = type("_R", (), {"move": self.page._original.mouse_move})()
+                human_idle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg)
             checked = self.is_checked()
             if checked:
                 self.page.click(_get_selector(self))
@@ -307,7 +312,7 @@ def _patch_locator_class_sync():
             if not _is_selector_focused(self.page, selector):
                 self.page.click(selector)
             sleep_ms(rand(50, 100))
-            self.page.keyboard.press("Control+a")
+            self.page.keyboard.press(_SELECT_ALL)
             sleep_ms(rand(30, 80))
             self.page.keyboard.press("Backspace")
         else:
@@ -403,9 +408,11 @@ def _patch_locator_class_async():
         if _is_humanized(self):
             cfg = _get_cfg(self)
             if cfg and cfg.idle_between_actions:
+                raw = type("_R", (), {"move": self.page._original.mouse_move})()
                 await async_human_idle(
-                    type("_R", (), {"move": self.page._original.mouse_move})(),
-                    rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg,
+                    raw,
+                    rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]),
+                    0, 0, cfg,
                 )
             checked = await self.is_checked()
             if not checked:
@@ -417,9 +424,11 @@ def _patch_locator_class_async():
         if _is_humanized(self):
             cfg = _get_cfg(self)
             if cfg and cfg.idle_between_actions:
+                raw = type("_R", (), {"move": self.page._original.mouse_move})()
                 await async_human_idle(
-                    type("_R", (), {"move": self.page._original.mouse_move})(),
-                    rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg,
+                    raw,
+                    rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]),
+                    0, 0, cfg,
                 )
             checked = await self.is_checked()
             if checked:
@@ -499,7 +508,7 @@ def _patch_locator_class_async():
             if not await _async_is_selector_focused(self.page, selector):
                 await self.page.click(selector)
             await async_sleep_ms(rand(50, 100))
-            await self.page.keyboard.press("Control+a")
+            await self.page.keyboard.press(_SELECT_ALL)
             await async_sleep_ms(rand(30, 80))
             await self.page.keyboard.press("Backspace")
         else:
@@ -635,7 +644,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         sleep_ms(rand_range(cfg.field_switch_delay))
         _human_click(selector)
         sleep_ms(rand(100, 250))
-        originals.keyboard_press("Control+a")
+        originals.keyboard_press(_SELECT_ALL)
         sleep_ms(rand(30, 80))
         originals.keyboard_press("Backspace")
         sleep_ms(rand(50, 150))
@@ -660,7 +669,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     def _human_select_option(selector: str, value: Any = None, **kwargs: Any) -> Any:
         _human_hover(selector)
         sleep_ms(rand(100, 300))
-        return originals.click(selector)  # fallback; real select done by Locator
+        return originals.click(selector)
 
     def _human_press(selector: str, key: str, **kwargs: Any) -> None:
         if not _is_selector_focused(page, selector):
@@ -695,11 +704,10 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     page.press = _human_press
     page.mouse.move = _human_mouse_move
     page.mouse.click = _human_mouse_click
-    page.keyboard.type = _human_keyboard_type
-
+    page.keyboard.type = _human_keyboard_type  
     # --- Patch Frame-level methods (for sub-frames) ---
     _patch_frames_sync(page, cfg, cursor, raw_mouse, raw_keyboard, originals)
-
+    
     # Initialize cursor immediately so it doesn't visibly jump from (0,0)
     cursor.x = rand(cfg.initial_cursor_x[0], cfg.initial_cursor_x[1])
     cursor.y = rand(cfg.initial_cursor_y[0], cfg.initial_cursor_y[1])
@@ -785,7 +793,7 @@ def _patch_single_frame_sync(
         if not _is_selector_focused(page, selector):
             page.click(selector)
         sleep_ms(rand(50, 100))
-        originals.keyboard_press("Control+a")
+        originals.keyboard_press(_SELECT_ALL)
         sleep_ms(rand(30, 80))
         originals.keyboard_press("Backspace")
 
@@ -987,7 +995,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await async_sleep_ms(rand_range(cfg.field_switch_delay))
         await _human_click(selector)
         await async_sleep_ms(rand(100, 250))
-        await originals.keyboard_press("Control+a")
+        await originals.keyboard_press(_SELECT_ALL)
         await async_sleep_ms(rand(30, 80))
         await originals.keyboard_press("Backspace")
         await async_sleep_ms(rand(50, 150))
@@ -1122,7 +1130,7 @@ def _patch_single_frame_async(
         if not await _async_is_selector_focused(page, selector):
             await page.click(selector)
         await async_sleep_ms(rand(50, 100))
-        await originals.keyboard_press("Control+a")
+        await originals.keyboard_press(_SELECT_ALL)
         await async_sleep_ms(rand(30, 80))
         await originals.keyboard_press("Backspace")
 

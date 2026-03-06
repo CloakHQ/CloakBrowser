@@ -10,7 +10,7 @@ import random
 from typing import Any, Protocol
 
 from .config import HumanConfig, rand, rand_range, async_sleep_ms
-from .keyboard import SHIFT_SYMBOLS
+from .keyboard import SHIFT_SYMBOLS, NEARBY_KEYS, _get_nearby_key
 
 
 class AsyncRawKeyboard(Protocol):
@@ -22,6 +22,16 @@ class AsyncRawKeyboard(Protocol):
 
 async def async_human_type(page: Any, raw: AsyncRawKeyboard, text: str, cfg: HumanConfig) -> None:
     for i, ch in enumerate(text):
+        # Mistype chance — press wrong key, notice, backspace, then correct
+        if random.random() < cfg.mistype_chance and ch.isalnum():
+            wrong = _get_nearby_key(ch)
+            await _type_normal_char(raw, wrong, cfg)
+            await async_sleep_ms(rand_range(cfg.mistype_delay_notice))
+            await raw.down("Backspace")
+            await async_sleep_ms(rand_range(cfg.key_hold))
+            await raw.up("Backspace")
+            await async_sleep_ms(rand_range(cfg.mistype_delay_correct))
+
         if ch.isupper() and ch.isalpha():
             await _type_shifted_char(page, raw, ch, cfg)
         elif ch in SHIFT_SYMBOLS:

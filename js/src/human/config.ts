@@ -19,6 +19,10 @@ export interface HumanConfig {
   shift_up_delay: [number, number];
   key_hold: [number, number];
   field_switch_delay: [number, number];
+  mistype_chance: number;
+  mistype_delay_notice: [number, number];
+  mistype_delay_correct: [number, number];
+
 
   // Mouse — movement
   mouse_steps_divisor: number;
@@ -82,6 +86,10 @@ const DEFAULT_CONFIG: HumanConfig = {
   shift_up_delay: [20, 50],
   key_hold: [15, 35],
   field_switch_delay: [800, 1500],
+  // Mistype (typo simulation)
+  mistype_chance: 0.02,
+  mistype_delay_notice: [100, 300],
+  mistype_delay_correct: [50, 150],
 
   // Mouse — movement
   mouse_steps_divisor: 8,
@@ -145,6 +153,9 @@ const CAREFUL_CONFIG: HumanConfig = {
   shift_up_delay: [30, 70],
   key_hold: [20, 45],
   field_switch_delay: [1000, 2000],
+  mistype_chance: 0.03,
+  mistype_delay_notice: [150, 400],
+  mistype_delay_correct: [80, 200],
 
   // Mouse — slower, more precise
   mouse_overshoot_chance: 0.10,
@@ -185,10 +196,16 @@ export function resolveConfig(
   preset: HumanPreset = 'default',
   overrides?: Partial<HumanConfig>,
 ): HumanConfig {
-  const base = PRESETS[preset] ?? DEFAULT_CONFIG;
+  const base = PRESETS[preset];
+  if (!base) {
+    throw new Error(
+      `Unknown humanize preset "${preset}". Valid presets: ${Object.keys(PRESETS).join(', ')}`
+    );
+  }
   if (!overrides) return { ...base };
   return { ...base, ...overrides };
 }
+
 
 // ---------------------------------------------------------------------------
 // Utility: random number in range
