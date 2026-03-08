@@ -52,6 +52,17 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     ...options.launchOptions,
   });
 
+  // Human-like behavioral patching
+  if (options.humanize) {
+    const { patchBrowser } = await import('./human/index.js');
+    const { resolveConfig } = await import('./human/config.js');
+    const cfg = resolveConfig(
+      (options.humanPreset as any) ?? 'default',
+      options.humanConfig as any,
+    );
+    patchBrowser(browser, cfg);
+  }
+
   return browser;
 }
 
@@ -103,6 +114,17 @@ export async function launchContext(
     await browser.close();
   };
 
+  // Human-like behavioral patching
+  if (options.humanize) {
+    const { patchContext } = await import('./human/index.js');
+    const { resolveConfig } = await import('./human/config.js');
+    const cfg = resolveConfig(
+      (options.humanPreset as any) ?? 'default',
+      options.humanConfig as any,
+    );
+    patchContext(context, cfg);
+  }
+
   return context;
 }
 
@@ -152,6 +174,17 @@ export async function launchPersistentContext(
     ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
     ...options.launchOptions,
   });
+
+  // Human-like behavioral patching
+  if (options.humanize) {
+    const { patchContext } = await import('./human/index.js');
+    const { resolveConfig } = await import('./human/config.js');
+    const cfg = resolveConfig(
+      (options.humanPreset as any) ?? 'default',
+      options.humanConfig as any,
+    );
+    patchContext(context, cfg);
+  }
 
   return context;
 }

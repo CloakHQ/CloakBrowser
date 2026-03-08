@@ -24,6 +24,12 @@ export interface LaunchOptions {
   geoip?: boolean;
   /** Raw options passed directly to playwright/puppeteer launch(). */
   launchOptions?: Record<string, unknown>;
+  /** Enable human-like mouse, keyboard, and scroll behavior. */
+  humanize?: boolean;
+  /** Human behavior preset: 'default' or 'careful'. */
+  humanPreset?: 'default' | 'careful';
+  /** Override individual human behavior parameters. */
+  humanConfig?: Record<string, unknown>;
 }
 
 export interface LaunchContextOptions extends LaunchOptions {
