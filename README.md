@@ -638,6 +638,16 @@ CloakBrowser works identically local, in Docker, and on VPS. No environment-spec
 
 **Note:** If you run CloakBrowser inside a web server with uvloop (e.g., `uvicorn[standard]`), use `--loop asyncio` to avoid subprocess pipe hangs.
 
+### Verify image signature
+
+The Docker image is built and signed on GitHub Actions infrastructure using [Sigstore Cosign](https://www.sigstore.dev/) (keyless, OIDC-based — no private key):
+
+```bash
+cosign verify cloakhq/cloakbrowser:latest \
+  --certificate-identity-regexp="https://github.com/CloakHQ/cloakbrowser" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+```
+
 ## Troubleshooting
 
 **Still getting blocked on aggressive sites (DataDome, Turnstile)?**
