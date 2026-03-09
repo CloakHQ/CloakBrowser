@@ -14,6 +14,7 @@ Usage:
 from .browser import launch, launch_async, launch_context, launch_persistent_context, launch_persistent_context_async, ProxySettings
 from .config import CHROMIUM_VERSION, get_default_stealth_args
 from .download import binary_info, check_for_update, clear_cache, ensure_binary
+from .proxy_rotator import ProxyRotator, Strategy as ProxyStrategy
 from ._version import __version__
 
 # Human-like behavioral layer (optional)
@@ -41,6 +42,8 @@ __all__ = [
     "CHROMIUM_VERSION",
     "get_default_stealth_args",
     "ProxySettings",
+    "ProxyRotator",
+    "ProxyStrategy",
     "HumanConfig",
     "resolve_human_config",
     "__version__",

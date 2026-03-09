@@ -24,5 +24,9 @@ export { ensureBinary, clearCache, binaryInfo, checkForUpdate } from "./download
 // Config
 export { CHROMIUM_VERSION, getDefaultStealthArgs } from "./config.js";
 
+// Proxy rotation
+export { ProxyRotator, maskProxy } from "./proxy-rotator.js";
+export type { ProxyRotationStrategy, ProxyValue, ProxyRotatorOptions, ProxyStats } from "./proxy-rotator.js";
+
 // Types
 export type { LaunchOptions, LaunchContextOptions, LaunchPersistentContextOptions, BinaryInfo } from "./types.js";
