@@ -8,6 +8,7 @@ import type { LaunchOptions } from "./types.js";
 import { buildArgs } from "./args.js";
 import { ensureBinary } from "./download.js";
 import { parseProxyUrl } from "./proxy.js";
+import { resolveProxyRotator } from "./proxy-rotator.js";
 
 /**
  * Launch stealth Chromium browser via Puppeteer.
@@ -26,16 +27,18 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const puppeteer = await import("puppeteer-core");
 
   const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
-  const resolved = await maybeResolveGeoip(options);
-  const args = buildArgs({ ...options, ...resolved });
+  const resolvedProxy = resolveProxyRotator(options.proxy);
+  const opts = { ...options, proxy: resolvedProxy };
+  const resolved = await maybeResolveGeoip(opts);
+  const args = buildArgs({ ...opts, ...resolved });
 
   // Puppeteer handles proxy via CLI args, not a separate option.
   // Chromium's --proxy-server does NOT support inline credentials,
   // so we strip them and use page.authenticate() instead.
   let proxyAuth: { username: string; password: string } | undefined;
-  if (options.proxy) {
-    if (typeof options.proxy === "string") {
-      const { server, username, password } = parseProxyUrl(options.proxy);
+  if (resolvedProxy) {
+    if (typeof resolvedProxy === "string") {
+      const { server, username, password } = parseProxyUrl(resolvedProxy);
       args.push(`--proxy-server=${server}`);
       if (username) {
         proxyAuth = { username, password: password ?? "" };
@@ -43,14 +46,14 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     } else {
       // Strip any inline credentials from the server URL — Chromium's
       // --proxy-server doesn't support them; use page.authenticate() instead.
-      const parsed = parseProxyUrl(options.proxy.server);
+      const parsed = parseProxyUrl(resolvedProxy.server);
       args.push(`--proxy-server=${parsed.server}`);
-      if (options.proxy.bypass) {
-        args.push(`--proxy-bypass-list=${options.proxy.bypass}`);
+      if (resolvedProxy.bypass) {
+        args.push(`--proxy-bypass-list=${resolvedProxy.bypass}`);
       }
       // Explicit username/password fields take precedence over inline creds
-      const username = options.proxy.username ?? parsed.username;
-      const password = options.proxy.password ?? parsed.password;
+      const username = resolvedProxy.username ?? parsed.username;
+      const password = resolvedProxy.password ?? parsed.password;
       if (username) {
         proxyAuth = { username, password: password ?? "" };
       }
@@ -90,7 +93,10 @@ async function maybeResolveGeoip(
   if (options.timezone && options.locale) return { timezone: options.timezone, locale: options.locale };
 
   const { resolveProxyGeo } = await import("./geoip.js");
-  const proxyUrl = typeof options.proxy === "string" ? options.proxy : options.proxy.server;
+  const proxy = options.proxy;
+  const proxyUrl = typeof proxy === "string"
+    ? proxy
+    : "server" in proxy ? proxy.server : undefined;
   if (!proxyUrl) return { timezone: options.timezone, locale: options.locale };
   const { timezone: geoTz, locale: geoLocale } = await resolveProxyGeo(proxyUrl);
   return {

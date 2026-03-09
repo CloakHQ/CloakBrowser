@@ -98,3 +98,36 @@ class TestMaybeResolveGeoip:
         tz, locale = _maybe_resolve_geoip(True, "http://proxy:8080", "Europe/Berlin", None)
         assert tz == "Europe/Berlin"
         assert locale == "ja-JP"
+
+
+# ---------------------------------------------------------------------------
+# Bare proxy format (user:pass@host:port without scheme)
+# ---------------------------------------------------------------------------
+
+
+class TestBareProxyFormat:
+    """_parse_proxy_url must handle bare 'user:pass@host:port' strings."""
+
+    def test_bare_proxy_with_credentials(self):
+        result = _parse_proxy_url("user:pass@proxy:8080")
+        assert result["username"] == "user"
+        assert result["password"] == "pass"
+        assert result["server"] == "http://proxy:8080"
+
+    def test_bare_proxy_without_credentials(self):
+        result = _parse_proxy_url("proxy:8080")
+        assert result["server"] == "proxy:8080"
+        assert "username" not in result
+
+    def test_bare_proxy_credentials_not_in_server(self):
+        """Server field must not contain embedded credentials."""
+        result = _parse_proxy_url("user:pass@proxy1.example.com:5610")
+        assert "user" not in result["server"]
+        assert "pass" not in result["server"]
+
+    def test_build_proxy_kwargs_bare_format(self):
+        result = _build_proxy_kwargs("user:pass@proxy:8080")
+        proxy = result["proxy"]
+        assert proxy["username"] == "user"
+        assert proxy["password"] == "pass"
+        assert "user" not in proxy["server"]

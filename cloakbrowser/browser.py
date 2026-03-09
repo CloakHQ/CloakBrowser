@@ -22,6 +22,7 @@ from urllib.parse import unquote, urlparse, urlunparse
 
 from .config import DEFAULT_VIEWPORT, get_default_stealth_args
 from .download import ensure_binary
+from .proxy_rotator import ProxyRotator
 
 logger = logging.getLogger("cloakbrowser")
 
@@ -51,7 +52,7 @@ class ProxySettings(_ProxySettingsRequired, total=False):
 
 def launch(
     headless: bool = True,
-    proxy: str | ProxySettings | None = None,
+    proxy: str | ProxySettings | ProxyRotator | None = None,
     args: list[str] | None = None,
     stealth_args: bool = True,
     timezone: str | None = None,
@@ -102,6 +103,7 @@ def launch(
     """
     sync_playwright = _import_sync_playwright(_resolve_backend(backend))
 
+    proxy = _resolve_proxy_rotator(proxy)
     binary_path = ensure_binary()
     timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
     chrome_args = _build_args(stealth_args, args, timezone=timezone, locale=locale)
@@ -139,7 +141,7 @@ def launch(
 
 async def launch_async(  # noqa: C901
     headless: bool = True,
-    proxy: str | ProxySettings | None = None,
+    proxy: str | ProxySettings | ProxyRotator | None = None,
     args: list[str] | None = None,
     stealth_args: bool = True,
     timezone: str | None = None,
@@ -185,6 +187,7 @@ async def launch_async(  # noqa: C901
     """
     async_playwright = _import_async_playwright(_resolve_backend(backend))
 
+    proxy = _resolve_proxy_rotator(proxy)
     binary_path = ensure_binary()
     timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
     chrome_args = _build_args(stealth_args, args, timezone=timezone, locale=locale)
@@ -223,7 +226,7 @@ async def launch_async(  # noqa: C901
 def launch_persistent_context(
     user_data_dir: str | os.PathLike,
     headless: bool = True,
-    proxy: str | ProxySettings | None = None,
+    proxy: str | ProxySettings | ProxyRotator | None = None,
     args: list[str] | None = None,
     stealth_args: bool = True,
     user_agent: str | None = None,
@@ -279,6 +282,7 @@ def launch_persistent_context(
     """
     sync_playwright = _import_sync_playwright(_resolve_backend(backend))
 
+    proxy = _resolve_proxy_rotator(proxy)
     timezone = _migrate_timezone_id(timezone, kwargs)
 
     binary_path = ensure_binary()
@@ -336,7 +340,7 @@ def launch_persistent_context(
 async def launch_persistent_context_async(
     user_data_dir: str | os.PathLike,
     headless: bool = True,
-    proxy: str | ProxySettings | None = None,
+    proxy: str | ProxySettings | ProxyRotator | None = None,
     args: list[str] | None = None,
     stealth_args: bool = True,
     user_agent: str | None = None,
@@ -394,6 +398,7 @@ async def launch_persistent_context_async(
     """
     async_playwright = _import_async_playwright(_resolve_backend(backend))
 
+    proxy = _resolve_proxy_rotator(proxy)
     timezone = _migrate_timezone_id(timezone, kwargs)
 
     binary_path = ensure_binary()
@@ -450,7 +455,7 @@ async def launch_persistent_context_async(
 
 def launch_context(
     headless: bool = True,
-    proxy: str | ProxySettings | None = None,
+    proxy: str | ProxySettings | ProxyRotator | None = None,
     args: list[str] | None = None,
     stealth_args: bool = True,
     user_agent: str | None = None,
@@ -492,6 +497,9 @@ def launch_context(
         Playwright BrowserContext object.
     """
     timezone = _migrate_timezone_id(timezone, kwargs)
+
+    # Resolve proxy rotator before geoip/launch to ensure consistent proxy
+    proxy = _resolve_proxy_rotator(proxy)
 
     # Resolve geoip BEFORE launch() to avoid double-resolution and ensure
     # resolved values flow to both binary flags AND context params
@@ -653,12 +661,23 @@ def _parse_proxy_url(proxy: str) -> dict[str, Any]:
     """Parse proxy URL, extracting credentials into separate Playwright fields.
 
     Handles: http://user:pass@host:port -> {server: "http://host:port", username: "user", password: "pass"}
-    Also handles: no credentials, URL-encoded special chars, socks5://, missing port.
+    Also handles: no credentials, URL-encoded special chars, socks5://, missing port,
+    and bare proxy strings without a scheme (e.g. 'user:pass@host:port' -> treated as http).
     """
-    parsed = urlparse(proxy)
+    # Bare format: "user:pass@host:port" — no scheme.
+    # urlparse needs a scheme to correctly extract credentials.
+    normalized = proxy
+    had_scheme = "://" in proxy
+    if not had_scheme and "@" in proxy:
+        normalized = f"http://{proxy}"
+
+    parsed = urlparse(normalized)
 
     if not parsed.username:
-        return {"server": proxy}
+        # No credentials found — if we added a scheme, use it; otherwise keep original.
+        if not had_scheme and "@" not in proxy:
+            return {"server": proxy}
+        return {"server": normalized}
 
     # Rebuild server URL without credentials
     netloc = parsed.hostname or ""
@@ -673,6 +692,13 @@ def _parse_proxy_url(proxy: str) -> dict[str, Any]:
         result["password"] = unquote(parsed.password)
 
     return result
+
+
+def _resolve_proxy_rotator(proxy: str | ProxySettings | ProxyRotator | None) -> str | ProxySettings | None:
+    """If proxy is a ProxyRotator, call .next() to get the actual proxy."""
+    if isinstance(proxy, ProxyRotator):
+        return proxy.next()
+    return proxy
 
 
 def _build_proxy_kwargs(proxy: str | ProxySettings | None) -> dict[str, Any]:

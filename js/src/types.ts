@@ -6,12 +6,13 @@ export interface LaunchOptions {
   /** Run in headless mode (default: true). */
   headless?: boolean;
   /**
-   * Proxy server — URL string or Playwright proxy object.
+   * Proxy server — URL string, Playwright proxy object, or ProxyRotator.
    * String: 'http://user:pass@proxy:8080' (credentials auto-extracted).
    * Object: { server: "http://proxy:8080", bypass: ".google.com", ... }
    *   — passed directly to Playwright.
+   * ProxyRotator: calls .next() automatically to get the next proxy.
    */
-  proxy?: string | { server: string; bypass?: string; username?: string; password?: string };
+  proxy?: string | { server: string; bypass?: string; username?: string; password?: string } | import('./proxy-rotator.js').ProxyRotator;
   /** Additional Chromium CLI arguments. */
   args?: string[];
   /** Include default stealth fingerprint args (default: true). Set false to use custom --fingerprint flags. */
