@@ -22,6 +22,11 @@ const NEARBY_KEYS: Record<string, string> = {
   '6': '57ty', '7': '68yu', '8': '79ui', '9': '80io', '0': '9p',
 };
 
+function isAscii(ch: string): boolean {
+  const code = ch.codePointAt(0);
+  return code !== undefined && code < 128;
+}
+
 function getNearbyKey(ch: string): string {
   const lower = ch.toLowerCase();
   if (lower in NEARBY_KEYS) {
@@ -38,11 +43,23 @@ export async function humanType(
   text: string,
   cfg: HumanConfig,
 ): Promise<void> {
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
+  const chars = [...text]; // Handle emoji surrogate pairs correctly
 
-    // Mistype chance — press wrong key, notice, backspace, then correct
-    if (Math.random() < cfg.mistype_chance && /[a-zA-Z0-9]/.test(ch)) {
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+
+    // Non-ASCII characters (Cyrillic, CJK, emoji) — use insertText
+    if (!isAscii(ch)) {
+      await sleep(randRange(cfg.key_hold));
+      await raw.insertText(ch);
+      if (i < chars.length - 1) {
+        await interCharDelay(cfg);
+      }
+      continue;
+    }
+
+    // Mistype chance — only for ASCII alphanumeric
+    if (Math.random() < cfg.mistype_chance && /^[a-zA-Z0-9]$/.test(ch)) {
       const wrong = getNearbyKey(ch);
       await typeNormalChar(raw, wrong, cfg);
       await sleep(randRange(cfg.mistype_delay_notice));
@@ -60,7 +77,7 @@ export async function humanType(
       await typeNormalChar(raw, ch, cfg);
     }
 
-    if (i < text.length - 1) {
+    if (i < chars.length - 1) {
       await interCharDelay(cfg);
     }
   }

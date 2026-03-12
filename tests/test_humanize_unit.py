@@ -407,6 +407,127 @@ class TestSelectAllPlatform:
 
 
 # =========================================================================
+# 11. Non-ASCII keyboard input
+# =========================================================================
+
+class TestNonAsciiKeyboard:
+    def test_cyrillic_uses_insert_text(self):
+        from cloakbrowser.human.keyboard import human_type
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", {"mistype_chance": 0})
+        page = MagicMock()
+        raw = MagicMock()
+
+        down_keys = []
+        inserted = []
+        raw.down = MagicMock(side_effect=lambda k: down_keys.append(k))
+        raw.up = MagicMock()
+        raw.insert_text = MagicMock(side_effect=lambda t: inserted.append(t))
+
+        human_type(page, raw, "Привет", cfg)
+
+        assert "".join(inserted) == "Привет"
+        for k in down_keys:
+            assert ord(k[0]) < 128 or k in ("Shift", "Backspace")
+
+    def test_mixed_ascii_cyrillic(self):
+        from cloakbrowser.human.keyboard import human_type
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", {"mistype_chance": 0})
+        page = MagicMock()
+        raw = MagicMock()
+
+        down_keys = []
+        inserted = []
+        raw.down = MagicMock(side_effect=lambda k: down_keys.append(k))
+        raw.up = MagicMock()
+        raw.insert_text = MagicMock(side_effect=lambda t: inserted.append(t))
+
+        human_type(page, raw, "Hi Мир", cfg)
+
+        assert "H" in down_keys
+        assert "i" in down_keys
+        assert "М" in "".join(inserted)
+
+    def test_cjk_uses_insert_text(self):
+        from cloakbrowser.human.keyboard import human_type
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", {"mistype_chance": 0})
+        page = MagicMock()
+        raw = MagicMock()
+
+        inserted = []
+        raw.down = MagicMock()
+        raw.up = MagicMock()
+        raw.insert_text = MagicMock(side_effect=lambda t: inserted.append(t))
+
+        human_type(page, raw, "你好", cfg)
+
+        assert "".join(inserted) == "你好"
+
+    def test_mistype_only_ascii(self):
+        from cloakbrowser.human.keyboard import human_type
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", {"mistype_chance": 1.0})
+        page = MagicMock()
+        raw = MagicMock()
+
+        down_keys = []
+        raw.down = MagicMock(side_effect=lambda k: down_keys.append(k))
+        raw.up = MagicMock()
+        raw.insert_text = MagicMock()
+
+        human_type(page, raw, "AБ", cfg)
+
+        assert "Backspace" in down_keys
+
+    def test_no_error_on_cyrillic(self):
+        from cloakbrowser.human.keyboard import human_type
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", {"mistype_chance": 0})
+        page = MagicMock()
+        raw = MagicMock()
+        raw.down = MagicMock()
+        raw.up = MagicMock()
+        raw.insert_text = MagicMock()
+
+        # Should not raise
+        human_type(page, raw, "Тест кириллицы", cfg)
+
+
+class TestNonAsciiKeyboardAsync:
+    @pytest.mark.asyncio
+    async def test_async_cyrillic_uses_insert_text(self):
+        from cloakbrowser.human.keyboard_async import async_human_type
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock, AsyncMock
+
+        cfg = resolve_config("default", {"mistype_chance": 0})
+        page = MagicMock()
+        raw = MagicMock()
+
+        inserted = []
+        raw.down = AsyncMock()
+        raw.up = AsyncMock()
+        raw.insert_text = AsyncMock(side_effect=lambda t: inserted.append(t))
+
+        await async_human_type(page, raw, "Привет", cfg)
+
+        assert "".join(inserted) == "Привет"
+
+
+
+# =========================================================================
 # SLOW TESTS — require browser (skipped in CI unless pytest -m slow)
 # =========================================================================
 

@@ -41,7 +41,15 @@ def _get_nearby_key(ch: str) -> str:
 
 def human_type(page: Any, raw: RawKeyboard, text: str, cfg: HumanConfig) -> None:
     for i, ch in enumerate(text):
-        # Mistype chance — press wrong key, notice, backspace, then correct
+        # Non-ASCII characters (Cyrillic, CJK, emoji) — use insertText
+        if not ch.isascii():
+            sleep_ms(rand_range(cfg.key_hold))
+            raw.insert_text(ch)
+            if i < len(text) - 1:
+                _inter_char_delay(cfg)
+            continue
+
+        # Mistype chance — only for ASCII alphanumeric
         if random.random() < cfg.mistype_chance and ch.isalnum():
             wrong = _get_nearby_key(ch)
             _type_normal_char(raw, wrong, cfg)

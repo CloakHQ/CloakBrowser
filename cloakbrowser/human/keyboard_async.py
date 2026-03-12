@@ -22,7 +22,15 @@ class AsyncRawKeyboard(Protocol):
 
 async def async_human_type(page: Any, raw: AsyncRawKeyboard, text: str, cfg: HumanConfig) -> None:
     for i, ch in enumerate(text):
-        # Mistype chance — press wrong key, notice, backspace, then correct
+        # Non-ASCII characters (Cyrillic, CJK, emoji) — use insertText
+        if not ch.isascii():
+            await async_sleep_ms(rand_range(cfg.key_hold))
+            await raw.insert_text(ch)
+            if i < len(text) - 1:
+                await _inter_char_delay(cfg)
+            continue
+
+        # Mistype chance — only for ASCII alphanumeric
         if random.random() < cfg.mistype_chance and ch.isalnum():
             wrong = _get_nearby_key(ch)
             await _type_normal_char(raw, wrong, cfg)

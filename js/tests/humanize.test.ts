@@ -530,6 +530,81 @@ function buildMockPage(overrides: Record<string, any> = {}): any {
   return page;
 }
 
+// =========================================================================
+// humanType non-ASCII
+// =========================================================================
+describe("humanType non-ASCII", () => {
+  function makeRawKeyboardMock() {
+    const downKeys: string[] = [];
+    const insertedChars: string[] = [];
+    const raw = {
+      down: vi.fn(async (k: string) => { downKeys.push(k); }),
+      up: vi.fn(async () => {}),
+      type: vi.fn(async () => {}),
+      insertText: vi.fn(async (t: string) => { insertedChars.push(t); }),
+    };
+    return { raw, downKeys, insertedChars };
+  }
+
+  it("types Cyrillic via insertText, not down", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { mistype_chance: 0 });
+    const { raw, downKeys, insertedChars } = makeRawKeyboardMock();
+
+    await humanType({} as any, raw, "Привет", cfg);
+
+    expect(insertedChars.join("")).toBe("Привет");
+    for (const k of downKeys) {
+      expect(k.charCodeAt(0)).toBeLessThan(128);
+    }
+  });
+
+  it("types mixed ASCII + Cyrillic correctly", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { mistype_chance: 0 });
+    const { raw, downKeys, insertedChars } = makeRawKeyboardMock();
+
+    await humanType({} as any, raw, "Hi Мир", cfg);
+
+    expect(downKeys).toContain("H");
+    expect(downKeys).toContain("i");
+    expect(insertedChars.join("")).toContain("М");
+    expect(insertedChars.join("")).toContain("и");
+    expect(insertedChars.join("")).toContain("р");
+  });
+
+  it("types CJK via insertText", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { mistype_chance: 0 });
+    const { raw, insertedChars } = makeRawKeyboardMock();
+
+    await humanType({} as any, raw, "你好", cfg);
+
+    expect(insertedChars.join("")).toBe("你好");
+  });
+
+  it("types emoji via insertText", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { mistype_chance: 0 });
+    const { raw, insertedChars } = makeRawKeyboardMock();
+
+    await humanType({} as any, raw, "Hi 👋", cfg);
+
+    expect(insertedChars.join("")).toContain("👋");
+  });
+
+  it("mistype only triggers for ASCII, not Cyrillic", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { mistype_chance: 1.0 });
+    const { raw, downKeys } = makeRawKeyboardMock();
+
+    await humanType({} as any, raw, "AБ", cfg);
+
+    expect(downKeys).toContain("Backspace");
+  });
+});
+
+
 
 function buildMockFrame(): any {
   return {
