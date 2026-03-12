@@ -217,3 +217,70 @@ class TestBotDetectionSites:
         score = results["score"]
         assert score is not None, "Could not extract reCAPTCHA score"
         assert score >= 0.7, f"reCAPTCHA score too low: {score}"
+
+
+class TestIssueRegressions:
+    """Regression tests for specific GitHub issues.
+
+    Uses the shared browser fixture to avoid "Sync API inside asyncio loop"
+    errors when pytest-asyncio is active.
+    """
+
+    @pytest.mark.slow
+    def test_immediate_goto_works(self, browser):
+        """Issue #9: page.goto() immediately after launch must not fail.
+
+        User reported reCAPTCHA fails if goto is called too quickly after
+        launch. This test verifies that immediate navigation works without
+        needing an artificial delay.
+        """
+        page = browser.new_page()
+        # No delay — goto immediately
+        page.goto("https://example.com", timeout=30000)
+        title = page.title()
+        page.close()
+        assert "Example Domain" in title, f"Immediate goto failed, title={title}"
+
+    @pytest.mark.slow
+    def test_add_init_script_without_proxy(self, browser):
+        """Issue #27: add_init_script must work (baseline without proxy).
+
+        The bug is proxy + add_init_script, but we first verify init_script
+        alone works so we have a baseline.
+        """
+        page = browser.new_page()
+        page.add_init_script("window.__cloaktest = 42;")
+        page.goto("https://example.com", timeout=30000)
+        val = page.evaluate("window.__cloaktest")
+        page.close()
+        assert val == 42, f"add_init_script failed, got {val}"
+
+    @pytest.mark.slow
+    def test_add_init_script_with_proxy(self, browser):
+        """Issue #27: add_init_script + proxy must not cause ERR_TUNNEL_CONNECTION_FAILED.
+
+        Patchright bug: add_init_script breaks proxy auth. This test guards
+        against regression if/when the upstream fix lands. Uses context-level
+        proxy to avoid launching a separate browser (event loop conflict).
+        """
+        proxy = os.environ.get("CLOAKBROWSER_TEST_PROXY")
+        if not proxy:
+            pytest.skip("CLOAKBROWSER_TEST_PROXY not set")
+
+        ctx = browser.new_context(proxy={"server": proxy})
+        page = ctx.new_page()
+        page.add_init_script("window.__cloaktest = 99;")
+        try:
+            page.goto("https://httpbin.org/ip", timeout=30000)
+            body = page.evaluate("document.body.innerText")
+            val = page.evaluate("window.__cloaktest")
+            assert val == 99, f"init_script value wrong: {val}"
+            assert "origin" in body, f"Page didn't load through proxy: {body[:100]}"
+        except Exception as e:
+            err = str(e)
+            if "ERR_TUNNEL_CONNECTION_FAILED" in err:
+                pytest.xfail("Known patchright bug: add_init_script + proxy auth (issue #27)")
+            raise
+        finally:
+            page.close()
+            ctx.close()

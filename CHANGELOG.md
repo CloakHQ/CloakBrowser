@@ -6,6 +6,49 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [0.3.14] — 2026-03-12
+
+- **[binary]** Upgrade Linux build to 145.0.7632.159.6 — fix persistent context detection by FingerprintJS
+- **[binary]** Storage quota normalization for persistent context profiles
+- **[binary]** Fix outerHeight calculation for non-incognito contexts
+- **[wrapper]** Add CLI for binary management — `python -m cloakbrowser install` / `npx cloakbrowser install` with visible download progress (closes #43)
+
+## [0.3.13] — 2026-03-10
+
+- **[wrapper]** Suppress Playwright's `--enable-unsafe-swiftshader` default arg — eliminates SwiftShader software renderer detection signal, letting the binary's GPU spoofing work cleanly
+- **[binary]** Upgrade Linux build to 145.0.7632.159.5 — fix WebGPU adapter limits and features for NVIDIA profiles
+
+## [0.3.12] — 2026-03-10
+
+- **[binary]** Upgrade Linux build to 145.0.7632.159.4
+- **[binary]** Native locale spoofing — new C++ patch replaces detectable CDP-level locale emulation
+- **[binary]** WebGPU fingerprint hardening — spoof adapter features, limits, device ID, and subgroup sizes for cross-API consistency
+- **[binary]** Restore WebGPU blocklist bypass auto-injection (safe now with full adapter spoofing)
+- **[binary]** Fix WebGL renderer suffix — remove driver version string flagged by BrowserLeaks
+- **[wrapper]** Use binary flags for timezone/locale instead of CDP emulation — eliminates a detection vector
+- **[wrapper]** Support bare proxy format (`user:pass@host:port`) without scheme prefix
+- **[wrapper]** Use ANGLE-wrapped GPU strings in default stealth args for realistic WebGL fingerprint
+
+## [0.3.11] — 2026-03-08
+
+- **[wrapper]** `humanize=True` — human-like mouse (Bézier curves, overshoot), keyboard (per-character timing, thinking pauses), scroll (accelerate/cruise/decelerate), and click behavior. Two presets: `default` and `careful`. Works in Python and JS. (thanks [@evelaa123](https://github.com/evelaa123))
+- **[binary]** CDP input stealth — 4 new source-level C++ patches removing automation signals from input events
+- **[binary]** Support `--remote-debugging-address` flag for CDP bind address — eliminates the socat workaround in `cloakserve` Docker mode
+- **[wrapper]** `cloakserve` updated to use `--remote-debugging-address=0.0.0.0` directly — socat dependency removed from Docker image
+- **[binary]** GPU fingerprint accuracy improvements — renderer suffix strings now match real Chrome output across Windows and Linux profiles
+- **[binary]** GPU capability accuracy fix for NVIDIA profiles — spoofed values now reflect actual hardware limits
+- **[binary]** macOS GPU accuracy fix — GPU model database reference corrected for Apple Silicon profiles
+- **[binary]** Fix CDP input synthesis — a guard condition prevented the patch from activating; now fires correctly on all input events
+- **[binary]** Code quality hardening across patches — correctness and reliability fixes
+
+## [0.3.10] — 2026-03-07
+
+- **[binary]** Upgrade Linux build to 145.0.7632.159.2
+- **[binary]** Fix detection regression caused by unnecessary browser flag (fixes #16)
+- **[binary]** Fix fingerprint consistency in offline audio rendering
+- **[wrapper]** Add `cloakserve` CDP server mode for Docker — exposes Chrome DevTools Protocol on `0.0.0.0:9222` for external tool integration
+- **[wrapper]** Add wrapper regression tests: page.goto timing with stealth init (#9), add_init_script compatibility with proxy auth (#27)
+
 ## [0.3.9] — 2026-03-05
 
 - **[binary]** Upgrade Chromium base to 145.0.7632.159 (Linux x64). macOS and Windows remain on 145.0.7632.109.2

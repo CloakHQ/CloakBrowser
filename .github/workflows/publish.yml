@@ -1,0 +1,134 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Job to run (leave empty to run all)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - publish-pypi
+          - publish-npm
+          - publish-docker
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python tests
+        run: |
+          pip install -e ".[dev]" pytest pytest-asyncio
+          pytest tests/ -v -m "not slow"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: JavaScript tests
+        run: cd js && npm ci && npm run build && npm test
+
+  validate-version:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check tag matches package versions
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PY=$(python -c 'import re; print(re.search(r"__version__\s*=\s*[\"'\'']([^\"'\'']+)", open("cloakbrowser/_version.py").read()).group(1))')
+          JS=$(python -c 'import json; print(json.load(open("js/package.json"))["version"])')
+          echo "Tag: $TAG | Python: $PY | npm: $JS"
+          [ "$TAG" = "$PY" ] || { echo "ERROR: tag v$TAG != _version.py $PY"; exit 1; }
+          [ "$TAG" = "$JS" ] || { echo "ERROR: tag v$TAG != package.json $JS"; exit 1; }
+
+  publish-pypi:
+    needs: [test, validate-version]
+    if: always() && needs.test.result == 'success' && (needs.validate-version.result == 'success' || needs.validate-version.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # OIDC trusted publishing — no PYPI_TOKEN needed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          pip install build
+          python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-npm:
+    needs: [test, validate-version]
+    if: always() && needs.test.result == 'success' && (needs.validate-version.result == 'success' || needs.validate-version.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # OIDC trusted publishing + provenance — no NPM_TOKEN needed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+      - name: Build
+        run: cd js && npm ci && npm run build
+      - name: Publish to npm
+        run: cd js && npm publish --provenance --access public
+
+  publish-docker:
+    needs: [test, validate-version]
+    if: always() && needs.test.result == 'success' && (needs.validate-version.result == 'success' || needs.validate-version.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write      # Cosign keyless signing + attestations
+      contents: read
+      attestations: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract version
+        run: |
+          VERSION=$(python -c 'import re; print(re.search(r"__version__\s*=\s*[\"'\'']([^\"'\'']+)", open("cloakbrowser/_version.py").read()).group(1))')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PAT }}
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            cloakhq/cloakbrowser:${{ env.VERSION }}
+            cloakhq/cloakbrowser:latest
+          provenance: true
+          sbom: true
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign image
+        run: cosign sign --yes cloakhq/cloakbrowser@${{ steps.build.outputs.digest }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: index.docker.io/cloakhq/cloakbrowser
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

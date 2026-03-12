@@ -5,15 +5,15 @@
 
 import type { Browser, BrowserContext } from "playwright-core";
 import type { LaunchOptions, LaunchContextOptions, LaunchPersistentContextOptions } from "./types.js";
-import { DEFAULT_VIEWPORT } from "./config.js";
+import { DEFAULT_VIEWPORT, IGNORE_DEFAULT_ARGS } from "./config.js";
 import { buildArgs } from "./args.js";
 import { ensureBinary } from "./download.js";
 import { parseProxyUrl } from "./proxy.js";
+import { maybeResolveGeoip } from "./geoip.js";
 
-/** @internal Migrate deprecated timezoneId → timezone, warn once. Exported for testing. */
-export function migrateTimezoneId<T extends { timezone?: string; timezoneId?: string }>(options: T): T {
+/** @internal Accept both timezone and timezoneId — either works, no warning. Exported for testing. */
+export function resolveTimezone<T extends { timezone?: string; timezoneId?: string }>(options: T): T {
   if (options.timezoneId != null) {
-    console.warn("[cloakbrowser] timezoneId is deprecated, use timezone instead");
     const merged = { ...options, timezone: options.timezone ?? options.timezoneId };
     delete (merged as any).timezoneId;
     return merged;
@@ -45,12 +45,23 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     executablePath: binaryPath,
     headless: options.headless ?? true,
     args,
-    ignoreDefaultArgs: ["--enable-automation"],
+    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
     ...(options.proxy
       ? { proxy: typeof options.proxy === "string" ? parseProxyUrl(options.proxy) : options.proxy }
       : {}),
     ...options.launchOptions,
   });
+
+  // Human-like behavioral patching
+  if (options.humanize) {
+    const { patchBrowser } = await import('./human/index.js');
+    const { resolveConfig } = await import('./human/config.js');
+    const cfg = resolveConfig(
+      (options.humanPreset as any) ?? 'default',
+      options.humanConfig as any,
+    );
+    patchBrowser(browser, cfg);
+  }
 
   return browser;
 }
@@ -74,21 +85,19 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
 export async function launchContext(
   options: LaunchContextOptions = {}
 ): Promise<BrowserContext> {
-  options = migrateTimezoneId(options);
+  options = resolveTimezone(options);
   // Resolve geoip BEFORE launch() to avoid double-resolution
   const resolved = await maybeResolveGeoip(options);
-  // Skip --fingerprint-timezone binary flag: it only applies to the default
-  // context and interferes with Playwright's timezoneId on new contexts.
-  // Timezone is set via browser.newContext(timezoneId: ...) below instead.
-  const browser = await launch({ ...options, ...resolved, geoip: false, timezone: undefined });
+  // --fingerprint-timezone is process-wide (reads CommandLine in renderer),
+  // so it applies to ALL contexts, not just the default one.
+  // locale and timezone are set via binary flags only — no CDP emulation.
+  const browser = await launch({ ...options, ...resolved, geoip: false });
 
   let context: BrowserContext;
   try {
     context = await browser.newContext({
       ...(options.userAgent ? { userAgent: options.userAgent } : {}),
       viewport: options.viewport ?? DEFAULT_VIEWPORT,
-      ...(resolved.locale ? { locale: resolved.locale } : {}),
-      ...(resolved.timezone ? { timezoneId: resolved.timezone } : {}),
       ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
     });
   } catch (err) {
@@ -102,6 +111,17 @@ export async function launchContext(
     await origClose();
     await browser.close();
   };
+
+  // Human-like behavioral patching
+  if (options.humanize) {
+    const { patchContext } = await import('./human/index.js');
+    const { resolveConfig } = await import('./human/config.js');
+    const cfg = resolveConfig(
+      (options.humanPreset as any) ?? 'default',
+      options.humanConfig as any,
+    );
+    patchContext(context, cfg);
+  }
 
   return context;
 }
@@ -130,28 +150,39 @@ export async function launchContext(
 export async function launchPersistentContext(
   options: LaunchPersistentContextOptions
 ): Promise<BrowserContext> {
-  options = migrateTimezoneId(options);
+  options = resolveTimezone(options);
   const { chromium } = await import("playwright-core");
 
   const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
   const resolved = await maybeResolveGeoip(options);
   const args = buildArgs({ ...options, ...resolved });
 
+  // locale and timezone are set via binary flags (--lang, --fingerprint-timezone)
+  // — NOT via Playwright context kwargs which use detectable CDP emulation.
   const context = await chromium.launchPersistentContext(options.userDataDir, {
     executablePath: binaryPath,
     headless: options.headless ?? true,
     args,
-    ignoreDefaultArgs: ["--enable-automation"],
+    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
     ...(options.proxy
       ? { proxy: typeof options.proxy === "string" ? parseProxyUrl(options.proxy) : options.proxy }
       : {}),
     ...(options.userAgent ? { userAgent: options.userAgent } : {}),
     viewport: options.viewport ?? DEFAULT_VIEWPORT,
-    ...(resolved.locale ? { locale: resolved.locale } : {}),
-    ...(resolved.timezone ? { timezoneId: resolved.timezone } : {}),
     ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
     ...options.launchOptions,
   });
+
+  // Human-like behavioral patching
+  if (options.humanize) {
+    const { patchContext } = await import('./human/index.js');
+    const { resolveConfig } = await import('./human/config.js');
+    const cfg = resolveConfig(
+      (options.humanPreset as any) ?? 'default',
+      options.humanConfig as any,
+    );
+    patchContext(context, cfg);
+  }
 
   return context;
 }
@@ -159,22 +190,6 @@ export async function launchPersistentContext(
 // ---------------------------------------------------------------------------
 // Internal
 // ---------------------------------------------------------------------------
-
-async function maybeResolveGeoip(
-  options: LaunchOptions
-): Promise<{ timezone?: string; locale?: string }> {
-  if (!options.geoip || !options.proxy) return { timezone: options.timezone, locale: options.locale };
-  if (options.timezone && options.locale) return { timezone: options.timezone, locale: options.locale };
-
-  const { resolveProxyGeo } = await import("./geoip.js");
-  const proxyUrl = typeof options.proxy === "string" ? options.proxy : options.proxy.server;
-  if (!proxyUrl) return { timezone: options.timezone, locale: options.locale };
-  const { timezone: geoTz, locale: geoLocale } = await resolveProxyGeo(proxyUrl);
-  return {
-    timezone: options.timezone ?? geoTz ?? undefined,
-    locale: options.locale ?? geoLocale ?? undefined,
-  };
-}
 
 /** @internal Exposed for unit tests only. */
 export { buildArgs as _buildArgsForTest } from "./args.js";

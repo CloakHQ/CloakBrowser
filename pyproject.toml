@@ -56,6 +56,10 @@ dependencies = [
 [project.optional-dependencies]
 geoip = ["geoip2>=4.0"]
 patchright = ["patchright>=1.40"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+cloakbrowser = "cloakbrowser.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/CloakHQ/CloakBrowser"

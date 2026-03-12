@@ -56,6 +56,9 @@ test-infra/
 # Website (deployed separately)
 site/
 
+# Browser profile manager (deployed separately)
+manager/
+
 # Release scripts
 publish.sh
 deploy.sh

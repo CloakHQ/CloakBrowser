@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Launch stealth Chromium as a CDP server for remote connections.
+
+Usage:
+    cloakserve                          # headless on port 9222
+    cloakserve --headless=false         # headed (uses Xvfb in Docker)
+    cloakserve --proxy-server=host:port # with proxy
+
+Connect from host:
+    playwright.chromium.connect_over_cdp("http://localhost:9222")
+"""
+import signal
+import subprocess
+import sys
+import time
+
+from cloakbrowser.config import get_default_stealth_args
+from cloakbrowser.download import ensure_binary
+
+PORT = 9222
+
+binary = ensure_binary()
+
+chrome_args = [
+    binary,
+    f"--remote-debugging-port={PORT}",
+    "--remote-debugging-address=0.0.0.0",
+    # Sane defaults for running Chrome directly (outside Playwright)
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--disable-popup-blocking",
+    "--disable-background-networking",
+    "--metrics-recording-only",
+] + get_default_stealth_args() + sys.argv[1:]
+
+chrome = subprocess.Popen(chrome_args)
+
+time.sleep(2)
+
+print(f"CloakBrowser CDP server ready on port {PORT}", flush=True)
+
+
+def cleanup(sig, frame):
+    chrome.terminate()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, cleanup)
+signal.signal(signal.SIGINT, cleanup)
+
+chrome.wait()

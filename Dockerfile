@@ -36,7 +36,10 @@ RUN python -c "from cloakbrowser import ensure_binary; ensure_binary()" \
 
 # CLI shortcuts
 COPY bin/cloaktest /usr/local/bin/cloaktest
-RUN chmod +x /usr/local/bin/cloaktest
+COPY bin/cloakserve /usr/local/bin/cloakserve
+RUN chmod +x /usr/local/bin/cloaktest /usr/local/bin/cloakserve
+
+EXPOSE 9222
 
 # Xvfb entrypoint for headed mode support
 COPY bin/docker-entrypoint.sh /entrypoint.sh

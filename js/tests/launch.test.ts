@@ -96,20 +96,20 @@ describe("launchContext (unit)", () => {
     expect(ctxArgs.userAgent).toBe("Custom/1.0");
   });
 
-  it("passes timezone to context timezoneId, not to launch", async () => {
+  it("passes timezone via binary flag, not CDP context", async () => {
     const { launchContext } = await import("../src/playwright.js");
     await launchContext({ timezone: "America/New_York" });
 
-    // launch() called with timezone: undefined (skipped for binary flag)
+    // launch() called with --fingerprint-timezone binary flag
     const launchArgs = mockChromium.launch.mock.calls[0][0];
     const hasTimezoneFlag = launchArgs.args.some((a: string) =>
-      a.startsWith("--fingerprint-timezone=")
+      a.startsWith("--fingerprint-timezone=America/New_York")
     );
-    expect(hasTimezoneFlag).toBe(false);
+    expect(hasTimezoneFlag).toBe(true);
 
-    // newContext() gets timezoneId
+    // NOT in newContext() — no CDP emulation
     const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
-    expect(ctxArgs.timezoneId).toBe("America/New_York");
+    expect(ctxArgs.timezoneId).toBeUndefined();
   });
 
   it("forwards colorScheme to newContext", async () => {
@@ -165,7 +165,7 @@ describe("launchPersistentContext (unit)", () => {
     expect(args.viewport).toEqual(DEFAULT_VIEWPORT);
   });
 
-  it("passes timezone and locale to context", async () => {
+  it("passes timezone and locale via binary args, not CDP context", async () => {
     const { launchPersistentContext } = await import("../src/playwright.js");
     await launchPersistentContext({
       userDataDir: "/tmp/profile",
@@ -174,11 +174,12 @@ describe("launchPersistentContext (unit)", () => {
     });
 
     const args = mockChromium.launchPersistentContext.mock.calls[0][1];
-    expect(args.timezoneId).toBe("Asia/Tokyo");
-    expect(args.locale).toBe("ja-JP");
-    // Also in binary args
+    // Binary args (native, undetectable)
     expect(args.args).toContain("--fingerprint-timezone=Asia/Tokyo");
     expect(args.args).toContain("--lang=ja-JP");
+    // NOT in context kwargs (would trigger detectable CDP emulation)
+    expect(args.timezoneId).toBeUndefined();
+    expect(args.locale).toBeUndefined();
   });
 
   it("forwards proxy string", async () => {

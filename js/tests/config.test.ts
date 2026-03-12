@@ -9,7 +9,7 @@ import {
   getDownloadUrl,
   getFallbackDownloadUrl,
 } from "../src/config.js";
-import { _buildArgsForTest, migrateTimezoneId } from "../src/playwright.js";
+import { _buildArgsForTest, resolveTimezone } from "../src/playwright.js";
 
 describe("config", () => {
   it("CHROMIUM_VERSION matches expected format", () => {
@@ -29,7 +29,6 @@ describe("config", () => {
       expect(args.some((a) => a.includes("hardware-concurrency"))).toBe(false);
     } else {
       expect(args).toContain("--fingerprint-platform=windows");
-      expect(args).toContain("--fingerprint-hardware-concurrency=8");
     }
 
     // Should have a random fingerprint seed
@@ -98,21 +97,24 @@ describe("buildArgs timezone/locale", () => {
     expect(args).toContain("--fingerprint-timezone=America/New_York");
   });
 
-  it("injects --lang when locale is set", () => {
+  it("injects --lang and --fingerprint-locale when locale is set", () => {
     const args = _buildArgsForTest({ locale: "en-US" });
     expect(args).toContain("--lang=en-US");
+    expect(args).toContain("--fingerprint-locale=en-US");
   });
 
   it("injects both when both are set", () => {
     const args = _buildArgsForTest({ timezone: "Europe/Berlin", locale: "de-DE" });
     expect(args).toContain("--fingerprint-timezone=Europe/Berlin");
     expect(args).toContain("--lang=de-DE");
+    expect(args).toContain("--fingerprint-locale=de-DE");
   });
 
   it("injects timezone/locale even when stealthArgs=false", () => {
     const args = _buildArgsForTest({ stealthArgs: false, timezone: "America/New_York", locale: "en-US" });
     expect(args).toContain("--fingerprint-timezone=America/New_York");
     expect(args).toContain("--lang=en-US");
+    expect(args).toContain("--fingerprint-locale=en-US");
     expect(args.some(a => a.startsWith("--fingerprint="))).toBe(false);
   });
 
@@ -120,6 +122,7 @@ describe("buildArgs timezone/locale", () => {
     const args = _buildArgsForTest({});
     expect(args.some(a => a.startsWith("--fingerprint-timezone="))).toBe(false);
     expect(args.some(a => a.startsWith("--lang="))).toBe(false);
+    expect(args.some(a => a.startsWith("--fingerprint-locale="))).toBe(false);
   });
 });
 
@@ -148,14 +151,17 @@ describe("buildArgs deduplication", () => {
     expect(tzArgs[0]).toBe("--fingerprint-timezone=America/New_York");
   });
 
-  it("locale param overrides user --lang arg", () => {
+  it("locale param overrides user --lang and --fingerprint-locale args", () => {
     const args = _buildArgsForTest({
-      args: ["--lang=de-DE"],
+      args: ["--lang=de-DE", "--fingerprint-locale=de-DE"],
       locale: "en-US",
     });
     const langArgs = args.filter(a => a.startsWith("--lang="));
     expect(langArgs).toHaveLength(1);
     expect(langArgs[0]).toBe("--lang=en-US");
+    const localeArgs = args.filter(a => a.startsWith("--fingerprint-locale="));
+    expect(localeArgs).toHaveLength(1);
+    expect(localeArgs[0]).toBe("--fingerprint-locale=en-US");
   });
 
   it("no duplicate flag keys in output", () => {
@@ -176,29 +182,29 @@ describe("buildArgs deduplication", () => {
   });
 });
 
-describe("migrateTimezoneId deprecation", () => {
-  it("migrates timezoneId to timezone", () => {
-    const result = migrateTimezoneId({ timezoneId: "Europe/Paris" });
+describe("resolveTimezone alias", () => {
+  it("resolves timezoneId to timezone", () => {
+    const result = resolveTimezone({ timezoneId: "Europe/Paris" });
     expect(result.timezone).toBe("Europe/Paris");
     expect(result).not.toHaveProperty("timezoneId");
   });
 
   it("preserves explicit timezone over timezoneId", () => {
-    const result = migrateTimezoneId({ timezone: "UTC", timezoneId: "Europe/Paris" });
+    const result = resolveTimezone({ timezone: "UTC", timezoneId: "Europe/Paris" });
     expect(result.timezone).toBe("UTC");
     expect(result).not.toHaveProperty("timezoneId");
   });
 
   it("returns options unchanged when no timezoneId", () => {
     const opts = { timezone: "UTC" };
-    const result = migrateTimezoneId(opts);
+    const result = resolveTimezone(opts);
     expect(result).toBe(opts); // same reference, no copy
     expect(result.timezone).toBe("UTC");
   });
 
   it("returns options unchanged when neither is set", () => {
     const opts = {};
-    const result = migrateTimezoneId(opts);
+    const result = resolveTimezone(opts);
     expect(result).toBe(opts);
   });
 });

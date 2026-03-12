@@ -1,6 +1,5 @@
 """Unit tests for launch_context() — context kwargs, viewport defaults, close cleanup."""
 
-import warnings
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -66,7 +65,7 @@ def test_user_agent(mock_launch, _mock_bin):
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch")
 def test_locale_forwarded(mock_launch, _mock_bin):
-    """locale flows to both launch() binary args AND new_context()."""
+    """locale flows to launch() for --lang binary flag, NOT to new_context() CDP."""
     browser, context = _make_mock_browser()
     mock_launch.return_value = browser
 
@@ -75,18 +74,18 @@ def test_locale_forwarded(mock_launch, _mock_bin):
 
     # Locale in launch() call (for --lang binary flag)
     assert mock_launch.call_args[1]["locale"] == "de-DE"
-    # Locale in new_context() call
+    # NOT in new_context() — would trigger detectable CDP emulation
     ctx_kwargs = browser.new_context.call_args
-    assert ctx_kwargs[1]["locale"] == "de-DE"
+    assert "locale" not in ctx_kwargs[1]
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch")
-def test_timezone_via_context_not_binary(mock_launch, _mock_bin):
-    """timezone passed to new_context(timezone_id=...) but NOT to launch(timezone=...).
+def test_timezone_via_binary_not_cdp(mock_launch, _mock_bin):
+    """timezone passed to launch() for binary flag, NOT to new_context() CDP.
 
-    This is intentional: the --fingerprint-timezone binary flag only applies to the
-    default context and would conflict with Playwright's timezone_id on new contexts.
+    --fingerprint-timezone is process-wide (reads CommandLine in renderer),
+    so it applies to ALL contexts, not just the default one.
     """
     browser, context = _make_mock_browser()
     mock_launch.return_value = browser
@@ -94,11 +93,11 @@ def test_timezone_via_context_not_binary(mock_launch, _mock_bin):
     from cloakbrowser.browser import launch_context
     launch_context(timezone="America/New_York")
 
-    # timezone=None in launch() — binary flag skipped
-    assert mock_launch.call_args[1]["timezone"] is None
-    # timezone_id in new_context()
+    # timezone in launch() — binary flag set
+    assert mock_launch.call_args[1]["timezone"] == "America/New_York"
+    # NOT in new_context() — no CDP emulation
     ctx_kwargs = browser.new_context.call_args
-    assert ctx_kwargs[1]["timezone_id"] == "America/New_York"
+    assert "timezone_id" not in ctx_kwargs[1]
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
@@ -119,40 +118,37 @@ def test_color_scheme(mock_launch, _mock_bin):
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch")
 def test_geoip_resolution(mock_launch, _mock_bin, _mock_geoip):
-    """geoip fills timezone+locale, both flow to correct places."""
+    """geoip fills timezone+locale, both flow to binary args only."""
     browser, context = _make_mock_browser()
     mock_launch.return_value = browser
 
     from cloakbrowser.browser import launch_context
     launch_context(proxy="http://proxy:8080", geoip=True)
 
-    # Locale goes to launch() for binary flag
+    # Both go to launch() for binary flags
     assert mock_launch.call_args[1]["locale"] == "de-DE"
-    # Timezone goes to context, not binary
-    assert mock_launch.call_args[1]["timezone"] is None
+    assert mock_launch.call_args[1]["timezone"] == "Europe/Berlin"
+    # Neither in context — no CDP emulation
     ctx_kwargs = browser.new_context.call_args
-    assert ctx_kwargs[1]["timezone_id"] == "Europe/Berlin"
-    assert ctx_kwargs[1]["locale"] == "de-DE"
+    assert "timezone_id" not in ctx_kwargs[1]
+    assert "locale" not in ctx_kwargs[1]
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch")
-def test_timezone_id_deprecation(mock_launch, _mock_bin):
-    """timezone_id kwarg triggers FutureWarning, value migrated to timezone."""
+def test_timezone_id_alias(mock_launch, _mock_bin):
+    """timezone_id kwarg accepted as alias for timezone."""
     browser, context = _make_mock_browser()
     mock_launch.return_value = browser
 
     from cloakbrowser.browser import launch_context
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        launch_context(timezone_id="Europe/Paris")
+    launch_context(timezone_id="Europe/Paris")
 
-    assert len(w) == 1
-    assert issubclass(w[0].category, FutureWarning)
-    assert "timezone_id" in str(w[0].message)
-    # Migrated value flows to context
+    # Resolved value flows to launch() for binary flag
+    assert mock_launch.call_args[1]["timezone"] == "Europe/Paris"
+    # NOT in context — no CDP emulation
     ctx_kwargs = browser.new_context.call_args
-    assert ctx_kwargs[1]["timezone_id"] == "Europe/Paris"
+    assert "timezone_id" not in ctx_kwargs[1]
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")

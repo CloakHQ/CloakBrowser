@@ -3,7 +3,6 @@
 All tests mock playwright to avoid needing a binary.
 """
 
-import warnings
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -87,7 +86,7 @@ def test_persistent_context_user_agent(_mock_geoip, _mock_bin):
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 def test_persistent_context_locale_and_timezone(_mock_bin):
-    """Both timezone and locale flow to context kwargs and binary args."""
+    """Timezone and locale flow to binary args only, NOT to CDP context kwargs."""
     pw_cm, pw, context = _make_mock_pw_and_context()
 
     with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):
@@ -95,12 +94,12 @@ def test_persistent_context_locale_and_timezone(_mock_bin):
         launch_persistent_context("/tmp/profile", timezone="Asia/Tokyo", locale="ja-JP")
 
     call_kwargs = pw.chromium.launch_persistent_context.call_args[1]
-    # Context kwargs
-    assert call_kwargs["timezone_id"] == "Asia/Tokyo"
-    assert call_kwargs["locale"] == "ja-JP"
-    # Binary args
+    # Binary args (native, undetectable)
     assert "--fingerprint-timezone=Asia/Tokyo" in call_kwargs["args"]
     assert "--lang=ja-JP" in call_kwargs["args"]
+    # NOT in context kwargs (would trigger detectable CDP emulation)
+    assert "timezone_id" not in call_kwargs
+    assert "locale" not in call_kwargs
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
@@ -120,7 +119,7 @@ def test_persistent_context_color_scheme(_mock_geoip, _mock_bin):
 @patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=("Europe/Berlin", "de-DE"))
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 def test_persistent_context_geoip(_mock_bin, _mock_geoip):
-    """geoip fills missing tz/locale."""
+    """geoip fills missing tz/locale — flows to binary args, not CDP context."""
     pw_cm, pw, context = _make_mock_pw_and_context()
 
     with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):
@@ -128,25 +127,26 @@ def test_persistent_context_geoip(_mock_bin, _mock_geoip):
         launch_persistent_context("/tmp/profile", proxy="http://proxy:8080", geoip=True)
 
     call_kwargs = pw.chromium.launch_persistent_context.call_args[1]
-    assert call_kwargs["timezone_id"] == "Europe/Berlin"
-    assert call_kwargs["locale"] == "de-DE"
+    # Binary args
+    assert "--fingerprint-timezone=Europe/Berlin" in call_kwargs["args"]
+    assert "--lang=de-DE" in call_kwargs["args"]
+    # NOT in context kwargs
+    assert "timezone_id" not in call_kwargs
+    assert "locale" not in call_kwargs
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-def test_persistent_context_timezone_id_deprecation(_mock_bin):
-    """Old timezone_id kwarg migrated with warning."""
+def test_persistent_context_timezone_id_alias(_mock_bin):
+    """timezone_id kwarg accepted as alias for timezone."""
     pw_cm, pw, context = _make_mock_pw_and_context()
 
     with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):
         from cloakbrowser.browser import launch_persistent_context
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            launch_persistent_context("/tmp/profile", timezone_id="Europe/Paris")
+        launch_persistent_context("/tmp/profile", timezone_id="Europe/Paris")
 
-    assert len(w) == 1
-    assert issubclass(w[0].category, FutureWarning)
     call_kwargs = pw.chromium.launch_persistent_context.call_args[1]
-    assert call_kwargs["timezone_id"] == "Europe/Paris"
+    assert "--fingerprint-timezone=Europe/Paris" in call_kwargs["args"]
+    assert "timezone_id" not in call_kwargs
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
@@ -246,17 +246,14 @@ async def test_persistent_context_async_close_stops_pw(_mock_geoip, _mock_bin):
 
 @pytest.mark.asyncio
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-async def test_persistent_context_async_timezone_id_deprecation(_mock_bin):
-    """Deprecated timezone_id kwarg migrated with warning in async path."""
+async def test_persistent_context_async_timezone_id_alias(_mock_bin):
+    """timezone_id kwarg accepted as alias in async path."""
     pw_cm, pw, context = _make_mock_async_pw_and_context()
 
     with patch("playwright.async_api.async_playwright", return_value=pw_cm):
         from cloakbrowser.browser import launch_persistent_context_async
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            await launch_persistent_context_async("/tmp/profile", timezone_id="Europe/Paris")
+        await launch_persistent_context_async("/tmp/profile", timezone_id="Europe/Paris")
 
-    assert len(w) == 1
-    assert issubclass(w[0].category, FutureWarning)
     call_kwargs = pw.chromium.launch_persistent_context.call_args[1]
-    assert call_kwargs["timezone_id"] == "Europe/Paris"
+    assert "--fingerprint-timezone=Europe/Paris" in call_kwargs["args"]
+    assert "timezone_id" not in call_kwargs

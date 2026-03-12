@@ -9,8 +9,9 @@
 <a href="https://github.com/CloakHQ/CloakBrowser"><img src="https://img.shields.io/github/last-commit/cloakhq/cloakbrowser" alt="Last Commit"></a>
 <br>
 <a href="https://github.com/CloakHQ/CloakBrowser"><img src="https://img.shields.io/github/stars/cloakhq/cloakbrowser" alt="Stars"></a>
-<a href="https://pepy.tech/projects/cloakbrowser"><img src="https://img.shields.io/pepy/dt/cloakbrowser?label=pypi&logo=pypi&logoColor=white" alt="PyPI Downloads"></a>
+<a href="https://pypi.org/project/cloakbrowser/"><img src="https://img.shields.io/pepy/dt/cloakbrowser?label=pypi&logo=pypi&logoColor=white" alt="PyPI Downloads"></a>
 <a href="https://www.npmjs.com/package/cloakbrowser"><img src="https://img.shields.io/npm/dt/cloakbrowser?label=npm&logo=npm&logoColor=white" alt="npm Downloads"></a>
+<a href="https://hub.docker.com/r/cloakhq/cloakbrowser"><img src="https://img.shields.io/docker/pulls/cloakhq/cloakbrowser?label=docker&logo=docker&logoColor=white" alt="Docker Pulls"></a>
 </p>
 
 <br>
@@ -35,7 +36,8 @@ Drop-in Playwright/Puppeteer replacement for Python and JavaScript.<br>
 Same API, same code — just swap the import. <strong>3 lines of code, 30 seconds to unblock.</strong>
 </p>
 
-- **26 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, automation signals
+- **32 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, automation signals, CDP input behavior
+- **`humanize=True`** — human-like mouse curves, keyboard timing, and scroll patterns. One flag, behavioral detection passes
 - **0.9 reCAPTCHA v3 score** — human-level, server-verified
 - **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — tested against 30+ detection sites
 - **Auto-updating binary** — background update checks, always on the latest stealth build
@@ -108,15 +110,29 @@ page.goto("https://example.com")
 
 > ⭐ **Star** to show support — **[Watch releases](https://github.com/CloakHQ/CloakBrowser/subscription)** to get notified when new builds drop.
 
-## Latest: v0.3.8 (Chromium 145.0.7632.159)
+## Browser Profile Manager
 
-- **All 4 platforms** — Linux x64, macOS arm64, macOS x64, and Windows x64 all on Chromium 145
-- **26 fingerprint patches** — 10 new patches since v142 (screen, device memory, audio, WebGL, auto-spoof, and more)
+Self-hosted alternative to Multilogin, GoLogin, and AdsPower. Create browser profiles with unique fingerprints, proxies, and persistent sessions. Launch and interact with them in your browser via noVNC.
+
+```bash
+docker run -p 8080:8080 -v cloakprofiles:/data cloakhq/cloakbrowser-manager
+```
+
+Open [http://localhost:8080](http://localhost:8080). Create a profile. Click **Launch**. Done.
+
+→ **[CloakBrowser Manager](https://github.com/CloakHQ/CloakBrowser-Manager)** — free, open source (MIT)
+
+---
+
+## Latest: v0.3.14 (Chromium 145.0.7632.159.6)
+
+- **`humanize=True`** — one flag makes all mouse, keyboard, and scroll interactions behave like a real user. Bézier curves, per-character typing, realistic scroll patterns. Two presets: `default` and `careful`
+- **CDP input behavior mimicking** — input events sent via CDP now produce the same signals as real user interactions. 5 new source-level patches covering pointer, keyboard, and mouse behavior
+- **Native locale spoofing** — new C++ patch replaces detectable CDP-level locale emulation
+- **WebGPU fingerprint hardening** — adapter features, limits, and device ID spoofed for cross-API consistency
+- **32 fingerprint patches** (Linux x64) — all 4 platforms on Chromium 145
 - **Stealthy with zero flags** — binary auto-generates a random fingerprint seed at startup. No configuration required
-- **Full stealth audit** — every patch reviewed for detection vectors, multiple fixes shipped
-- **CDP hardening** — audited and patched known automation detection vectors
 - **Timezone & locale from proxy IP** — `launch(proxy="...", geoip=True)` auto-detects timezone and locale
-- **Playwright + Puppeteer from one package** — `import from 'cloakbrowser'` or `import from 'cloakbrowser/puppeteer'`. Same binary, your choice of API
 - **Persistent profiles** — `launch_persistent_context()` keeps cookies and localStorage across sessions, bypasses incognito detection
 
 See the full [CHANGELOG.md](CHANGELOG.md) for details.
@@ -127,7 +143,7 @@ See the full [CHANGELOG.md](CHANGELOG.md) for details.
 - **CloakBrowser patches Chromium source code** — fingerprints are modified at the C++ level, compiled into the binary. Detection sites see a real browser because it *is* a real browser.
 - **Source-level stealth** — C++ patches handle fingerprints (GPU, screen, UA, hardware reporting) at the binary level. No JavaScript injection, no config-level hacks. Most stealth tools only patch at the surface.
 - **Same behavior everywhere** — works identically local, in Docker, and on VPS. No environment-specific patches or config needed.
-- **Works with any browser automation framework** — tested and passing stealth checks with Playwright, Puppeteer, Selenium, undetected-chromedriver, browser-use, Crawl4AI, and agent-browser. Just point any Chromium-based framework at the binary path.
+- **Works with AI agents and automation frameworks** — drop-in stealth for browser-use, Crawl4AI, agent-browser, Claude computer use, and OpenAI Operator. Also tested with Playwright, Puppeteer, and Selenium — point any Chromium-based framework at the binary path.
 
 CloakBrowser doesn't solve CAPTCHAs — it prevents them from appearing. No CAPTCHA-solving services, no proxy rotation built in — bring your own proxies, use the Playwright API you already know.
 
@@ -175,6 +191,11 @@ All tests verified against live detection services. Last tested: Mar 2026 (Chrom
 <br><em>FingerprintJS web-scraping demo — data served, not blocked</em>
 </p>
 
+<p align="center">
+<img src="https://i.imgur.com/srCcFtK.png" width="600" alt="deviceandbrowserinfo.com — You are human!">
+<br><em>deviceandbrowserinfo.com behavioral bot detection — "You are human!" with humanize=True (24/24 signals passed)</em>
+</p>
+
 ## Comparison
 
 | Feature | Playwright | playwright-stealth | undetected-chromedriver | Camoufox | CloakBrowser |
@@ -196,7 +217,7 @@ CloakBrowser is a thin wrapper (Python + JavaScript) around a custom-built Chrom
 3. **Every launch** → Playwright or Puppeteer starts with our binary + stealth args
 4. **You write code** → standard Playwright/Puppeteer API, nothing new to learn
 
-The binary includes 26 source-level patches covering canvas, WebGL, audio, fonts, GPU, screen properties, hardware reporting, and automation signal removal.
+The binary includes 32 source-level patches covering canvas, WebGL, audio, fonts, GPU, screen properties, hardware reporting, automation signal removal, and CDP input behavior mimicking.
 
 These are compiled into the Chromium binary — not injected via JavaScript, not set via flags.
 
@@ -224,7 +245,7 @@ browser = launch(proxy={"server": "http://proxy:8080", "bypass": ".google.com", 
 # With extra Chrome args
 browser = launch(args=["--disable-gpu"])
 
-# With timezone and locale (sets both binary flags and Playwright context)
+# With timezone and locale (sets binary flags — no detectable CDP emulation)
 browser = launch(timezone="America/New_York", locale="en-US")
 
 # Auto-detect timezone/locale from proxy IP (requires: pip install cloakbrowser[geoip])
@@ -232,6 +253,12 @@ browser = launch(proxy="http://proxy:8080", geoip=True)
 
 # Explicit timezone/locale always win over auto-detection
 browser = launch(proxy="http://proxy:8080", geoip=True, timezone="Europe/London")
+
+# Human-like mouse, keyboard, and scroll behavior
+browser = launch(humanize=True)
+
+# With slower, more deliberate movements
+browser = launch(humanize=True, human_preset="careful")
 
 # Without default stealth args (bring your own fingerprint flags)
 browser = launch(stealth_args=False, args=["--fingerprint=12345"])
@@ -300,6 +327,17 @@ Supports all the same options as `launch_context()`: `proxy`, `user_agent`, `vie
 
 Async version: `launch_persistent_context_async()`.
 
+### CLI
+
+Pre-download the binary or check installation status from the command line:
+
+```bash
+python -m cloakbrowser install      # Download binary with progress output
+python -m cloakbrowser info         # Show version, path, platform
+python -m cloakbrowser update       # Check for and download newer binary
+python -m cloakbrowser clear-cache  # Remove cached binaries
+```
+
 ### Utility Functions
 
 ```python
@@ -307,7 +345,7 @@ from cloakbrowser import binary_info, clear_cache, ensure_binary
 
 # Check binary installation status
 print(binary_info())
-# {'version': '145.0.7632.159', 'platform': 'linux-x64', 'installed': True, ...}
+# {'version': '145.0.7632.159.2', 'platform': 'linux-x64', 'installed': True, ...}
 
 # Force re-download
 clear_cache()
@@ -335,6 +373,7 @@ const browser = await launch({
   args: ['--fingerprint=12345'],
   timezone: 'America/New_York',
   locale: 'en-US',
+  humanize: true,
 });
 
 // Convenience: browser + context in one call
@@ -385,6 +424,69 @@ console.log(binaryInfo());
 // Force re-download
 clearCache();
 ```
+
+## Human Behavior
+
+Pass `humanize=True` to make all mouse, keyboard, and scroll interactions indistinguishable from real users. All Playwright calls — `page.click()`, `page.fill()`, `page.type()`, `page.mouse.*`, `page.keyboard.*`, and the full Locator API — are automatically replaced with human-like equivalents. No code changes needed.
+
+```python
+browser = launch(humanize=True)
+page = browser.new_page()
+page.goto("https://example.com")
+page.locator("#email").fill("user@example.com")  # per-character timing, thinking pauses
+page.locator("button[type=submit]").click()       # Bézier curve, realistic aim point
+```
+
+```javascript
+const browser = await launch({ humanize: true });
+```
+
+**What changes:**
+
+| Interaction | Default | With `humanize=True` |
+|---|---|---|
+| Mouse movement | Instant teleport | Bézier curve with easing and slight overshoot |
+| Clicks | Instant | Realistic aim point + hold duration |
+| Keyboard | Instant fill | Per-character timing, thinking pauses, occasional typos with self-correction |
+| Scroll | Jump | Accelerate → cruise → decelerate micro-steps |
+| `fill()` | Instant value set | Clears existing content, types character by character |
+
+**Presets** — `default` (normal speed) or `careful` (slower, more deliberate, idle micro-movements between actions):
+
+```python
+browser = launch(humanize=True, human_preset="careful")
+```
+
+```javascript
+const browser = await launch({ humanize: true, humanPreset: 'careful' });
+```
+
+**Custom config** — override any parameter:
+
+```python
+browser = launch(humanize=True, human_config={
+    "mistype_chance": 0.05,              # 5% typo rate with self-correction
+    "typing_delay": 100,                 # slower typing (ms per character)
+    "idle_between_actions": True,        # micro-movements between clicks
+    "idle_between_duration": [0.3, 0.8], # idle duration range (seconds)
+})
+```
+
+```javascript
+const browser = await launch({
+    humanize: true,
+    humanConfig: {
+        mistype_chance: 0.05,
+        typing_delay: 100,
+        idle_between_actions: true,
+        idle_between_duration: [0.3, 0.8],
+    }
+});
+```
+
+Access the original un-patched Playwright page at `page._original` if you need raw speed for a specific call.
+
+> Contributed by [@evelaa123](https://github.com/evelaa123) — full Playwright API coverage.
 
 ## Configuration
 
@@ -450,6 +552,7 @@ Supported by the binary but **not set by default** — pass via `args` to custom
 | `--fingerprint-platform-version` | Client Hints platform version |
 | `--fingerprint-location` | Geolocation coordinates |
 | `--fingerprint-timezone` | Timezone (e.g. `America/New_York`) |
+| `--fingerprint-locale` | Locale (e.g. `en-US`) |
 | `--fingerprint-taskbar-height` | Override taskbar height (binary defaults: Win=48, Mac=95, Linux=0) |
 | `--fingerprint-fonts-dir` | Path to cross-platform font directory |
 | `--enable-blink-features=FakeShadowRoot` | Access closed shadow DOM elements |
@@ -495,7 +598,7 @@ browser = launch(args=[
 
 | Platform | Chromium | Patches | Status |
 |---|---|---|---|
-| Linux x86_64 | 145 | 26 | ✅ Latest |
+| Linux x86_64 | 145 | 31 | ✅ Latest |
 | macOS arm64 (Apple Silicon) | 145 | 26 | ✅ Latest |
 | macOS x86_64 (Intel) | 145 | 26 | ✅ Latest |
 | Windows x86_64 | 145 | 26 | ✅ Latest |
@@ -506,13 +609,18 @@ The wrapper auto-downloads the correct binary for your platform.
 
 ## Docker
 
-Pre-built image on Docker Hub — no install, no setup:
+Pre-built image on Docker Hub — no install, no setup.
+
+### Quick test
 
 ```bash
-# Run the stealth test suite
 docker run --rm cloakhq/cloakbrowser cloaktest
+```
 
-# Run your own script
+### Run a script
+
+```bash
+# Inline script
 docker run --rm cloakhq/cloakbrowser python -c "
 from cloakbrowser import launch
 browser = launch()
@@ -521,6 +629,9 @@ page.goto('https://example.com')
 print(page.title())
 browser.close()
 "
+
+# Mount your own script
+docker run --rm -v ./my_script.py:/app/my_script.py cloakhq/cloakbrowser python my_script.py
 
 # With a proxy
 docker run --rm cloakhq/cloakbrowser python -c "
@@ -533,12 +644,100 @@ browser.close()
 "
 ```
 
-To extend with your own script:
+### CDP server mode
+
+Start a persistent stealth browser and connect to it remotely via Chrome DevTools Protocol:
+
+```bash
+docker run -d --name cloak -p 127.0.0.1:9222:9222 cloakhq/cloakbrowser cloakserve
+```
+
+Then connect from your host machine:
+
+```python
+from playwright.sync_api import sync_playwright
+
+pw = sync_playwright().start()
+browser = pw.chromium.connect_over_cdp("http://localhost:9222")
+page = browser.new_page()
+page.goto("https://example.com")
+print(page.title())
+browser.close()
+```
+
+Pass extra flags to the browser:
+
+```bash
+# With proxy
+docker run -d --name cloak -p 127.0.0.1:9222:9222 cloakhq/cloakbrowser \
+  cloakserve --proxy-server=http://proxy:8080
+
+# Headed mode (renders to Xvfb inside container)
+docker run -d --name cloak -p 127.0.0.1:9222:9222 cloakhq/cloakbrowser \
+  cloakserve --headless=false
+```
+
+Stop the server:
+
+```bash
+docker stop cloak && docker rm cloak
+```
+
+> **Security:** CDP gives full control over the browser (execute JS, read pages, access files).
+> The examples bind to `127.0.0.1` so only your machine can connect. Never expose port 9222
+> to the public internet without additional authentication.
+
+### Docker Compose
+
+```yaml
+services:
+  cloakbrowser:
+    image: cloakhq/cloakbrowser
+    command: cloakserve
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9222:9222"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9222/json/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+```
+
+Run multiple instances with different fingerprint seeds on different ports — each gets unique canvas noise, client rects, and other browser signals. Pass `--fingerprint=<seed>` in the command (e.g., `cloakserve --fingerprint=12345`).
+
+**Persistent profiles** — mount a volume to keep cookies and sessions across container restarts:
+
+```bash
+docker run --rm -v ./my-profile:/profile cloakhq/cloakbrowser python -c "
+from cloakbrowser import launch_persistent_context
+ctx = launch_persistent_context('/profile')
+page = ctx.new_page()
+page.goto('https://example.com')
+ctx.close()
+"
+```
+
+Run again with the same volume — cookies, localStorage, and cache are restored automatically.
+
+**Resource usage:** ~190MB RAM idle, ~280MB with 3 tabs. ~30MB per additional tab.
+
+### Extend with your own image
 
 ```dockerfile
 FROM cloakhq/cloakbrowser
 COPY your_script.py /app/
 CMD ["python", "your_script.py"]
+```
+
+**Building your own image from pip** — use `python -m cloakbrowser install` to download the binary during build with visible progress:
+
+```dockerfile
+FROM python:3.12-slim
+RUN pip install cloakbrowser && python -m cloakbrowser install
+COPY your_script.py /app/
+CMD ["python", "/app/your_script.py"]
 ```
 
 **Building from source** — a [`Dockerfile`](Dockerfile) is also included if you prefer to build your own image:
@@ -553,7 +752,9 @@ CloakBrowser works identically local, in Docker, and on VPS. No environment-spec
 
 ## Troubleshooting
 
-**Still getting blocked on aggressive sites (DataDome, Turnstile)?**
+---
+
+### Still getting blocked on aggressive sites (DataDome, Turnstile)?
 
 Some sites detect headless mode even with our C++ patches. Run in **headed mode** with a virtual display:
 
@@ -578,7 +779,9 @@ browser.close()
 
 This runs a real headed browser rendered on a virtual display — no physical monitor needed. Combined with a residential proxy, this passes even the most aggressive detection services. Datacenter IPs are often flagged by IP reputation regardless of browser fingerprint — a residential proxy makes the difference.
 
-**Sites challenge fresh sessions but work after first visit**
+---
+
+### Sites challenge fresh sessions but work after first visit
 
 Some sites challenge first-time visitors with no cookies over HTTP/2. This affects all Chromium browsers, not just CloakBrowser. Use a persistent profile to warm up cookies once, then reuse across sessions:
 
@@ -612,7 +815,10 @@ ctx = await launchPersistentContext({ userDataDir: './profile' });
 
 For stateless/ephemeral use cases, `launch(args=["--disable-http2"])` forces HTTP/1.1 which bypasses the check. Only use this flag for sites that require it — most work fine with HTTP/2.
 
-**Something not working? Make sure you're on the latest version**
+---
+
+### Something not working? Make sure you're on the latest version
+
 Older versions may use outdated stealth args or download an older binary:
 ```bash
 pip install -U cloakbrowser    # Python
@@ -620,42 +826,54 @@ npm install cloakbrowser@latest # JavaScript
 docker pull cloakhq/cloakbrowser:latest  # Docker
 ```
 
-**Binary download fails / timeout**
+---
+
+### Binary download fails / timeout
+
 Set a custom download URL or use a local binary:
 ```bash
 export CLOAKBROWSER_BINARY_PATH=/path/to/your/chrome
 ```
 
-**New update broke something? Roll back to the previous version**
-When auto-update downloads a newer binary, the previous version stays in `~/.cloakbrowser/`. Point `CLOAKBROWSER_BINARY_PATH` to the older cached binary:
+---
+
+### New update broke something? Roll back to the previous version
+
+Install a specific wrapper version to downgrade both the wrapper and the binary it downloads:
 ```bash
-# Linux
-export CLOAKBROWSER_BINARY_PATH=~/.cloakbrowser/chromium-145.0.7632.159/chrome
-
-# macOS
-export CLOAKBROWSER_BINARY_PATH=~/.cloakbrowser/chromium-145.0.7632.109.2/Chromium.app/Contents/MacOS/Chromium
-
-# Windows
-set CLOAKBROWSER_BINARY_PATH=%USERPROFILE%\.cloakbrowser\chromium-145.0.7632.109.2\chrome.exe
+pip install cloakbrowser==0.3.11              # Python
+npm install cloakbrowser@0.3.11               # JavaScript
+docker pull cloakhq/cloakbrowser:0.3.11       # Docker
 ```
+Each wrapper version pins its own binary version, so downgrading the wrapper automatically gets you the matching binary on next launch.
 
-**macOS: "App is damaged" or Gatekeeper blocks launch**
+---
+
+### macOS: "App is damaged" or Gatekeeper blocks launch
+
 The binary is ad-hoc signed. macOS quarantines downloaded files. Run once to clear it:
 ```bash
 xattr -cr ~/.cloakbrowser/chromium-*/Chromium.app
 ```
 
-**"playwright install" vs CloakBrowser binary**
+---
+
+### "playwright install" vs CloakBrowser binary
+
 You do NOT need `playwright install chromium`. CloakBrowser downloads its own binary. You only need Playwright's system deps:
 ```bash
 playwright install-deps chromium
 ```
 
-**macOS: Blocked on some sites that pass on Linux**
+---
+
+### macOS: Blocked on some sites that pass on Linux
 
 The macOS fingerprint profile has known inconsistencies that aggressive bot detection catches. If a site blocks you on macOS but works on Linux, switch to a Windows fingerprint profile by passing `stealth_args=False` and manually setting `--fingerprint-platform=windows` with matching GPU flags (see [Fingerprint Management](#fingerprint-management) for the full flag list).
 
-**Site detects incognito / private browsing mode**
+---
+
+### Site detects incognito / private browsing mode
 
 By default, `launch()` opens an incognito context. Some sites (like BrowserScan) detect this. Use `launch_persistent_context()` instead — it runs with a real user profile, so incognito detection passes:
 
@@ -677,7 +895,9 @@ const ctx = await launchPersistentContext({
 
 This also gives you cookie and localStorage persistence across sessions.
 
-**reCAPTCHA v3 scores are low (0.1–0.3)**
+---
+
+### reCAPTCHA v3 scores are low (0.1–0.3)
 
 Avoid `page.wait_for_timeout()` — it sends CDP protocol commands that reCAPTCHA detects. Use native sleep instead:
 
@@ -699,7 +919,7 @@ await new Promise(r => setTimeout(r, 3000));
 ```
 
 Other tips for maximizing reCAPTCHA scores:
-- **Try the Patchright backend** — suppresses CDP automation signals that reCAPTCHA Enterprise detects. Install with `pip install cloakbrowser[patchright]`, then use `launch(backend="patchright")` or set `CLOAKBROWSER_BACKEND=patchright` globally. Note: Patchright breaks proxy auth and `add_init_script` — only use it when you need the extra CDP stealth
+- **Try the Patchright backend** — suppresses additional CDP automation signals at the Playwright protocol layer. Install with `pip install cloakbrowser[patchright]`, then use `launch(backend="patchright")` or set `CLOAKBROWSER_BACKEND=patchright` globally. Note: Patchright breaks proxy auth and `add_init_script` — only use it if you're still seeing low scores after trying the steps above
 - **Use Playwright, not Puppeteer** — Puppeteer sends more CDP protocol traffic that reCAPTCHA detects ([details](#puppeteer))
 - **Use residential proxies** — datacenter IPs are flagged by IP reputation, not browser fingerprint
 - **Spend 15+ seconds on the page** before triggering reCAPTCHA — short visits score lower
@@ -745,6 +965,25 @@ A: Yes. Pass `proxy="http://user:pass@host:port"` to `launch()`.
 - 📦 **npm** — [npmjs.com/package/cloakbrowser](https://www.npmjs.com/package/cloakbrowser)
 - 📧 **Contact** — cloakhq@pm.me
 
+## Security
+
+All releases are signed for supply chain verification.
+
+```bash
+# Verify GPG signature (binary release tag)
+gpg --keyserver keyserver.ubuntu.com --recv-keys C60C0DDC9D0DE2DD
+git verify-tag chromium-v145.0.7632.159.6
+
+# Verify GitHub binary attestation (Sigstore)
+gh attestation verify cloakbrowser-linux-x64.tar.gz --repo CloakHQ/cloakbrowser
+
+# Verify Docker image signature (Cosign/Sigstore)
+cosign verify \
+  --certificate-identity-regexp "https://github.com/CloakHQ/CloakBrowser/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  cloakhq/cloakbrowser:latest
+```
+
 ## License
 
 - **Wrapper code** (this repository) — MIT. See [LICENSE](https://github.com/CloakHQ/CloakBrowser/blob/main/LICENSE).
@@ -753,3 +992,8 @@ A: Yes. Pass `proxy="http://user:pass@host:port"` to `launch()`.
 ## Contributing
 
 Issues and PRs welcome. If something isn't working, [open an issue](https://github.com/CloakHQ/CloakBrowser/issues) — we respond fast.
+
+## Contributors
+
+- [@evelaa123](https://github.com/evelaa123) — humanize behavior, persistent contexts, Windows fix
+- [@yahooguntu](https://github.com/yahooguntu) — persistent contexts

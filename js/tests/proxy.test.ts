@@ -82,3 +82,36 @@ describe("proxy dict type", () => {
     }
   });
 });
+
+describe("bare proxy format (user:pass@host:port)", () => {
+  it("extracts credentials from bare format", () => {
+    expect(parseProxyUrl("user:pass@proxy:8080")).toEqual({
+      server: "http://proxy:8080",
+      username: "user",
+      password: "pass",
+    });
+  });
+
+  it("credentials not in server", () => {
+    const r = parseProxyUrl("user:pass@proxy1.example.com:5610");
+    expect(r.server).not.toContain("user");
+    expect(r.server).not.toContain("pass");
+  });
+
+  it("bare username only", () => {
+    const r = parseProxyUrl("user@proxy:8080");
+    expect(r.username).toBe("user");
+    expect(r.password).toBeUndefined();
+    expect(r.server).toBe("http://proxy:8080");
+  });
+
+  it("bare no port", () => {
+    const r = parseProxyUrl("user:pass@proxy.example.com");
+    expect(r.username).toBe("user");
+    expect(r.server).toBe("http://proxy.example.com");
+  });
+
+  it("bare no credentials passes through unchanged", () => {
+    expect(parseProxyUrl("proxy:8080")).toEqual({ server: "proxy:8080" });
+  });
+});

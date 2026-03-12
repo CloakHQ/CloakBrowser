@@ -38,12 +38,13 @@ export function buildArgs(options: LaunchOptions): string[] {
     seen.set(key, flag);
   }
   if (options.locale) {
-    const key = "--lang";
-    const flag = `${key}=${options.locale}`;
-    if (seen.has(key)) {
-      if (DEBUG) console.debug(`[cloakbrowser] Arg override: ${seen.get(key)} -> ${flag}`);
+    for (const k of ["--lang", "--fingerprint-locale"] as const) {
+      const flag = `${k}=${options.locale}`;
+      if (seen.has(k)) {
+        if (DEBUG) console.debug(`[cloakbrowser] Arg override: ${seen.get(k)} -> ${flag}`);
+      }
+      seen.set(k, flag);
     }
-    seen.set(key, flag);
   }
   return [...seen.values()];
 }

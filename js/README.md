@@ -11,7 +11,7 @@
 
 Drop-in Playwright/Puppeteer replacement. Same API, same code — just swap the import. **3 lines of code, 30 seconds to unblock.**
 
-- **26 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, automation signals
+- **32 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, automation signals
 - **0.9 reCAPTCHA v3 score** — human-level, server-verified
 - **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — tested against 30+ detection sites
 - **`npm install cloakbrowser`** — binary auto-downloads, auto-updates, zero config
@@ -81,7 +81,7 @@ const browser = await launch({
   args: ['--fingerprint=12345'],
 });
 
-// With timezone and locale (sets --fingerprint-timezone and --lang binary flags)
+// With timezone and locale
 const browser = await launch({
   timezone: 'America/New_York',
   locale: 'en-US',
@@ -93,7 +93,7 @@ const browser = await launch({
   geoip: true,
 });
 
-// Browser + context in one call (timezone/locale set both binary flags AND context)
+// Browser + context in one call (timezone/locale set via binary flags)
 const context = await launchContext({
   userAgent: 'Custom UA',
   viewport: { width: 1920, height: 1080 },
@@ -132,6 +132,17 @@ const browser = await launch({ proxy: 'http://proxy:8080', geoip: true, timezone
 ```
 
 > **Note:** For rotating residential proxies, the DNS-resolved IP may differ from the exit IP. Pass explicit `timezone`/`locale` in those cases.
+
+### CLI
+
+Pre-download the binary or check installation status from the command line:
+
+```bash
+npx cloakbrowser install      # Download binary with progress output
+npx cloakbrowser info         # Show version, path, platform
+npx cloakbrowser update       # Check for and download newer binary
+npx cloakbrowser clear-cache  # Remove cached binaries
+```
 
 ### Utilities
 
@@ -247,7 +258,7 @@ Other tips for maximizing reCAPTCHA scores:
 When auto-update downloads a newer binary, the previous version stays in `~/.cloakbrowser/`. Point `CLOAKBROWSER_BINARY_PATH` to the older cached binary:
 ```bash
 # Linux
-export CLOAKBROWSER_BINARY_PATH=~/.cloakbrowser/chromium-145.0.7632.159/chrome
+export CLOAKBROWSER_BINARY_PATH=~/.cloakbrowser/chromium-145.0.7632.159.2/chrome
 
 # macOS
 export CLOAKBROWSER_BINARY_PATH=~/.cloakbrowser/chromium-145.0.7632.109.2/Chromium.app/Contents/MacOS/Chromium

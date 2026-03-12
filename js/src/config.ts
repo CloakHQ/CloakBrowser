@@ -27,10 +27,10 @@ export { WRAPPER_VERSION };
 // CHROMIUM_VERSION is the latest across all platforms (for display/reference).
 // Use getChromiumVersion() for the current platform's actual version.
 // ---------------------------------------------------------------------------
-export const CHROMIUM_VERSION = "145.0.7632.159";
+export const CHROMIUM_VERSION = "145.0.7632.159.6";
 
 export const PLATFORM_CHROMIUM_VERSIONS: Record<string, string> = {
-  "linux-x64": "145.0.7632.159",
+  "linux-x64": "145.0.7632.159.6",
   "darwin-arm64": "145.0.7632.109.2",
   "darwin-x64": "145.0.7632.109.2",
   "windows-x64": "145.0.7632.109.2",
@@ -189,6 +189,14 @@ export function getLocalBinaryOverride(): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Playwright default args to suppress — these leak automation signals.
+// --enable-automation: exposes navigator.webdriver = true
+// --enable-unsafe-swiftshader: forces software WebGL rendering via SwiftShader,
+//   producing a distinctive renderer string that no real user browser has
+// ---------------------------------------------------------------------------
+export const IGNORE_DEFAULT_ARGS = ["--enable-automation", "--enable-unsafe-swiftshader"];
+
+// ---------------------------------------------------------------------------
 // Default stealth arguments
 // ---------------------------------------------------------------------------
 // Default viewport — realistic maximized Chrome on 1080p Windows
@@ -222,7 +230,7 @@ export function getDefaultStealthArgs(): string[] {
   return [
     ...base,
     "--fingerprint-platform=windows",
-    "--fingerprint-gpu-vendor=NVIDIA Corporation",
-    "--fingerprint-gpu-renderer=NVIDIA GeForce RTX 3070",
+    "--fingerprint-gpu-vendor=Google Inc. (NVIDIA)",
+    "--fingerprint-gpu-renderer=ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 (0x00002484) Direct3D11 vs_5_0 ps_5_0, D3D11)",
   ];
 }

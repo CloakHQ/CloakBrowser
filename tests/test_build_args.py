@@ -1,8 +1,6 @@
-"""Unit tests for _build_args timezone/locale injection and deprecation compat."""
+"""Unit tests for _build_args timezone/locale injection and timezone alias."""
 
-import warnings
-
-from cloakbrowser.browser import _build_args, _migrate_timezone_id
+from cloakbrowser.browser import _build_args, _resolve_timezone
 
 
 def test_timezone_injected():
@@ -12,9 +10,10 @@ def test_timezone_injected():
 
 
 def test_locale_injected():
-    """--lang flag should appear when locale is set."""
+    """--lang and --fingerprint-locale flags should appear when locale is set."""
     args = _build_args(stealth_args=True, extra_args=None, locale="en-US")
     assert "--lang=en-US" in args
+    assert "--fingerprint-locale=en-US" in args
 
 
 def test_both_injected():
@@ -22,6 +21,7 @@ def test_both_injected():
     args = _build_args(stealth_args=True, extra_args=None, timezone="Europe/Berlin", locale="de-DE")
     assert "--fingerprint-timezone=Europe/Berlin" in args
     assert "--lang=de-DE" in args
+    assert "--fingerprint-locale=de-DE" in args
 
 
 def test_timezone_independent_of_stealth_args():
@@ -29,15 +29,17 @@ def test_timezone_independent_of_stealth_args():
     args = _build_args(stealth_args=False, extra_args=None, timezone="America/New_York", locale="en-US")
     assert "--fingerprint-timezone=America/New_York" in args
     assert "--lang=en-US" in args
+    assert "--fingerprint-locale=en-US" in args
     # No stealth fingerprint args
     assert not any(a.startswith("--fingerprint=") for a in args)
 
 
 def test_no_flags_when_not_set():
-    """No timezone/lang flags when params are None."""
+    """No timezone/lang/fingerprint-locale flags when params are None."""
     args = _build_args(stealth_args=True, extra_args=None)
     assert not any(a.startswith("--fingerprint-timezone=") for a in args)
     assert not any(a.startswith("--lang=") for a in args)
+    assert not any(a.startswith("--fingerprint-locale=") for a in args)
 
 
 def test_extra_args_preserved():
@@ -46,52 +48,41 @@ def test_extra_args_preserved():
     assert "--disable-gpu" in args
     assert "--fingerprint-timezone=Asia/Tokyo" in args
     assert "--lang=ja-JP" in args
+    assert "--fingerprint-locale=ja-JP" in args
 
 
-# --- _migrate_timezone_id deprecation compat ---
+# --- _resolve_timezone alias ---
 
 
-def test_migrate_old_param_only():
+def test_resolve_timezone_id_alias():
     """timezone_id in kwargs should be promoted to timezone."""
     kwargs = {"timezone_id": "Europe/Paris"}
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = _migrate_timezone_id(None, kwargs)
+    result = _resolve_timezone(None, kwargs)
     assert result == "Europe/Paris"
     assert "timezone_id" not in kwargs
-    assert len(w) == 1 and issubclass(w[0].category, FutureWarning)
 
 
-def test_migrate_new_param_wins():
+def test_resolve_timezone_wins_over_alias():
     """Explicit timezone takes precedence; timezone_id is still popped."""
     kwargs = {"timezone_id": "Europe/Paris"}
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = _migrate_timezone_id("UTC", kwargs)
+    result = _resolve_timezone("UTC", kwargs)
     assert result == "UTC"
     assert "timezone_id" not in kwargs
-    assert len(w) == 1
 
 
-def test_migrate_no_old_param():
-    """No warning when timezone_id is absent."""
+def test_resolve_no_alias():
+    """No-op when timezone_id is absent."""
     kwargs = {"other": "value"}
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = _migrate_timezone_id("UTC", kwargs)
+    result = _resolve_timezone("UTC", kwargs)
     assert result == "UTC"
     assert "other" in kwargs
-    assert len(w) == 0
 
 
-def test_migrate_both_none():
-    """Neither param set — returns None, no warning."""
+def test_resolve_both_none():
+    """Neither param set — returns None."""
     kwargs = {}
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = _migrate_timezone_id(None, kwargs)
+    result = _resolve_timezone(None, kwargs)
     assert result is None
-    assert len(w) == 0
 
 
 # --- Deduplication tests ---
@@ -126,15 +117,18 @@ def test_timezone_param_overrides_user_arg():
 
 
 def test_locale_param_overrides_user_arg():
-    """Dedicated locale param should override user --lang arg."""
+    """Dedicated locale param should override user --lang and --fingerprint-locale args."""
     args = _build_args(
         stealth_args=True,
-        extra_args=["--lang=de-DE"],
+        extra_args=["--lang=de-DE", "--fingerprint-locale=de-DE"],
         locale="en-US",
     )
     lang_args = [a for a in args if a.startswith("--lang=")]
     assert len(lang_args) == 1
     assert lang_args[0] == "--lang=en-US"
+    locale_args = [a for a in args if a.startswith("--fingerprint-locale=")]
+    assert len(locale_args) == 1
+    assert locale_args[0] == "--fingerprint-locale=en-US"
 
 
 def test_no_duplicate_flags():

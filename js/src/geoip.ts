@@ -14,6 +14,8 @@ import { createWriteStream } from "node:fs";
 import dns from "node:dns/promises";
 import net from "node:net";
 import { getCacheDir } from "./config.js";
+import type { LaunchOptions } from "./types.js";
+import { ensureProxyScheme } from "./proxy.js";
 
 // P3TERX mirror of MaxMind GeoLite2-City — no license key needed
 const GEOIP_DB_URL =
@@ -259,4 +261,24 @@ function maybeTriggerUpdate(dbPath: string): void {
   }
   // Fire-and-forget background update
   downloadGeoipDb(dbPath).catch(() => {});
+}
+
+/**
+ * Auto-fill timezone/locale from proxy IP when geoip is enabled.
+ * Shared by the Playwright and Puppeteer wrappers.
+ */
+export async function maybeResolveGeoip(
+  options: LaunchOptions
+): Promise<{ timezone?: string; locale?: string }> {
+  if (!options.geoip || !options.proxy) return { timezone: options.timezone, locale: options.locale };
+  if (options.timezone && options.locale) return { timezone: options.timezone, locale: options.locale };
+
+  let proxyUrl = typeof options.proxy === "string" ? options.proxy : options.proxy.server;
+  if (!proxyUrl) return { timezone: options.timezone, locale: options.locale };
+  proxyUrl = ensureProxyScheme(proxyUrl);
+  const { timezone: geoTz, locale: geoLocale } = await resolveProxyGeo(proxyUrl);
+  return {
+    timezone: options.timezone ?? geoTz ?? undefined,
+    locale: options.locale ?? geoLocale ?? undefined,
+  };
 }

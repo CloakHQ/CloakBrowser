@@ -16,20 +16,18 @@ from __future__ import annotations
 
 import logging
 import os
-import warnings
 from typing import Any, Literal, TypedDict
 from urllib.parse import unquote, urlparse, urlunparse
 
-from .config import DEFAULT_VIEWPORT, get_default_stealth_args
+from .config import DEFAULT_VIEWPORT, IGNORE_DEFAULT_ARGS, get_default_stealth_args
 from .download import ensure_binary
 
 logger = logging.getLogger("cloakbrowser")
 
 
-def _migrate_timezone_id(timezone: str | None, kwargs: dict[str, Any]) -> str | None:
-    """Pop deprecated timezone_id from kwargs, warn, return resolved timezone."""
+def _resolve_timezone(timezone: str | None, kwargs: dict[str, Any]) -> str | None:
+    """Accept both timezone and timezone_id — either works, no warning."""
     if "timezone_id" in kwargs:
-        warnings.warn("timezone_id is deprecated, use timezone instead", FutureWarning, stacklevel=3)
         if timezone is None:
             timezone = kwargs.pop("timezone_id")
         else:
@@ -58,6 +56,9 @@ def launch(
     locale: str | None = None,
     geoip: bool = False,
     backend: str | None = None,
+    humanize: bool = False,
+    human_preset: str = "default",
+    human_config: dict | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth Chromium browser. Returns a Playwright Browser object.
@@ -81,6 +82,9 @@ def launch(
             Patchright suppresses CDP signals (helps reCAPTCHA v3 Enterprise)
             but breaks proxy auth and add_init_script.
             Override globally with CLOAKBROWSER_BACKEND env var.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config dict to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -107,7 +111,7 @@ def launch(
         executable_path=binary_path,
         headless=headless,
         args=chrome_args,
-        ignore_default_args=["--enable-automation"],
+        ignore_default_args=IGNORE_DEFAULT_ARGS,
         **_build_proxy_kwargs(proxy),
         **kwargs,
     )
@@ -121,10 +125,17 @@ def launch(
 
     browser.close = _close_with_cleanup
 
+    # Human-like behavioral patching
+    if humanize:
+        from .human import patch_browser
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_browser(browser, cfg)
+
     return browser
 
 
-async def launch_async(
+async def launch_async(  # noqa: C901
     headless: bool = True,
     proxy: str | ProxySettings | None = None,
     args: list[str] | None = None,
@@ -133,6 +144,9 @@ async def launch_async(
     locale: str | None = None,
     geoip: bool = False,
     backend: str | None = None,
+    humanize: bool = False,
+    human_preset: str = "default",
+    human_config: dict | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch(). Returns a Playwright Browser object.
@@ -146,6 +160,9 @@ async def launch_async(
         locale: BCP 47 locale (e.g. 'en-US'). Sets --lang binary flag.
         geoip: Auto-detect timezone/locale from proxy IP (default False).
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config dict to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -177,7 +194,7 @@ async def launch_async(
         executable_path=binary_path,
         headless=headless,
         args=chrome_args,
-        ignore_default_args=["--enable-automation"],
+        ignore_default_args=IGNORE_DEFAULT_ARGS,
         **_build_proxy_kwargs(proxy),
         **kwargs,
     )
@@ -190,6 +207,13 @@ async def launch_async(
         await pw.stop()
 
     browser.close = _close_with_cleanup
+
+    # Human-like behavioral patching (async variant)
+    if humanize:
+        from .human import patch_browser_async
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_browser_async(browser, cfg)
 
     return browser
 
@@ -207,6 +231,9 @@ def launch_persistent_context(
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
     geoip: bool = False,
     backend: str | None = None,
+    humanize: bool = False,
+    human_preset: str = "default",
+    human_config: dict | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser with a persistent profile and return a BrowserContext.
@@ -232,6 +259,9 @@ def launch_persistent_context(
         geoip: Auto-detect timezone/locale from proxy IP (default False).
             Requires ``pip install cloakbrowser[geoip]``.
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config dict to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -247,7 +277,7 @@ def launch_persistent_context(
     """
     sync_playwright = _import_sync_playwright(_resolve_backend(backend))
 
-    timezone = _migrate_timezone_id(timezone, kwargs)
+    timezone = _resolve_timezone(timezone, kwargs)
 
     binary_path = ensure_binary()
     timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
@@ -259,14 +289,12 @@ def launch_persistent_context(
         user_data_dir,
     )
 
+    # locale and timezone are set via binary flags (--lang, --fingerprint-timezone)
+    # — NOT via Playwright context kwargs which use detectable CDP emulation.
     context_kwargs: dict[str, Any] = {}
     if user_agent:
         context_kwargs["user_agent"] = user_agent
     context_kwargs["viewport"] = viewport or DEFAULT_VIEWPORT
-    if locale:
-        context_kwargs["locale"] = locale
-    if timezone:
-        context_kwargs["timezone_id"] = timezone
     if color_scheme:
         context_kwargs["color_scheme"] = color_scheme
     context_kwargs.update(kwargs)
@@ -277,7 +305,7 @@ def launch_persistent_context(
         executable_path=binary_path,
         headless=headless,
         args=chrome_args,
-        ignore_default_args=["--enable-automation"],
+        ignore_default_args=IGNORE_DEFAULT_ARGS,
         **_build_proxy_kwargs(proxy),
         **context_kwargs,
     )
@@ -290,6 +318,13 @@ def launch_persistent_context(
         pw.stop()
 
     context.close = _close_with_cleanup
+
+    # Human-like behavioral patching
+    if humanize:
+        from .human import patch_context
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_context(context, cfg)
 
     return context
 
@@ -307,6 +342,9 @@ async def launch_persistent_context_async(
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
     geoip: bool = False,
     backend: str | None = None,
+    humanize: bool = False,
+    human_preset: str = "default",
+    human_config: dict | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_persistent_context().
@@ -329,6 +367,9 @@ async def launch_persistent_context_async(
         color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
         geoip: Auto-detect timezone/locale from proxy IP (default False).
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config dict to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -349,7 +390,7 @@ async def launch_persistent_context_async(
     """
     async_playwright = _import_async_playwright(_resolve_backend(backend))
 
-    timezone = _migrate_timezone_id(timezone, kwargs)
+    timezone = _resolve_timezone(timezone, kwargs)
 
     binary_path = ensure_binary()
     timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
@@ -361,14 +402,12 @@ async def launch_persistent_context_async(
         user_data_dir,
     )
 
+    # locale and timezone are set via binary flags (--lang, --fingerprint-timezone)
+    # — NOT via Playwright context kwargs which use detectable CDP emulation.
     context_kwargs: dict[str, Any] = {}
     if user_agent:
         context_kwargs["user_agent"] = user_agent
     context_kwargs["viewport"] = viewport or DEFAULT_VIEWPORT
-    if locale:
-        context_kwargs["locale"] = locale
-    if timezone:
-        context_kwargs["timezone_id"] = timezone
     if color_scheme:
         context_kwargs["color_scheme"] = color_scheme
     context_kwargs.update(kwargs)
@@ -379,7 +418,7 @@ async def launch_persistent_context_async(
         executable_path=binary_path,
         headless=headless,
         args=chrome_args,
-        ignore_default_args=["--enable-automation"],
+        ignore_default_args=IGNORE_DEFAULT_ARGS,
         **_build_proxy_kwargs(proxy),
         **context_kwargs,
     )
@@ -392,6 +431,13 @@ async def launch_persistent_context_async(
         await pw.stop()
 
     context.close = _close_with_cleanup
+
+    # Human-like behavioral patching (async variant)
+    if humanize:
+        from .human import patch_context_async
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_context_async(context, cfg)
 
     return context
 
@@ -408,6 +454,9 @@ def launch_context(
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
     geoip: bool = False,
     backend: str | None = None,
+    humanize: bool = False,
+    human_preset: str = "default",
+    human_config: dict | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser and return a BrowserContext with common options pre-set.
@@ -428,30 +477,29 @@ def launch_context(
             Default: None (uses Chromium default, which is 'light').
         geoip: Auto-detect timezone/locale from proxy IP (default False).
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config dict to override preset values.
         **kwargs: Passed to browser.new_context().
 
     Returns:
         Playwright BrowserContext object.
     """
-    timezone = _migrate_timezone_id(timezone, kwargs)
+    timezone = _resolve_timezone(timezone, kwargs)
 
     # Resolve geoip BEFORE launch() to avoid double-resolution and ensure
-    # resolved values flow to both binary flags AND context params
+    # resolved values flow to binary flags
     timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    # Skip --fingerprint-timezone binary flag: it only applies to the default
-    # context and interferes with Playwright's timezone_id on new contexts.
-    # Timezone is set via browser.new_context(timezone_id=...) below instead.
+    # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
+    # so it applies to ALL contexts, not just the default one.
+    # locale and timezone are set via binary flags only — no CDP emulation.
     browser = launch(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
-                     timezone=None, locale=locale, backend=backend)
+                     timezone=timezone, locale=locale, backend=backend)
 
     context_kwargs: dict[str, Any] = {}
     if user_agent:
         context_kwargs["user_agent"] = user_agent
     context_kwargs["viewport"] = viewport or DEFAULT_VIEWPORT
-    if locale:
-        context_kwargs["locale"] = locale
-    if timezone:
-        context_kwargs["timezone_id"] = timezone
     if color_scheme:
         context_kwargs["color_scheme"] = color_scheme
     context_kwargs.update(kwargs)
@@ -470,6 +518,13 @@ def launch_context(
         browser.close()
 
     context.close = _close_context_with_cleanup
+
+    # Human-like behavioral patching
+    if humanize:
+        from .human import patch_context
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_context(context, cfg)
 
     return context
 
@@ -520,6 +575,11 @@ def _import_async_playwright(backend: str):
 # ---------------------------------------------------------------------------
 
 
+def _ensure_proxy_scheme(proxy_url: str) -> str:
+    """Prepend http:// to schemeless proxy URLs so parsers can extract hostname."""
+    return proxy_url if "://" in proxy_url else f"http://{proxy_url}"
+
+
 def _maybe_resolve_geoip(
     geoip: bool,
     proxy: str | ProxySettings | None,
@@ -535,6 +595,7 @@ def _maybe_resolve_geoip(
     proxy_url = proxy.get("server") if isinstance(proxy, dict) else proxy
     if not proxy_url:
         return timezone, locale
+    proxy_url = _ensure_proxy_scheme(proxy_url)
     geo_tz, geo_locale = resolve_proxy_geo(proxy_url)
     if timezone is None:
         timezone = geo_tz
@@ -575,11 +636,11 @@ def _build_args(
             logger.debug("Arg override: %s -> %s", seen[key], flag)
         seen[key] = flag
     if locale:
-        key = "--lang"
-        flag = f"{key}={locale}"
-        if key in seen:
-            logger.debug("Arg override: %s -> %s", seen[key], flag)
-        seen[key] = flag
+        for key in ("--lang", "--fingerprint-locale"):
+            flag = f"{key}={locale}"
+            if key in seen:
+                logger.debug("Arg override: %s -> %s", seen[key], flag)
+            seen[key] = flag
 
     return list(seen.values())
 
@@ -588,12 +649,18 @@ def _parse_proxy_url(proxy: str) -> dict[str, Any]:
     """Parse proxy URL, extracting credentials into separate Playwright fields.
 
     Handles: http://user:pass@host:port -> {server: "http://host:port", username: "user", password: "pass"}
-    Also handles: no credentials, URL-encoded special chars, socks5://, missing port.
+    Also handles: no credentials, URL-encoded special chars, socks5://, missing port,
+    and bare proxy strings without a scheme (e.g. 'user:pass@host:port' -> treated as http).
     """
-    parsed = urlparse(proxy)
+    # Bare format: "user:pass@host:port" — urlparse needs a scheme to extract credentials.
+    normalized = proxy
+    if "@" in proxy and "://" not in proxy:
+        normalized = f"http://{proxy}"
+
+    parsed = urlparse(normalized)
 
     if not parsed.username:
-        return {"server": proxy}
+        return {"server": proxy}  # no creds — return original unchanged
 
     # Rebuild server URL without credentials
     netloc = parsed.hostname or ""

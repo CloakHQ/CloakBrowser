@@ -5,9 +5,11 @@
 
 import type { Browser } from "puppeteer-core";
 import type { LaunchOptions } from "./types.js";
+import { IGNORE_DEFAULT_ARGS } from "./config.js";
 import { buildArgs } from "./args.js";
 import { ensureBinary } from "./download.js";
 import { parseProxyUrl } from "./proxy.js";
+import { maybeResolveGeoip } from "./geoip.js";
 
 /**
  * Launch stealth Chromium browser via Puppeteer.
@@ -61,7 +63,7 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     executablePath: binaryPath,
     headless: options.headless ?? true,
     args,
-    ignoreDefaultArgs: ["--enable-automation"],
+    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
     ...options.launchOptions,
   });
 
@@ -82,20 +84,4 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
 // ---------------------------------------------------------------------------
 // Internal
 // ---------------------------------------------------------------------------
-
-async function maybeResolveGeoip(
-  options: LaunchOptions
-): Promise<{ timezone?: string; locale?: string }> {
-  if (!options.geoip || !options.proxy) return { timezone: options.timezone, locale: options.locale };
-  if (options.timezone && options.locale) return { timezone: options.timezone, locale: options.locale };
-
-  const { resolveProxyGeo } = await import("./geoip.js");
-  const proxyUrl = typeof options.proxy === "string" ? options.proxy : options.proxy.server;
-  if (!proxyUrl) return { timezone: options.timezone, locale: options.locale };
-  const { timezone: geoTz, locale: geoLocale } = await resolveProxyGeo(proxyUrl);
-  return {
-    timezone: options.timezone ?? geoTz ?? undefined,
-    locale: options.locale ?? geoLocale ?? undefined,
-  };
-}
 
