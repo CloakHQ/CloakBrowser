@@ -227,7 +227,8 @@ async function verifyDownloadChecksum(filePath: string, version?: string): Promi
   await verifyChecksum(filePath, expected);
 }
 
-async function fetchChecksums(version?: string): Promise<Map<string, string> | null> {
+/** @internal Exported for testing only. */
+export async function fetchChecksums(version?: string): Promise<Map<string, string> | null> {
   const v = version || getChromiumVersion();
   const hasCustomUrl = !!process.env.CLOAKBROWSER_DOWNLOAD_URL;
 

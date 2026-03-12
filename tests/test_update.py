@@ -20,6 +20,8 @@ from cloakbrowser.config import (
 )
 from cloakbrowser.download import (
     _check_wrapper_update,
+    _download_and_extract,
+    _fetch_checksums,
     _get_latest_chromium_version,
     _parse_checksums,
     _should_check_for_update,
@@ -474,3 +476,75 @@ class TestWriteVersionMarker:
             marker = tmp_path / f"latest_version_{get_platform_tag()}"
             assert marker.exists()
             assert marker.read_text() == "999.0.0.0"
+
+
+class TestDownloadFallback:
+    """Verify primary server (cloakbrowser.dev) → GitHub Releases fallback on HTTP errors."""
+
+    def test_binary_download_falls_back_on_http_error(self, tmp_path):
+        """HTTP error from primary triggers GitHub Releases fallback for binary download."""
+        with patch.dict(os.environ, {
+            "CLOAKBROWSER_CACHE_DIR": str(tmp_path),
+            "CLOAKBROWSER_DOWNLOAD_URL": "",
+            "CLOAKBROWSER_SKIP_CHECKSUM": "true",
+        }):
+            urls_called = []
+
+            def mock_download_file(url, dest):
+                urls_called.append(url)
+                if "cloakbrowser.dev" in url:
+                    raise Exception("HTTP 429 Too Many Requests")
+                # GitHub fallback succeeds
+                dest.write_bytes(b"fake")
+
+            with patch("cloakbrowser.download._download_file", side_effect=mock_download_file), \
+                 patch("cloakbrowser.download._extract_archive"), \
+                 patch("cloakbrowser.download._show_welcome"):
+                _download_and_extract()
+
+            assert len(urls_called) == 2
+            assert "cloakbrowser.dev" in urls_called[0]
+            assert "github.com" in urls_called[1]
+
+    def test_binary_download_no_fallback_with_custom_url(self, tmp_path):
+        """Custom CLOAKBROWSER_DOWNLOAD_URL disables GitHub fallback — error propagates."""
+        with patch.dict(os.environ, {
+            "CLOAKBROWSER_CACHE_DIR": str(tmp_path),
+            "CLOAKBROWSER_DOWNLOAD_URL": "https://my-mirror.com/releases",
+            "CLOAKBROWSER_SKIP_CHECKSUM": "true",
+        }):
+            with patch("cloakbrowser.download._download_file", side_effect=Exception("503")):
+                with pytest.raises(Exception, match="503"):
+                    _download_and_extract()
+
+    def test_checksum_fetch_falls_back_on_http_error(self):
+        """HTTP error from primary checksum URL triggers GitHub fallback."""
+        valid_checksums = (
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            "  cloakbrowser-linux-x64.tar.gz\n"
+        )
+
+        def mock_get(url, **kwargs):
+            resp = MagicMock()
+            if "cloakbrowser.dev" in url:
+                resp.raise_for_status.side_effect = Exception("HTTP 429")
+                return resp
+            # GitHub URL succeeds
+            resp.text = valid_checksums
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        with patch.dict(os.environ, {"CLOAKBROWSER_DOWNLOAD_URL": ""}):
+            with patch("cloakbrowser.download.httpx.get", side_effect=mock_get):
+                result = _fetch_checksums()
+
+        assert result is not None
+        assert "cloakbrowser-linux-x64.tar.gz" in result
+
+    def test_checksum_fetch_returns_none_when_both_fail(self):
+        """Both primary and GitHub checksum URLs fail → returns None (skip verification)."""
+        with patch.dict(os.environ, {"CLOAKBROWSER_DOWNLOAD_URL": ""}):
+            with patch("cloakbrowser.download.httpx.get", side_effect=Exception("network error")):
+                result = _fetch_checksums()
+
+        assert result is None

@@ -14,6 +14,7 @@ import {
   checkWrapperUpdate,
   clearCache,
   ensureBinary,
+  fetchChecksums,
   getLatestChromiumVersion,
   parseChecksums,
   resetWrapperUpdateChecked,
@@ -266,6 +267,54 @@ describe("parseChecksums", () => {
   it("returns empty map for empty input", () => {
     expect(parseChecksums("").size).toBe(0);
     expect(parseChecksums("   \n  \n").size).toBe(0);
+  });
+});
+
+describe("download fallback", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
+  });
+
+  it("checksum fetch falls back to GitHub on primary 429", async () => {
+    const HASH =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const checksumText = `${HASH}  cloakbrowser-${getPlatformTag()}.tar.gz`;
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+      if (url.includes("cloakbrowser.dev")) {
+        return {
+          ok: false,
+          status: 429,
+          statusText: "Too Many Requests",
+        } as Response;
+      }
+      // GitHub fallback
+      return { ok: true, text: async () => checksumText } as Response;
+    });
+
+    const result = await fetchChecksums();
+    expect(result).not.toBeNull();
+    expect(
+      result!.has(`cloakbrowser-${getPlatformTag()}.tar.gz`)
+    ).toBe(true);
+  });
+
+  it("checksum fetch returns null when both sources fail", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+    } as Response);
+
+    const result = await fetchChecksums();
+    expect(result).toBeNull();
   });
 });
 
