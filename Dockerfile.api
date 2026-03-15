@@ -1,0 +1,88 @@
+# CloakBrowser API Server
+# Multi-stage build for smaller final image
+
+# ============================================================
+# Stage 1: Download the stealth Chromium binary
+# ============================================================
+FROM python:3.12-slim AS binary-downloader
+
+# System deps needed to run the downloader
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml README.md LICENSE ./
+COPY cloakbrowser/ cloakbrowser/
+
+RUN pip install --no-cache-dir .
+
+# Pre-download stealth Chromium binary during build
+# This avoids slow first-request downloads at runtime
+ENV CLOAKBROWSER_CACHE_DIR=/cloakbrowser-cache
+RUN python -c "from cloakbrowser import ensure_binary; ensure_binary()"
+
+
+# ============================================================
+# Stage 2: Final API image
+# ============================================================
+FROM python:3.12-slim
+
+# Chromium system dependencies (required for headless Chromium)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core Chromium deps
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+    libdbus-1-3 libdrm2 libxkbcommon0 libatspi2.0-0 libxcomposite1 \
+    libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
+    libcairo2 libasound2 libx11-xcb1 libfontconfig1 libx11-6 \
+    libxcb1 libxext6 libxshmfence1 \
+    libglib2.0-0 libgtk-3-0 libpangocairo-1.0-0 libcairo-gobject2 \
+    libgdk-pixbuf-2.0-0 libxss1 libxtst6 fonts-liberation \
+    # Fonts for proper rendering
+    fonts-noto fonts-noto-cjk \
+    # Utilities
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy application code
+COPY pyproject.toml README.md LICENSE ./
+COPY cloakbrowser/ cloakbrowser/
+COPY api/ api/
+
+# Install Python dependencies (cloakbrowser + FastAPI stack)
+RUN pip install --no-cache-dir \
+    "fastapi>=0.110" \
+    "uvicorn[standard]>=0.27" \
+    "pydantic>=2.0" \
+    . \
+    && pip install --no-cache-dir playwright \
+    && playwright install-deps chromium 2>/dev/null || true
+
+# Copy pre-downloaded Chromium binary from builder stage
+ENV CLOAKBROWSER_CACHE_DIR=/cloakbrowser-cache
+COPY --from=binary-downloader /cloakbrowser-cache /cloakbrowser-cache
+
+# Create non-root user for security
+RUN useradd -m -u 1000 -s /bin/bash appuser \
+    && chown -R appuser:appuser /app /cloakbrowser-cache
+
+USER appuser
+
+# Environment defaults (override via docker-compose or Coolify env vars)
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    LOG_LEVEL=INFO \
+    MAX_SESSIONS=10 \
+    SESSION_TTL=3600 \
+    PORT=7317
+
+EXPOSE 7317
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health')" || exit 1
+
+CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT} --workers 1"]
