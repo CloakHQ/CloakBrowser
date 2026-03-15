@@ -33,6 +33,9 @@ chrome_args = [
     "--disable-popup-blocking",
     "--disable-background-networking",
     "--metrics-recording-only",
+    # GPU blocklist bypass: Chromium blocks WebGL on software GPUs in
+    # Docker/Xvfb. Without this, WebGL vendor/renderer spoofing fails. #58
+    "--ignore-gpu-blocklist",
 ] + get_default_stealth_args() + sys.argv[1:]
 
 chrome = subprocess.Popen(chrome_args)
