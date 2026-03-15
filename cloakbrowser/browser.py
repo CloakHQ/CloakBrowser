@@ -120,8 +120,10 @@ def launch(
     _original_close = browser.close
 
     def _close_with_cleanup() -> None:
-        _original_close()
-        pw.stop()
+        try:
+            _original_close()
+        finally:
+            pw.stop()
 
     browser.close = _close_with_cleanup
 
@@ -203,8 +205,10 @@ async def launch_async(  # noqa: C901
     _original_close = browser.close
 
     async def _close_with_cleanup() -> None:
-        await _original_close()
-        await pw.stop()
+        try:
+            await _original_close()
+        finally:
+            await pw.stop()
 
     browser.close = _close_with_cleanup
 
@@ -314,8 +318,10 @@ def launch_persistent_context(
     _original_close = context.close
 
     def _close_with_cleanup() -> None:
-        _original_close()
-        pw.stop()
+        try:
+            _original_close()
+        finally:
+            pw.stop()
 
     context.close = _close_with_cleanup
 
@@ -427,8 +433,10 @@ async def launch_persistent_context_async(
     _original_close = context.close
 
     async def _close_with_cleanup() -> None:
-        await _original_close()
-        await pw.stop()
+        try:
+            await _original_close()
+        finally:
+            await pw.stop()
 
     context.close = _close_with_cleanup
 
@@ -514,8 +522,10 @@ def launch_context(
     _original_ctx_close = context.close
 
     def _close_context_with_cleanup() -> None:
-        _original_ctx_close()
-        browser.close()
+        try:
+            _original_ctx_close()
+        finally:
+            browser.close()
 
     context.close = _close_context_with_cleanup
 
