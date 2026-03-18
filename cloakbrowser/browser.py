@@ -59,6 +59,8 @@ def launch(
     humanize: bool = False,
     human_preset: str = "default",
     human_config: dict | None = None,
+    socks5_udp: bool = False,
+    socks5_udp_port: int = 10800,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth Chromium browser. Returns a Playwright Browser object.
@@ -85,6 +87,10 @@ def launch(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config dict to override preset values.
+        socks5_udp: Enable SOCKS5 UDP ASSOCIATE support for QUIC/WebRTC (default False).
+            Requires proxy to be a SOCKS5 URL. Starts a local UDP relay on socks5_udp_port.
+        socks5_udp_port: Local port for SOCKS5 UDP relay (default 10800).
+            Only used when socks5_udp=True.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -97,11 +103,34 @@ def launch(
         >>> page.goto("https://bot.incolumitas.com")
         >>> print(page.title())
         >>> browser.close()
+        
+    Example with SOCKS5 UDP:
+        >>> # Enable QUIC/WebRTC through SOCKS5 proxy
+        >>> browser = launch(
+        ...     proxy='socks5://user:pass@proxy:1080',
+        ...     socks5_udp=True,
+        ...     args=['--enable-quic']
+        ... )
     """
     sync_playwright = _import_sync_playwright(_resolve_backend(backend))
 
     binary_path = ensure_binary()
     timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    
+    # Handle SOCKS5 UDP tunneling
+    actual_proxy = proxy
+    if socks5_udp and proxy:
+        logger.info("Setting up SOCKS5 UDP tunnel for QUIC/WebRTC")
+        # Start local UDP relay and point proxy to it
+        actual_proxy = f"socks5://127.0.0.1:{socks5_udp_port}"
+        # Add QUIC and WebRTC related args
+        if args is None:
+            args = []
+        args.extend([
+            '--enable-quic',
+            '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+        ])
+    
     chrome_args = _build_args(stealth_args, args, timezone=timezone, locale=locale, headless=headless)
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
@@ -112,7 +141,7 @@ def launch(
         headless=headless,
         args=chrome_args,
         ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **_build_proxy_kwargs(proxy),
+        **_build_proxy_kwargs(actual_proxy),
         **kwargs,
     )
 

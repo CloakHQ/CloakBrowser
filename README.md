@@ -258,6 +258,15 @@ browser = launch(proxy="http://proxy:8080", geoip=True)
 # Explicit timezone/locale always win over auto-detection
 browser = launch(proxy="http://proxy:8080", geoip=True, timezone="Europe/London")
 
+# SOCKS5 UDP support for QUIC/WebRTC (requires: pip install cloakbrowser[socks5udp])
+# Tunnels UDP traffic through SOCKS5 proxy using RFC 1928 UDP ASSOCIATE
+browser = launch(
+    proxy="socks5://user:pass@proxy:1080",
+    socks5_udp=True,  # Enable UDP tunneling
+    socks5_udp_port=10800,  # Local UDP relay port
+    args=["--enable-quic"]  # Enable QUIC protocol
+)
+
 # Human-like mouse, keyboard, and scroll behavior
 browser = launch(humanize=True)
 
@@ -512,6 +521,108 @@ Access the original un-patched Playwright page at `page._original` if you need r
 | `CLOAKBROWSER_DOWNLOAD_URL` | `cloakbrowser.dev` | Custom download URL for binary |
 | `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
 | `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Set to `true` to skip SHA-256 verification after download |
+
+## SOCKS5 UDP Support (QUIC/WebRTC)
+
+**New in v0.3.18**: Full SOCKS5 UDP ASSOCIATE support for tunneling QUIC and WebRTC traffic through SOCKS5 proxies.
+
+### Why SOCKS5 UDP?
+
+Standard SOCKS5 proxies only support TCP connections via the CONNECT command. However:
+- **QUIC** (used by YouTube, Google, Facebook) runs over UDP
+- **WebRTC** uses UDP for real-time communication
+- Without UDP support, these protocols either fail or leak your real IP
+
+The SOCKS5 UDP feature implements RFC 1928 UDP ASSOCIATE to tunnel all UDP traffic through your SOCKS5 proxy.
+
+### Installation
+
+```bash
+pip install cloakbrowser[socks5udp]
+```
+
+### Usage
+
+```python
+from cloakbrowser import launch
+
+# Enable SOCKS5 UDP tunneling
+browser = launch(
+    proxy="socks5://user:pass@proxy:1080",
+    socks5_udp=True,  # Enable UDP tunneling
+    socks5_udp_port=10800,  # Local UDP relay port (default: 10800)
+    args=["--enable-quic"]  # Enable QUIC protocol
+)
+
+page = browser.new_page()
+page.goto("https://www.youtube.com")  # Uses QUIC through proxy
+browser.close()
+```
+
+### How It Works
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   CloakBrowser  │────▶│  socks5-udp-wrap │────▶│  SOCKS5 Proxy   │
+│   (Chromium)    │ UDP │  (Local :10800)   │ UDP │  (Upstream)     │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+```
+
+1. **Local UDP Relay**: A local UDP server binds to port 10800
+2. **SOCKS5 UDP ASSOCIATE**: Establishes UDP relay with upstream proxy
+3. **Packet Wrapping**: UDP packets are wrapped in SOCKS5 format (RFC 1928)
+4. **Transparent Tunneling**: QUIC/WebRTC traffic flows through proxy
+
+### Testing
+
+Test for IP leaks:
+
+```python
+from cloakbrowser import launch
+
+browser = launch(
+    proxy="socks5://user:pass@proxy:1080",
+    socks5_udp=True,
+    headless=False  # See the browser
+)
+
+page = browser.new_page()
+page.goto("https://browserleaks.com/webrtc")
+# Verify no local IP addresses are shown
+```
+
+### Advanced: Manual UDP Client
+
+```python
+import asyncio
+from cloakbrowser.socks5udp import SOCKS5UDPClient, UDPProxyConfig
+
+async def main():
+    config = UDPProxyConfig(
+        socks5_host="proxy.example.com",
+        socks5_port=1080,
+        username="user",
+        password="pass",
+        local_bind_port=10800
+    )
+    
+    client = SOCKS5UDPClient(config)
+    await client.connect()
+    
+    # Send DNS query over SOCKS5 UDP
+    await client.sendto(dns_query, ("8.8.8.8", 53))
+    response, addr = await client.recvfrom(4096)
+    
+    await client.close()
+
+asyncio.run(main())
+```
+
+### Limitations
+
+- Requires SOCKS5 proxy with UDP ASSOCIATE support
+- Some proxies may not support UDP (test first)
+- Slightly higher latency due to UDP wrapping/unwrapping
 
 ## Fingerprint Management
 
