@@ -6,6 +6,15 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [0.3.19] — 2026-03-18
+
+- **[wrapper]** Add full SOCKS5 UDP ASSOCIATE support (RFC 1928) for QUIC/WebRTC traffic tunneling
+- **[wrapper]** New module: `cloakbrowser.socks5udp` with `SOCKS5UDPClient`, `UDPDatagram`, and protocol helpers
+- **[wrapper]** Fix binary download to bypass proxy environment variables (fixes SOCKS proxy issues with httpx)
+- **[tests]** Add comprehensive SOCKS5 UDP test suite (14 test cases)
+- **[docs]** Add SOCKS5 UDP implementation plan and usage examples
+- **[fix]** Correct UDP datagram domain unpacking byte count calculation
+
 ## [0.3.18] — 2026-03-15
 
 - **[wrapper]** Fix welcome banner printing to stdout — now writes to stderr so it won't corrupt JSON output in programmatic usage (fixes #59)

@@ -524,7 +524,7 @@ Access the original un-patched Playwright page at `page._original` if you need r
 
 ## SOCKS5 UDP Support (QUIC/WebRTC)
 
-**New in v0.3.18**: Full SOCKS5 UDP ASSOCIATE support for tunneling QUIC and WebRTC traffic through SOCKS5 proxies.
+**New in v0.3.19**: Full SOCKS5 UDP ASSOCIATE support for tunneling QUIC and WebRTC traffic through SOCKS5 proxies.
 
 ### Why SOCKS5 UDP?
 

@@ -248,29 +248,42 @@ def _download_file(url: str, dest: Path) -> None:
     """Download a file with progress logging."""
     logger.info("Downloading from %s", url)
 
-    with httpx.stream("GET", url, follow_redirects=True, timeout=DOWNLOAD_TIMEOUT) as response:
-        response.raise_for_status()
+    # Disable proxy for binary downloads to avoid SOCKS proxy issues with httpx
+    # Temporarily clear proxy environment variables
+    import os
+    old_env = {}
+    for var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']:
+        if var in os.environ:
+            old_env[var] = os.environ.pop(var)
+    
+    try:
+        with httpx.Client() as client:
+            with client.stream("GET", url, follow_redirects=True, timeout=DOWNLOAD_TIMEOUT) as response:
+                response.raise_for_status()
 
-        total = int(response.headers.get("content-length", 0))
-        downloaded = 0
-        last_logged_pct = -1
+                total = int(response.headers.get("content-length", 0))
+                downloaded = 0
+                last_logged_pct = -1
 
-        with open(dest, "wb") as f:
-            for chunk in response.iter_bytes(chunk_size=8192):
-                f.write(chunk)
-                downloaded += len(chunk)
+                with open(dest, "wb") as f:
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        f.write(chunk)
+                        downloaded += len(chunk)
 
-                if total > 0:
-                    pct = int(downloaded / total * 100)
-                    # Log every 10%
-                    if pct >= last_logged_pct + 10:
-                        last_logged_pct = pct
-                        logger.info(
-                            "Download progress: %d%% (%d/%d MB)",
-                            pct,
-                            downloaded // (1024 * 1024),
-                            total // (1024 * 1024),
-                        )
+                        if total > 0:
+                            pct = int(downloaded / total * 100)
+                            # Log every 10%
+                            if pct >= last_logged_pct + 10:
+                                last_logged_pct = pct
+                                logger.info(
+                                    "Download progress: %d%% (%d/%d MB)",
+                                    pct,
+                                    downloaded // (1024 * 1024),
+                                    total // (1024 * 1024),
+                                )
+    finally:
+        # Restore proxy environment variables
+        os.environ.update(old_env)
 
     logger.info("Download complete: %d MB", dest.stat().st_size // (1024 * 1024))
 

@@ -86,7 +86,7 @@ class TestUDPDatagram:
         
         datagram, consumed = UDPDatagram.unpack(data)
         
-        assert consumed == 20
+        assert consumed == 21  # 4 (header) + 1 (len) + 10 (domain) + 2 (port) + 4 (data)
         assert datagram.dst_addr == 'google.com'
         assert datagram.dst_port == 443
         
