@@ -1,0 +1,77 @@
+version: "3.9"
+
+# CloakBrowser API — Docker Compose for local dev & Coolify deployment
+#
+# Usage (local):
+#   docker compose up --build
+#
+# Coolify:
+#   - Point Coolify to this repo
+#   - Set Dockerfile path to: Dockerfile.api
+#   - Configure env vars in Coolify dashboard (see .env.example)
+
+services:
+  cloakbrowser-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: cloakbrowser-api:latest
+    container_name: cloakbrowser-api
+
+    ports:
+      - "${PORT:-7317}:7317"
+
+    environment:
+      # Security
+      API_KEY: ${API_KEY:-}           # Set a secret key to protect the API
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+
+      # Session limits
+      MAX_SESSIONS: ${MAX_SESSIONS:-10}
+      SESSION_TTL: ${SESSION_TTL:-3600}   # Seconds before idle session is closed
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # Port
+      PORT: ${PORT:-7317}
+
+    # Shared memory for Chromium (prevents crashes in Docker)
+    shm_size: "2gb"
+
+    # Resource limits — adjust based on your server
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT:-4g}
+          cpus: "${CPU_LIMIT:-2.0}"
+        reservations:
+          memory: 512m
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7317/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    # Security options for Chromium
+    security_opt:
+      - seccomp:unconfined   # Required for Chromium sandbox
+    cap_add:
+      - SYS_ADMIN            # Required for Chromium in some environments
+
+    # Tmpfs for Chromium temp files (performance)
+    tmpfs:
+      - /tmp:size=512m
