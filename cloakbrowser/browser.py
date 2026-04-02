@@ -101,8 +101,8 @@ def launch(
     sync_playwright = _import_sync_playwright(_resolve_backend(backend))
 
     binary_path = ensure_binary()
-    timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    chrome_args = _build_args(stealth_args, args, timezone=timezone, locale=locale, headless=headless)
+    timezone, locale = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    chrome_args = build_args(stealth_args, args, timezone=timezone, locale=locale, headless=headless)
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
 
@@ -186,8 +186,8 @@ async def launch_async(  # noqa: C901
     async_playwright = _import_async_playwright(_resolve_backend(backend))
 
     binary_path = ensure_binary()
-    timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    chrome_args = _build_args(stealth_args, args, timezone=timezone, locale=locale, headless=headless)
+    timezone, locale = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    chrome_args = build_args(stealth_args, args, timezone=timezone, locale=locale, headless=headless)
 
     logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(chrome_args))
 
@@ -284,8 +284,8 @@ def launch_persistent_context(
     timezone = _resolve_timezone(timezone, kwargs)
 
     binary_path = ensure_binary()
-    timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    chrome_args = _build_args(stealth_args, args, timezone=timezone, locale=locale, headless=headless)
+    timezone, locale = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    chrome_args = build_args(stealth_args, args, timezone=timezone, locale=locale, headless=headless)
 
     logger.debug(
         "Launching persistent stealth Chromium (headless=%s, user_data_dir=%s)",
@@ -399,8 +399,8 @@ async def launch_persistent_context_async(
     timezone = _resolve_timezone(timezone, kwargs)
 
     binary_path = ensure_binary()
-    timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    chrome_args = _build_args(stealth_args, args, timezone=timezone, locale=locale, headless=headless)
+    timezone, locale = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    chrome_args = build_args(stealth_args, args, timezone=timezone, locale=locale, headless=headless)
 
     logger.debug(
         "Launching persistent stealth Chromium async (headless=%s, user_data_dir=%s)",
@@ -497,7 +497,7 @@ def launch_context(
 
     # Resolve geoip BEFORE launch() to avoid double-resolution and ensure
     # resolved values flow to binary flags
-    timezone, locale = _maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    timezone, locale = maybe_resolve_geoip(geoip, proxy, timezone, locale)
     # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
     # so it applies to ALL contexts, not just the default one.
     # locale and timezone are set via binary flags only — no CDP emulation.
@@ -590,7 +590,7 @@ def _ensure_proxy_scheme(proxy_url: str) -> str:
     return proxy_url if "://" in proxy_url else f"http://{proxy_url}"
 
 
-def _maybe_resolve_geoip(
+def maybe_resolve_geoip(
     geoip: bool,
     proxy: str | ProxySettings | None,
     timezone: str | None,
@@ -614,7 +614,7 @@ def _maybe_resolve_geoip(
     return timezone, locale
 
 
-def _build_args(
+def build_args(
     stealth_args: bool,
     extra_args: list[str] | None,
     timezone: str | None = None,

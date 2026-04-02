@@ -26,7 +26,7 @@ def _make_mock_pw_and_context():
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=(None, None))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None))
 def test_persistent_context_args_built(_mock_geoip, _mock_bin):
     """Stealth args + extra args combined correctly."""
     pw_cm, pw, context = _make_mock_pw_and_context()
@@ -42,7 +42,7 @@ def test_persistent_context_args_built(_mock_geoip, _mock_bin):
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=(None, None))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None))
 def test_persistent_context_default_viewport(_mock_geoip, _mock_bin):
     """DEFAULT_VIEWPORT applied when no viewport given."""
     pw_cm, pw, context = _make_mock_pw_and_context()
@@ -56,7 +56,7 @@ def test_persistent_context_default_viewport(_mock_geoip, _mock_bin):
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=(None, None))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None))
 def test_persistent_context_custom_viewport(_mock_geoip, _mock_bin):
     """Custom viewport overrides DEFAULT_VIEWPORT."""
     pw_cm, pw, context = _make_mock_pw_and_context()
@@ -71,7 +71,7 @@ def test_persistent_context_custom_viewport(_mock_geoip, _mock_bin):
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=(None, None))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None))
 def test_persistent_context_user_agent(_mock_geoip, _mock_bin):
     """user_agent forwarded to launch_persistent_context()."""
     pw_cm, pw, context = _make_mock_pw_and_context()
@@ -103,7 +103,7 @@ def test_persistent_context_locale_and_timezone(_mock_bin):
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=(None, None))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None))
 def test_persistent_context_color_scheme(_mock_geoip, _mock_bin):
     """color_scheme forwarded correctly."""
     pw_cm, pw, context = _make_mock_pw_and_context()
@@ -116,7 +116,7 @@ def test_persistent_context_color_scheme(_mock_geoip, _mock_bin):
     assert call_kwargs["color_scheme"] == "dark"
 
 
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=("Europe/Berlin", "de-DE"))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=("Europe/Berlin", "de-DE"))
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 def test_persistent_context_geoip(_mock_bin, _mock_geoip):
     """geoip fills missing tz/locale — flows to binary args, not CDP context."""
@@ -150,7 +150,7 @@ def test_persistent_context_timezone_id_alias(_mock_bin):
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=(None, None))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None))
 def test_persistent_context_close_stops_pw(_mock_geoip, _mock_bin):
     """context.close() also calls pw.stop()."""
     pw_cm, pw, context = _make_mock_pw_and_context()
@@ -166,7 +166,7 @@ def test_persistent_context_close_stops_pw(_mock_geoip, _mock_bin):
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=(None, None))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None))
 def test_persistent_context_proxy_string(_mock_geoip, _mock_bin):
     """Proxy string parsed and passed."""
     pw_cm, pw, context = _make_mock_pw_and_context()
@@ -182,7 +182,7 @@ def test_persistent_context_proxy_string(_mock_geoip, _mock_bin):
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=(None, None))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None))
 def test_persistent_context_proxy_dict(_mock_geoip, _mock_bin):
     """Proxy dict passed through."""
     pw_cm, pw, context = _make_mock_pw_and_context()
@@ -213,7 +213,7 @@ def _make_mock_async_pw_and_context():
 
 @pytest.mark.asyncio
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=(None, None))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None))
 async def test_persistent_context_async_args_built(_mock_geoip, _mock_bin):
     """Async launch builds args correctly."""
     pw_cm, pw, context = _make_mock_async_pw_and_context()
@@ -229,7 +229,7 @@ async def test_persistent_context_async_args_built(_mock_geoip, _mock_bin):
 
 @pytest.mark.asyncio
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=(None, None))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None))
 async def test_persistent_context_async_close_stops_pw(_mock_geoip, _mock_bin):
     """await context.close() calls await pw.stop()."""
     pw_cm, pw, context = _make_mock_async_pw_and_context()

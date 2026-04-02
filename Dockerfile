@@ -20,7 +20,7 @@ WORKDIR /app
 # Python wrapper
 COPY pyproject.toml README.md LICENSE BINARY-LICENSE.md CHANGELOG.md ./
 COPY cloakbrowser/ cloakbrowser/
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[serve]"
 
 # JS wrapper
 COPY js/ js/

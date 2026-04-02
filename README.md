@@ -754,7 +754,28 @@ services:
       start_period: 10s
 ```
 
-Run multiple instances with different fingerprint seeds on different ports — each gets unique canvas noise, client rects, and other browser signals. Pass `--fingerprint=<seed>` in the command (e.g., `cloakserve --fingerprint=12345`).
+**Per-connection fingerprint seeds** — run multiple browser identities from a single container. Each unique seed spawns a separate Chrome process with its own fingerprint:
+
+```python
+# Each seed gets unique canvas noise, client rects, and other browser signals
+b1 = pw.chromium.connect_over_cdp("http://localhost:9222?fingerprint=11111")
+b2 = pw.chromium.connect_over_cdp("http://localhost:9222?fingerprint=22222")
+
+# Full identity control via query params
+b3 = pw.chromium.connect_over_cdp(
+    "http://localhost:9222?fingerprint=33333"
+    "&timezone=Asia/Tokyo&locale=ja-JP&platform=macos"
+    "&hardware-concurrency=4&device-memory=8"
+)
+
+# Auto-detect timezone/locale from proxy exit IP
+b4 = pw.chromium.connect_over_cdp(
+    "http://localhost:9222?fingerprint=44444"
+    "&proxy=http://proxy:8080&geoip=true"
+)
+```
+
+Supported query params: `fingerprint`, `timezone`, `locale`, `platform`, `platform-version`, `brand`, `brand-version`, `gpu-vendor`, `gpu-renderer`, `hardware-concurrency`, `device-memory`, `screen-width`, `screen-height`, `proxy`, `geoip`. Same seed reuses the same process. No seed = shared default process (backward compatible).
 
 **Persistent profiles** — mount a volume to keep cookies and sessions across container restarts:
 

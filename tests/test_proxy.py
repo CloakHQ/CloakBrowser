@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from cloakbrowser.browser import _build_proxy_kwargs, _maybe_resolve_geoip, _parse_proxy_url
+from cloakbrowser.browser import _build_proxy_kwargs, maybe_resolve_geoip, _parse_proxy_url
 
 
 class TestParseProxyUrl:
@@ -70,7 +70,7 @@ class TestBuildProxyKwargs:
 class TestMaybeResolveGeoip:
     @patch("cloakbrowser.geoip.resolve_proxy_geo", return_value=("America/New_York", "en-US"))
     def test_geoip_with_string_proxy(self, mock_geo):
-        tz, locale = _maybe_resolve_geoip(True, "http://proxy:8080", None, None)
+        tz, locale = maybe_resolve_geoip(True, "http://proxy:8080", None, None)
         mock_geo.assert_called_once_with("http://proxy:8080")
         assert tz == "America/New_York"
         assert locale == "en-US"
@@ -78,31 +78,31 @@ class TestMaybeResolveGeoip:
     @patch("cloakbrowser.geoip.resolve_proxy_geo", return_value=("Europe/London", "en-GB"))
     def test_geoip_with_dict_proxy_extracts_server(self, mock_geo):
         proxy_dict = {"server": "http://proxy:8080", "bypass": ".google.com"}
-        tz, locale = _maybe_resolve_geoip(True, proxy_dict, None, None)
+        tz, locale = maybe_resolve_geoip(True, proxy_dict, None, None)
         mock_geo.assert_called_once_with("http://proxy:8080")
         assert tz == "Europe/London"
         assert locale == "en-GB"
 
     def test_geoip_disabled_skips_resolution(self):
-        tz, locale = _maybe_resolve_geoip(False, "http://proxy:8080", None, None)
+        tz, locale = maybe_resolve_geoip(False, "http://proxy:8080", None, None)
         assert tz is None
         assert locale is None
 
     def test_geoip_no_proxy_skips_resolution(self):
-        tz, locale = _maybe_resolve_geoip(True, None, None, None)
+        tz, locale = maybe_resolve_geoip(True, None, None, None)
         assert tz is None
         assert locale is None
 
     @patch("cloakbrowser.geoip.resolve_proxy_geo", return_value=("Asia/Tokyo", "ja-JP"))
     def test_geoip_preserves_explicit_timezone(self, mock_geo):
-        tz, locale = _maybe_resolve_geoip(True, "http://proxy:8080", "Europe/Berlin", None)
+        tz, locale = maybe_resolve_geoip(True, "http://proxy:8080", "Europe/Berlin", None)
         assert tz == "Europe/Berlin"
         assert locale == "ja-JP"
 
     @patch("cloakbrowser.geoip.resolve_proxy_geo", return_value=("America/New_York", "en-US"))
     def test_geoip_normalizes_bare_proxy_with_creds(self, mock_geo):
         # "user:pass@host:port" must be normalized to http:// before geoip lookup.
-        tz, locale = _maybe_resolve_geoip(True, "user:pass@proxy:8080", None, None)
+        tz, locale = maybe_resolve_geoip(True, "user:pass@proxy:8080", None, None)
         mock_geo.assert_called_once_with("http://user:pass@proxy:8080")
         assert tz == "America/New_York"
         assert locale == "en-US"
@@ -110,7 +110,7 @@ class TestMaybeResolveGeoip:
     @patch("cloakbrowser.geoip.resolve_proxy_geo", return_value=("America/New_York", "en-US"))
     def test_geoip_normalizes_schemeless_proxy_no_creds(self, mock_geo):
         # "host:port" (no @ and no scheme) must also be normalized.
-        tz, locale = _maybe_resolve_geoip(True, "proxy:8080", None, None)
+        tz, locale = maybe_resolve_geoip(True, "proxy:8080", None, None)
         mock_geo.assert_called_once_with("http://proxy:8080")
         assert tz == "America/New_York"
 

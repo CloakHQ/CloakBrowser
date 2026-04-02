@@ -114,7 +114,7 @@ def test_color_scheme(mock_launch, _mock_bin):
     assert ctx_kwargs[1]["color_scheme"] == "dark"
 
 
-@patch("cloakbrowser.browser._maybe_resolve_geoip", return_value=("Europe/Berlin", "de-DE"))
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=("Europe/Berlin", "de-DE"))
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch")
 def test_geoip_resolution(mock_launch, _mock_bin, _mock_geoip):

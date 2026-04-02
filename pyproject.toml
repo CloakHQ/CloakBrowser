@@ -56,6 +56,7 @@ dependencies = [
 [project.optional-dependencies]
 geoip = ["geoip2>=4.0"]
 patchright = ["patchright>=1.40"]
+serve = ["aiohttp>=3.9", "websockets>=12.0"]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
