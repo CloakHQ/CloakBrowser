@@ -97,7 +97,7 @@ export async function launchContext(
   try {
     context = await browser.newContext({
       ...(options.userAgent ? { userAgent: options.userAgent } : {}),
-      viewport: options.viewport ?? DEFAULT_VIEWPORT,
+      viewport: options.viewport === undefined ? DEFAULT_VIEWPORT : options.viewport,
       ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
     });
   } catch (err) {

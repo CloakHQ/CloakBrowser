@@ -36,7 +36,7 @@ export interface LaunchContextOptions extends LaunchOptions {
   /** Custom user agent string. */
   userAgent?: string;
   /** Viewport size. */
-  viewport?: { width: number; height: number };
+  viewport?: { width: number; height: number } | null;
   /** Browser locale, e.g. "en-US". */
   locale?: string;
   /** IANA timezone — alias for `timezone`. Either works. */
