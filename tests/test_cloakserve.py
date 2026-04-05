@@ -1,9 +1,10 @@
-"""Unit tests for cloakserve — parse_connection_params, parse_cli_args, URL rewriting."""
+"""Unit tests for cloakserve — parse_connection_params, parse_cli_args, URL rewriting, connection tracking."""
 
 import importlib.machinery
 import importlib.util
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -19,6 +20,8 @@ _loader.exec_module(_mod)
 
 parse_connection_params = _mod.parse_connection_params
 parse_cli_args = _mod.parse_cli_args
+ChromePool = _mod.ChromePool
+_default_data_dir = _mod._default_data_dir
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +85,7 @@ class TestParseCliArgs:
         config, passthrough = parse_cli_args([])
         assert config["port"] == 9222
         assert config["headless"] is True
+        assert config["data_dir"] is not None
         assert passthrough == []
 
     def test_custom_port(self):
@@ -108,6 +112,24 @@ class TestParseCliArgs:
         _, passthrough = parse_cli_args(["--port=9222", "--no-sandbox"])
         assert "--port=9222" not in passthrough
         assert "--no-sandbox" in passthrough
+
+    def test_custom_data_dir(self):
+        config, passthrough = parse_cli_args(["--data-dir=/custom/path", "--no-sandbox"])
+        assert config["data_dir"] == "/custom/path"
+        assert "--data-dir=/custom/path" not in passthrough
+
+    def test_data_dir_not_in_passthrough(self):
+        _, passthrough = parse_cli_args(["--data-dir=/tmp/test"])
+        assert not any(a.startswith("--data-dir=") for a in passthrough)
+
+    @patch("os.path.exists", return_value=True)
+    def test_default_data_dir_docker(self, _mock):
+        assert _default_data_dir() == "/tmp/cloakserve"
+
+    @patch("os.path.exists", return_value=False)
+    def test_default_data_dir_bare_metal(self, _mock):
+        result = _default_data_dir()
+        assert result.endswith(".cloakbrowser/cloakserve")
 
 
 # ---------------------------------------------------------------------------
@@ -169,3 +191,54 @@ class TestURLRewriting:
         orig = "ws://127.0.0.1:5100/devtools/page/DEF-456"
         result = self._rewrite_list_entry(orig, "host:443", "seed1", scheme="wss")
         assert result == "wss://host:443/fingerprint/seed1/devtools/page/DEF-456"
+
+
+# ---------------------------------------------------------------------------
+# Connection refcounting
+# ---------------------------------------------------------------------------
+
+
+class TestConnectionTracking:
+    """Test ChromePool.connect() / disconnect() without real Chrome."""
+
+    def _make_pool(self):
+        return ChromePool(
+            binary="/fake/chrome",
+            global_args=[],
+            headless=True,
+            data_dir="/tmp/test-cloakserve",
+        )
+
+    def test_connect_increments(self):
+        pool = self._make_pool()
+        pool.connect("seed1")
+        assert pool._connections["seed1"] == 1
+        pool.connect("seed1")
+        assert pool._connections["seed1"] == 2
+
+    def test_disconnect_decrements(self):
+        pool = self._make_pool()
+        pool.connect("seed1")
+        pool.connect("seed1")
+        pool.disconnect("seed1")
+        assert pool._connections["seed1"] == 1
+
+    def test_disconnect_to_zero_removes_key(self):
+        pool = self._make_pool()
+        pool.connect("seed1")
+        pool.disconnect("seed1")
+        assert "seed1" not in pool._connections
+
+    def test_disconnect_below_zero_safe(self):
+        pool = self._make_pool()
+        pool.disconnect("nonexistent")
+        assert "nonexistent" not in pool._connections
+
+    def test_multiple_seeds_independent(self):
+        pool = self._make_pool()
+        pool.connect("a")
+        pool.connect("b")
+        pool.connect("a")
+        pool.disconnect("a")
+        assert pool._connections["a"] == 1
+        assert pool._connections["b"] == 1

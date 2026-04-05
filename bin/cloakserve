@@ -30,7 +30,10 @@ import time
 from dataclasses import dataclass
 from urllib.parse import parse_qs
 
+from pathlib import Path
+
 import aiohttp
+import websockets
 from aiohttp import web
 
 from cloakbrowser.browser import build_args, maybe_resolve_geoip
@@ -69,6 +72,9 @@ class ChromeProcess:
     process: subprocess.Popen
     cdp_port: int
     user_data_dir: str
+    timezone: str | None = None
+    locale: str | None = None
+    proxy: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -81,14 +87,18 @@ class ChromePool:
         binary: str,
         global_args: list[str],
         headless: bool,
+        data_dir: str = "/tmp/cloakserve",
     ):
         self._binary = binary
         self._global_args = global_args
         self._headless = headless
+        self._data_dir = data_dir
         self._processes: dict[str, ChromeProcess] = {}
         self._default: ChromeProcess | None = None
         self._locks: dict[str, asyncio.Lock] = {}
         self._next_port = BASE_CDP_PORT
+        # Connection refcounting for status reporting
+        self._connections: dict[str, int] = {}
 
     def _get_lock(self, seed: str) -> asyncio.Lock:
         if seed not in self._locks:
@@ -107,6 +117,18 @@ class ChromePool:
             except OSError:
                 continue
         raise RuntimeError("No free ports available for Chrome CDP")
+
+    def connect(self, seed_key: str) -> None:
+        """Increment connection refcount for a seed."""
+        self._connections[seed_key] = self._connections.get(seed_key, 0) + 1
+
+    def disconnect(self, seed_key: str) -> None:
+        """Decrement connection refcount for a seed."""
+        count = self._connections.get(seed_key, 0) - 1
+        if count <= 0:
+            self._connections.pop(seed_key, None)
+        else:
+            self._connections[seed_key] = count
 
     async def get_or_launch(
         self,
@@ -134,9 +156,10 @@ class ChromePool:
                 if proc.process.poll() is None:
                     if any([extra_args, timezone, locale, proxy, geoip]):
                         logger.warning(
-                            "Seed %s already running (port %d) — "
+                            "Seed %s already running (port %d, tz=%s, locale=%s, proxy=%s) — "
                             "ignoring new params (first-launch wins)",
                             seed_key, proc.cdp_port,
+                            proc.timezone, proc.locale, proc.proxy,
                         )
                     return proc
                 # Dead — clean up
@@ -163,7 +186,7 @@ class ChromePool:
 
             # Allocate port and user data dir
             port = self._allocate_port()
-            user_data_dir = f"/tmp/cloakserve-{seed_key}"
+            user_data_dir = os.path.join(self._data_dir, seed_key)
             os.makedirs(user_data_dir, exist_ok=True)
 
             full_args = (
@@ -199,6 +222,9 @@ class ChromePool:
                 process=process,
                 cdp_port=port,
                 user_data_dir=user_data_dir,
+                timezone=timezone,
+                locale=locale,
+                proxy=proxy,
             )
             self._processes[seed_key] = cp
 
@@ -224,6 +250,7 @@ class ChromePool:
         if self._default is proc:
             self._default = None
         self._locks.pop(key, None)
+        self._connections.pop(key, None)
 
     async def shutdown(self) -> None:
         """Terminate all Chrome processes."""
@@ -307,12 +334,24 @@ def _ws_scheme(request: web.Request) -> str:
 
 
 async def handle_root(request: web.Request) -> web.Response:
-    """Health check / info."""
+    """Health check / process status."""
     pool: ChromePool = request.app["pool"]
-    alive = sum(1 for p in pool._processes.values() if p.process.poll() is None)
+    processes = {}
+    for key, proc in pool._processes.items():
+        if proc.process.poll() is None:
+            processes[key] = {
+                "pid": proc.process.pid,
+                "port": proc.cdp_port,
+                "seed": proc.seed,
+                "connections": pool._connections.get(key, 0),
+                "timezone": proc.timezone,
+                "locale": proc.locale,
+                "proxy": proc.proxy,
+            }
     return web.json_response({
         "status": "ok",
-        "processes": alive,
+        "active": len(processes),
+        "processes": processes,
     })
 
 
@@ -410,8 +449,6 @@ async def proxy_cdp_websocket(
     label: str,
 ) -> None:
     """Bidirectional WebSocket proxy between client and Chrome CDP."""
-    import websockets
-
     try:
         async with websockets.connect(
             target_url, max_size=None, ping_interval=None, ping_timeout=None,
@@ -463,8 +500,12 @@ async def handle_ws_default(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    target_url = f"ws://127.0.0.1:{cp.cdp_port}/devtools/{path}"
-    await proxy_cdp_websocket(ws, target_url, f"CDP default [{path}]")
+    pool.connect("__default__")
+    try:
+        target_url = f"ws://127.0.0.1:{cp.cdp_port}/devtools/{path}"
+        await proxy_cdp_websocket(ws, target_url, f"CDP default [{path}]")
+    finally:
+        pool.disconnect("__default__")
     return ws
 
 
@@ -479,8 +520,12 @@ async def handle_ws_seed(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    target_url = f"ws://127.0.0.1:{cp.cdp_port}/devtools/{path}"
-    await proxy_cdp_websocket(ws, target_url, f"CDP seed={seed} [{path}]")
+    pool.connect(seed)
+    try:
+        target_url = f"ws://127.0.0.1:{cp.cdp_port}/devtools/{path}"
+        await proxy_cdp_websocket(ws, target_url, f"CDP seed={seed} [{path}]")
+    finally:
+        pool.disconnect(seed)
     return ws
 
 
@@ -492,16 +537,25 @@ async def on_shutdown(app: web.Application) -> None:
 # CLI arg parsing
 # ---------------------------------------------------------------------------
 
+def _default_data_dir() -> str:
+    """Smart default: Docker → /tmp/cloakserve, bare metal → ~/.cloakbrowser/cloakserve."""
+    if os.path.exists("/.dockerenv"):
+        return "/tmp/cloakserve"
+    return str(Path.home() / ".cloakbrowser" / "cloakserve")
+
+
 def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
     """Parse cloakserve-specific args, return (config, passthrough_args)."""
-    config = {
+    config: dict = {
         "port": 9222,
         "headless": True,
+        "data_dir": None,
     }
     passthrough = []
     # Flags consumed by cloakserve (not passed to Chrome)
     consumed_prefixes = (
         "--port=",
+        "--data-dir=",
         "--remote-debugging-port=",
         "--remote-debugging-address=",
     )
@@ -509,6 +563,8 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
     for arg in argv:
         if arg.startswith("--port="):
             config["port"] = int(arg.split("=", 1)[1])
+        elif arg.startswith("--data-dir="):
+            config["data_dir"] = arg.split("=", 1)[1]
         elif arg == "--headless=false" or arg == "--headless=False":
             config["headless"] = False
             passthrough.append(arg)
@@ -516,6 +572,9 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
             pass  # Strip these silently
         else:
             passthrough.append(arg)
+
+    if config["data_dir"] is None:
+        config["data_dir"] = _default_data_dir()
 
     return config, passthrough
 
@@ -532,6 +591,7 @@ def main() -> None:
         binary=binary,
         global_args=global_args,
         headless=config["headless"],
+        data_dir=config["data_dir"],
     )
 
     app = web.Application()

@@ -775,7 +775,7 @@ b4 = pw.chromium.connect_over_cdp(
 )
 ```
 
-Supported query params: `fingerprint`, `timezone`, `locale`, `platform`, `platform-version`, `brand`, `brand-version`, `gpu-vendor`, `gpu-renderer`, `hardware-concurrency`, `device-memory`, `screen-width`, `screen-height`, `proxy`, `geoip`. Same seed reuses the same process. No seed = shared default process (backward compatible).
+Supported query params: `fingerprint`, `timezone`, `locale`, `platform`, `platform-version`, `brand`, `brand-version`, `gpu-vendor`, `gpu-renderer`, `hardware-concurrency`, `device-memory`, `screen-width`, `screen-height`, `proxy`, `geoip`. Same seed reuses the same process (first connection's params win). No seed = shared default process (backward compatible). Check active processes at `GET /` (returns JSON with PIDs, ports, and connection counts).
 
 **Persistent profiles** — mount a volume to keep cookies and sessions across container restarts:
 
