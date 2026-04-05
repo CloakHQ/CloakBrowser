@@ -4,12 +4,17 @@
  * Activated via humanize: true in launch() / launchContext().
  * Patches page methods to use Bezier mouse curves, realistic typing, and smooth scrolling.
  *
+ * Stealth-aware (fixes #110):
+ *   - isInputElement / isSelectorFocused use CDP Isolated Worlds instead of page.evaluate
+ *   - Shift symbol typing uses CDP Input.dispatchKeyEvent for isTrusted=true events
+ *   - Falls back to page.evaluate only when CDP session is unavailable
+ *
  * Patches all interaction methods:
  * click, dblclick, hover, type, fill, check, uncheck, selectOption,
  * press, pressSequentially, tap, dragTo, clear + Frame-level equivalents.
  */
 
-import type { Browser, BrowserContext, Page, Frame } from 'playwright-core';
+import type { Browser, BrowserContext, Page, Frame, CDPSession } from 'playwright-core';
 import { HumanConfig, resolveConfig, rand, randRange, sleep } from './config.js';
 import { RawMouse, RawKeyboard, humanMove, humanClick, clickTarget, humanIdle } from './mouse.js';
 import { humanType } from './keyboard.js';
@@ -23,13 +28,148 @@ export { scrollToElement } from './scroll.js';
 // --- Platform-aware select-all shortcut (macOS uses Meta, others use Control) ---
 const SELECT_ALL = process.platform === 'darwin' ? 'Meta+a' : 'Control+a';
 
+
+// ============================================================================
+// CDP Isolated World — stealth DOM evaluation
+// ============================================================================
+
+/**
+ * Manages a CDP isolated execution context for DOM reads.
+ * Produces clean Error.stack traces (no 'eval at evaluate :302:')
+ * and is invisible to querySelector monkey-patches in the main world.
+ *
+ * Context ID is invalidated on navigation and auto-recreated on next call.
+ */
+class StealthEval {
+  private cdp: CDPSession | null = null;
+  private contextId: number | null = null;
+  private page: Page;
+
+  constructor(page: Page) {
+    this.page = page;
+  }
+
+  private async ensureCdp(): Promise<CDPSession> {
+    if (!this.cdp) {
+      this.cdp = await this.page.context().newCDPSession(this.page);
+    }
+    return this.cdp;
+  }
+
+  private async createWorld(): Promise<number> {
+    const cdp = await this.ensureCdp();
+    const tree = await cdp.send('Page.getFrameTree');
+    const frameId = tree.frameTree.frame.id;
+    const result = await cdp.send('Page.createIsolatedWorld', {
+      frameId,
+      worldName: '',
+      grantUniveralAccess: true,
+    });
+    const ctxId = result.executionContextId;
+    this.contextId = ctxId;
+    return ctxId;
+  }
+
+  /**
+   * Evaluate a JS expression in the isolated world.
+   * Auto-recreates the world if the context was invalidated (navigation).
+   * Returns the result value, or undefined on failure.
+   */
+  async evaluate(expression: string): Promise<any> {
+    if (this.contextId === null) {
+      await this.createWorld();
+    }
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const cdp = await this.ensureCdp();
+        const result = await cdp.send('Runtime.evaluate', {
+          expression,
+          contextId: this.contextId!,
+          returnByValue: true,
+        });
+
+        if (result.exceptionDetails) {
+          // Context was likely invalidated by navigation
+          if (attempt === 0) {
+            await this.createWorld();
+            continue;
+          }
+          return undefined;
+        }
+
+        return result.result?.value;
+      } catch {
+        if (attempt === 0) {
+          this.contextId = null;
+          try {
+            await this.createWorld();
+          } catch {
+            return undefined;
+          }
+          continue;
+        }
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /** Mark context as stale — call after navigation. */
+  invalidate(): void {
+    this.contextId = null;
+  }
+
+  /** Get the underlying CDP session (reused for Input.dispatchKeyEvent etc.). */
+  async getCdpSession(): Promise<CDPSession> {
+    return this.ensureCdp();
+  }
+}
+
+
+// ============================================================================
+// Cursor state
+// ============================================================================
+
 class CursorState {
   x = 0;
   y = 0;
   initialized = false;
 }
 
-async function isInputElement(page: Page, selector: string): Promise<boolean> {
+
+// ============================================================================
+// Stealth DOM queries — isolated world with evaluate fallback
+// ============================================================================
+
+/**
+ * Check if selector matches an input/textarea/contenteditable element.
+ * Uses CDP Isolated World when available — invisible to main world.
+ */
+async function isInputElement(
+  stealth: StealthEval | null,
+  page: Page,
+  selector: string,
+): Promise<boolean> {
+  if (stealth) {
+    try {
+      const escaped = JSON.stringify(selector);
+      const result = await stealth.evaluate(`
+        (() => {
+          const el = document.querySelector(${escaped});
+          if (!el) return false;
+          const tag = el.tagName.toLowerCase();
+          return tag === 'input' || tag === 'textarea'
+            || el.getAttribute('contenteditable') === 'true';
+        })()
+      `);
+      return !!result;
+    } catch {
+      // Fall through to page.evaluate
+    }
+  }
+
+  // Fallback: page.evaluate (detectable — should only happen if CDP fails)
   return page.evaluate((sel: string) => {
     const el = document.querySelector(sel);
     if (!el) return false;
@@ -39,12 +179,36 @@ async function isInputElement(page: Page, selector: string): Promise<boolean> {
   }, selector).catch(() => false);
 }
 
-async function isSelectorFocused(page: Page, selector: string): Promise<boolean> {
+/**
+ * Check if the element matching selector is currently focused.
+ * Uses CDP Isolated World when available — invisible to main world.
+ */
+async function isSelectorFocused(
+  stealth: StealthEval | null,
+  page: Page,
+  selector: string,
+): Promise<boolean> {
+  if (stealth) {
+    try {
+      const escaped = JSON.stringify(selector);
+      const result = await stealth.evaluate(`
+        (() => {
+          const el = document.querySelector(${escaped});
+          return el === document.activeElement;
+        })()
+      `);
+      return !!result;
+    } catch {
+      // Fall through to page.evaluate
+    }
+  }
+
   return page.evaluate((sel: string) => {
     const el = document.querySelector(sel);
     return el === document.activeElement;
   }, selector).catch(() => false);
 }
+
 
 // ============================================================================
 // Page-level patching
@@ -82,6 +246,21 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   (page as any)._original = originals;
   (page as any)._humanCfg = cfg;
 
+  // --- Stealth infrastructure ---
+  const stealth = new StealthEval(page);
+  (page as any)._stealth = stealth;
+
+  // CDP session for shift symbol typing (lazy-initialized, reuses stealth's session)
+  let cdpSession: CDPSession | null = null;
+  const ensureCdp = async (): Promise<CDPSession | null> => {
+    if (!cdpSession) {
+      try {
+        cdpSession = await stealth.getCdpSession();
+      } catch {}
+    }
+    return cdpSession;
+  };
+
   const raw: RawMouse = {
     move: originals.mouseMove,
     down: originals.mouseDown,
@@ -105,11 +284,11 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     }
   }
 
-  // --- goto ---
+  // --- goto (invalidate isolated world on navigation) ---
   const humanGoto = async (url: string, options?: any) => {
     const response = await originals.goto(url, options);
-    // Patch any new frames after navigation
-    patchFrames(page, cfg, cursor, raw, rawKb, originals);
+    stealth.invalidate();
+    patchFrames(page, cfg, cursor, raw, rawKb, originals, stealth);
     return response;
   };
 
@@ -122,7 +301,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, cfg);
     cursor.x = cursorX;
     cursor.y = cursorY;
-    const isInput = await isInputElement(page, selector);
+    const isInput = await isInputElement(stealth, page, selector);
     const target = clickTarget(box, isInput, cfg);
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, cfg);
     cursor.x = target.x;
@@ -139,7 +318,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, cfg);
     cursor.x = cursorX;
     cursor.y = cursorY;
-    const isInput = await isInputElement(page, selector);
+    const isInput = await isInputElement(stealth, page, selector);
     const target = clickTarget(box, isInput, cfg);
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, cfg);
     cursor.x = target.x;
@@ -169,7 +348,8 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     await sleep(randRange(cfg.field_switch_delay));
     await humanClickFn(selector);
     await sleep(rand(100, 250));
-    await humanType(page, rawKb, text, cfg);
+    const cdp = await ensureCdp();
+    await humanType(page, rawKb, text, cfg, cdp);
   };
 
   // --- fill (clears existing content first) ---
@@ -181,12 +361,13 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     await sleep(rand(30, 80));
     await originals.keyboardPress('Backspace');
     await sleep(rand(50, 150));
-    await humanType(page, rawKb, value, cfg);
+    const cdp = await ensureCdp();
+    await humanType(page, rawKb, value, cfg, cdp);
   };
 
   // --- clear ---
   const humanClearFn = async (selector: string, options?: any) => {
-    if (!await isSelectorFocused(page, selector)) {
+    if (!await isSelectorFocused(stealth, page, selector)) {
       await humanClickFn(selector);
     }
     await sleep(rand(50, 150));
@@ -226,7 +407,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
   // --- press (checks focus first — avoids redundant mouse moves) ---
   const humanPressFn = async (selector: string, key: string, options?: any) => {
-    if (!await isSelectorFocused(page, selector)) {
+    if (!await isSelectorFocused(stealth, page, selector)) {
       await humanClickFn(selector);
     }
     await sleep(rand(50, 150));
@@ -235,11 +416,12 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
   // --- pressSequentially ---
   const humanPressSequentiallyFn = async (selector: string, text: string, options?: any) => {
-    if (!await isSelectorFocused(page, selector)) {
+    if (!await isSelectorFocused(stealth, page, selector)) {
       await humanClickFn(selector);
     }
     await sleep(rand(100, 250));
-    await humanType(page, rawKb, text, cfg);
+    const cdp = await ensureCdp();
+    await humanType(page, rawKb, text, cfg, cdp);
   };
 
   // --- tap ---
@@ -277,7 +459,8 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
   // --- keyboard patches ---
   page.keyboard.type = async (text: string, options?: any) => {
-    await humanType(page, rawKb, text, cfg);
+    const cdp = await ensureCdp();
+    await humanType(page, rawKb, text, cfg, cdp);
   };
 
   // Store helpers for frame patching
@@ -301,7 +484,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   }).catch(() => {});
 
   // --- Patch Frame-level methods (for sub-frames) ---
-  patchFrames(page, cfg, cursor, raw, rawKb, originals);
+  patchFrames(page, cfg, cursor, raw, rawKb, originals, stealth);
 }
 
 
@@ -321,13 +504,20 @@ function patchFrames(
   raw: RawMouse,
   rawKb: RawKeyboard,
   originals: any,
+  stealth: StealthEval,
 ): void {
   for (const frame of iterFrames(page)) {
-    patchSingleFrame(frame, page, cfg, originals);
+    patchSingleFrame(frame, page, cfg, originals, stealth);
   }
 }
 
-function patchSingleFrame(frame: Frame, page: Page, cfg: HumanConfig, originals: any): void {
+function patchSingleFrame(
+  frame: Frame,
+  page: Page,
+  cfg: HumanConfig,
+  originals: any,
+  stealth: StealthEval,
+): void {
   if ((frame as any)._humanPatched) return;
   (frame as any)._humanPatched = true;
 
@@ -374,7 +564,7 @@ function patchSingleFrame(frame: Frame, page: Page, cfg: HumanConfig, originals:
   };
 
   (frame as any).clear = async (selector: string, options?: any) => {
-    if (!await isSelectorFocused(page, selector)) {
+    if (!await isSelectorFocused(stealth, page, selector)) {
       await (page as any).click(selector);
     }
     await sleep(rand(50, 150));

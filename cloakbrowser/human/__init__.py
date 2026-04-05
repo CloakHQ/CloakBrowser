@@ -3,14 +3,20 @@
 Activated via humanize=True in launch() / launch_async().
 Patches page methods to use Bezier mouse curves, realistic typing, and smooth scrolling.
 
+Stealth-aware (fixes #110):
+  - isInputElement / isSelectorFocused use CDP Isolated Worlds instead of page.evaluate
+  - Shift symbol typing uses CDP Input.dispatchKeyEvent for isTrusted=true events
+  - Falls back to page.evaluate only when CDP session is unavailable
+
 Supports both sync and async Playwright APIs.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
-from typing import Any
+from typing import Any, Optional
 
 from .config import HumanConfig, HumanPreset, resolve_config
 from .config import rand, rand_range, sleep_ms, async_sleep_ms
@@ -33,6 +39,153 @@ __all__ = [
 
 logger = logging.getLogger("cloakbrowser.human")
 
+
+# ============================================================================
+# CDP Isolated World — stealth DOM evaluation
+# ============================================================================
+
+class _SyncIsolatedWorld:
+    """Manages a CDP isolated execution context for DOM reads (sync).
+
+    Produces clean Error.stack traces (no 'eval at evaluate :302:')
+    and is invisible to querySelector monkey-patches in the main world.
+    Context ID is invalidated on navigation and auto-recreated on next call.
+    """
+
+    __slots__ = ("_page", "_cdp", "_context_id")
+
+    def __init__(self, page: Any):
+        self._page = page
+        self._cdp: Any = None
+        self._context_id: Optional[int] = None
+
+    def _ensure_cdp(self) -> Any:
+        if self._cdp is None:
+            self._cdp = self._page.context.new_cdp_session(self._page)
+        return self._cdp
+
+    def _create_world(self) -> int:
+        cdp = self._ensure_cdp()
+        tree = cdp.send("Page.getFrameTree")
+        frame_id = tree["frameTree"]["frame"]["id"]
+        result = cdp.send("Page.createIsolatedWorld", {
+            "frameId": frame_id,
+            "worldName": "",
+            "grantUniveralAccess": True,
+        })
+        self._context_id = result["executionContextId"]
+        return self._context_id
+
+    def evaluate(self, expression: str) -> Any:
+        """Evaluate JS in isolated world. Auto-recreates on stale context."""
+        if self._context_id is None:
+            self._create_world()
+
+        for attempt in range(2):
+            try:
+                result = self._cdp.send("Runtime.evaluate", {
+                    "expression": expression,
+                    "contextId": self._context_id,
+                    "returnByValue": True,
+                })
+                if "exceptionDetails" in result:
+                    if attempt == 0:
+                        self._create_world()
+                        continue
+                    return None
+                return result.get("result", {}).get("value")
+            except Exception:
+                if attempt == 0:
+                    self._context_id = None
+                    try:
+                        self._create_world()
+                    except Exception:
+                        return None
+                    continue
+                return None
+        return None
+
+    def invalidate(self) -> None:
+        """Mark context as stale — call after navigation."""
+        self._context_id = None
+
+    def get_cdp_session(self) -> Any:
+        """Get the underlying CDP session (reused for Input.dispatchKeyEvent)."""
+        return self._ensure_cdp()
+
+
+class _AsyncIsolatedWorld:
+    """Manages a CDP isolated execution context for DOM reads (async).
+
+    Same as _SyncIsolatedWorld but uses await for all CDP calls.
+    """
+
+    __slots__ = ("_page", "_cdp", "_context_id")
+
+    def __init__(self, page: Any):
+        self._page = page
+        self._cdp: Any = None
+        self._context_id: Optional[int] = None
+
+    async def _ensure_cdp(self) -> Any:
+        if self._cdp is None:
+            self._cdp = await self._page.context.new_cdp_session(self._page)
+        return self._cdp
+
+    async def _create_world(self) -> int:
+        cdp = await self._ensure_cdp()
+        tree = await cdp.send("Page.getFrameTree")
+        frame_id = tree["frameTree"]["frame"]["id"]
+        result = await cdp.send("Page.createIsolatedWorld", {
+            "frameId": frame_id,
+            "worldName": "",
+            "grantUniveralAccess": True,
+        })
+        self._context_id = result["executionContextId"]
+        return self._context_id
+
+    async def evaluate(self, expression: str) -> Any:
+        """Evaluate JS in isolated world. Auto-recreates on stale context."""
+        if self._context_id is None:
+            await self._create_world()
+
+        for attempt in range(2):
+            try:
+                result = await self._cdp.send("Runtime.evaluate", {
+                    "expression": expression,
+                    "contextId": self._context_id,
+                    "returnByValue": True,
+                })
+                if "exceptionDetails" in result:
+                    if attempt == 0:
+                        await self._create_world()
+                        continue
+                    return None
+                return result.get("result", {}).get("value")
+            except Exception:
+                if attempt == 0:
+                    self._context_id = None
+                    try:
+                        await self._create_world()
+                    except Exception:
+                        return None
+                    continue
+                return None
+        return None
+
+    def invalidate(self) -> None:
+        """Mark context as stale — call after navigation."""
+        self._context_id = None
+
+    async def get_cdp_session(self) -> Any:
+        """Get the underlying CDP session (reused for Input.dispatchKeyEvent)."""
+        return await self._ensure_cdp()
+
+
+# ============================================================================
+# Cursor state
+# ============================================================================
+
 class _CursorState:
     __slots__ = ("x", "y", "initialized")
 
@@ -42,7 +195,30 @@ class _CursorState:
         self.initialized: bool = False
 
 
+# ============================================================================
+# Stealth DOM queries — isolated world with evaluate fallback
+# ============================================================================
+
 def _is_input_element(page: Any, selector: str) -> bool:
+    """Check if selector is an input element. Uses CDP isolated world when available."""
+    world: Optional[_SyncIsolatedWorld] = getattr(page, '_stealth_world', None)
+    if world is not None:
+        try:
+            escaped = json.dumps(selector)
+            result = world.evaluate(
+                f"(() => {{"
+                f"  const el = document.querySelector({escaped});"
+                f"  if (!el) return false;"
+                f"  const tag = el.tagName.toLowerCase();"
+                f"  return tag === 'input' || tag === 'textarea'"
+                f"    || el.getAttribute('contenteditable') === 'true';"
+                f"}})()"
+            )
+            return bool(result)
+        except Exception:
+            pass
+
+    # Fallback: page.evaluate (detectable — should only happen if CDP fails)
     try:
         return page.evaluate(
             """(sel) => {
@@ -59,6 +235,24 @@ def _is_input_element(page: Any, selector: str) -> bool:
 
 
 async def _async_is_input_element(page: Any, selector: str) -> bool:
+    """Check if selector is an input element (async). Uses CDP isolated world when available."""
+    world: Optional[_AsyncIsolatedWorld] = getattr(page, '_stealth_world', None)
+    if world is not None:
+        try:
+            escaped = json.dumps(selector)
+            result = await world.evaluate(
+                f"(() => {{"
+                f"  const el = document.querySelector({escaped});"
+                f"  if (!el) return false;"
+                f"  const tag = el.tagName.toLowerCase();"
+                f"  return tag === 'input' || tag === 'textarea'"
+                f"    || el.getAttribute('contenteditable') === 'true';"
+                f"}})()"
+            )
+            return bool(result)
+        except Exception:
+            pass
+
     try:
         return await page.evaluate(
             """(sel) => {
@@ -75,7 +269,22 @@ async def _async_is_input_element(page: Any, selector: str) -> bool:
 
 
 def _is_selector_focused(page: Any, selector: str) -> bool:
-    """Check if the element matching selector is currently focused."""
+    """Check if the element matching selector is currently focused.
+    Uses CDP isolated world when available."""
+    world: Optional[_SyncIsolatedWorld] = getattr(page, '_stealth_world', None)
+    if world is not None:
+        try:
+            escaped = json.dumps(selector)
+            result = world.evaluate(
+                f"(() => {{"
+                f"  const el = document.querySelector({escaped});"
+                f"  return el === document.activeElement;"
+                f"}})()"
+            )
+            return bool(result)
+        except Exception:
+            pass
+
     try:
         return page.evaluate(
             """(sel) => {
@@ -89,7 +298,22 @@ def _is_selector_focused(page: Any, selector: str) -> bool:
 
 
 async def _async_is_selector_focused(page: Any, selector: str) -> bool:
-    """Check if the element matching selector is currently focused (async)."""
+    """Check if the element matching selector is currently focused (async).
+    Uses CDP isolated world when available."""
+    world: Optional[_AsyncIsolatedWorld] = getattr(page, '_stealth_world', None)
+    if world is not None:
+        try:
+            escaped = json.dumps(selector)
+            result = await world.evaluate(
+                f"(() => {{"
+                f"  const el = document.querySelector({escaped});"
+                f"  return el === document.activeElement;"
+                f"}})()"
+            )
+            return bool(result)
+        except Exception:
+            pass
+
     try:
         return await page.evaluate(
             """(sel) => {
@@ -216,7 +440,6 @@ def _patch_locator_class_sync():
     def _humanized_press(self, key, **kwargs):
         if _is_humanized(self):
             selector = _get_selector(self)
-            # Only click if not already focused — avoids redundant mouse moves
             if not _is_selector_focused(self.page, selector):
                 self.page.click(selector)
             sleep_ms(rand(50, 150))
@@ -516,6 +739,17 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     page._original = originals
     page._human_cfg = cfg
 
+    # --- Stealth infrastructure ---
+    try:
+        stealth = _SyncIsolatedWorld(page)
+        page._stealth_world = stealth
+        cdp_session = stealth.get_cdp_session()
+    except Exception:
+        stealth = None
+        page._stealth_world = None
+        cdp_session = None
+        logger.debug("Could not create CDP session — stealth features disabled")
+
     raw_mouse: RawMouse = type("_RawMouse", (), {
         "move": originals.mouse_move,
         "down": originals.mouse_down,
@@ -539,6 +773,9 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
     def _human_goto(url: str, **kwargs: Any) -> Any:
         response = originals.goto(url, **kwargs)
+        # Invalidate isolated world after navigation (context ID becomes stale)
+        if stealth is not None:
+            stealth.invalidate()
         return response
 
     def _human_click(selector: str, **kwargs: Any) -> None:
@@ -593,7 +830,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         sleep_ms(rand_range(cfg.field_switch_delay))
         _human_click(selector)
         sleep_ms(rand(100, 250))
-        human_type(page, raw_keyboard, text, cfg)
+        human_type(page, raw_keyboard, text, cfg, cdp_session=cdp_session)
 
     def _human_fill(selector: str, value: str, **kwargs: Any) -> None:
         sleep_ms(rand_range(cfg.field_switch_delay))
@@ -603,7 +840,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         sleep_ms(rand(30, 80))
         originals.keyboard_press("Backspace")
         sleep_ms(rand(50, 150))
-        human_type(page, raw_keyboard, value, cfg)
+        human_type(page, raw_keyboard, value, cfg, cdp_session=cdp_session)
 
     def _human_check(selector: str, **kwargs: Any) -> None:
         try:
@@ -646,7 +883,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         human_click(raw_mouse, False, cfg)
 
     def _human_keyboard_type(text: str, **kwargs: Any) -> None:
-        human_type(page, raw_keyboard, text, cfg)
+        human_type(page, raw_keyboard, text, cfg, cdp_session=cdp_session)
 
     page.goto = _human_goto
     page.click = _human_click
@@ -659,10 +896,10 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     page.press = _human_press
     page.mouse.move = _human_mouse_move
     page.mouse.click = _human_mouse_click
-    page.keyboard.type = _human_keyboard_type  
+    page.keyboard.type = _human_keyboard_type
     # --- Patch Frame-level methods (for sub-frames) ---
     _patch_frames_sync(page, cfg, cursor, raw_mouse, raw_keyboard, originals)
-    
+
     # Initialize cursor immediately so it doesn't visibly jump from (0,0)
     cursor.x = rand(cfg.initial_cursor_x[0], cfg.initial_cursor_x[1])
     cursor.y = rand(cfg.initial_cursor_y[0], cfg.initial_cursor_y[1])
@@ -690,6 +927,10 @@ def _patch_frames_sync(
 
             def _frame_aware_goto(url: str, **kwargs: Any) -> Any:
                 response = _orig_goto(url, **kwargs)
+                # Invalidate isolated world after navigation
+                stealth_world = getattr(page, '_stealth_world', None)
+                if stealth_world is not None:
+                    stealth_world.invalidate()
                 for frame in _iter_frames(page):
                     if not getattr(frame, "_human_patched", False):
                         _patch_single_frame_sync(frame, page, cfg, cursor, raw_mouse, raw_keyboard, originals)
@@ -709,7 +950,6 @@ def _patch_single_frame_sync(
         return
     frame._human_patched = True
 
-    # Save originals for methods that need fallback
     _orig_frame_select_option = frame.select_option
     _orig_frame_drag_and_drop = getattr(frame, 'drag_and_drop', None)
 
@@ -841,6 +1081,7 @@ def patch_browser(browser: Any, cfg: HumanConfig) -> None:
 
 
 def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
+    """Replace page methods with human-like implementations (async)."""
     originals = type("Originals", (), {
         "click": page.click,
         "type": page.type,
@@ -862,6 +1103,19 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
     page._original = originals
     page._human_cfg = cfg
+
+    # --- Stealth infrastructure (lazy-initialized, async) ---
+    stealth = _AsyncIsolatedWorld(page)
+    page._stealth_world = stealth
+    cdp_session_holder: list[Any] = [None]  # mutable container for closure
+
+    async def _ensure_cdp() -> Any:
+        if cdp_session_holder[0] is None:
+            try:
+                cdp_session_holder[0] = await stealth.get_cdp_session()
+            except Exception:
+                logger.debug("Could not create async CDP session")
+        return cdp_session_holder[0]
 
     raw_mouse: AsyncRawMouse = type("_AsyncRawMouse", (), {
         "move": originals.mouse_move,
@@ -886,6 +1140,8 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
     async def _human_goto(url: str, **kwargs: Any) -> Any:
         response = await originals.goto(url, **kwargs)
+        # Invalidate isolated world after navigation
+        stealth.invalidate()
         return response
 
     async def _human_click(selector: str, **kwargs: Any) -> None:
@@ -940,7 +1196,8 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await async_sleep_ms(rand_range(cfg.field_switch_delay))
         await _human_click(selector)
         await async_sleep_ms(rand(100, 250))
-        await async_human_type(page, raw_keyboard, text, cfg)
+        cdp = await _ensure_cdp()
+        await async_human_type(page, raw_keyboard, text, cfg, cdp_session=cdp)
 
     async def _human_fill(selector: str, value: str, **kwargs: Any) -> None:
         await async_sleep_ms(rand_range(cfg.field_switch_delay))
@@ -950,7 +1207,8 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await async_sleep_ms(rand(30, 80))
         await originals.keyboard_press("Backspace")
         await async_sleep_ms(rand(50, 150))
-        await async_human_type(page, raw_keyboard, value, cfg)
+        cdp = await _ensure_cdp()
+        await async_human_type(page, raw_keyboard, value, cfg, cdp_session=cdp)
 
     async def _human_check(selector: str, **kwargs: Any) -> None:
         try:
@@ -988,7 +1246,8 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await async_human_click(raw_mouse, False, cfg)
 
     async def _human_keyboard_type(text: str, **kwargs: Any) -> None:
-        await async_human_type(page, raw_keyboard, text, cfg)
+        cdp = await _ensure_cdp()
+        await async_human_type(page, raw_keyboard, text, cfg, cdp_session=cdp)
 
     page.goto = _human_goto
     page.click = _human_click
@@ -1024,6 +1283,10 @@ def _patch_frames_async(
 
             async def _frame_aware_goto(url: str, **kwargs: Any) -> Any:
                 response = await _orig_goto(url, **kwargs)
+                # Invalidate isolated world after navigation
+                stealth_world = getattr(page, '_stealth_world', None)
+                if stealth_world is not None:
+                    stealth_world.invalidate()
                 for frame in _iter_frames(page):
                     if not getattr(frame, "_human_patched", False):
                         _patch_single_frame_async(frame, page, cfg, cursor, raw_mouse, raw_keyboard, originals)
