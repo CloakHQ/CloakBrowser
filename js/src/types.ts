@@ -2,6 +2,13 @@
  * Shared types for cloakbrowser launch wrappers.
  */
 
+declare module 'playwright-core' {
+  interface Page {
+    /** Evaluate JS in a CDP isolated world — clean stack traces, invisible to main-world monkey-patches. */
+    stealthEvaluate(expression: string): Promise<any>;
+  }
+}
+
 export interface LaunchOptions {
   /** Run in headless mode (default: true). */
   headless?: boolean;

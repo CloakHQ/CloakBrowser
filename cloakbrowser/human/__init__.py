@@ -26,6 +26,7 @@ from .scroll import scroll_to_element
 from .mouse_async import AsyncRawMouse, async_human_move, async_human_click, async_human_idle
 from .keyboard_async import AsyncRawKeyboard, async_human_type
 from .scroll_async import async_scroll_to_element
+from ..stealth_eval import _SyncIsolatedWorld, _AsyncIsolatedWorld
 
 _SELECT_ALL = "Meta+a" if sys.platform == "darwin" else "Control+a"
 
@@ -44,142 +45,9 @@ logger = logging.getLogger("cloakbrowser.human")
 # CDP Isolated World — stealth DOM evaluation
 # ============================================================================
 
-class _SyncIsolatedWorld:
-    """Manages a CDP isolated execution context for DOM reads (sync).
 
-    Produces clean Error.stack traces (no 'eval at evaluate :302:')
-    and is invisible to querySelector monkey-patches in the main world.
-    Context ID is invalidated on navigation and auto-recreated on next call.
-    """
-
-    __slots__ = ("_page", "_cdp", "_context_id")
-
-    def __init__(self, page: Any):
-        self._page = page
-        self._cdp: Any = None
-        self._context_id: Optional[int] = None
-
-    def _ensure_cdp(self) -> Any:
-        if self._cdp is None:
-            self._cdp = self._page.context.new_cdp_session(self._page)
-        return self._cdp
-
-    def _create_world(self) -> int:
-        cdp = self._ensure_cdp()
-        tree = cdp.send("Page.getFrameTree")
-        frame_id = tree["frameTree"]["frame"]["id"]
-        result = cdp.send("Page.createIsolatedWorld", {
-            "frameId": frame_id,
-            "worldName": "",
-            "grantUniveralAccess": True,
-        })
-        self._context_id = result["executionContextId"]
-        return self._context_id
-
-    def evaluate(self, expression: str) -> Any:
-        """Evaluate JS in isolated world. Auto-recreates on stale context."""
-        if self._context_id is None:
-            self._create_world()
-
-        for attempt in range(2):
-            try:
-                result = self._cdp.send("Runtime.evaluate", {
-                    "expression": expression,
-                    "contextId": self._context_id,
-                    "returnByValue": True,
-                })
-                if "exceptionDetails" in result:
-                    if attempt == 0:
-                        self._create_world()
-                        continue
-                    return None
-                return result.get("result", {}).get("value")
-            except Exception:
-                if attempt == 0:
-                    self._context_id = None
-                    try:
-                        self._create_world()
-                    except Exception:
-                        return None
-                    continue
-                return None
-        return None
-
-    def invalidate(self) -> None:
-        """Mark context as stale — call after navigation."""
-        self._context_id = None
-
-    def get_cdp_session(self) -> Any:
-        """Get the underlying CDP session (reused for Input.dispatchKeyEvent)."""
-        return self._ensure_cdp()
-
-
-class _AsyncIsolatedWorld:
-    """Manages a CDP isolated execution context for DOM reads (async).
-
-    Same as _SyncIsolatedWorld but uses await for all CDP calls.
-    """
-
-    __slots__ = ("_page", "_cdp", "_context_id")
-
-    def __init__(self, page: Any):
-        self._page = page
-        self._cdp: Any = None
-        self._context_id: Optional[int] = None
-
-    async def _ensure_cdp(self) -> Any:
-        if self._cdp is None:
-            self._cdp = await self._page.context.new_cdp_session(self._page)
-        return self._cdp
-
-    async def _create_world(self) -> int:
-        cdp = await self._ensure_cdp()
-        tree = await cdp.send("Page.getFrameTree")
-        frame_id = tree["frameTree"]["frame"]["id"]
-        result = await cdp.send("Page.createIsolatedWorld", {
-            "frameId": frame_id,
-            "worldName": "",
-            "grantUniveralAccess": True,
-        })
-        self._context_id = result["executionContextId"]
-        return self._context_id
-
-    async def evaluate(self, expression: str) -> Any:
-        """Evaluate JS in isolated world. Auto-recreates on stale context."""
-        if self._context_id is None:
-            await self._create_world()
-
-        for attempt in range(2):
-            try:
-                result = await self._cdp.send("Runtime.evaluate", {
-                    "expression": expression,
-                    "contextId": self._context_id,
-                    "returnByValue": True,
-                })
-                if "exceptionDetails" in result:
-                    if attempt == 0:
-                        await self._create_world()
-                        continue
-                    return None
-                return result.get("result", {}).get("value")
-            except Exception:
-                if attempt == 0:
-                    self._context_id = None
-                    try:
-                        await self._create_world()
-                    except Exception:
-                        return None
-                    continue
-                return None
-        return None
-
-    def invalidate(self) -> None:
-        """Mark context as stale — call after navigation."""
-        self._context_id = None
-
-    async def get_cdp_session(self) -> Any:
-        """Get the underlying CDP session (reused for Input.dispatchKeyEvent)."""
-        return await self._ensure_cdp()
+# _SyncIsolatedWorld and _AsyncIsolatedWorld are defined in
+# cloakbrowser.stealth_eval and imported at the top of this file.
 
 
 # ============================================================================
@@ -739,10 +607,12 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     page._original = originals
     page._human_cfg = cfg
 
-    # --- Stealth infrastructure ---
+    # --- Stealth infrastructure (reuse if already attached by stealth_eval) ---
     try:
-        stealth = _SyncIsolatedWorld(page)
-        page._stealth_world = stealth
+        stealth = getattr(page, '_stealth_world', None)
+        if not isinstance(stealth, _SyncIsolatedWorld):
+            stealth = _SyncIsolatedWorld(page)
+            page._stealth_world = stealth
         cdp_session = stealth.get_cdp_session()
     except Exception:
         stealth = None
@@ -1104,9 +974,11 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     page._original = originals
     page._human_cfg = cfg
 
-    # --- Stealth infrastructure (lazy-initialized, async) ---
-    stealth = _AsyncIsolatedWorld(page)
-    page._stealth_world = stealth
+    # --- Stealth infrastructure (reuse if already attached by stealth_eval) ---
+    stealth = getattr(page, '_stealth_world', None)
+    if not isinstance(stealth, _AsyncIsolatedWorld):
+        stealth = _AsyncIsolatedWorld(page)
+        page._stealth_world = stealth
     cdp_session_holder: list[Any] = [None]  # mutable container for closure
 
     async def _ensure_cdp() -> Any:

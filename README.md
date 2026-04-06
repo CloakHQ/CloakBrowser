@@ -514,6 +514,33 @@ Access the original un-patched Playwright page at `page._original` if you need r
 
 > Contributed by [@evelaa123](https://github.com/evelaa123) — full Playwright API coverage.
 
+## Stealth Evaluate
+
+`page.stealth_evaluate(expression)` runs JavaScript in a CDP isolated world instead of Playwright's main-world `evaluate()`. This produces clean `Error.stack` traces and full variable isolation from page JS — useful when a site's anti-bot scripts inspect execution context.
+
+```python
+browser = launch()
+page = browser.new_page()
+page.goto("https://example.com")
+
+# Stealth — clean stack trace, invisible to page JS
+title = page.stealth_evaluate("document.title")
+rect = page.stealth_evaluate("document.querySelector('#btn').getBoundingClientRect().toJSON()")
+
+# Regular evaluate — unchanged, use for DOM writes
+page.evaluate("document.body.style.display = 'none'")
+```
+
+```javascript
+const browser = await launch();
+const page = await browser.newPage();
+await page.goto('https://example.com');
+
+const title = await page.stealthEvaluate('document.title');
+```
+
+Always available on every page — no flag needed. Returns JSON-serializable values only. The isolated world context auto-recreates after navigation.
+
 ## Configuration
 
 | Env Variable | Default | Description |

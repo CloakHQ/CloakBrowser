@@ -46,14 +46,17 @@ describe("launchContext (unit)", () => {
   let mockContext: any;
   let mockBrowser: any;
   let mockChromium: any;
+  let origNewContext: any;
   const origEnv = process.env.CLOAKBROWSER_BINARY_PATH;
 
   beforeEach(() => {
     process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
     const origClose = vi.fn();
-    mockContext = { close: origClose, _origClose: origClose };
+    mockContext = { close: origClose, _origClose: origClose, newPage: vi.fn(), on: vi.fn(), pages: vi.fn().mockReturnValue([]) };
+    origNewContext = vi.fn().mockResolvedValue(mockContext);
     mockBrowser = {
-      newContext: vi.fn().mockResolvedValue(mockContext),
+      newContext: origNewContext,
+      newPage: vi.fn(),
       close: vi.fn(),
     };
     mockChromium = { launch: vi.fn().mockResolvedValue(mockBrowser) };
@@ -75,7 +78,7 @@ describe("launchContext (unit)", () => {
     const { launchContext } = await import("../src/playwright.js");
     await launchContext();
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = origNewContext.mock.calls[0][0];
     expect(ctxArgs.viewport).toEqual(DEFAULT_VIEWPORT);
   });
 
@@ -84,7 +87,7 @@ describe("launchContext (unit)", () => {
     const custom = { width: 1280, height: 720 };
     await launchContext({ viewport: custom });
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = origNewContext.mock.calls[0][0];
     expect(ctxArgs.viewport).toEqual(custom);
   });
 
@@ -92,7 +95,7 @@ describe("launchContext (unit)", () => {
     const { launchContext } = await import("../src/playwright.js");
     await launchContext({ userAgent: "Custom/1.0" });
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = origNewContext.mock.calls[0][0];
     expect(ctxArgs.userAgent).toBe("Custom/1.0");
   });
 
@@ -108,7 +111,7 @@ describe("launchContext (unit)", () => {
     expect(hasTimezoneFlag).toBe(true);
 
     // NOT in newContext() — no CDP emulation
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = origNewContext.mock.calls[0][0];
     expect(ctxArgs.timezoneId).toBeUndefined();
   });
 
@@ -116,7 +119,7 @@ describe("launchContext (unit)", () => {
     const { launchContext } = await import("../src/playwright.js");
     await launchContext({ colorScheme: "dark" });
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = origNewContext.mock.calls[0][0];
     expect(ctxArgs.colorScheme).toBe("dark");
   });
 
@@ -132,6 +135,84 @@ describe("launchContext (unit)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// stealth_evaluate patching unit tests
+// ---------------------------------------------------------------------------
+
+describe("stealthEvaluate patching (unit)", () => {
+  const origEnv = process.env.CLOAKBROWSER_BINARY_PATH;
+  let mockPage: any;
+  let mockContext: any;
+  let mockBrowser: any;
+
+  beforeEach(() => {
+    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
+
+    // Page mock with context() returning the implicit context
+    mockPage = {
+      context: vi.fn(),
+    };
+    // Implicit context created by browser.newPage()
+    mockContext = {
+      pages: vi.fn().mockReturnValue([]),
+      newPage: vi.fn(),
+      on: vi.fn(),
+    };
+    mockPage.context.mockReturnValue(mockContext);
+
+    mockBrowser = {
+      newContext: vi.fn().mockResolvedValue(mockContext),
+      newPage: vi.fn().mockResolvedValue(mockPage),
+      close: vi.fn(),
+    };
+    const mockChromium = { launch: vi.fn().mockResolvedValue(mockBrowser) };
+    vi.doMock("playwright-core", () => ({ chromium: mockChromium }));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    if (origEnv) {
+      process.env.CLOAKBROWSER_BINARY_PATH = origEnv;
+    } else {
+      delete process.env.CLOAKBROWSER_BINARY_PATH;
+    }
+  });
+
+  it("page.stealthEvaluate exists after launch + browser.newPage", async () => {
+    const { launch } = await import("../src/playwright.js");
+    const browser = await launch({ headless: true });
+    const page = await browser.newPage();
+
+    expect(typeof (page as any).stealthEvaluate).toBe("function");
+  });
+
+  it("implicit context from browser.newPage is patched for future pages", async () => {
+    const { launch } = await import("../src/playwright.js");
+    const browser = await launch({ headless: true });
+    await browser.newPage();
+
+    // The 'page' event listener should be registered on the implicit context
+    expect(mockContext.on).toHaveBeenCalledWith("page", expect.any(Function));
+    // The context should be marked as patched
+    expect((mockContext as any)._stealthEvalPatched).toBe(true);
+  });
+
+  it("context from browser.newContext patches pages with stealthEvaluate", async () => {
+    const { launch } = await import("../src/playwright.js");
+    const browser = await launch({ headless: true });
+
+    const mockPage2: any = { context: vi.fn().mockReturnValue(mockContext) };
+    mockContext.newPage.mockResolvedValue(mockPage2);
+    mockContext.pages.mockReturnValue([]);
+
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+
+    expect(typeof (page as any).stealthEvaluate).toBe("function");
+  });
+});
+
 describe("launchPersistentContext (unit)", () => {
   let mockContext: any;
   let mockChromium: any;
@@ -139,7 +220,7 @@ describe("launchPersistentContext (unit)", () => {
 
   beforeEach(() => {
     process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
-    mockContext = { close: vi.fn(), pages: vi.fn().mockReturnValue([]) };
+    mockContext = { close: vi.fn(), pages: vi.fn().mockReturnValue([]), newPage: vi.fn(), on: vi.fn() };
     mockChromium = {
       launchPersistentContext: vi.fn().mockResolvedValue(mockContext),
     };

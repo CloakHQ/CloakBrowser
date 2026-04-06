@@ -67,6 +67,10 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     patchBrowser(browser, cfg);
   }
 
+  // Stealth evaluate — always attached
+  const { patchBrowser: patchStealthEval } = await import('./stealth-eval.js');
+  patchStealthEval(browser);
+
   return browser;
 }
 
@@ -132,6 +136,10 @@ export async function launchContext(
     patchContext(context, cfg);
   }
 
+  // Stealth evaluate — always attached
+  const { patchContext: patchStealthEvalCtx } = await import('./stealth-eval.js');
+  patchStealthEvalCtx(context);
+
   return context;
 }
 
@@ -196,6 +204,10 @@ export async function launchPersistentContext(
     );
     patchContext(context, cfg);
   }
+
+  // Stealth evaluate — always attached
+  const { patchContext: patchStealthEvalCtx2 } = await import('./stealth-eval.js');
+  patchStealthEvalCtx2(context);
 
   return context;
 }

@@ -177,6 +177,24 @@ if (newVersion) console.log(`Updated to ${newVersion}`);
 | TLS fingerprint | Mismatch | **Identical to Chrome** |
 | | | **Tested against 30+ detection sites** |
 
+## Stealth Evaluate
+
+`page.stealthEvaluate(expression)` runs JavaScript in a CDP isolated world instead of Playwright's main-world `evaluate()`. This produces clean `Error.stack` traces and full variable isolation from page JS.
+
+```typescript
+const browser = await launch();
+const page = await browser.newPage();
+await page.goto('https://example.com');
+
+// Stealth — clean stack trace, invisible to page JS
+const title = await page.stealthEvaluate('document.title');
+
+// Regular evaluate — unchanged, use for DOM writes
+await page.evaluate(() => { document.body.style.display = 'none'; });
+```
+
+Always available on every page — no flag needed. Returns JSON-serializable values only. The isolated world context auto-recreates after navigation.
+
 ## Configuration
 
 | Env Variable | Default | Description |

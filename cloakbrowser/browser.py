@@ -138,6 +138,10 @@ def launch(
         cfg = resolve_config(human_preset, human_config)
         patch_browser(browser, cfg)
 
+    # Stealth evaluate — always attached
+    from .stealth_eval import patch_browser_stealth_eval
+    patch_browser_stealth_eval(browser, is_async=False)
+
     return browser
 
 
@@ -226,6 +230,10 @@ async def launch_async(  # noqa: C901
         from .human.config import resolve_config
         cfg = resolve_config(human_preset, human_config)
         patch_browser_async(browser, cfg)
+
+    # Stealth evaluate — always attached
+    from .stealth_eval import patch_browser_stealth_eval
+    patch_browser_stealth_eval(browser, is_async=True)
 
     return browser
 
@@ -343,6 +351,10 @@ def launch_persistent_context(
         from .human.config import resolve_config
         cfg = resolve_config(human_preset, human_config)
         patch_context(context, cfg)
+
+    # Stealth evaluate — always attached
+    from .stealth_eval import patch_context_stealth_eval
+    patch_context_stealth_eval(context, is_async=False)
 
     return context
 
@@ -463,6 +475,10 @@ async def launch_persistent_context_async(
         cfg = resolve_config(human_preset, human_config)
         patch_context_async(context, cfg)
 
+    # Stealth evaluate — always attached
+    from .stealth_eval import patch_context_stealth_eval
+    patch_context_stealth_eval(context, is_async=True)
+
     return context
 
 
@@ -555,6 +571,10 @@ def launch_context(
         from .human.config import resolve_config
         cfg = resolve_config(human_preset, human_config)
         patch_context(context, cfg)
+
+    # Stealth evaluate — always attached
+    from .stealth_eval import patch_context_stealth_eval
+    patch_context_stealth_eval(context, is_async=False)
 
     return context
 

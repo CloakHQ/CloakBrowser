@@ -470,7 +470,7 @@ describe("humanType mixed text with CDP", () => {
 // patchPage stealth wiring
 // =========================================================================
 describe("patchPage stealth infrastructure", () => {
-  it("page._stealth is a StealthEval instance after patching", async () => {
+  it("page._stealthWorld is a StealthEval instance after patching", async () => {
     const { patchPage } = await import("../src/human/index.js");
 
     const page = buildMockPage();
@@ -478,10 +478,10 @@ describe("patchPage stealth infrastructure", () => {
     const cursor = { x: 0, y: 0, initialized: false };
     patchPage(page as any, cfg, cursor as any);
 
-    expect((page as any)._stealth).toBeDefined();
-    expect(typeof (page as any)._stealth.evaluate).toBe("function");
-    expect(typeof (page as any)._stealth.invalidate).toBe("function");
-    expect(typeof (page as any)._stealth.getCdpSession).toBe("function");
+    expect((page as any)._stealthWorld).toBeDefined();
+    expect(typeof (page as any)._stealthWorld.evaluate).toBe("function");
+    expect(typeof (page as any)._stealthWorld.invalidate).toBe("function");
+    expect(typeof (page as any)._stealthWorld.getCdpSession).toBe("function");
   });
 
   it("page._original and page._humanCfg are set", async () => {
@@ -504,7 +504,7 @@ describe("patchPage stealth infrastructure", () => {
     const cursor = { x: 0, y: 0, initialized: false };
     patchPage(page as any, cfg, cursor as any);
 
-    const stealth = (page as any)._stealth;
+    const stealth = (page as any)._stealthWorld;
     const invalidateSpy = vi.spyOn(stealth, "invalidate");
 
     await page.goto("https://example.com");
@@ -540,7 +540,7 @@ describe("StealthEval lifecycle", () => {
     const cursor = { x: 0, y: 0, initialized: false };
     patchPage(page as any, cfg, cursor as any);
 
-    const stealth = (page as any)._stealth;
+    const stealth = (page as any)._stealthWorld;
     expect(() => stealth.invalidate()).not.toThrow();
   });
 
@@ -552,7 +552,7 @@ describe("StealthEval lifecycle", () => {
     const cursor = { x: 0, y: 0, initialized: false };
     patchPage(page as any, cfg, cursor as any);
 
-    const stealth = (page as any)._stealth;
+    const stealth = (page as any)._stealthWorld;
     const session = await stealth.getCdpSession();
     expect(session).toBeDefined();
     expect(typeof session.send).toBe("function");
@@ -587,7 +587,7 @@ describe("StealthEval lifecycle", () => {
     const cursor = { x: 0, y: 0, initialized: false };
     patchPage(page as any, cfg, cursor as any);
 
-    const stealth = (page as any)._stealth;
+    const stealth = (page as any)._stealthWorld;
     const result = await stealth.evaluate("1 + 1");
     expect(result).toBe(true);
   });
@@ -626,7 +626,7 @@ describe("StealthEval lifecycle", () => {
     const cursor = { x: 0, y: 0, initialized: false };
     patchPage(page as any, cfg, cursor as any);
 
-    const stealth = (page as any)._stealth;
+    const stealth = (page as any)._stealthWorld;
     const result = await stealth.evaluate("test");
     expect(result).toBe("recovered");
   });
@@ -660,7 +660,7 @@ describe("StealthEval lifecycle", () => {
     const cursor = { x: 0, y: 0, initialized: false };
     patchPage(page as any, cfg, cursor as any);
 
-    const stealth = (page as any)._stealth;
+    const stealth = (page as any)._stealthWorld;
     const result = await stealth.evaluate("broken");
     expect(result).toBeUndefined();
   });
@@ -975,7 +975,7 @@ describeIfSlow("stealth browser: navigation invalidation", () => {
     const browser = await launch({ headless: true, args: ['--humanize'] });
     const page = await browser.newPage();
 
-    expect((page as any)._stealth).toBeDefined();
+    expect((page as any)._stealthWorld).toBeDefined();
 
     await page.goto('https://www.wikipedia.org', { waitUntil: 'domcontentloaded' });
     await sleep(1000);

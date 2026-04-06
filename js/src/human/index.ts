@@ -19,6 +19,7 @@ import { HumanConfig, resolveConfig, rand, randRange, sleep } from './config.js'
 import { RawMouse, RawKeyboard, humanMove, humanClick, clickTarget, humanIdle } from './mouse.js';
 import { humanType } from './keyboard.js';
 import { scrollToElement } from './scroll.js';
+import { StealthEval } from '../stealth-eval.js';
 
 export { HumanConfig, resolveConfig } from './config.js';
 export { humanMove, humanClick, clickTarget, humanIdle } from './mouse.js';
@@ -29,102 +30,7 @@ export { scrollToElement } from './scroll.js';
 const SELECT_ALL = process.platform === 'darwin' ? 'Meta+a' : 'Control+a';
 
 
-// ============================================================================
-// CDP Isolated World — stealth DOM evaluation
-// ============================================================================
-
-/**
- * Manages a CDP isolated execution context for DOM reads.
- * Produces clean Error.stack traces (no 'eval at evaluate :302:')
- * and is invisible to querySelector monkey-patches in the main world.
- *
- * Context ID is invalidated on navigation and auto-recreated on next call.
- */
-class StealthEval {
-  private cdp: CDPSession | null = null;
-  private contextId: number | null = null;
-  private page: Page;
-
-  constructor(page: Page) {
-    this.page = page;
-  }
-
-  private async ensureCdp(): Promise<CDPSession> {
-    if (!this.cdp) {
-      this.cdp = await this.page.context().newCDPSession(this.page);
-    }
-    return this.cdp;
-  }
-
-  private async createWorld(): Promise<number> {
-    const cdp = await this.ensureCdp();
-    const tree = await cdp.send('Page.getFrameTree');
-    const frameId = tree.frameTree.frame.id;
-    const result = await cdp.send('Page.createIsolatedWorld', {
-      frameId,
-      worldName: '',
-      grantUniveralAccess: true,
-    });
-    const ctxId = result.executionContextId;
-    this.contextId = ctxId;
-    return ctxId;
-  }
-
-  /**
-   * Evaluate a JS expression in the isolated world.
-   * Auto-recreates the world if the context was invalidated (navigation).
-   * Returns the result value, or undefined on failure.
-   */
-  async evaluate(expression: string): Promise<any> {
-    if (this.contextId === null) {
-      await this.createWorld();
-    }
-
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const cdp = await this.ensureCdp();
-        const result = await cdp.send('Runtime.evaluate', {
-          expression,
-          contextId: this.contextId!,
-          returnByValue: true,
-        });
-
-        if (result.exceptionDetails) {
-          // Context was likely invalidated by navigation
-          if (attempt === 0) {
-            await this.createWorld();
-            continue;
-          }
-          return undefined;
-        }
-
-        return result.result?.value;
-      } catch {
-        if (attempt === 0) {
-          this.contextId = null;
-          try {
-            await this.createWorld();
-          } catch {
-            return undefined;
-          }
-          continue;
-        }
-        return undefined;
-      }
-    }
-    return undefined;
-  }
-
-  /** Mark context as stale — call after navigation. */
-  invalidate(): void {
-    this.contextId = null;
-  }
-
-  /** Get the underlying CDP session (reused for Input.dispatchKeyEvent etc.). */
-  async getCdpSession(): Promise<CDPSession> {
-    return this.ensureCdp();
-  }
-}
+// StealthEval is defined in stealth-eval.ts and imported at the top of this file.
 
 
 // ============================================================================
@@ -163,7 +69,8 @@ async function isInputElement(
             || el.getAttribute('contenteditable') === 'true';
         })()
       `);
-      return !!result;
+      if (result !== undefined && result !== null) return !!result;
+      // undefined/null = CDP failed, fall through to page.evaluate
     } catch {
       // Fall through to page.evaluate
     }
@@ -197,7 +104,8 @@ async function isSelectorFocused(
           return el === document.activeElement;
         })()
       `);
-      return !!result;
+      if (result !== undefined && result !== null) return !!result;
+      // undefined/null = CDP failed, fall through to page.evaluate
     } catch {
       // Fall through to page.evaluate
     }
@@ -246,9 +154,9 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   (page as any)._original = originals;
   (page as any)._humanCfg = cfg;
 
-  // --- Stealth infrastructure ---
-  const stealth = new StealthEval(page);
-  (page as any)._stealth = stealth;
+  // --- Stealth infrastructure (reuse if already attached by stealth-eval) ---
+  const stealth = (page as any)._stealthWorld ?? new StealthEval(page);
+  (page as any)._stealthWorld = stealth;
 
   // CDP session for shift symbol typing (lazy-initialized, reuses stealth's session)
   let cdpSession: CDPSession | null = null;
