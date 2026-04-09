@@ -88,11 +88,17 @@ class ChromePool:
         global_args: list[str],
         headless: bool,
         data_dir: str = "/tmp/cloakserve",
+        default_seed: str | None = None,
+        default_locale: str | None = None,
+        default_timezone: str | None = None,
     ):
         self._binary = binary
         self._global_args = global_args
         self._headless = headless
         self._data_dir = data_dir
+        self._default_seed = default_seed
+        self._default_locale = default_locale
+        self._default_timezone = default_timezone
         self._processes: dict[str, ChromeProcess] = {}
         self._default: ChromeProcess | None = None
         self._locks: dict[str, asyncio.Lock] = {}
@@ -140,6 +146,14 @@ class ChromePool:
         geoip: bool = False,
     ) -> ChromeProcess:
         """Get existing or launch new Chrome process for a seed."""
+        # Apply CLI defaults when query params don't provide values
+        if seed is None and self._default_seed:
+            seed = self._default_seed
+        if locale is None:
+            locale = self._default_locale
+        if timezone is None:
+            timezone = self._default_timezone
+
         # No seed = default shared process
         if seed is None:
             seed_key = "__default__"
@@ -552,11 +566,20 @@ def _default_data_dir() -> str:
 
 
 def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
-    """Parse cloakserve-specific args, return (config, passthrough_args)."""
+    """Parse cloakserve-specific args, return (config, passthrough_args).
+
+    --fingerprint, --fingerprint-locale, and --fingerprint-timezone are
+    extracted into config defaults so they route through build_args()
+    (e.g. locale needs both --lang and --fingerprint-locale).
+    Query-string params override these defaults per-connection.
+    """
     config: dict = {
         "port": 9222,
         "headless": True,
         "data_dir": None,
+        "default_seed": None,
+        "default_locale": None,
+        "default_timezone": None,
     }
     passthrough = []
     # Flags consumed by cloakserve (not passed to Chrome)
@@ -577,6 +600,13 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
             passthrough.append(arg)
         elif arg.startswith(consumed_prefixes):
             pass  # Strip these silently
+        # Route through build_args() so companion flags are set correctly
+        elif arg.startswith("--fingerprint-locale="):
+            config["default_locale"] = arg.split("=", 1)[1]
+        elif arg.startswith("--fingerprint-timezone="):
+            config["default_timezone"] = arg.split("=", 1)[1]
+        elif arg.startswith("--fingerprint="):
+            config["default_seed"] = arg.split("=", 1)[1]
         else:
             passthrough.append(arg)
 
@@ -599,6 +629,9 @@ def main() -> None:
         global_args=global_args,
         headless=config["headless"],
         data_dir=config["data_dir"],
+        default_seed=config["default_seed"],
+        default_locale=config["default_locale"],
+        default_timezone=config["default_timezone"],
     )
 
     app = web.Application()
