@@ -832,6 +832,101 @@ describe("frame patching with stealth", () => {
 
 
 // =========================================================================
+// Page-level: pressSequentially, tap, clear are patched
+// =========================================================================
+describe("page-level pressSequentially, tap, clear patches", () => {
+  it("page.pressSequentially is replaced after patchPage", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+
+    const page = buildMockPage();
+    const originalPressSeq = page.pressSequentially ?? (() => {});
+    const cfg = resolveConfig("default");
+    const cursor = { x: 0, y: 0, initialized: false };
+    patchPage(page as any, cfg, cursor as any);
+
+    expect(typeof (page as any).pressSequentially).toBe("function");
+    expect((page as any).pressSequentially).not.toBe(originalPressSeq);
+  });
+
+  it("page.tap is replaced after patchPage", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+
+    const page = buildMockPage();
+    const originalTap = page.tap ?? (() => {});
+    const cfg = resolveConfig("default");
+    const cursor = { x: 0, y: 0, initialized: false };
+    patchPage(page as any, cfg, cursor as any);
+
+    expect(typeof (page as any).tap).toBe("function");
+    expect((page as any).tap).not.toBe(originalTap);
+  });
+
+  it("page.clear is replaced after patchPage", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+
+    const page = buildMockPage();
+    const originalClear = page.clear ?? (() => {});
+    const cfg = resolveConfig("default");
+    const cursor = { x: 0, y: 0, initialized: false };
+    patchPage(page as any, cfg, cursor as any);
+
+    expect(typeof (page as any).clear).toBe("function");
+    expect((page as any).clear).not.toBe(originalClear);
+  });
+});
+
+
+// =========================================================================
+// Frame-level: pressSequentially, tap are patched
+// =========================================================================
+describe("frame-level pressSequentially, tap patches", () => {
+  it("child frame has pressSequentially patched", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+
+    const childFrame: any = {
+      click: vi.fn(async () => {}),
+      dblclick: vi.fn(async () => {}),
+      hover: vi.fn(async () => {}),
+      type: vi.fn(async () => {}),
+      fill: vi.fn(async () => {}),
+      check: vi.fn(async () => {}),
+      uncheck: vi.fn(async () => {}),
+      selectOption: vi.fn(async () => {}),
+      press: vi.fn(async () => {}),
+      pressSequentially: vi.fn(async () => {}),
+      tap: vi.fn(async () => {}),
+      clear: vi.fn(async () => {}),
+      dragAndDrop: vi.fn(async () => {}),
+      locator: vi.fn(() => ({
+        boundingBox: vi.fn(async () => ({ x: 0, y: 0, width: 100, height: 30 })),
+      })),
+      childFrames: vi.fn(() => []),
+    };
+
+    const origPressSeq = childFrame.pressSequentially;
+    const origTap = childFrame.tap;
+
+    const mainFrame = {
+      ...childFrame,
+      childFrames: vi.fn(() => [childFrame]),
+    };
+
+    const page = buildMockPage({ mainFrameReturn: mainFrame });
+    const cfg = resolveConfig("default");
+    const cursor = { x: 0, y: 0, initialized: false };
+    patchPage(page as any, cfg, cursor as any);
+
+    expect((childFrame as any)._humanPatched).toBe(true);
+    // pressSequentially and tap should be replaced with humanized versions
+    expect(childFrame.pressSequentially).not.toBe(origPressSeq);
+    expect(childFrame.tap).not.toBe(origTap);
+    expect(typeof childFrame.pressSequentially).toBe("function");
+    expect(typeof childFrame.tap).toBe("function");
+  });
+});
+
+
+// =========================================================================
 // Non-ASCII text does NOT go through CDP shift symbol path
 // =========================================================================
 describe("non-ASCII text avoids CDP shift path", () => {
@@ -898,7 +993,8 @@ describeIfSlow("stealth browser: no evaluate leak on click", () => {
   it("click() does not trigger querySelector from evaluate context", async () => {
     const { launch } = await import("../src/index.js");
 
-    const browser = await launch({ headless: true, args: ['--humanize'] });
+    const browser = await launch({ headless: true, humanize: true });
+
     const page = await browser.newPage();
 
     await page.goto('https://www.wikipedia.org', { waitUntil: 'domcontentloaded' });
@@ -932,7 +1028,8 @@ describeIfSlow("stealth browser: shift symbols isTrusted=true", () => {
   it("'!' produces isTrusted=true keydown, not isTrusted=false", async () => {
     const { launch } = await import("../src/index.js");
 
-    const browser = await launch({ headless: true, args: ['--humanize'] });
+    const browser = await launch({ headless: true, humanize: true });
+
     const page = await browser.newPage();
 
     await page.goto('https://www.wikipedia.org', { waitUntil: 'domcontentloaded' });
@@ -972,7 +1069,8 @@ describeIfSlow("stealth browser: navigation invalidation", () => {
   it("click works after navigation (isolated world re-created)", async () => {
     const { launch } = await import("../src/index.js");
 
-    const browser = await launch({ headless: true, args: ['--humanize'] });
+    const browser = await launch({ headless: true, humanize: true });
+
     const page = await browser.newPage();
 
     expect((page as any)._stealth).toBeDefined();
@@ -1003,7 +1101,8 @@ describeIfSlow("stealth browser: full form no evaluate leak", () => {
   it("form with shift symbols has zero evaluate leaks and zero untrusted events", async () => {
     const { launch } = await import("../src/index.js");
 
-    const browser = await launch({ headless: true, args: ['--humanize'] });
+    const browser = await launch({ headless: true, humanize: true });
+
     const page = await browser.newPage();
 
     await page.goto(

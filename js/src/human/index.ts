@@ -440,6 +440,9 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   (page as any).uncheck = humanUncheckFn;
   (page as any).selectOption = humanSelectOptionFn;
   (page as any).press = humanPressFn;
+  (page as any).pressSequentially = humanPressSequentiallyFn;
+  (page as any).tap = humanTapFn;
+  (page as any).clear = humanClearFn;
 
   // --- mouse patches ---
   page.mouse.move = async (x: number, y: number, options?: any) => {
@@ -494,8 +497,8 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
 /**
  * Patch Frame methods so Locator-based calls go through humanization.
- * All 11 methods patched: click, dblclick, hover, type, fill, check, uncheck,
- * selectOption, press, clear, dragAndDrop.
+ * All 13 methods patched: click, dblclick, hover, type, fill, check, uncheck,
+ * selectOption, press, pressSequentially, tap, clear, dragAndDrop.
  */
 function patchFrames(
   page: Page,
@@ -561,6 +564,14 @@ function patchSingleFrame(
 
   (frame as any).press = async (selector: string, key: string, options?: any) => {
     await (page as any).press(selector, key, options);
+  };
+
+  (frame as any).pressSequentially = async (selector: string, text: string, options?: any) => {
+    await (page as any).pressSequentially(selector, text, options);
+  };
+
+  (frame as any).tap = async (selector: string, options?: any) => {
+    await (page as any).tap(selector, options);
   };
 
   (frame as any).clear = async (selector: string, options?: any) => {

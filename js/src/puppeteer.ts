@@ -1,6 +1,7 @@
 /**
  * Puppeteer launch wrapper for cloakbrowser.
- * Alternative to the Playwright wrapper for users who prefer Puppeteer.
+ * NOW WITH HUMANIZE SUPPORT — humanize: true enables human-like
+ * mouse curves, keyboard timing, and scroll patterns (same as Playwright).
  */
 
 import type { Browser } from "puppeteer-core";
@@ -17,11 +18,12 @@ import { maybeResolveGeoip, resolveWebrtcArgs } from "./geoip.js";
  * @example
  * ```ts
  * import { launch } from 'cloakbrowser/puppeteer';
- * const browser = await launch();
+ * * // With humanize — human-like mouse, keyboard, scroll
+ * const browser = await launch({ humanize: true });
  * const page = await browser.newPage();
- * await page.goto('https://bot.incolumitas.com');
- * console.log(await page.title());
- * await browser.close();
+ * await page.goto('[https://example.com](https://example.com)');
+ * await page.click('#login');  // Bézier curve mouse movement
+ * await page.type('#email', 'user@example.com');  // Per-character timing
  * ```
  */
 export async function launch(options: LaunchOptions = {}): Promise<Browser> {
@@ -30,6 +32,7 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
   const { exitIp, ...resolved } = (await maybeResolveGeoip(options)) ?? {};
   let resolvedArgs = (await resolveWebrtcArgs(options)) ?? options.args;
+  
   if (exitIp && !(resolvedArgs ?? []).some(a => a.startsWith("--fingerprint-webrtc-ip"))) {
     resolvedArgs = [...(resolvedArgs ?? []), `--fingerprint-webrtc-ip=${exitIp}`];
   }
@@ -82,10 +85,18 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     };
   }
 
+  // Human-like behavioral patching — FULL coverage, same as Playwright.
+  // This enables Bézier mouse movements, organic typing rhythms, and 
+  // natural scrolling to bypass advanced anti-bot detection.
+  if (options.humanize) {
+    const { patchBrowser } = await import('./human-puppeteer/index.js');
+    const { resolveConfig } = await import('./human/config.js');
+    const cfg = resolveConfig(
+      (options.humanPreset as any) ?? 'default',
+      options.humanConfig as any,
+    );
+    patchBrowser(browser, cfg);
+  }
+
   return browser;
 }
-
-// ---------------------------------------------------------------------------
-// Internal
-// ---------------------------------------------------------------------------
-
