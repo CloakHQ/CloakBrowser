@@ -9,7 +9,7 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 ## [0.3.24] — 2026-04-10
 
 - **[wrapper]** Native SOCKS5 proxy support — pass `proxy="socks5://user:pass@host:port"` directly. Credentials handled natively by Chrome. Works across all launch functions, Python + JS.
-- **[wrapper]** Add Playwright ElementHandle humanize support — `element_handle.click()`, `.fill()`, `.type()` now use human-like behavior when `humanize=True` (thanks [@lilos](https://github.com/lilos), #133)
+- **[wrapper]** Add Playwright ElementHandle humanize support — `element_handle.click()`, `.fill()`, `.type()` now use human-like behavior when `humanize=True` (thanks [@evelaa123](https://github.com/evelaa123), #133)
 - **[binary]** Upgrade Linux arm64 to Chromium 146.0.7680.177.2 (49 patches) — now matches Linux x64
 - **[binary]** New build 146.0.7680.177.2 for both Linux platforms: native SOCKS5 proxy with UDP ASSOCIATE (QUIC/HTTP3 over SOCKS5)
 - **[docs]** Clarify humanize requires wrapper import over CDP (#126)
