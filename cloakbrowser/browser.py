@@ -21,6 +21,7 @@ from urllib.parse import quote, unquote, urlparse, urlunparse
 
 from .config import DEFAULT_VIEWPORT, IGNORE_DEFAULT_ARGS, get_default_stealth_args
 from .download import ensure_binary
+from .human.config import HumanConfigOverrides, HumanPreset
 
 logger = logging.getLogger("cloakbrowser")
 
@@ -60,8 +61,8 @@ def launch(
     geoip: bool = False,
     backend: str | None = None,
     humanize: bool = False,
-    human_preset: str = "default",
-    human_config: dict | None = None,
+    human_preset: HumanPreset = "default",
+    human_config: HumanConfigOverrides | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth Chromium browser. Returns a Playwright Browser object.
@@ -87,7 +88,7 @@ def launch(
             Override globally with CLOAKBROWSER_BACKEND env var.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
-        human_config: Custom humanize config dict to override preset values.
+        human_config: Custom humanize config mapping to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -155,8 +156,8 @@ async def launch_async(  # noqa: C901
     geoip: bool = False,
     backend: str | None = None,
     humanize: bool = False,
-    human_preset: str = "default",
-    human_config: dict | None = None,
+    human_preset: HumanPreset = "default",
+    human_config: HumanConfigOverrides | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch(). Returns a Playwright Browser object.
@@ -172,7 +173,7 @@ async def launch_async(  # noqa: C901
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
-        human_config: Custom humanize config dict to override preset values.
+        human_config: Custom humanize config mapping to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -249,8 +250,8 @@ def launch_persistent_context(
     geoip: bool = False,
     backend: str | None = None,
     humanize: bool = False,
-    human_preset: str = "default",
-    human_config: dict | None = None,
+    human_preset: HumanPreset = "default",
+    human_config: HumanConfigOverrides | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser with a persistent profile and return a BrowserContext.
@@ -279,7 +280,7 @@ def launch_persistent_context(
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
-        human_config: Custom humanize config dict to override preset values.
+        human_config: Custom humanize config mapping to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -373,8 +374,8 @@ async def launch_persistent_context_async(
     geoip: bool = False,
     backend: str | None = None,
     humanize: bool = False,
-    human_preset: str = "default",
-    human_config: dict | None = None,
+    human_preset: HumanPreset = "default",
+    human_config: HumanConfigOverrides | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_persistent_context().
@@ -400,7 +401,7 @@ async def launch_persistent_context_async(
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
-        human_config: Custom humanize config dict to override preset values.
+        human_config: Custom humanize config mapping to override preset values.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -498,8 +499,8 @@ def launch_context(
     geoip: bool = False,
     backend: str | None = None,
     humanize: bool = False,
-    human_preset: str = "default",
-    human_config: dict | None = None,
+    human_preset: HumanPreset = "default",
+    human_config: HumanConfigOverrides | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser and return a BrowserContext with common options pre-set.
@@ -523,7 +524,7 @@ def launch_context(
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
-        human_config: Custom humanize config dict to override preset values.
+        human_config: Custom humanize config mapping to override preset values.
         **kwargs: Passed to browser.new_context().
 
     Returns:

@@ -60,8 +60,8 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     const { patchBrowser } = await import('./human/index.js');
     const { resolveConfig } = await import('./human/config.js');
     const cfg = resolveConfig(
-      (options.humanPreset as any) ?? 'default',
-      options.humanConfig as any,
+      options.humanPreset ?? 'default',
+      options.humanConfig,
     );
     patchBrowser(browser, cfg);
   }
@@ -125,8 +125,8 @@ export async function launchContext(
     const { patchContext } = await import('./human/index.js');
     const { resolveConfig } = await import('./human/config.js');
     const cfg = resolveConfig(
-      (options.humanPreset as any) ?? 'default',
-      options.humanConfig as any,
+      options.humanPreset ?? 'default',
+      options.humanConfig,
     );
     patchContext(context, cfg);
   }
@@ -189,8 +189,8 @@ export async function launchPersistentContext(
     const { patchContext } = await import('./human/index.js');
     const { resolveConfig } = await import('./human/config.js');
     const cfg = resolveConfig(
-      (options.humanPreset as any) ?? 'default',
-      options.humanConfig as any,
+      options.humanPreset ?? 'default',
+      options.humanConfig,
     );
     patchContext(context, cfg);
   }

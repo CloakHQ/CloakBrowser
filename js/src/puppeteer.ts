@@ -94,8 +94,8 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     const { patchBrowser } = await import('./human-puppeteer/index.js');
     const { resolveConfig } = await import('./human/config.js');
     const cfg = resolveConfig(
-      (options.humanPreset as any) ?? 'default',
-      options.humanConfig as any,
+      options.humanPreset ?? 'default',
+      options.humanConfig,
     );
     patchBrowser(browser, cfg);
   }

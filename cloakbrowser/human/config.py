@@ -10,7 +10,7 @@ import math
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Literal, Tuple
+from typing import Literal, Tuple, TypedDict
 
 # ---------------------------------------------------------------------------
 # Type alias
@@ -18,6 +18,50 @@ from typing import Literal, Tuple
 
 Range = Tuple[float, float]
 HumanPreset = Literal["default", "careful"]
+
+
+class HumanConfigOverrides(TypedDict, total=False):
+    typing_delay: float
+    typing_delay_spread: float
+    typing_pause_chance: float
+    typing_pause_range: Range
+    shift_down_delay: Range
+    shift_up_delay: Range
+    key_hold: Range
+    field_switch_delay: Range
+    mistype_chance: float
+    mistype_delay_notice: Range
+    mistype_delay_correct: Range
+    mouse_steps_divisor: float
+    mouse_min_steps: int
+    mouse_max_steps: int
+    mouse_wobble_max: float
+    mouse_overshoot_chance: float
+    mouse_overshoot_px: Range
+    mouse_burst_size: Range
+    mouse_burst_pause: Range
+    click_aim_delay_input: Range
+    click_aim_delay_button: Range
+    click_hold_input: Range
+    click_hold_button: Range
+    click_input_x_range: Range
+    idle_drift_px: float
+    idle_pause_range: Range
+    scroll_delta_base: Range
+    scroll_delta_variance: float
+    scroll_pause_fast: Range
+    scroll_pause_slow: Range
+    scroll_accel_steps: Range
+    scroll_decel_steps: Range
+    scroll_overshoot_chance: float
+    scroll_overshoot_px: Range
+    scroll_settle_delay: Range
+    scroll_target_zone: Range
+    scroll_pre_move_delay: Range
+    initial_cursor_x: Range
+    initial_cursor_y: Range
+    idle_between_actions: bool
+    idle_between_duration: Range
 
 
 # ---------------------------------------------------------------------------
@@ -130,13 +174,13 @@ _PRESETS: dict[str, HumanConfig] = {
 
 def resolve_config(
     preset: HumanPreset = "default",
-    overrides: dict | None = None,
+    overrides: HumanConfigOverrides | None = None,
 ) -> HumanConfig:
     """Resolve a preset name + optional overrides into a full HumanConfig.
 
     Args:
         preset: 'default' or 'careful'.
-        overrides: Dict of field names to override values.
+        overrides: Typed mapping of HumanConfig field names to override values.
 
     Returns:
         A new HumanConfig instance.

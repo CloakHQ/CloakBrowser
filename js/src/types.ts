@@ -2,6 +2,8 @@
  * Shared types for cloakbrowser launch wrappers.
  */
 
+import type { HumanConfig, HumanPreset } from "./human/config.js";
+
 export interface LaunchOptions {
   /** Run in headless mode (default: true). */
   headless?: boolean;
@@ -27,9 +29,9 @@ export interface LaunchOptions {
   /** Enable human-like mouse, keyboard, and scroll behavior. */
   humanize?: boolean;
   /** Human behavior preset: 'default' or 'careful'. */
-  humanPreset?: 'default' | 'careful';
+  humanPreset?: HumanPreset;
   /** Override individual human behavior parameters. */
-  humanConfig?: Record<string, unknown>;
+  humanConfig?: Partial<HumanConfig>;
 }
 
 export interface LaunchContextOptions extends LaunchOptions {
