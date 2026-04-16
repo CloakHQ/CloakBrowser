@@ -316,6 +316,38 @@ page.goto("https://protected-site.com")
 context.close()
 ```
 
+Extra kwargs are forwarded to Playwright's `browser.new_context()` — use this for `storage_state`, `permissions`, `extra_http_headers`, etc. without needing a persistent profile folder:
+
+```python
+from cloakbrowser import launch_context
+
+# Restore a saved session (cookies, localStorage) from a JSON file
+context = launch_context(storage_state="state.json")
+page = context.new_page()
+page.goto("https://example.com")
+# Save state back for next run
+context.storage_state(path="state.json")
+context.close()
+```
+
+### `launch_context_async()`
+
+Async counterpart to `launch_context()`. Same signature and kwargs forwarding:
+
+```python
+import asyncio
+from cloakbrowser import launch_context_async
+
+async def main():
+    ctx = await launch_context_async(storage_state="state.json")
+    page = await ctx.new_page()
+    await page.goto("https://example.com")
+    await ctx.storage_state(path="state.json")
+    await ctx.close()
+
+asyncio.run(main())
+```
+
 ### `launch_persistent_context()`
 
 Same as `launch_context()`, but with a persistent user profile. Cookies, localStorage, and cache persist across sessions.

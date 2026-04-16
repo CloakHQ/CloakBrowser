@@ -3,7 +3,7 @@
  * Mirrors Python cloakbrowser/browser.py.
  */
 
-import type { Browser, BrowserContext } from "playwright-core";
+import type { Browser, BrowserContext, BrowserContextOptions } from "playwright-core";
 import type { LaunchOptions, LaunchContextOptions, LaunchPersistentContextOptions } from "./types.js";
 import { DEFAULT_VIEWPORT, IGNORE_DEFAULT_ARGS } from "./config.js";
 import { buildArgs } from "./args.js";
@@ -19,6 +19,29 @@ export function resolveTimezone<T extends { timezone?: string; timezoneId?: stri
     return merged;
   }
   return options;
+}
+
+/**
+ * Strip `locale` and `timezoneId` from user-provided contextOptions — both route
+ * through detectable CDP emulation. The wrapper's top-level `locale`/`timezone`
+ * fields use binary flags instead (undetectable). Warn so users notice.
+ */
+function filterStealthCtxOptions(ctx?: BrowserContextOptions): Partial<BrowserContextOptions> {
+  if (!ctx) return {};
+  const { locale, timezoneId, ...rest } = ctx;
+  if (locale !== undefined) {
+    console.warn(
+      "[cloakbrowser] contextOptions.locale ignored — use top-level `locale` " +
+      "instead (routes through binary flag, avoids detectable CDP emulation)."
+    );
+  }
+  if (timezoneId !== undefined) {
+    console.warn(
+      "[cloakbrowser] contextOptions.timezoneId ignored — use top-level `timezone` " +
+      "instead (routes through binary flag, avoids detectable CDP emulation)."
+    );
+  }
+  return rest;
 }
 
 /**
@@ -104,6 +127,9 @@ export async function launchContext(
   let context: BrowserContext;
   try {
     context = await browser.newContext({
+      // contextOptions first — explicit wrapper fields below override it.
+      // filterStealthCtxOptions strips locale/timezoneId to prevent CDP detection.
+      ...filterStealthCtxOptions(options.contextOptions),
       ...(options.userAgent ? { userAgent: options.userAgent } : {}),
       viewport: options.viewport === undefined ? DEFAULT_VIEWPORT : options.viewport,
       ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
@@ -178,6 +204,9 @@ export async function launchPersistentContext(
     args,
     ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
     ...(proxyOption ? { proxy: proxyOption } : {}),
+    // contextOptions before explicit wrapper fields so explicit wins.
+    // filterStealthCtxOptions strips locale/timezoneId to prevent CDP detection.
+    ...filterStealthCtxOptions(options.contextOptions),
     ...(options.userAgent ? { userAgent: options.userAgent } : {}),
     viewport: options.viewport === undefined ? DEFAULT_VIEWPORT : options.viewport,
     ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),

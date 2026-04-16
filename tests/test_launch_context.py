@@ -1,6 +1,6 @@
 """Unit tests for launch_context() — context kwargs, viewport defaults, close cleanup."""
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -207,3 +207,125 @@ def test_kwargs_passthrough(mock_launch, _mock_bin):
     # Verify kwarg did NOT leak to launch()
     launch_kwargs = mock_launch.call_args[1]
     assert "record_video_dir" not in launch_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Async: launch_context_async()
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_async_browser():
+    """Create a mock async browser whose new_context() returns a mock context."""
+    browser = AsyncMock()
+    context = AsyncMock()
+    browser.new_context.return_value = context
+    return browser, context
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch_async")
+async def test_async_storage_state_forwarded(mock_launch_async, _mock_bin):
+    """storage_state kwarg forwarded to browser.new_context() in async path.
+
+    This is the motivating use case from issue #141.
+    """
+    browser, context = _make_mock_async_browser()
+    mock_launch_async.return_value = browser
+
+    from cloakbrowser.browser import launch_context_async
+    await launch_context_async(storage_state="state.json")
+
+    ctx_kwargs = browser.new_context.call_args
+    assert ctx_kwargs[1]["storage_state"] == "state.json"
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch_async")
+async def test_async_default_viewport(mock_launch_async, _mock_bin):
+    """DEFAULT_VIEWPORT applied when no viewport given (async)."""
+    browser, context = _make_mock_async_browser()
+    mock_launch_async.return_value = browser
+
+    from cloakbrowser.browser import launch_context_async
+    await launch_context_async()
+
+    ctx_kwargs = browser.new_context.call_args
+    assert ctx_kwargs[1]["viewport"] == DEFAULT_VIEWPORT
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch_async")
+async def test_async_locale_flows_to_binary_not_cdp(mock_launch_async, _mock_bin):
+    """locale flows to launch_async() for --lang flag, NOT to new_context() CDP."""
+    browser, context = _make_mock_async_browser()
+    mock_launch_async.return_value = browser
+
+    from cloakbrowser.browser import launch_context_async
+    await launch_context_async(locale="de-DE", timezone="Europe/Berlin")
+
+    # Binary flags
+    assert mock_launch_async.call_args[1]["locale"] == "de-DE"
+    assert mock_launch_async.call_args[1]["timezone"] == "Europe/Berlin"
+    # Not in context — would trigger detectable CDP emulation
+    ctx_kwargs = browser.new_context.call_args
+    assert "locale" not in ctx_kwargs[1]
+    assert "timezone_id" not in ctx_kwargs[1]
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch_async")
+async def test_async_close_closes_browser(mock_launch_async, _mock_bin):
+    """await ctx.close() also closes the underlying browser."""
+    browser, context = _make_mock_async_browser()
+    original_ctx_close = context.close
+    mock_launch_async.return_value = browser
+
+    from cloakbrowser.browser import launch_context_async
+    ctx = await launch_context_async()
+
+    await ctx.close()
+    original_ctx_close.assert_called_once()
+    browser.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch_async")
+async def test_async_error_closes_browser(mock_launch_async, _mock_bin):
+    """If new_context() raises in async path, browser is still closed."""
+    browser = AsyncMock()
+    browser.new_context.side_effect = RuntimeError("context creation failed")
+    mock_launch_async.return_value = browser
+
+    from cloakbrowser.browser import launch_context_async
+    with pytest.raises(RuntimeError, match="context creation failed"):
+        await launch_context_async()
+
+    browser.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch_async")
+async def test_async_cancellation_closes_browser(mock_launch_async, _mock_bin):
+    """asyncio.CancelledError during new_context() still closes browser.
+
+    CancelledError derives from BaseException (not Exception) in Python 3.8+,
+    so the cleanup must catch BaseException to prevent browser process leaks
+    when the awaiting task is cancelled.
+    """
+    import asyncio
+
+    browser = AsyncMock()
+    browser.new_context.side_effect = asyncio.CancelledError()
+    mock_launch_async.return_value = browser
+
+    from cloakbrowser.browser import launch_context_async
+    with pytest.raises(asyncio.CancelledError):
+        await launch_context_async()
+
+    browser.close.assert_called_once()

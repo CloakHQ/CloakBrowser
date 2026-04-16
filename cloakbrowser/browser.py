@@ -585,6 +585,130 @@ def launch_context(
     return context
 
 
+async def launch_context_async(
+    headless: bool = True,
+    proxy: str | ProxySettings | None = None,
+    args: list[str] | None = None,
+    stealth_args: bool = True,
+    user_agent: str | None = None,
+    viewport: dict | None = _VIEWPORT_UNSET,
+    locale: str | None = None,
+    timezone: str | None = None,
+    color_scheme: Literal["light", "dark", "no-preference"] | None = None,
+    geoip: bool = False,
+    backend: str | None = None,
+    humanize: bool = False,
+    human_preset: HumanPreset = "default",
+    human_config: HumanConfigOverrides | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Async version of launch_context().
+
+    Launch stealth browser and return a BrowserContext with common options pre-set.
+    All extra kwargs are forwarded to ``browser.new_context()`` — use this for
+    ``storage_state``, ``permissions``, ``extra_http_headers``, etc. without needing
+    a persistent profile folder.
+
+    Args:
+        headless: Run in headless mode (default True).
+        proxy: Proxy URL string or Playwright proxy dict (see launch() for details).
+        args: Additional Chromium CLI arguments.
+        stealth_args: Include default stealth fingerprint args (default True).
+        user_agent: Custom user agent string.
+        viewport: Viewport size dict, e.g. {"width": 1920, "height": 1080}.
+            Pass None to disable viewport emulation (use OS window size).
+        locale: Browser locale, e.g. "en-US".
+        timezone: IANA timezone (e.g. 'America/New_York').
+        color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
+        geoip: Auto-detect timezone/locale from proxy IP (default False).
+        backend: Playwright backend — 'playwright' (default) or 'patchright'.
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config mapping to override preset values.
+        **kwargs: Passed to browser.new_context() — e.g. storage_state, permissions.
+
+    Returns:
+        Playwright BrowserContext object (async API).
+        Call ``await .close()`` when done — this also closes the underlying browser.
+
+    Example:
+        >>> import asyncio
+        >>> from cloakbrowser import launch_context_async
+        >>>
+        >>> async def main():
+        ...     # Load saved session (cookies, localStorage)
+        ...     ctx = await launch_context_async(
+        ...         headless=True,
+        ...         storage_state="state.json",
+        ...     )
+        ...     page = await ctx.new_page()
+        ...     await page.goto("https://example.com")
+        ...     # Save state back
+        ...     await ctx.storage_state(path="state.json")
+        ...     await ctx.close()
+        >>>
+        >>> asyncio.run(main())
+    """
+    timezone = _resolve_timezone(timezone, kwargs)
+
+    # Resolve geoip BEFORE launch_async() to avoid double-resolution and ensure
+    # resolved values flow to binary flags
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
+        args = list(args or [])
+        args.append(f"--fingerprint-webrtc-ip={exit_ip}")
+    # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
+    # so it applies to ALL contexts, not just the default one.
+    # locale and timezone are set via binary flags only — no CDP emulation.
+    browser = await launch_async(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
+                                 timezone=timezone, locale=locale, backend=backend)
+
+    context_kwargs: dict[str, Any] = {}
+    if user_agent:
+        context_kwargs["user_agent"] = user_agent
+    if viewport is _VIEWPORT_UNSET:
+        context_kwargs["viewport"] = DEFAULT_VIEWPORT
+    elif viewport is None:
+        context_kwargs["no_viewport"] = True
+    else:
+        context_kwargs["viewport"] = viewport
+    if color_scheme:
+        context_kwargs["color_scheme"] = color_scheme
+    context_kwargs.update(kwargs)
+
+    # Catch BaseException (not just Exception) so that asyncio.CancelledError
+    # triggers browser cleanup — otherwise the underlying Chromium process
+    # leaks when the awaiting task is cancelled.
+    try:
+        context = await browser.new_context(**context_kwargs)
+    except BaseException:
+        try:
+            await browser.close()
+        except BaseException:
+            pass
+        raise
+
+    # Patch close() to also close the browser (and its Playwright instance)
+    _original_ctx_close = context.close
+
+    async def _close_context_with_cleanup() -> None:
+        try:
+            await _original_ctx_close()
+        finally:
+            await browser.close()
+
+    context.close = _close_context_with_cleanup
+
+    # Human-like behavioral patching (async variant)
+    if humanize:
+        from .human import patch_context_async
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_context_async(context, cfg)
+
+    return context
+
+
 # ---------------------------------------------------------------------------
 # Backend resolution
 # ---------------------------------------------------------------------------

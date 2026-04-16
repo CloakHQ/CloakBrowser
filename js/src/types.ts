@@ -2,6 +2,7 @@
  * Shared types for cloakbrowser launch wrappers.
  */
 
+import type { BrowserContextOptions } from "playwright-core";
 import type { HumanConfig, HumanPreset } from "./human/config.js";
 
 export interface LaunchOptions {
@@ -45,6 +46,15 @@ export interface LaunchContextOptions extends LaunchOptions {
   timezoneId?: string;
   /** Color scheme preference — 'light', 'dark', or 'no-preference'. */
   colorScheme?: "light" | "dark" | "no-preference";
+  /**
+   * Extra options forwarded directly to Playwright's `browser.newContext()` —
+   * e.g. `storageState`, `permissions`, `geolocation`, `extraHTTPHeaders`,
+   * `httpCredentials`. Use this for context-level options not surfaced as
+   * top-level fields. `locale` and `timezoneId` are stripped here to avoid
+   * detectable CDP emulation — use the top-level `locale` and `timezone`
+   * wrapper fields instead (they route through undetectable binary flags).
+   */
+  contextOptions?: BrowserContextOptions;
 }
 
 export interface LaunchPersistentContextOptions extends LaunchContextOptions {

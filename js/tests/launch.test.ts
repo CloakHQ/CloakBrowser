@@ -130,6 +130,60 @@ describe("launchContext (unit)", () => {
     // Browser also closed
     expect(mockBrowser.close).toHaveBeenCalledOnce();
   });
+
+  it("forwards contextOptions to newContext (storageState, etc.)", async () => {
+    const { launchContext } = await import("../src/playwright.js");
+    await launchContext({
+      contextOptions: {
+        storageState: "state.json",
+        permissions: ["geolocation"],
+      },
+    });
+
+    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    expect(ctxArgs.storageState).toBe("state.json");
+    expect(ctxArgs.permissions).toEqual(["geolocation"]);
+  });
+
+  it("explicit top-level fields win over contextOptions on collision", async () => {
+    const { launchContext } = await import("../src/playwright.js");
+    await launchContext({
+      userAgent: "Explicit/1.0",
+      viewport: { width: 1280, height: 720 },
+      colorScheme: "dark",
+      contextOptions: {
+        userAgent: "ShouldBeOverridden/9.9",
+        viewport: { width: 9999, height: 9999 },
+        colorScheme: "light",
+      },
+    });
+
+    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    expect(ctxArgs.userAgent).toBe("Explicit/1.0");
+    expect(ctxArgs.viewport).toEqual({ width: 1280, height: 720 });
+    expect(ctxArgs.colorScheme).toBe("dark");
+  });
+
+  it("strips locale and timezoneId from contextOptions (stealth-sensitive)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { launchContext } = await import("../src/playwright.js");
+    await launchContext({
+      contextOptions: {
+        storageState: "state.json",
+        locale: "de-DE",
+        timezoneId: "Europe/Berlin",
+      },
+    });
+
+    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    // Stealth-sensitive keys stripped — they would reintroduce detectable CDP emulation.
+    expect(ctxArgs.locale).toBeUndefined();
+    expect(ctxArgs.timezoneId).toBeUndefined();
+    // Benign keys preserved
+    expect(ctxArgs.storageState).toBe("state.json");
+    // Warning was logged for both stripped keys
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("launchPersistentContext (unit)", () => {
@@ -206,5 +260,54 @@ describe("launchPersistentContext (unit)", () => {
     const args = mockChromium.launchPersistentContext.mock.calls[0][1];
     expect(args.userAgent).toBe("Custom/1.0");
     expect(args.colorScheme).toBe("dark");
+  });
+
+  it("forwards contextOptions to launchPersistentContext", async () => {
+    const { launchPersistentContext } = await import("../src/playwright.js");
+    await launchPersistentContext({
+      userDataDir: "/tmp/profile",
+      contextOptions: {
+        permissions: ["geolocation"],
+        extraHTTPHeaders: { "X-Custom": "1" },
+      },
+    });
+
+    const args = mockChromium.launchPersistentContext.mock.calls[0][1];
+    expect(args.permissions).toEqual(["geolocation"]);
+    expect(args.extraHTTPHeaders).toEqual({ "X-Custom": "1" });
+  });
+
+  it("explicit top-level fields win over contextOptions in persistent context", async () => {
+    const { launchPersistentContext } = await import("../src/playwright.js");
+    await launchPersistentContext({
+      userDataDir: "/tmp/profile",
+      userAgent: "Explicit/1.0",
+      viewport: { width: 1280, height: 720 },
+      contextOptions: {
+        userAgent: "ShouldBeOverridden/9.9",
+        viewport: { width: 9999, height: 9999 },
+      },
+    });
+
+    const args = mockChromium.launchPersistentContext.mock.calls[0][1];
+    expect(args.userAgent).toBe("Explicit/1.0");
+    expect(args.viewport).toEqual({ width: 1280, height: 720 });
+  });
+
+  it("strips locale and timezoneId from contextOptions (persistent context)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { launchPersistentContext } = await import("../src/playwright.js");
+    await launchPersistentContext({
+      userDataDir: "/tmp/profile",
+      contextOptions: {
+        locale: "de-DE",
+        timezoneId: "Europe/Berlin",
+      },
+    });
+
+    const args = mockChromium.launchPersistentContext.mock.calls[0][1];
+    expect(args.locale).toBeUndefined();
+    expect(args.timezoneId).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(2);
   });
 });
