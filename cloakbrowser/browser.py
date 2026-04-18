@@ -760,6 +760,37 @@ def _ensure_proxy_scheme(proxy_url: str) -> str:
     return proxy_url if "://" in proxy_url else f"http://{proxy_url}"
 
 
+def _assemble_socks_url(
+    scheme: str,
+    host: str,
+    port: int | None,
+    enc_user: str,
+    enc_pass: str | None,
+    path: str = "",
+    params: str = "",
+    query: str = "",
+    fragment: str = "",
+) -> str:
+    """Build a SOCKS URL from already-percent-encoded credentials and host parts.
+
+    ``enc_pass is None`` means no password (no colon in userinfo). Empty string
+    means present-but-empty (colon preserved). This mirrors the distinction
+    urlparse makes between ``user@host`` and ``user:@host``.
+    """
+    if ":" in host:  # IPv6 literal — re-add brackets
+        host = f"[{host}]"
+    if enc_pass is not None:
+        userinfo = f"{enc_user}:{enc_pass}@"
+    elif enc_user:
+        userinfo = f"{enc_user}@"
+    else:
+        userinfo = ""
+    netloc = f"{userinfo}{host}"
+    if port is not None:
+        netloc += f":{port}"
+    return urlunparse((scheme, netloc, path, params, query, fragment))
+
+
 def _reconstruct_socks_url(proxy: ProxySettings) -> str:
     """Reconstruct a SOCKS5 URL with inline credentials from a Playwright proxy dict."""
     server = proxy.get("server", "")
@@ -768,16 +799,47 @@ def _reconstruct_socks_url(proxy: ProxySettings) -> str:
     if not username:
         return server
     parsed = urlparse(server)
-    creds = quote(username, safe="")
-    if password:
-        creds += f":{quote(password, safe='')}"
-    host = parsed.hostname or ""
-    if ":" in host:  # IPv6 literal — re-add brackets
-        host = f"[{host}]"
-    netloc = f"{creds}@{host}"
-    if parsed.port:
-        netloc += f":{parsed.port}"
-    return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+    enc_user = quote(username, safe="")
+    # Dict convention: empty/missing password → no colon.
+    enc_pass = quote(password, safe="") if password else None
+    return _assemble_socks_url(
+        parsed.scheme, parsed.hostname or "", parsed.port,
+        enc_user, enc_pass, parsed.path,
+    )
+
+
+def _normalize_socks_string_url(url: str) -> str:
+    """Re-encode credentials in a SOCKS5 URL string so Chromium's parser doesn't
+    truncate them at special chars like '='. Idempotent: pre-encoded input stays
+    the same (decoded then re-encoded).
+
+    On unparseable input (invalid port, broken IPv6 literal, etc.) logs a
+    warning and returns the original string — preserves pre-fix pass-through
+    behavior so Chromium's own error handling kicks in.
+    """
+    try:
+        parsed = urlparse(url)
+        # Accessing .port raises ValueError on invalid port strings.
+        _ = parsed.port
+    except ValueError as e:
+        logger.warning("Malformed SOCKS5 proxy URL, passing through unchanged: %s", e)
+        return url
+    # Skip only if no credentials at all (username AND password both absent).
+    # urlparse returns None for absent components, "" for present-but-empty.
+    if parsed.username is None and parsed.password is None:
+        return url
+    enc_user = quote(unquote(parsed.username), safe="") if parsed.username else ""
+    # Preserve the colon separator when password component is present, even if
+    # empty, so `user:@host` stays `user:@host`.
+    if parsed.password is not None:
+        enc_pass = quote(unquote(parsed.password), safe="") if parsed.password else ""
+    else:
+        enc_pass = None
+    return _assemble_socks_url(
+        parsed.scheme, parsed.hostname or "", parsed.port,
+        enc_user, enc_pass,
+        parsed.path, parsed.params, parsed.query, parsed.fragment,
+    )
 
 
 def _extract_proxy_url(proxy: str | ProxySettings | None) -> str | None:
@@ -926,11 +988,14 @@ def build_args(
 
 
 def _parse_proxy_url(proxy: str) -> dict[str, Any]:
-    """Parse proxy URL, extracting credentials into separate Playwright fields.
+    """Parse HTTP(S) proxy URL, extracting credentials into separate Playwright fields.
 
     Handles: http://user:pass@host:port -> {server: "http://host:port", username: "user", password: "pass"}
-    Also handles: no credentials, URL-encoded special chars, socks5://, missing port,
+    Also handles: no credentials, URL-encoded special chars, missing port,
     and bare proxy strings without a scheme (e.g. 'user:pass@host:port' -> treated as http).
+
+    SOCKS5 URLs are NOT handled here — they take a dedicated path via
+    ``_normalize_socks_string_url`` in ``_resolve_proxy_config``.
     """
     # Bare format: "user:pass@host:port" — urlparse needs a scheme to extract credentials.
     normalized = proxy
@@ -988,8 +1053,9 @@ def _resolve_proxy_config(
             if proxy.get("bypass"):
                 extra_args.append(f"--proxy-bypass-list={proxy['bypass']}")
             return {}, extra_args
-        # String URL — pass as-is (Chrome handles user:pass@ in the URL)
-        return {}, [f"--proxy-server={proxy}"]
+        # String URL — re-encode creds to work around Chromium parser truncating
+        # passwords at '=' and other special chars (#157).
+        return {}, [f"--proxy-server={_normalize_socks_string_url(proxy)}"]
 
     # HTTP/HTTPS: use Playwright's proxy dict as before
     if isinstance(proxy, dict):

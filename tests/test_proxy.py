@@ -266,3 +266,75 @@ class TestResolveProxyConfig:
         assert kwargs == {}
         assert "--proxy-server=socks5://host:1080" in args
         assert "--proxy-bypass-list=.example.com" in args
+
+    def test_socks5_string_encodes_equals_in_password(self):
+        # Chromium's --proxy-server parser truncates passwords at '=' (#157).
+        # Wrapper must auto URL-encode before passing to Chrome.
+        _, args = _resolve_proxy_config("socks5://user:pass=123@host:1080")
+        assert args == ["--proxy-server=socks5://user:pass%3D123@host:1080"]
+
+    def test_socks5_string_encodes_at_in_password(self):
+        _, args = _resolve_proxy_config("socks5://user:p@ss@host:1080")
+        # Note: parsing "user:p@ss@host" — urlparse takes everything up to LAST @
+        # as userinfo, so password = "p@ss".
+        assert args == ["--proxy-server=socks5://user:p%40ss@host:1080"]
+
+    def test_socks5_string_encoding_idempotent(self):
+        # Already-encoded input should remain encoded (not double-encoded).
+        _, args = _resolve_proxy_config("socks5://user:pass%3D123@host:1080")
+        assert args == ["--proxy-server=socks5://user:pass%3D123@host:1080"]
+
+    def test_socks5_string_no_creds_unchanged(self):
+        _, args = _resolve_proxy_config("socks5://host:1080")
+        assert args == ["--proxy-server=socks5://host:1080"]
+
+    def test_socks5_string_password_only_still_encoded(self):
+        # Empty username with password: fix must still re-encode the password
+        # (regression test for empty-username bypass).
+        _, args = _resolve_proxy_config("socks5://:pass=123@host:1080")
+        assert args == ["--proxy-server=socks5://:pass%3D123@host:1080"]
+
+    def test_socks5_string_empty_password_preserves_colon(self):
+        # `user:@host` (empty password) must NOT collapse to `user@host` —
+        # semantics differ between the two forms.
+        _, args = _resolve_proxy_config("socks5://user:@host:1080")
+        assert args == ["--proxy-server=socks5://user:@host:1080"]
+
+    def test_socks5_string_literal_percent_in_password(self):
+        # Literal '%' not followed by 2 hex digits must be encoded as '%25'
+        # so Chrome decodes it back to '%'. Must not crash.
+        _, args = _resolve_proxy_config("socks5://user:100%sure@host:1080")
+        assert args == ["--proxy-server=socks5://user:100%25sure@host:1080"]
+
+    def test_socks5_string_malformed_port_passes_through(self, caplog):
+        # Invalid port (non-numeric) raises in urlparse.port. Wrapper should
+        # log a warning and pass original through to Chromium.
+        import logging
+        with caplog.at_level(logging.WARNING, logger="cloakbrowser"):
+            _, args = _resolve_proxy_config("socks5://user:pass@host:abc")
+        assert args == ["--proxy-server=socks5://user:pass@host:abc"]
+        assert any("Malformed SOCKS5" in r.message for r in caplog.records)
+
+    def test_socks5_string_malformed_ipv6_passes_through(self, caplog):
+        # Broken IPv6 bracket — must not crash, and must reach Chromium
+        # verbatim so its own error surfaces instead of a silent rewrite.
+        import logging
+        with caplog.at_level(logging.WARNING, logger="cloakbrowser"):
+            _, args = _resolve_proxy_config("socks5://user:pass@[::1")
+        assert args == ["--proxy-server=socks5://user:pass@[::1"]
+
+    def test_socks5_string_preserves_path_and_query(self):
+        # Nonstandard for SOCKS5, but don't silently drop user-supplied suffixes.
+        # Matches JS behavior.
+        _, args = _resolve_proxy_config("socks5://user:pass@host:1080/p?x=1#f")
+        assert args[0] == "--proxy-server=socks5://user:pass@host:1080/p?x=1#f"
+
+    def test_socks5_string_ipv6_with_special_char_password(self):
+        # IPv6 host + special char in password — both must be handled.
+        _, args = _resolve_proxy_config("socks5://user:pass=eq@[::1]:1080")
+        assert args[0] == "--proxy-server=socks5://user:pass%3Deq@[::1]:1080"
+
+    def test_socks5_string_port_zero_preserved(self):
+        # Port 0 is an unusual but valid URL component; don't silently strip it.
+        _, args = _resolve_proxy_config("socks5://user:pass=1@host:0")
+        assert args[0] == "--proxy-server=socks5://user:pass%3D1@host:0"

@@ -36,7 +36,7 @@ import aiohttp
 import websockets
 from aiohttp import web
 
-from cloakbrowser.browser import build_args, maybe_resolve_geoip, _resolve_webrtc_args
+from cloakbrowser.browser import build_args, maybe_resolve_geoip, _resolve_webrtc_args, _normalize_socks_string_url
 from cloakbrowser.download import ensure_binary
 
 logging.basicConfig(
@@ -189,7 +189,7 @@ class ChromePool:
             if extra_args:
                 fp_extra.extend(extra_args)
             if proxy:
-                fp_extra.append(f"--proxy-server={proxy}")
+                fp_extra.append(f"--proxy-server={_normalize_socks_string_url(proxy)}")
 
             # WebRTC IP spoofing: resolve auto, inject geoip exit IP
             fp_extra = _resolve_webrtc_args(fp_extra, proxy)

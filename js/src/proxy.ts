@@ -44,6 +44,40 @@ export function isSocksProxy(proxy: string | ProxyDict | undefined | null): bool
 }
 
 /**
+ * Build a SOCKS URL from already-percent-encoded credentials and a host suffix.
+ *
+ * `encPass === null` means no password (no colon in userinfo). Empty string
+ * means present-but-empty (colon preserved).
+ */
+function assembleSocksUrl(
+  scheme: string,
+  encUser: string,
+  encPass: string | null,
+  hostAndRest: string,
+): string {
+  let userinfo: string;
+  if (encPass !== null) {
+    userinfo = `${encUser}:${encPass}@`;
+  } else if (encUser) {
+    userinfo = `${encUser}@`;
+  } else {
+    userinfo = "";
+  }
+  return `${scheme}://${userinfo}${hostAndRest}`;
+}
+
+/**
+ * Lenient percent-decode that handles malformed escapes gracefully, matching
+ * Python's ``urllib.parse.unquote``: valid ``%XX`` sequences are decoded,
+ * bare ``%`` not followed by two hex digits is left as a literal ``%``.
+ */
+function lenientDecodeURIComponent(s: string): string {
+  return s.replace(/%([0-9A-Fa-f]{2})|%/g, (match, hex) =>
+    hex ? String.fromCharCode(parseInt(hex, 16)) : "%",
+  );
+}
+
+/**
  * Reconstruct a SOCKS5 URL with inline credentials from a proxy dict.
  */
 export function reconstructSocksUrl(proxy: ProxyDict): string {
@@ -53,6 +87,60 @@ export function reconstructSocksUrl(proxy: ProxyDict): string {
     if (proxy.password) url.password = encodeURIComponent(proxy.password);
   }
   return url.href.replace(/\/$/, "");
+}
+
+/**
+ * Re-encode credentials in a SOCKS5 URL string so Chromium's parser doesn't
+ * truncate them at special chars like '='. Idempotent: pre-encoded input stays
+ * the same (decoded then re-encoded).
+ *
+ * Parsing is done manually rather than via `new URL` + setters, because WHATWG
+ * URL's username/password setters re-encode `%` on assignment, causing
+ * double-encoding when we round-trip decode-then-encode.
+ *
+ * On any unexpected failure, logs a warning and returns the original string
+ * so Chromium's own error handling can surface the real problem.
+ */
+export function normalizeSocksStringUrl(urlStr: string): string {
+  // Split userinfo from host at the LAST '@' (RFC 3986), so a raw '@' inside
+  // a password like `socks5://user:p@ss@host:1080` parses correctly. Matches
+  // Python urlparse's rpartition('@') behavior.
+  const schemeMatch = urlStr.match(/^([a-z][a-z0-9+\-.]*):\/\/(.*)$/i);
+  if (!schemeMatch) return urlStr;
+  const [, scheme, rest] = schemeMatch;
+  const hostStart = rest.search(/[/?#]/);
+  const authority = hostStart === -1 ? rest : rest.slice(0, hostStart);
+  const suffix = hostStart === -1 ? "" : rest.slice(hostStart);
+  const atIdx = authority.lastIndexOf("@");
+  if (atIdx === -1) return urlStr;  // no creds
+  const userinfo = authority.slice(0, atIdx);
+  const hostPart = authority.slice(atIdx + 1);
+  // Validate port (matches Python's urlparse().port ValueError guard).
+  // Extract port after last ':' — but skip IPv6 brackets (e.g. [::1]:1080).
+  const bracketEnd = hostPart.lastIndexOf("]");
+  const portColonIdx = hostPart.indexOf(":", Math.max(bracketEnd, 0));
+  if (portColonIdx !== -1) {
+    const portStr = hostPart.slice(portColonIdx + 1);
+    if (portStr && !/^\d+$/.test(portStr)) {
+      console.warn(`[cloakbrowser] Malformed SOCKS5 proxy URL, passing through unchanged: invalid port`);
+      return urlStr;
+    }
+  }
+  const hostAndRest = hostPart + suffix;
+  const colonIdx = userinfo.indexOf(":");
+  const rawUserEnc = colonIdx === -1 ? userinfo : userinfo.slice(0, colonIdx);
+  const hasPassword = colonIdx !== -1;
+  const rawPassEnc = hasPassword ? userinfo.slice(colonIdx + 1) : "";
+  try {
+    const encUser = rawUserEnc ? encodeURIComponent(lenientDecodeURIComponent(rawUserEnc)) : "";
+    const encPass = hasPassword
+      ? (rawPassEnc ? encodeURIComponent(lenientDecodeURIComponent(rawPassEnc)) : "")
+      : null;
+    return assembleSocksUrl(scheme, encUser, encPass, hostAndRest);
+  } catch (e) {
+    console.warn(`[cloakbrowser] Could not normalize SOCKS5 proxy URL, passing through unchanged: ${(e as Error).message}`);
+    return urlStr;
+  }
 }
 
 /**
@@ -67,7 +155,9 @@ export function resolveProxyConfig(proxy: string | ProxyDict | undefined): Proxy
   if (isSocksProxy(proxy)) {
     // SOCKS5: bypass Playwright, pass directly to Chrome via --proxy-server.
     if (typeof proxy === "string") {
-      return { proxyArgs: [`--proxy-server=${proxy}`] };
+      // Re-encode creds to work around Chromium parser truncating passwords
+      // at '=' and other special chars (#157).
+      return { proxyArgs: [`--proxy-server=${normalizeSocksStringUrl(proxy)}`] };
     }
     const socksUrl = reconstructSocksUrl(proxy);
     const args = [`--proxy-server=${socksUrl}`];
