@@ -113,6 +113,29 @@ Only `url` is required. Everything else is optional.
 | `screenshot` | bool | `true` |
 | `full_page_screenshot` | bool | `false` |
 
+### Retry orchestration
+
+The handler retries transient navigation failures inline within the same Lambda invocation. Two layers, both built-in:
+
+- **Launch retries** — 3 attempts with 0.3 s + 0.6 s backoff. Recovers Xvfb / Chromium spawn races at cold start. Fast and cheap; not configurable.
+- **Strategy retries** — default 1 attempt, configurable via the `retries` event field. Recovers specific post-launch error classes by relaunching with adjusted Chromium args / page-load budgets.
+
+| Field | Type | Default |
+|---|---|---|
+| `retries` | int | `1` — number of strategy-retry attempts after the first failure. Set to `0` to disable retry entirely. |
+
+Strategies (priority order — first match wins):
+
+| Error pattern | Strategy applied |
+|---|---|
+| `ERR_CERT_*` (any cert error) | `extra_args: ["--ignore-certificate-errors"]`, `goto_timeout_ms: 60000` |
+| `Timeout … exceeded` | `goto_timeout_ms: 90000`, `max_settle_ms: 25000` |
+| `ERR_CONNECTION_TIMED_OUT` | same as `Timeout … exceeded` |
+
+Errors that are **not retried** (no anonymous scraper can recover): `ERR_NAME_NOT_RESOLVED`, `ERR_SSL_PROTOCOL_ERROR`, `ERR_CONNECTION_REFUSED`, `ERR_HTTP_RESPONSE_CODE_FAILURE`. These bail immediately.
+
+On final failure, the raised `RuntimeError`'s message includes a `retry_history` block listing every attempt (strategy applied + error seen). Successful invocations return the standard response shape unchanged — no surprise fields when retries didn't fire.
+
 ### Response
 
 ```json
@@ -140,7 +163,7 @@ Whatever tool you use to create the Lambda function (CLI, CDK, Terraform, SAM, c
 | Package type | Image | Required — this is a container image, not a zip. |
 | Architecture | `arm64` | Roughly 20% cheaper than x86_64. Native build on Apple Silicon. Match the architecture you built for. |
 | Memory | 3008 MB | Memory in Lambda is tied to vCPU. Below ~1769 MB Chromium starts noticeably slower. |
-| Timeout | 60–120 s | Cold start can hit 80+ s on this image; warm invocations are 3–15 s depending on site. |
+| Timeout | 120–180 s | Single-attempt scrapes complete in 3–15 s warm; under retry, a `Timeout`-class first failure (30 s default) plus a longer-budget retry (90 s) plus cleanup can total ~120-130 s. 180 s leaves headroom; below 120 s the function will time out before the retry completes. Cold-start init adds 5-10 s on top. |
 | Ephemeral storage (`/tmp`) | 1024 MB | Chromium profile dirs and screenshots can fill the 512 MB default. |
 | Networking | Default (no VPC) | Binary is baked in, no network needed at cold start. Add VPC + NAT only if your proxy egress requires it. |
 | Execution role | `AWSLambdaBasicExecutionRole` | Just CloudWatch Logs. Add more permissions only if your handler needs them. |

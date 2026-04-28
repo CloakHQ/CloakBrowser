@@ -43,6 +43,19 @@ Event schema (all fields except `url` are optional):
         screenshot              bool         True
         full_page_screenshot    bool         False — capture entire scrollable page
 
+    Retry orchestration:
+        retries     int  default 1. Number of retry attempts after the first
+                          failure. Set to 0 to disable retries entirely (the
+                          handler will fail fast on the first error).
+                          Retried errors:
+                            ERR_CERT_*                -> retry with --ignore-certificate-errors
+                            Timeout exceeded          -> retry with goto_timeout_ms=90000, max_settle_ms=25000
+                            ERR_CONNECTION_TIMED_OUT  -> same as Timeout
+                          Not retried (unrecoverable): ERR_NAME_NOT_RESOLVED,
+                          ERR_SSL_PROTOCOL_ERROR, generic ERR_CONNECTION_REFUSED.
+                          On final failure, the error message includes a
+                          retry_history block with strategy + error per attempt.
+
 Returns:
     {"title": ..., "url": ..., "html": ..., "screenshot_b64"?: ...}
 """
@@ -51,6 +64,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import subprocess
 from pathlib import Path
@@ -179,16 +193,69 @@ async def _post_nav_waits(page, event: dict) -> None:
         await page.wait_for_timeout(event["wait_ms"])
 
 
-async def _run(event: dict) -> dict:
-    url = event["url"]
+async def _launch_with_retry(event: dict, attempts: int = 3, backoff_s: float = 0.3):
+    """Retry launch_context_async up to `attempts` times with linear backoff.
 
-    try:
-        ctx = await launch_context_async(**_build_launch_kwargs(event))
-    except Exception as e:
-        diag = _diag_snapshot()
-        logger.error("launch_context_async failed: %s\nDIAG:\n%s", e, diag)
-        raise RuntimeError(f"launch failed: {e}\n--- DIAG ---\n{diag}") from e
+    Lambda cold-start storms occasionally race Xvfb readiness or hit transient
+    Chromium spawn failures — both surface as "Target page, context or browser
+    has been closed" at launch. The failure is fast (~0.5s) so retries are
+    cheap, and a retry on a now-warm container almost always succeeds.
 
+    Pairs with the lock-cleanup + socket-poll in lambda-entrypoint.sh: the
+    entrypoint catches the common case at container init; this catches the
+    residual race when the first invocation hits before Xvfb is fully ready.
+    """
+    last_err: Exception | None = None
+    for i in range(attempts):
+        try:
+            return await launch_context_async(**_build_launch_kwargs(event))
+        except Exception as e:
+            last_err = e
+            logger.warning("launch attempt %d/%d failed: %s",
+                           i + 1, attempts, str(e)[:200])
+            if i + 1 < attempts:
+                await asyncio.sleep(backoff_s * (i + 1))  # 0.3s, 0.6s
+    raise last_err  # type: ignore[misc]
+
+
+def _classify_error(err: Exception) -> dict | None:
+    """Map a Playwright error to a retry-strategy override dict, or None
+    if the error is unrecoverable.
+
+    Match on str(e) because Playwright errors carry their codes inside the
+    message (Error.__str__ includes ERR_CERT_AUTHORITY_INVALID etc.); there
+    is no stable structured `.error_code` attribute to rely on.
+
+    Strategies (priority order — first match wins):
+      ERR_CERT_*                  -> --ignore-certificate-errors + 60s goto budget
+      Timeout exceeded            -> 90s goto budget + 25s smart_wait cap
+      ERR_CONNECTION_TIMED_OUT    -> same as Timeout
+    Returns None for unrecoverable site issues (DNS, SSL, refused, HTTP 4xx/5xx).
+    """
+    msg = str(err)
+    if "ERR_CERT" in msg:
+        return {
+            "extra_args": ["--ignore-certificate-errors"],
+            "goto_timeout_ms": 60000,
+        }
+    if ("Timeout" in msg and "exceeded" in msg) or "ERR_CONNECTION_TIMED_OUT" in msg:
+        return {
+            "goto_timeout_ms": 90000,
+            "max_settle_ms": 25000,
+        }
+    return None
+
+
+async def _attempt_scrape(url: str, event: dict) -> dict:
+    """One self-contained scrape attempt: launch, navigate, wait, capture, close.
+
+    Extracted from `_run` so the retry loop can call it repeatedly with an
+    overridden event dict. Each attempt relaunches the browser — uniform
+    behavior across strategies (the cert-bypass strategy *requires* a relaunch
+    because `--ignore-certificate-errors` is a Chromium CLI arg, not a per-
+    context switch), and the ~3-5s relaunch cost is fine on the slow path.
+    """
+    ctx = await _launch_with_retry(event)
     try:
         page = await ctx.new_page()
         await page.goto(
@@ -217,3 +284,52 @@ async def _run(event: dict) -> dict:
             await ctx.close()
         except Exception:
             pass
+
+
+def _raise_with_history(err: Exception, history: list[dict]) -> None:
+    """Surface a final failure with a retry_history block embedded in the
+    error message, so callers see what was tried before bailing."""
+    diag = _diag_snapshot()
+    if history:
+        diag = "retry_history: " + json.dumps(history, default=str) + "\n\n" + diag
+    logger.error("scrape failed (after %d retries): %s\nDIAG:\n%s",
+                 len(history), err, diag)
+    raise RuntimeError(f"scrape failed: {err}\n--- DIAG ---\n{diag}") from err
+
+
+async def _run(event: dict) -> dict:
+    """Top-level scrape with strategy-based retry orchestration.
+
+    First attempt uses the event verbatim. If it fails with a classifiable
+    error (cert / timeout), retry with that strategy's overrides merged into
+    the event. `retries` bounds the number of strategy retries (default 1;
+    set to 0 to disable retry entirely).
+    """
+    url = event["url"]
+    retries_left = max(0, int(event.get("retries", 1)))
+    history: list[dict] = []
+    current_event = event
+
+    while True:
+        try:
+            return await _attempt_scrape(url, current_event)
+        except Exception as e:
+            if retries_left <= 0:
+                _raise_with_history(e, history)
+            strategy = _classify_error(e)
+            if strategy is None:
+                _raise_with_history(e, history)
+            history.append({
+                "attempt": len(history) + 1,
+                "error": str(e)[:300],
+                "strategy": strategy,
+            })
+            logger.warning("attempt %d failed (%s); retrying with strategy=%s",
+                           len(history), str(e)[:120], strategy)
+            current_event = {**current_event, **strategy}
+            retries_left -= 1
+            # No backoff: strategy overrides change goto budget directly;
+            # the prior failure was either fast (cert reject) or already
+            # waited its full timeout. Container is warm.
+
+

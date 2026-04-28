@@ -15,8 +15,25 @@ set -e
 mkdir -p /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix 2>/dev/null || true
 
+# Clean any stale Xvfb state. If a previous Xvfb died and left its lock file
+# behind (we observed this in cold-start storms), a new Xvfb refuses to start
+# with "Server is already active for display 99". Removing both files makes
+# Xvfb start cleanly every time.
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp >/tmp/Xvfb.log 2>&1 &
-sleep 0.5
+
+# Wait for the X11 socket to appear AND for Xvfb to be ready to serve. The
+# socket file appears at bind(), but listen() and the first accept() come
+# slightly later — under cold-start CPU contention this gap matters.
+i=0
+while [ ! -e /tmp/.X11-unix/X99 ] && [ "$i" -lt 200 ]; do
+    i=$((i + 1))
+    sleep 0.05
+done
+# Small buffer after the socket appears so Xvfb has a moment to call listen()
+# and start accepting clients. Cheap insurance against the bind/listen gap.
+sleep 0.2
 
 # Lambda handler shape: exactly one arg, dotted identifier (no spaces, no slashes,
 # no leading dot). `python`, `cloakserve`, `cloaktest`, `bash`, `node` all fail
