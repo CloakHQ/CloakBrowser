@@ -326,7 +326,8 @@ async def _run(event: dict) -> dict:
             })
             logger.warning("attempt %d failed (%s); retrying with strategy=%s",
                            len(history), str(e)[:120], strategy)
-            current_event = {**current_event, **strategy}
+            merged_args = list(current_event.get("extra_args", [])) + list(strategy.get("extra_args", []))
+            current_event = {**current_event, **strategy, "extra_args": merged_args}
             retries_left -= 1
             # No backoff: strategy overrides change goto budget directly;
             # the prior failure was either fast (cert reject) or already
