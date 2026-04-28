@@ -18,23 +18,23 @@ import logging
 import sys
 from typing import Any, Optional
 
-from .config import HumanConfig, HumanPreset, resolve_config
+from .config import HumanConfig, HumanPreset, resolve_config, merge_config
 from .config import rand, rand_range, sleep_ms, async_sleep_ms
 from .mouse import RawMouse, human_move, human_click, click_target, human_idle
 from .keyboard import RawKeyboard, human_type
-from .scroll import scroll_to_element
+from .scroll import scroll_to_element, human_scroll_into_view
 from .mouse_async import AsyncRawMouse, async_human_move, async_human_click, async_human_idle
 from .keyboard_async import AsyncRawKeyboard, async_human_type
-from .scroll_async import async_scroll_to_element
+from .scroll_async import async_scroll_to_element, async_human_scroll_into_view
 
 _SELECT_ALL = "Meta+a" if sys.platform == "darwin" else "Control+a"
 
 __all__ = [
     "patch_browser", "patch_context", "patch_page",
     "patch_browser_async", "patch_context_async", "patch_page_async",
-    "HumanConfig", "resolve_config",
+    "HumanConfig", "resolve_config", "merge_config",
     "human_move", "human_click", "click_target", "human_idle",
-    "human_type", "scroll_to_element",
+    "human_type", "scroll_to_element", "human_scroll_into_view",
 ]
 
 logger = logging.getLogger("cloakbrowser.human")
@@ -356,6 +356,7 @@ def _patch_locator_class_sync():
     _orig_tap = Locator.tap
     _orig_drag_to = Locator.drag_to
     _orig_clear = Locator.clear
+    _orig_scroll_into_view = getattr(Locator, 'scroll_into_view_if_needed', None)
 
     def _get_selector(self):
         return self._impl_obj._selector
@@ -366,35 +367,75 @@ def _patch_locator_class_sync():
     def _get_cfg(self):
         return getattr(self.page, '_human_cfg', None)
 
+    # Forward only options the page-level humanized methods understand
+    # (timeout, human_config). Other Locator-specific kwargs (force, trial,
+    # noWaitAfter, ...) are silently dropped — the humanized path doesn't
+    # consult them.
+    def _forward_kwargs(kwargs):
+        out = {}
+        if "timeout" in kwargs:
+            out["timeout"] = kwargs["timeout"]
+        if "human_config" in kwargs:
+            out["human_config"] = kwargs["human_config"]
+        return out
+
     def _humanized_fill(self, value, **kwargs):
         if _is_humanized(self):
-            self.page.fill(_get_selector(self), value)
+            self.page.fill(_get_selector(self), value, **_forward_kwargs(kwargs))
         else:
             _orig_fill(self, value, **kwargs)
 
     def _humanized_click(self, **kwargs):
         if _is_humanized(self):
-            self.page.click(_get_selector(self))
+            self.page.click(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             _orig_click(self, **kwargs)
 
     def _humanized_type(self, text, **kwargs):
         if _is_humanized(self):
-            self.page.type(_get_selector(self), text)
+            self.page.type(_get_selector(self), text, **_forward_kwargs(kwargs))
         else:
             _orig_type(self, text, **kwargs)
 
     def _humanized_dblclick(self, **kwargs):
         if _is_humanized(self):
-            self.page.dblclick(_get_selector(self))
+            self.page.dblclick(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             _orig_dblclick(self, **kwargs)
 
     def _humanized_hover(self, **kwargs):
         if _is_humanized(self):
-            self.page.hover(_get_selector(self))
+            self.page.hover(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             _orig_hover(self, **kwargs)
+
+    def _humanized_scroll_into_view_if_needed(self, **kwargs):
+        if _is_humanized(self):
+            page = self.page
+            cfg = _get_cfg(self)
+            cursor = getattr(page, '_human_cursor', None)
+            raw = getattr(page, '_human_raw_mouse', None)
+            call_cfg = merge_config(cfg, kwargs.get("human_config")) if cfg else None
+            if call_cfg is None or cursor is None or raw is None:
+                if _orig_scroll_into_view is not None:
+                    native_kwargs = {k: v for k, v in kwargs.items() if k != "human_config"}
+                    return _orig_scroll_into_view(self, **native_kwargs)
+                return
+            timeout = kwargs.get("timeout", 2000)
+            try:
+                _, nx, ny = human_scroll_into_view(
+                    page, raw,
+                    lambda: self.bounding_box(timeout=timeout),
+                    cursor.x, cursor.y, call_cfg,
+                )
+                cursor.x = nx
+                cursor.y = ny
+            except Exception:
+                if _orig_scroll_into_view is not None:
+                    native_kwargs = {k: v for k, v in kwargs.items() if k != "human_config"}
+                    _orig_scroll_into_view(self, **native_kwargs)
+        elif _orig_scroll_into_view is not None:
+            _orig_scroll_into_view(self, **kwargs)
 
     def _humanized_check(self, **kwargs):
         if _is_humanized(self):
@@ -512,6 +553,8 @@ def _patch_locator_class_sync():
     Locator.tap = _humanized_tap
     Locator.drag_to = _humanized_drag_to
     Locator.clear = _humanized_clear
+    if _orig_scroll_into_view is not None:
+        Locator.scroll_into_view_if_needed = _humanized_scroll_into_view_if_needed
 
 
 # ============================================================================
@@ -544,6 +587,7 @@ def _patch_locator_class_async():
     _orig_tap = AsyncLocator.tap
     _orig_drag_to = AsyncLocator.drag_to
     _orig_clear = AsyncLocator.clear
+    _orig_scroll_into_view = getattr(AsyncLocator, 'scroll_into_view_if_needed', None)
 
     def _get_selector(self):
         return self._impl_obj._selector
@@ -554,35 +598,73 @@ def _patch_locator_class_async():
     def _get_cfg(self):
         return getattr(self.page, '_human_cfg', None)
 
+    def _forward_kwargs(kwargs):
+        out = {}
+        if "timeout" in kwargs:
+            out["timeout"] = kwargs["timeout"]
+        if "human_config" in kwargs:
+            out["human_config"] = kwargs["human_config"]
+        return out
+
     async def _humanized_fill(self, value, **kwargs):
         if _is_humanized(self):
-            await self.page.fill(_get_selector(self), value)
+            await self.page.fill(_get_selector(self), value, **_forward_kwargs(kwargs))
         else:
             await _orig_fill(self, value, **kwargs)
 
     async def _humanized_click(self, **kwargs):
         if _is_humanized(self):
-            await self.page.click(_get_selector(self))
+            await self.page.click(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             await _orig_click(self, **kwargs)
 
     async def _humanized_type(self, text, **kwargs):
         if _is_humanized(self):
-            await self.page.type(_get_selector(self), text)
+            await self.page.type(_get_selector(self), text, **_forward_kwargs(kwargs))
         else:
             await _orig_type(self, text, **kwargs)
 
     async def _humanized_dblclick(self, **kwargs):
         if _is_humanized(self):
-            await self.page.dblclick(_get_selector(self))
+            await self.page.dblclick(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             await _orig_dblclick(self, **kwargs)
 
     async def _humanized_hover(self, **kwargs):
         if _is_humanized(self):
-            await self.page.hover(_get_selector(self))
+            await self.page.hover(_get_selector(self), **_forward_kwargs(kwargs))
         else:
             await _orig_hover(self, **kwargs)
+
+    async def _humanized_scroll_into_view_if_needed(self, **kwargs):
+        if _is_humanized(self):
+            page = self.page
+            cfg = _get_cfg(self)
+            cursor = getattr(page, '_human_cursor', None)
+            raw = getattr(page, '_human_raw_mouse', None)
+            call_cfg = merge_config(cfg, kwargs.get("human_config")) if cfg else None
+            if call_cfg is None or cursor is None or raw is None:
+                if _orig_scroll_into_view is not None:
+                    native_kwargs = {k: v for k, v in kwargs.items() if k != "human_config"}
+                    await _orig_scroll_into_view(self, **native_kwargs)
+                return
+            timeout = kwargs.get("timeout", 2000)
+
+            async def _get_box():
+                return await self.bounding_box(timeout=timeout)
+            try:
+                _, nx, ny = await async_human_scroll_into_view(
+                    page, raw, _get_box,
+                    cursor.x, cursor.y, call_cfg,
+                )
+                cursor.x = nx
+                cursor.y = ny
+            except Exception:
+                if _orig_scroll_into_view is not None:
+                    native_kwargs = {k: v for k, v in kwargs.items() if k != "human_config"}
+                    await _orig_scroll_into_view(self, **native_kwargs)
+        elif _orig_scroll_into_view is not None:
+            await _orig_scroll_into_view(self, **kwargs)
 
     async def _humanized_check(self, **kwargs):
         if _is_humanized(self):
@@ -708,6 +790,8 @@ def _patch_locator_class_async():
     AsyncLocator.tap = _humanized_tap
     AsyncLocator.drag_to = _humanized_drag_to
     AsyncLocator.clear = _humanized_clear
+    if _orig_scroll_into_view is not None:
+        AsyncLocator.scroll_into_view_if_needed = _humanized_scroll_into_view_if_needed
 
 
 # ============================================================================
@@ -738,6 +822,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
     page._original = originals
     page._human_cfg = cfg
+    page._human_cursor = cursor
 
     # --- Stealth infrastructure ---
     try:
@@ -764,6 +849,8 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         "insert_text": originals.keyboard_insert_text,
     })()
 
+    page._human_raw_mouse = raw_mouse
+
     def _ensure_cursor_init() -> None:
         if not cursor.initialized:
             cursor.x = rand(cfg.initial_cursor_x[0], cfg.initial_cursor_x[1])
@@ -780,32 +867,36 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
     def _human_click(selector: str, **kwargs: Any) -> None:
         _ensure_cursor_init()
-        if cfg.idle_between_actions:
-            human_idle(raw_mouse, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        timeout = kwargs.get("timeout", 2000)
+        if call_cfg.idle_between_actions:
+            human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = scroll_to_element(
-            page, raw_mouse, selector, cursor.x, cursor.y, cfg
+            page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=timeout,
         )
         cursor.x = cx
         cursor.y = cy
         is_input = _is_input_element(page, selector)
-        target = click_target(box, is_input, cfg)
-        human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, cfg)
+        target = click_target(box, is_input, call_cfg)
+        human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
-        human_click(raw_mouse, is_input, cfg)
+        human_click(raw_mouse, is_input, call_cfg)
 
     def _human_dblclick(selector: str, **kwargs: Any) -> None:
         _ensure_cursor_init()
-        if cfg.idle_between_actions:
-            human_idle(raw_mouse, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        timeout = kwargs.get("timeout", 2000)
+        if call_cfg.idle_between_actions:
+            human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = scroll_to_element(
-            page, raw_mouse, selector, cursor.x, cursor.y, cfg
+            page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=timeout,
         )
         cursor.x = cx
         cursor.y = cy
         is_input = _is_input_element(page, selector)
-        target = click_target(box, is_input, cfg)
-        human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, cfg)
+        target = click_target(box, is_input, call_cfg)
+        human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
         raw_mouse.down(click_count=2)
@@ -814,33 +905,39 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
     def _human_hover(selector: str, **kwargs: Any) -> None:
         _ensure_cursor_init()
-        if cfg.idle_between_actions:
-            human_idle(raw_mouse, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        timeout = kwargs.get("timeout", 2000)
+        if call_cfg.idle_between_actions:
+            human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = scroll_to_element(
-            page, raw_mouse, selector, cursor.x, cursor.y, cfg
+            page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=timeout,
         )
         cursor.x = cx
         cursor.y = cy
-        target = click_target(box, False, cfg)
-        human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, cfg)
+        target = click_target(box, False, call_cfg)
+        human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
 
     def _human_type(selector: str, text: str, **kwargs: Any) -> None:
-        sleep_ms(rand_range(cfg.field_switch_delay))
-        _human_click(selector)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        sleep_ms(rand_range(call_cfg.field_switch_delay))
+        # Forward kwargs so timeout / human_config also propagate to the click
+        # that focuses the field.
+        _human_click(selector, **kwargs)
         sleep_ms(rand(100, 250))
-        human_type(page, raw_keyboard, text, cfg, cdp_session=cdp_session)
+        human_type(page, raw_keyboard, text, call_cfg, cdp_session=cdp_session)
 
     def _human_fill(selector: str, value: str, **kwargs: Any) -> None:
-        sleep_ms(rand_range(cfg.field_switch_delay))
-        _human_click(selector)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        sleep_ms(rand_range(call_cfg.field_switch_delay))
+        _human_click(selector, **kwargs)
         sleep_ms(rand(100, 250))
         originals.keyboard_press(_SELECT_ALL)
         sleep_ms(rand(30, 80))
         originals.keyboard_press("Backspace")
         sleep_ms(rand(50, 150))
-        human_type(page, raw_keyboard, value, cfg, cdp_session=cdp_session)
+        human_type(page, raw_keyboard, value, call_cfg, cdp_session=cdp_session)
 
     def _human_check(selector: str, **kwargs: Any) -> None:
         try:
@@ -958,6 +1055,7 @@ def _patch_single_element_handle_sync(
     _orig_set_checked = getattr(el, 'set_checked', None)
     _orig_tap = el.tap
     _orig_focus = el.focus
+    _orig_scroll_into_view = getattr(el, 'scroll_into_view_if_needed', None)
 
     # Nested selectors
     _orig_qs = el.query_selector
@@ -992,39 +1090,57 @@ def _patch_single_element_handle_sync(
     el.query_selector_all = _patched_qsa
     el.wait_for_selector = _patched_wfs
 
-    # Helper: move cursor to element
-    def _move_to_element():
+    # Helper: move cursor to element. Accepts optional ``call_cfg`` so per-call
+    # ``human_config`` overrides on type/fill carry through to mouse timing.
+    # Also scrolls into view first so off-screen elements don't silently fall
+    # back to the unpatched native method (#129, #172 follow-up).
+    def _move_to_element(call_cfg: HumanConfig = cfg):
         if not cursor.initialized:
-            cursor.x = rand(cfg.initial_cursor_x[0], cfg.initial_cursor_x[1])
-            cursor.y = rand(cfg.initial_cursor_y[0], cfg.initial_cursor_y[1])
+            cursor.x = rand(call_cfg.initial_cursor_x[0], call_cfg.initial_cursor_x[1])
+            cursor.y = rand(call_cfg.initial_cursor_y[0], call_cfg.initial_cursor_y[1])
             originals.mouse_move(cursor.x, cursor.y)
             cursor.initialized = True
+
+        # Scroll into view first — best-effort. If the element can't be located
+        # we fall through to bounding_box() below which returns None and lets
+        # the caller fall back to the original Playwright method.
+        try:
+            _, nx, ny = human_scroll_into_view(
+                page, raw_mouse, lambda: el.bounding_box(),
+                cursor.x, cursor.y, call_cfg,
+            )
+            cursor.x = nx
+            cursor.y = ny
+        except Exception:
+            pass
 
         box = el.bounding_box()
         if not box:
             return None
 
         is_inp = _is_input_element_handle_sync(el)
-        target = click_target(box, is_inp, cfg)
+        target = click_target(box, is_inp, call_cfg)
 
-        if cfg.idle_between_actions:
-            human_idle(raw_mouse, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg)
+        if call_cfg.idle_between_actions:
+            human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
 
-        human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, cfg)
+        human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
         return {'box': box, 'is_inp': is_inp}
 
     # --- el.click() ---
     def _human_el_click(**kwargs: Any) -> None:
-        info = _move_to_element()
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        info = _move_to_element(call_cfg)
         if info is None:
             return _orig_click(**kwargs)
-        human_click(raw_mouse, info['is_inp'], cfg)
+        human_click(raw_mouse, info['is_inp'], call_cfg)
 
     # --- el.dblclick() ---
     def _human_el_dblclick(**kwargs: Any) -> None:
-        info = _move_to_element()
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        info = _move_to_element(call_cfg)
         if info is None:
             return _orig_dblclick(**kwargs)
         raw_mouse.down(click_count=2)
@@ -1033,32 +1149,62 @@ def _patch_single_element_handle_sync(
 
     # --- el.hover() ---
     def _human_el_hover(**kwargs: Any) -> None:
-        info = _move_to_element()
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        info = _move_to_element(call_cfg)
         if info is None:
             return _orig_hover(**kwargs)
         # Just move, no click
 
     # --- el.type() ---
     def _human_el_type(text: str, **kwargs: Any) -> None:
-        info = _move_to_element()
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        info = _move_to_element(call_cfg)
         if info is None:
             return _orig_type(text, **kwargs)
-        human_click(raw_mouse, info['is_inp'], cfg)
+        human_click(raw_mouse, info['is_inp'], call_cfg)
         sleep_ms(rand(100, 250))
-        human_type(page, raw_keyboard, text, cfg, cdp_session=cdp_session)
+        human_type(page, raw_keyboard, text, call_cfg, cdp_session=cdp_session)
 
     # --- el.fill() ---
     def _human_el_fill(value: str, **kwargs: Any) -> None:
-        info = _move_to_element()
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        info = _move_to_element(call_cfg)
         if info is None:
             return _orig_fill(value, **kwargs)
-        human_click(raw_mouse, info['is_inp'], cfg)
+        human_click(raw_mouse, info['is_inp'], call_cfg)
         sleep_ms(rand(100, 250))
         originals.keyboard_press(_SELECT_ALL)
         sleep_ms(rand(30, 80))
         originals.keyboard_press("Backspace")
         sleep_ms(rand(50, 150))
-        human_type(page, raw_keyboard, value, cfg, cdp_session=cdp_session)
+        human_type(page, raw_keyboard, value, call_cfg, cdp_session=cdp_session)
+
+    # --- el.scroll_into_view_if_needed() ---
+    # Playwright's native version snaps the page — a strong bot signal.
+    # Replace with the same accelerate → cruise → decelerate → overshoot wheel
+    # sequence used by page.click(). Falls back to the native method if the
+    # element is detached or scrolling fails.
+    def _human_el_scroll_into_view_if_needed(**kwargs: Any) -> None:
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        if not cursor.initialized:
+            cursor.x = rand(call_cfg.initial_cursor_x[0], call_cfg.initial_cursor_x[1])
+            cursor.y = rand(call_cfg.initial_cursor_y[0], call_cfg.initial_cursor_y[1])
+            try:
+                originals.mouse_move(cursor.x, cursor.y)
+                cursor.initialized = True
+            except Exception:
+                pass
+        try:
+            _, nx, ny = human_scroll_into_view(
+                page, raw_mouse, lambda: el.bounding_box(),
+                cursor.x, cursor.y, call_cfg,
+            )
+            cursor.x = nx
+            cursor.y = ny
+        except Exception:
+            if _orig_scroll_into_view is not None:
+                native_kwargs = {k: v for k, v in kwargs.items() if k != "human_config"}
+                _orig_scroll_into_view(**native_kwargs)
 
     # --- el.press() ---
     def _human_el_press(key: str, **kwargs: Any) -> None:
@@ -1142,6 +1288,8 @@ def _patch_single_element_handle_sync(
         el.set_checked = _human_el_set_checked
     el.tap = _human_el_tap
     el.focus = _human_el_focus
+    if _orig_scroll_into_view is not None:
+        el.scroll_into_view_if_needed = _human_el_scroll_into_view_if_needed
 
 
 def _patch_page_element_handles_sync(
@@ -1425,6 +1573,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
     page._original = originals
     page._human_cfg = cfg
+    page._human_cursor = cursor
 
     # --- Stealth infrastructure (lazy-initialized, async) ---
     stealth = _AsyncIsolatedWorld(page)
@@ -1454,6 +1603,8 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         "insert_text": originals.keyboard_insert_text,
     })()
 
+    page._human_raw_mouse = raw_mouse
+
     async def _ensure_cursor_init() -> None:
         if not cursor.initialized:
             cursor.x = rand(cfg.initial_cursor_x[0], cfg.initial_cursor_x[1])
@@ -1469,32 +1620,36 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
     async def _human_click(selector: str, **kwargs: Any) -> None:
         await _ensure_cursor_init()
-        if cfg.idle_between_actions:
-            await async_human_idle(raw_mouse, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        timeout = kwargs.get("timeout", 2000)
+        if call_cfg.idle_between_actions:
+            await async_human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = await async_scroll_to_element(
-            page, raw_mouse, selector, cursor.x, cursor.y, cfg
+            page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=timeout,
         )
         cursor.x = cx
         cursor.y = cy
         is_input = await _async_is_input_element(page, selector)
-        target = click_target(box, is_input, cfg)
-        await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, cfg)
+        target = click_target(box, is_input, call_cfg)
+        await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
-        await async_human_click(raw_mouse, is_input, cfg)
+        await async_human_click(raw_mouse, is_input, call_cfg)
 
     async def _human_dblclick(selector: str, **kwargs: Any) -> None:
         await _ensure_cursor_init()
-        if cfg.idle_between_actions:
-            await async_human_idle(raw_mouse, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        timeout = kwargs.get("timeout", 2000)
+        if call_cfg.idle_between_actions:
+            await async_human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = await async_scroll_to_element(
-            page, raw_mouse, selector, cursor.x, cursor.y, cfg
+            page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=timeout,
         )
         cursor.x = cx
         cursor.y = cy
         is_input = await _async_is_input_element(page, selector)
-        target = click_target(box, is_input, cfg)
-        await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, cfg)
+        target = click_target(box, is_input, call_cfg)
+        await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
         await raw_mouse.down(click_count=2)
@@ -1503,35 +1658,39 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
     async def _human_hover(selector: str, **kwargs: Any) -> None:
         await _ensure_cursor_init()
-        if cfg.idle_between_actions:
-            await async_human_idle(raw_mouse, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        timeout = kwargs.get("timeout", 2000)
+        if call_cfg.idle_between_actions:
+            await async_human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = await async_scroll_to_element(
-            page, raw_mouse, selector, cursor.x, cursor.y, cfg
+            page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=timeout,
         )
         cursor.x = cx
         cursor.y = cy
-        target = click_target(box, False, cfg)
-        await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, cfg)
+        target = click_target(box, False, call_cfg)
+        await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
 
     async def _human_type(selector: str, text: str, **kwargs: Any) -> None:
-        await async_sleep_ms(rand_range(cfg.field_switch_delay))
-        await _human_click(selector)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        await async_sleep_ms(rand_range(call_cfg.field_switch_delay))
+        await _human_click(selector, **kwargs)
         await async_sleep_ms(rand(100, 250))
         cdp = await _ensure_cdp()
-        await async_human_type(page, raw_keyboard, text, cfg, cdp_session=cdp)
+        await async_human_type(page, raw_keyboard, text, call_cfg, cdp_session=cdp)
 
     async def _human_fill(selector: str, value: str, **kwargs: Any) -> None:
-        await async_sleep_ms(rand_range(cfg.field_switch_delay))
-        await _human_click(selector)
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        await async_sleep_ms(rand_range(call_cfg.field_switch_delay))
+        await _human_click(selector, **kwargs)
         await async_sleep_ms(rand(100, 250))
         await originals.keyboard_press(_SELECT_ALL)
         await async_sleep_ms(rand(30, 80))
         await originals.keyboard_press("Backspace")
         await async_sleep_ms(rand(50, 150))
         cdp = await _ensure_cdp()
-        await async_human_type(page, raw_keyboard, value, cfg, cdp_session=cdp)
+        await async_human_type(page, raw_keyboard, value, call_cfg, cdp_session=cdp)
 
     async def _human_check(selector: str, **kwargs: Any) -> None:
         try:
@@ -1637,6 +1796,7 @@ def _patch_single_element_handle_async(
     _orig_set_checked = getattr(el, 'set_checked', None)
     _orig_tap = el.tap
     _orig_focus = el.focus
+    _orig_scroll_into_view = getattr(el, 'scroll_into_view_if_needed', None)
 
     # Nested selectors
     _orig_qs = el.query_selector
@@ -1671,25 +1831,41 @@ def _patch_single_element_handle_async(
     el.query_selector_all = _patched_qsa
     el.wait_for_selector = _patched_wfs
 
-    # Helper: move cursor to element (async)
-    async def _move_to_element():
+    # Helper: move cursor to element (async). Accepts optional ``call_cfg`` so
+    # per-call ``human_config`` overrides on type/fill carry through to mouse
+    # timing. Also scrolls into view first so off-screen elements work
+    # (#129, #172 follow-up).
+    async def _move_to_element(call_cfg: HumanConfig = cfg):
         if not cursor.initialized:
-            cursor.x = rand(cfg.initial_cursor_x[0], cfg.initial_cursor_x[1])
-            cursor.y = rand(cfg.initial_cursor_y[0], cfg.initial_cursor_y[1])
+            cursor.x = rand(call_cfg.initial_cursor_x[0], call_cfg.initial_cursor_x[1])
+            cursor.y = rand(call_cfg.initial_cursor_y[0], call_cfg.initial_cursor_y[1])
             await originals.mouse_move(cursor.x, cursor.y)
             cursor.initialized = True
+
+        # Scroll into view first — best-effort.
+        async def _get_box():
+            return await el.bounding_box()
+        try:
+            _, nx, ny = await async_human_scroll_into_view(
+                page, raw_mouse, _get_box,
+                cursor.x, cursor.y, call_cfg,
+            )
+            cursor.x = nx
+            cursor.y = ny
+        except Exception:
+            pass
 
         box = await el.bounding_box()
         if not box:
             return None
 
         is_inp = await _async_is_input_element_handle(el)
-        target = click_target(box, is_inp, cfg)
+        target = click_target(box, is_inp, call_cfg)
 
-        if cfg.idle_between_actions:
-            await async_human_idle(raw_mouse, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg)
+        if call_cfg.idle_between_actions:
+            await async_human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
 
-        await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, cfg)
+        await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
         return {'box': box, 'is_inp': is_inp}
@@ -1704,14 +1880,16 @@ def _patch_single_element_handle_async(
 
     # --- el.click() ---
     async def _human_el_click(**kwargs: Any) -> None:
-        info = await _move_to_element()
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        info = await _move_to_element(call_cfg)
         if info is None:
             return await _orig_click(**kwargs)
-        await async_human_click(raw_mouse, info['is_inp'], cfg)
+        await async_human_click(raw_mouse, info['is_inp'], call_cfg)
 
     # --- el.dblclick() ---
     async def _human_el_dblclick(**kwargs: Any) -> None:
-        info = await _move_to_element()
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        info = await _move_to_element(call_cfg)
         if info is None:
             return await _orig_dblclick(**kwargs)
         await raw_mouse.down(click_count=2)
@@ -1720,33 +1898,62 @@ def _patch_single_element_handle_async(
 
     # --- el.hover() ---
     async def _human_el_hover(**kwargs: Any) -> None:
-        info = await _move_to_element()
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        info = await _move_to_element(call_cfg)
         if info is None:
             return await _orig_hover(**kwargs)
 
     # --- el.type() ---
     async def _human_el_type(text: str, **kwargs: Any) -> None:
-        info = await _move_to_element()
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        info = await _move_to_element(call_cfg)
         if info is None:
             return await _orig_type(text, **kwargs)
-        await async_human_click(raw_mouse, info['is_inp'], cfg)
+        await async_human_click(raw_mouse, info['is_inp'], call_cfg)
         await async_sleep_ms(rand(100, 250))
         cdp = await _get_cdp()
-        await async_human_type(page, raw_keyboard, text, cfg, cdp_session=cdp)
+        await async_human_type(page, raw_keyboard, text, call_cfg, cdp_session=cdp)
 
     # --- el.fill() ---
     async def _human_el_fill(value: str, **kwargs: Any) -> None:
-        info = await _move_to_element()
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        info = await _move_to_element(call_cfg)
         if info is None:
             return await _orig_fill(value, **kwargs)
-        await async_human_click(raw_mouse, info['is_inp'], cfg)
+        await async_human_click(raw_mouse, info['is_inp'], call_cfg)
         await async_sleep_ms(rand(100, 250))
         await originals.keyboard_press(_SELECT_ALL)
         await async_sleep_ms(rand(30, 80))
         await originals.keyboard_press("Backspace")
         await async_sleep_ms(rand(50, 150))
         cdp = await _get_cdp()
-        await async_human_type(page, raw_keyboard, value, cfg, cdp_session=cdp)
+        await async_human_type(page, raw_keyboard, value, call_cfg, cdp_session=cdp)
+
+    # --- el.scroll_into_view_if_needed() ---
+    async def _human_el_scroll_into_view_if_needed(**kwargs: Any) -> None:
+        call_cfg = merge_config(cfg, kwargs.get("human_config"))
+        if not cursor.initialized:
+            cursor.x = rand(call_cfg.initial_cursor_x[0], call_cfg.initial_cursor_x[1])
+            cursor.y = rand(call_cfg.initial_cursor_y[0], call_cfg.initial_cursor_y[1])
+            try:
+                await originals.mouse_move(cursor.x, cursor.y)
+                cursor.initialized = True
+            except Exception:
+                pass
+
+        async def _get_box():
+            return await el.bounding_box()
+        try:
+            _, nx, ny = await async_human_scroll_into_view(
+                page, raw_mouse, _get_box,
+                cursor.x, cursor.y, call_cfg,
+            )
+            cursor.x = nx
+            cursor.y = ny
+        except Exception:
+            if _orig_scroll_into_view is not None:
+                native_kwargs = {k: v for k, v in kwargs.items() if k != "human_config"}
+                await _orig_scroll_into_view(**native_kwargs)
 
     # --- el.press() ---
     async def _human_el_press(key: str, **kwargs: Any) -> None:
@@ -1830,6 +2037,8 @@ def _patch_single_element_handle_async(
         el.set_checked = _human_el_set_checked
     el.tap = _human_el_tap
     el.focus = _human_el_focus
+    if _orig_scroll_into_view is not None:
+        el.scroll_into_view_if_needed = _human_el_scroll_into_view_if_needed
 
 
 def _patch_page_element_handles_async(

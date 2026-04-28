@@ -1052,3 +1052,326 @@ function buildMockFrame(): any {
     childFrames: vi.fn(() => []),
   };
 }
+
+// =========================================================================
+// mergeConfig
+// =========================================================================
+describe("mergeConfig", () => {
+  it("returns base unchanged when overrides is undefined/null", async () => {
+    const { mergeConfig, resolveConfig: rc } = await import("../src/human/config.js");
+    const base = rc("default");
+    expect(mergeConfig(base, undefined)).toBe(base);
+    expect(mergeConfig(base, null)).toBe(base);
+  });
+
+  it("creates a new object — base is never mutated", async () => {
+    const { mergeConfig, resolveConfig: rc } = await import("../src/human/config.js");
+    const base = rc("default");
+    const before = base.typing_delay;
+    const merged = mergeConfig(base, { typing_delay: 30 });
+    expect(merged.typing_delay).toBe(30);
+    expect(base.typing_delay).toBe(before);
+    expect(merged).not.toBe(base);
+  });
+
+  it("preserves non-overridden fields", async () => {
+    const { mergeConfig, resolveConfig: rc } = await import("../src/human/config.js");
+    const base = rc("default");
+    const merged = mergeConfig(base, { typing_delay: 30 });
+    expect(merged.mouse_min_steps).toBe(base.mouse_min_steps);
+    expect(merged.mistype_chance).toBe(base.mistype_chance);
+  });
+});
+
+
+// =========================================================================
+// Per-call timeout forwarding (issue #137)
+// =========================================================================
+describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
+  it("scrollToElement passes timeout to locator.boundingBox()", async () => {
+    const { scrollToElement } = await import("../src/human/scroll.js");
+    const cfg = resolveConfig("default");
+
+    const boundingBox = vi.fn(async () => ({ x: 100, y: 200, width: 50, height: 30 }));
+    const page: any = {
+      viewportSize: () => ({ width: 1280, height: 720 }),
+      locator: vi.fn(() => ({ first: () => ({ boundingBox }) })),
+    };
+    const raw = {
+      move: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      wheel: vi.fn(async () => {}),
+    };
+
+    await scrollToElement(page, raw, "#x", 0, 0, cfg, 5000);
+    expect(boundingBox).toHaveBeenCalledWith({ timeout: 5000 });
+  });
+
+  it("default timeout stays 2000ms when not specified", async () => {
+    const { scrollToElement } = await import("../src/human/scroll.js");
+    const cfg = resolveConfig("default");
+
+    const boundingBox = vi.fn(async () => ({ x: 100, y: 200, width: 50, height: 30 }));
+    const page: any = {
+      viewportSize: () => ({ width: 1280, height: 720 }),
+      locator: vi.fn(() => ({ first: () => ({ boundingBox }) })),
+    };
+    const raw = {
+      move: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      wheel: vi.fn(async () => {}),
+    };
+
+    await scrollToElement(page, raw, "#x", 0, 0, cfg);
+    expect(boundingBox).toHaveBeenCalledWith({ timeout: 2000 });
+  });
+
+  it("page.click({ timeout }) reaches scrollToElement", async () => {
+    const scrollMod = await import("../src/human/scroll.js");
+    const { patchPage } = await import("../src/human/index.js");
+    const cfg = resolveConfig("default", { idle_between_actions: false });
+
+    let captured = -1;
+    const spy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
+      async (_page, _raw, _sel, cx, cy, _cfg, timeout?: number) => {
+        captured = timeout ?? -1;
+        return { box: { x: 100, y: 100, width: 50, height: 30 }, cursorX: cx, cursorY: cy };
+      },
+    );
+
+    const page = buildMockPage();
+    const cursor = { x: 100, y: 100, initialized: true };
+    patchPage(page as any, cfg, cursor as any);
+    await (page as any).click("#slow", { timeout: 5000 });
+
+    expect(captured).toBe(5000);
+    spy.mockRestore();
+  });
+});
+
+
+// =========================================================================
+// Per-call human_config override
+// =========================================================================
+describe("page.type / page.fill accept per-call human_config override", () => {
+  it("page.type forwards merged config to humanType", async () => {
+    const keyboardMod = await import("../src/human/keyboard.js");
+    const scrollMod = await import("../src/human/scroll.js");
+    const { patchPage } = await import("../src/human/index.js");
+
+    // Make field_switch_delay tiny so the test runs fast
+    const cfg = resolveConfig("default", {
+      idle_between_actions: false,
+      field_switch_delay: [0, 1],
+    });
+    expect(cfg.typing_delay).toBe(70); // baseline
+
+    let captured: any = null;
+    const typeSpy = vi.spyOn(keyboardMod, "humanType").mockImplementation(
+      async (_page, _raw, _text, callCfg) => { captured = callCfg; },
+    );
+    const scrollSpy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
+      async (_page, _raw, _sel, cx, cy) => ({
+        box: { x: 100, y: 100, width: 50, height: 30 },
+        cursorX: cx, cursorY: cy,
+      }),
+    );
+
+    const page = buildMockPage();
+    const cursor = { x: 100, y: 100, initialized: true };
+    patchPage(page as any, cfg, cursor as any);
+
+    await (page as any).type("#email", "hi", {
+      human_config: { typing_delay: 30, mistype_chance: 0 },
+    });
+
+    expect(captured.typing_delay).toBe(30);
+    expect(captured.mistype_chance).toBe(0);
+    // Global cfg untouched
+    expect(cfg.typing_delay).toBe(70);
+
+    typeSpy.mockRestore();
+    scrollSpy.mockRestore();
+  }, 30000);
+
+  it("page.fill forwards merged config to humanType", async () => {
+    const keyboardMod = await import("../src/human/keyboard.js");
+    const scrollMod = await import("../src/human/scroll.js");
+    const { patchPage } = await import("../src/human/index.js");
+
+    const cfg = resolveConfig("default", {
+      idle_between_actions: false,
+      field_switch_delay: [0, 1],
+    });
+
+    let captured: any = null;
+    const typeSpy = vi.spyOn(keyboardMod, "humanType").mockImplementation(
+      async (_page, _raw, _text, callCfg) => { captured = callCfg; },
+    );
+    const scrollSpy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
+      async (_page, _raw, _sel, cx, cy) => ({
+        box: { x: 100, y: 100, width: 50, height: 30 },
+        cursorX: cx, cursorY: cy,
+      }),
+    );
+
+    const page = buildMockPage();
+    const cursor = { x: 100, y: 100, initialized: true };
+    patchPage(page as any, cfg, cursor as any);
+
+    await (page as any).fill("#password", "secret", {
+      human_config: { typing_delay: 150 },
+    });
+
+    expect(captured.typing_delay).toBe(150);
+
+    typeSpy.mockRestore();
+    scrollSpy.mockRestore();
+  }, 30000);
+
+  it("el.type forwards human_config to humanType", async () => {
+    const keyboardMod = await import("../src/human/keyboard.js");
+    const { patchSingleElementHandle } = await import("../src/human/elementhandle.js");
+    const cfg = resolveConfig("default", { idle_between_actions: false, mistype_chance: 0 });
+    const cursor = { x: 50, y: 50, initialized: true };
+
+    let captured: any = null;
+    const typeSpy = vi.spyOn(keyboardMod, "humanType").mockImplementation(
+      async (_page, _raw, _text, callCfg) => { captured = callCfg; },
+    );
+
+    const raw = { move: vi.fn(async () => {}), down: vi.fn(async () => {}), up: vi.fn(async () => {}), wheel: vi.fn(async () => {}) };
+    const rawKb = { down: vi.fn(async () => {}), up: vi.fn(async () => {}), type: vi.fn(async () => {}), insertText: vi.fn(async () => {}) };
+    const originals = { keyboardPress: vi.fn(async () => {}), keyboardDown: vi.fn(async () => {}), keyboardUp: vi.fn(async () => {}) };
+
+    const el = buildMockElementHandle({ evaluate: vi.fn(async () => true) });
+    const page = buildMockPage();
+    (page as any)._ensureCursorInit = vi.fn(async () => {});
+
+    patchSingleElementHandle(el, page as any, cfg, cursor as any, raw, rawKb, originals, null);
+
+    await el.type("abc", { human_config: { typing_delay: 25 } });
+    expect(captured.typing_delay).toBe(25);
+
+    typeSpy.mockRestore();
+  }, 30000);
+});
+
+
+// =========================================================================
+// scrollIntoViewIfNeeded humanization
+// =========================================================================
+describe("humanScrollIntoView", () => {
+  it("skips wheel events when element is already in viewport", async () => {
+    const { humanScrollIntoView } = await import("../src/human/scroll.js");
+    const cfg = resolveConfig("default");
+
+    const page: any = { viewportSize: () => ({ width: 1280, height: 720 }) };
+    const raw = {
+      move: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      wheel: vi.fn(async () => {}),
+    };
+    // Box centered in viewport — squarely in scroll_target_zone
+    const inViewBox = { x: 200, y: 300, width: 50, height: 30 };
+    const result = await humanScrollIntoView(page, raw, async () => inViewBox, 0, 0, cfg);
+
+    expect(result.box).toEqual(inViewBox);
+    expect(raw.wheel).not.toHaveBeenCalled();
+  });
+
+  it("fires wheel events when element is below the fold", async () => {
+    const { humanScrollIntoView } = await import("../src/human/scroll.js");
+    const cfg = resolveConfig("default", {
+      scroll_overshoot_chance: 0,
+      scroll_pre_move_delay: [0, 1],
+      scroll_pause_fast: [0, 1],
+      scroll_pause_slow: [0, 1],
+      scroll_settle_delay: [0, 1],
+    });
+
+    const page: any = { viewportSize: () => ({ width: 1280, height: 720 }) };
+    const raw = {
+      move: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      wheel: vi.fn(async () => {}),
+    };
+
+    const boxes = [
+      { x: 200, y: 2000, width: 50, height: 30 }, // far below
+      { x: 200, y: 1500, width: 50, height: 30 },
+      { x: 200, y: 1000, width: 50, height: 30 },
+      { x: 200, y: 400, width: 50, height: 30 },  // in view
+      { x: 200, y: 400, width: 50, height: 30 },
+      { x: 200, y: 400, width: 50, height: 30 },
+    ];
+    let i = 0;
+    const getBox = async () => boxes[Math.min(i++, boxes.length - 1)];
+
+    await humanScrollIntoView(page, raw, getBox, 0, 0, cfg);
+    expect(raw.wheel).toHaveBeenCalled();
+  }, 15000);
+});
+
+describe("el.scrollIntoViewIfNeeded humanization", () => {
+  it("calls humanScrollIntoView instead of native snap-scroll", async () => {
+    const scrollMod = await import("../src/human/scroll.js");
+    const { patchSingleElementHandle } = await import("../src/human/elementhandle.js");
+
+    let called = 0;
+    const spy = vi.spyOn(scrollMod, "humanScrollIntoView").mockImplementation(
+      async (_p, _raw, _gb, cx, cy) => {
+        called++;
+        return { box: { x: 200, y: 200, width: 50, height: 30 }, cursorX: cx, cursorY: cy };
+      },
+    );
+
+    const cfg = resolveConfig("default", { idle_between_actions: false });
+    const cursor = { x: 50, y: 50, initialized: true };
+    const raw = { move: vi.fn(async () => {}), down: vi.fn(async () => {}), up: vi.fn(async () => {}), wheel: vi.fn(async () => {}) };
+    const rawKb = { down: vi.fn(async () => {}), up: vi.fn(async () => {}), type: vi.fn(async () => {}), insertText: vi.fn(async () => {}) };
+    const originals = { keyboardPress: vi.fn(async () => {}), keyboardDown: vi.fn(async () => {}), keyboardUp: vi.fn(async () => {}) };
+
+    const el = buildMockElementHandle();
+    el.scrollIntoViewIfNeeded = vi.fn(async () => {});
+    const page = buildMockPage();
+    (page as any)._ensureCursorInit = vi.fn(async () => {});
+
+    patchSingleElementHandle(el, page as any, cfg, cursor as any, raw, rawKb, originals, null);
+    await el.scrollIntoViewIfNeeded();
+
+    expect(called).toBeGreaterThan(0);
+    spy.mockRestore();
+  });
+
+  it("falls back to native scrollIntoViewIfNeeded if humanized helper throws", async () => {
+    const scrollMod = await import("../src/human/scroll.js");
+    const { patchSingleElementHandle } = await import("../src/human/elementhandle.js");
+
+    const spy = vi.spyOn(scrollMod, "humanScrollIntoView").mockImplementation(
+      async () => { throw new Error("detached"); },
+    );
+
+    const cfg = resolveConfig("default", { idle_between_actions: false });
+    const cursor = { x: 50, y: 50, initialized: true };
+    const raw = { move: vi.fn(async () => {}), down: vi.fn(async () => {}), up: vi.fn(async () => {}), wheel: vi.fn(async () => {}) };
+    const rawKb = { down: vi.fn(async () => {}), up: vi.fn(async () => {}), type: vi.fn(async () => {}), insertText: vi.fn(async () => {}) };
+    const originals = { keyboardPress: vi.fn(async () => {}), keyboardDown: vi.fn(async () => {}), keyboardUp: vi.fn(async () => {}) };
+
+    const nativeFallback = vi.fn(async () => {});
+    const el = buildMockElementHandle();
+    el.scrollIntoViewIfNeeded = nativeFallback;
+    const page = buildMockPage();
+    (page as any)._ensureCursorInit = vi.fn(async () => {});
+
+    patchSingleElementHandle(el, page as any, cfg, cursor as any, raw, rawKb, originals, null);
+    await el.scrollIntoViewIfNeeded();
+
+    expect(nativeFallback).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});

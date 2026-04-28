@@ -201,6 +201,25 @@ def resolve_config(
     return HumanConfig(**merged)
 
 
+def merge_config(base: HumanConfig, overrides: dict | None) -> HumanConfig:
+    """Merge ``overrides`` (a dict of HumanConfig field names → values) on top of
+    ``base``. Returns a new HumanConfig — ``base`` is never mutated.
+
+    Used by per-call overrides like ``page.type(sel, text, human_config={...})``
+    so the same page can use different timings for different inputs without
+    re-patching.
+
+    Unknown keys are ignored silently to keep this forgiving for callers.
+    """
+    if not overrides:
+        return base
+    merged = {k: getattr(base, k) for k in base.__dataclass_fields__}
+    for k, v in overrides.items():
+        if k in base.__dataclass_fields__:
+            merged[k] = v
+    return HumanConfig(**merged)
+
+
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------

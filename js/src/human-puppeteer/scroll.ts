@@ -5,7 +5,7 @@
  * Changes from Playwright version:
  *   - page.viewport() instead of page.viewportSize()
  *   - page.$(selector) + el.boundingBox() instead of page.locator().boundingBox()
- *   - No timeout parameter on boundingBox()
+ *   - boundingBox() has no timeout param — we poll page.$() up to ``timeout`` ms
  */
 
 import type { Page } from 'puppeteer-core';
@@ -55,22 +55,40 @@ export async function smoothWheel(
   }
 }
 
-async function getElementBox(page: Page, selector: string): Promise<ElementBounds | null> {
-  try {
-    const el = await page.$(selector);
-    if (!el) return null;
-    const box = await el.boundingBox();
-    if (!box) return null;
-    return { x: box.x, y: box.y, width: box.width, height: box.height };
-  } catch {
-    return null;
+/**
+ * Poll ``page.$(selector)`` for up to ``timeout`` ms, returning the element's
+ * bounding box when found. ``timeout`` defaults to 2000ms when not specified.
+ */
+async function getElementBox(
+  page: Page,
+  selector: string,
+  timeout: number = 2000,
+): Promise<ElementBounds | null> {
+  const start = Date.now();
+  const pollInterval = 100;
+  while (true) {
+    try {
+      const el = await page.$(selector);
+      if (el) {
+        const box = await el.boundingBox();
+        if (box) return { x: box.x, y: box.y, width: box.width, height: box.height };
+      }
+    } catch { /* keep polling */ }
+
+    if (Date.now() - start >= timeout) return null;
+    await sleep(pollInterval);
   }
 }
 
-export async function scrollToElement(
+/**
+ * Humanized scrolling that takes an arbitrary ``getBox`` callable.
+ * Used by both ``scrollToElement`` (selector-based) and the ElementHandle
+ * ``scrollIntoView`` patch.
+ */
+export async function humanScrollIntoView(
   page: Page,
   raw: RawMouse,
-  selector: string,
+  getBox: () => Promise<ElementBounds | null>,
   cursorX: number,
   cursorY: number,
   cfg: HumanConfig,
@@ -78,11 +96,11 @@ export async function scrollToElement(
   const viewport = page.viewport();
   if (!viewport) throw new Error('Viewport size not available');
 
-  let box = await getElementBox(page, selector);
+  let box = await getBox();
   if (!box) {
     await sleep(200);
-    box = await getElementBox(page, selector);
-    if (!box) throw new Error(`Element not found: ${selector}`);
+    box = await getBox();
+    if (!box) throw new Error('Element not found while scrolling into view');
   }
 
   if (isInViewport(box, viewport.height, cfg)) {
@@ -134,7 +152,7 @@ export async function scrollToElement(
     await sleep(pause);
 
     if (i % 3 === 2 || i === totalClicks - 1) {
-      box = await getElementBox(page, selector);
+      box = await getBox();
       if (box && isInViewport(box, viewport.height, cfg)) {
         break;
       }
@@ -159,8 +177,31 @@ export async function scrollToElement(
 
   await sleep(randRange(cfg.scroll_settle_delay));
 
-  box = await getElementBox(page, selector);
-  if (!box) throw new Error(`Element lost after scrolling: ${selector}`);
+  box = await getBox();
+  if (!box) throw new Error('Element lost after scrolling into view');
 
   return { box, cursorX, cursorY };
+}
+
+/**
+ * Selector-based humanized scroll (Puppeteer).
+ *
+ * ``timeout`` controls how long we poll ``page.$(selector)`` before giving up,
+ * so callers like ``page.click('#x', { timeout: 5000 })`` can wait longer for
+ * slow-loading elements (#137). Default stays 2000ms when not specified.
+ */
+export async function scrollToElement(
+  page: Page,
+  raw: RawMouse,
+  selector: string,
+  cursorX: number,
+  cursorY: number,
+  cfg: HumanConfig,
+  timeout?: number,
+): Promise<{ box: ElementBounds; cursorX: number; cursorY: number }> {
+  return humanScrollIntoView(
+    page, raw,
+    () => getElementBox(page, selector, timeout),
+    cursorX, cursorY, cfg,
+  );
 }

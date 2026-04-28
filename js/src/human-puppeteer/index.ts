@@ -48,16 +48,16 @@
 
 import type { Browser, Page, Frame, CDPSession, ElementHandle, BrowserContext } from 'puppeteer-core';
 import type { HumanConfig } from '../human/config.js';
-import { resolveConfig, rand, randRange, sleep } from '../human/config.js';
+import { resolveConfig, mergeConfig, rand, randRange, sleep } from '../human/config.js';
 import { RawMouse, RawKeyboard, humanMove, humanClick, clickTarget, humanIdle } from '../human/mouse.js';
 import { humanType } from './keyboard.js';
-import { scrollToElement, smoothWheel } from './scroll.js';
+import { scrollToElement, humanScrollIntoView, smoothWheel } from './scroll.js';
 
 export type { HumanConfig } from '../human/config.js';
-export { resolveConfig } from '../human/config.js';
+export { resolveConfig, mergeConfig } from '../human/config.js';
 export { humanMove, humanClick, clickTarget, humanIdle } from '../human/mouse.js';
 export { humanType } from './keyboard.js';
-export { scrollToElement } from './scroll.js';
+export { scrollToElement, humanScrollIntoView } from './scroll.js';
 
 
 // ============================================================================
@@ -329,52 +329,55 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   // ==== click (with clickCount support for dblclick) ====
   const humanClickFn = async (selector: string, options?: any) => {
     await ensureCursorInit();
-    if (cfg.idle_between_actions) {
-      await humanIdle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    if (callCfg.idle_between_actions) {
+      await humanIdle(raw, rand(callCfg.idle_between_duration[0], callCfg.idle_between_duration[1]), cursor.x, cursor.y, callCfg);
     }
-    const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, cfg);
+    const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, options?.timeout);
     cursor.x = cursorX;
     cursor.y = cursorY;
     const isInput = await isInputElement(stealth, page, selector);
-    const target = clickTarget(box, isInput, cfg);
-    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, cfg);
+    const target = clickTarget(box, isInput, callCfg);
+    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
 
     const clickCount = options?.clickCount ?? options?.count ?? 1;
     if (clickCount >= 2) {
-      await humanClick(raw, isInput, cfg);
+      await humanClick(raw, isInput, callCfg);
       await sleep(rand(40, 90));
       await raw.down({ clickCount: 2 });
       await sleep(rand(30, 60));
       await raw.up({ clickCount: 2 });
     } else {
-      await humanClick(raw, isInput, cfg);
+      await humanClick(raw, isInput, callCfg);
     }
   };
 
   // ==== hover ====
   const humanHoverFn = async (selector: string, options?: any) => {
     await ensureCursorInit();
-    if (cfg.idle_between_actions) {
-      await humanIdle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    if (callCfg.idle_between_actions) {
+      await humanIdle(raw, rand(callCfg.idle_between_duration[0], callCfg.idle_between_duration[1]), cursor.x, cursor.y, callCfg);
     }
-    const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, cfg);
+    const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, options?.timeout);
     cursor.x = cursorX;
     cursor.y = cursorY;
-    const target = clickTarget(box, false, cfg);
-    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, cfg);
+    const target = clickTarget(box, false, callCfg);
+    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
   };
 
   // ==== type ====
   const humanTypeFn = async (selector: string, text: string, options?: any) => {
-    await sleep(randRange(cfg.field_switch_delay));
-    await humanClickFn(selector);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    await sleep(randRange(callCfg.field_switch_delay));
+    await humanClickFn(selector, options);
     await sleep(rand(100, 250));
     const cdp = await ensureCdp();
-    await humanType(page, rawKb, text, cfg, cdp);
+    await humanType(page, rawKb, text, callCfg, cdp);
   };
 
   // ==== select ====
@@ -577,6 +580,9 @@ function patchSingleElementHandle(
   const origElDragAndDrop = (el as any).dragAndDrop?.bind(el);
   const origElSelect = (el as any).select?.bind(el);
   const origElDrop = (el as any).drop?.bind(el);
+  // Puppeteer v22+ adds ElementHandle.scrollIntoView(); earlier versions
+  // expose it implicitly via evaluate(node => node.scrollIntoView()).
+  const origElScrollIntoView = (el as any).scrollIntoView?.bind(el);
 
   // --- Nested selectors ---
   const origEl$ = el.$.bind(el);
@@ -603,20 +609,34 @@ function patchSingleElementHandle(
     return child;
   };
 
-  // --- Helper: get box and move cursor ---
-  const moveToElement = async () => {
+  // --- Helper: get box and move cursor. Accepts a per-call ``callCfg``
+  // so type/fill overrides like ``el.type(text, { human_config: {...} })``
+  // carry through to mouse timing for that single call. Also scrolls into
+  // view first so off-screen elements work (#129, #137 follow-up).
+  const moveToElement = async (callCfg: HumanConfig = cfg) => {
     await (page as any)._ensureCursorInit();
+
+    try {
+      const { cursorX, cursorY } = await humanScrollIntoView(
+        page, raw,
+        () => el.boundingBox().then(b => b ?? null),
+        cursor.x, cursor.y, callCfg,
+      );
+      cursor.x = cursorX;
+      cursor.y = cursorY;
+    } catch { /* let boundingBox() decide */ }
+
     const box = await el.boundingBox();
     if (!box) return null;
 
     const isInp = await isInputElementHandle(stealth, el);
-    const target = clickTarget(box, isInp, cfg);
+    const target = clickTarget(box, isInp, callCfg);
 
-    if (cfg.idle_between_actions) {
-      await humanIdle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg);
+    if (callCfg.idle_between_actions) {
+      await humanIdle(raw, rand(callCfg.idle_between_duration[0], callCfg.idle_between_duration[1]), cursor.x, cursor.y, callCfg);
     }
 
-    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, cfg);
+    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
     return { box, isInp };
@@ -624,18 +644,19 @@ function patchSingleElementHandle(
 
   // --- el.click() ---
   (el as any).click = async (options?: any) => {
-    const info = await moveToElement();
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    const info = await moveToElement(callCfg);
     if (!info) return origElClick(options);
 
     const clickCount = options?.clickCount ?? options?.count ?? 1;
     if (clickCount >= 2) {
-      await humanClick(raw, info.isInp, cfg);
+      await humanClick(raw, info.isInp, callCfg);
       await sleep(rand(40, 90));
       await raw.down({ clickCount: 2 });
       await sleep(rand(30, 60));
       await raw.up({ clickCount: 2 });
     } else {
-      await humanClick(raw, info.isInp, cfg);
+      await humanClick(raw, info.isInp, callCfg);
     }
   };
 
@@ -647,13 +668,38 @@ function patchSingleElementHandle(
 
   // --- el.type() ---
   (el as any).type = async (text: string, options?: any) => {
-    const info = await moveToElement();
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    const info = await moveToElement(callCfg);
     if (!info) return origElType(text, options);
-    await humanClick(raw, info.isInp, cfg);
+    await humanClick(raw, info.isInp, callCfg);
     await sleep(rand(100, 250));
     const cdp = await stealth.getCdpSession().catch(() => null);
-    await humanType(page, rawKb, text, cfg, cdp);
+    await humanType(page, rawKb, text, callCfg, cdp);
   };
+
+  // --- el.scrollIntoView() ---
+  // Puppeteer-only equivalent of Playwright's scrollIntoViewIfNeeded.
+  // Replaces the native snap-scroll (a strong bot signal) with the same
+  // accelerate → cruise → decelerate → overshoot wheel sequence used by
+  // page.click(). Only patched when the underlying ElementHandle exposes
+  // ``scrollIntoView`` (Puppeteer v22+).
+  if (origElScrollIntoView) {
+    (el as any).scrollIntoView = async (options?: any) => {
+      const callCfg = mergeConfig(cfg, options?.human_config);
+      await (page as any)._ensureCursorInit();
+      try {
+        const { cursorX, cursorY } = await humanScrollIntoView(
+          page, raw,
+          () => el.boundingBox().then(b => b ?? null),
+          cursor.x, cursor.y, callCfg,
+        );
+        cursor.x = cursorX;
+        cursor.y = cursorY;
+      } catch {
+        return origElScrollIntoView(options);
+      }
+    };
+  }
 
   // --- el.press() ---
   if (origElPress) {

@@ -18,9 +18,10 @@
 
 import type { Page, Frame, ElementHandle, CDPSession } from 'playwright-core';
 import type { HumanConfig } from './config.js';
-import { rand, randRange, sleep } from './config.js';
+import { rand, randRange, sleep, mergeConfig } from './config.js';
 import { RawMouse, RawKeyboard, humanMove, humanClick, clickTarget, humanIdle } from './mouse.js';
 import { humanType } from './keyboard.js';
+import { humanScrollIntoView } from './scroll.js';
 
 // --- Platform-aware select-all shortcut ---
 const SELECT_ALL = process.platform === 'darwin' ? 'Meta+a' : 'Control+a';
@@ -102,6 +103,7 @@ export function patchSingleElementHandle(
   const origElSetChecked = (el as any).setChecked?.bind(el);
   const origElTap = el.tap.bind(el);
   const origElFocus = el.focus.bind(el);
+  const origElScrollIntoViewIfNeeded = (el as any).scrollIntoViewIfNeeded?.bind(el);
 
   // Nested selectors
   const origEl$ = el.$.bind(el);
@@ -130,22 +132,42 @@ export function patchSingleElementHandle(
   };
 
   // --- Helper: get bounding box and move cursor to element ---
-  const moveToElement = async () => {
+  // Accepts a per-call ``callCfg`` so type/fill overrides like
+  // ``el.type(text, { human_config: { typing_delay: 30 } })`` carry through to
+  // mouse movement & idle timing for that single call.
+  // Also scrolls the element into view first so off-screen elements work
+  // (#129, #137 follow-up): otherwise boundingBox() returns null and we'd
+  // silently fall back to the unpatched native method.
+  const moveToElement = async (callCfg: HumanConfig = cfg) => {
     // Ensure cursor is initialized
     const ensureCursorInit = (page as any)._ensureCursorInit;
     if (ensureCursorInit) await ensureCursorInit();
+
+    // Scroll into view first so boundingBox() returns coordinates even when
+    // the element starts below the fold. Best-effort — if humanScrollIntoView
+    // throws (e.g. detached element), we let boundingBox() decide whether to
+    // proceed or fall back to the original method.
+    try {
+      const { cursorX, cursorY } = await humanScrollIntoView(
+        page, raw,
+        () => el.boundingBox(),
+        cursor.x, cursor.y, callCfg,
+      );
+      cursor.x = cursorX;
+      cursor.y = cursorY;
+    } catch { /* let boundingBox() decide */ }
 
     const box = await el.boundingBox();
     if (!box) return null;
 
     const isInp = await isInputElementHandle(stealth, el);
-    const target = clickTarget(box, isInp, cfg);
+    const target = clickTarget(box, isInp, callCfg);
 
-    if (cfg.idle_between_actions) {
-      await humanIdle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg);
+    if (callCfg.idle_between_actions) {
+      await humanIdle(raw, rand(callCfg.idle_between_duration[0], callCfg.idle_between_duration[1]), cursor.x, cursor.y, callCfg);
     }
 
-    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, cfg);
+    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
     return { box, isInp };
@@ -153,14 +175,16 @@ export function patchSingleElementHandle(
 
   // --- el.click() ---
   (el as any).click = async (options?: any) => {
-    const info = await moveToElement();
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    const info = await moveToElement(callCfg);
     if (!info) return origElClick(options);
-    await humanClick(raw, info.isInp, cfg);
+    await humanClick(raw, info.isInp, callCfg);
   };
 
   // --- el.dblclick() ---
   (el as any).dblclick = async (options?: any) => {
-    const info = await moveToElement();
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    const info = await moveToElement(callCfg);
     if (!info) return origElDblclick(options);
     await raw.down({ clickCount: 2 });
     await sleep(rand(30, 60));
@@ -169,27 +193,30 @@ export function patchSingleElementHandle(
 
   // --- el.hover() ---
   (el as any).hover = async (options?: any) => {
-    const info = await moveToElement();
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    const info = await moveToElement(callCfg);
     if (!info) return origElHover(options);
     // Just move — no click
   };
 
   // --- el.type() ---
   (el as any).type = async (text: string, options?: any) => {
-    const info = await moveToElement();
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    const info = await moveToElement(callCfg);
     if (!info) return origElType(text, options);
-    await humanClick(raw, info.isInp, cfg);
+    await humanClick(raw, info.isInp, callCfg);
     await sleep(rand(100, 250));
     let cdpSession: CDPSession | null = null;
     try { cdpSession = await stealth?.getCdpSession(); } catch {}
-    await humanType(page, rawKb, text, cfg, cdpSession);
+    await humanType(page, rawKb, text, callCfg, cdpSession);
   };
 
   // --- el.fill() ---
   (el as any).fill = async (value: string, options?: any) => {
-    const info = await moveToElement();
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    const info = await moveToElement(callCfg);
     if (!info) return origElFill(value, options);
-    await humanClick(raw, info.isInp, cfg);
+    await humanClick(raw, info.isInp, callCfg);
     await sleep(rand(100, 250));
     // Clear existing content
     await originals.keyboardPress(SELECT_ALL);
@@ -198,7 +225,7 @@ export function patchSingleElementHandle(
     await sleep(rand(50, 150));
     let cdpSession: CDPSession | null = null;
     try { cdpSession = await stealth?.getCdpSession(); } catch {}
-    await humanType(page, rawKb, value, cfg, cdpSession);
+    await humanType(page, rawKb, value, callCfg, cdpSession);
   };
 
   // --- el.press() ---
@@ -268,6 +295,30 @@ export function patchSingleElementHandle(
     await moveToElement();  // human-like Bézier cursor movement
     await origElFocus();    // programmatic focus, no click
   };
+
+  // --- el.scrollIntoViewIfNeeded() ---
+  // Playwright's native version snaps the page — a strong bot signal.
+  // Replace with the same accelerate → cruise → decelerate → overshoot
+  // wheel sequence used by page.click() etc. Falls back to the native
+  // method if the element is detached or scrolling fails.
+  if (origElScrollIntoViewIfNeeded) {
+    (el as any).scrollIntoViewIfNeeded = async (options?: any) => {
+      const callCfg = mergeConfig(cfg, options?.human_config);
+      const ensureCursorInit = (page as any)._ensureCursorInit;
+      if (ensureCursorInit) await ensureCursorInit();
+      try {
+        const { cursorX, cursorY } = await humanScrollIntoView(
+          page, raw,
+          () => el.boundingBox(),
+          cursor.x, cursor.y, callCfg,
+        );
+        cursor.x = cursorX;
+        cursor.y = cursorY;
+      } catch {
+        return origElScrollIntoViewIfNeeded(options);
+      }
+    };
+  }
 }
 
 

@@ -38,10 +38,17 @@ async function smoothWheel(raw: RawMouse, delta: number, cfg: HumanConfig): Prom
   }
 }
 
-export async function scrollToElement(
+/**
+ * Humanized scrolling that takes an arbitrary ``getBox`` callable.
+ *
+ * Used by both ``scrollToElement`` (selector-based) and the ElementHandle
+ * ``scrollIntoViewIfNeeded`` patch so the same accelerate → cruise →
+ * decelerate → overshoot behavior runs everywhere.
+ */
+export async function humanScrollIntoView(
   page: Page,
   raw: RawMouse,
-  selector: string,
+  getBox: () => Promise<ElementBounds | null>,
   cursorX: number,
   cursorY: number,
   cfg: HumanConfig,
@@ -49,11 +56,11 @@ export async function scrollToElement(
   const viewport = page.viewportSize();
   if (!viewport) throw new Error('Viewport size not available');
 
-  let box = await getElementBox(page, selector);
+  let box = await getBox();
   if (!box) {
     await sleep(200);
-    box = await getElementBox(page, selector);
-    if (!box) throw new Error(`Element not found: ${selector}`);
+    box = await getBox();
+    if (!box) throw new Error('Element not found while scrolling into view');
   }
 
   if (isInViewport(box, viewport.height, cfg)) {
@@ -107,7 +114,7 @@ export async function scrollToElement(
 
     // Check visibility every 3 steps
     if (i % 3 === 2 || i === totalClicks - 1) {
-      box = await getElementBox(page, selector);
+      box = await getBox();
       if (box && isInViewport(box, viewport.height, cfg)) {
         break;
       }
@@ -133,16 +140,43 @@ export async function scrollToElement(
   // Settle
   await sleep(randRange(cfg.scroll_settle_delay));
 
-  box = await getElementBox(page, selector);
-  if (!box) throw new Error(`Element lost after scrolling: ${selector}`);
+  box = await getBox();
+  if (!box) throw new Error('Element lost after scrolling into view');
 
   return { box, cursorX, cursorY };
 }
 
-async function getElementBox(page: Page, selector: string): Promise<ElementBounds | null> {
+/**
+ * Selector-based humanized scroll.
+ *
+ * ``timeout`` is forwarded to Playwright's ``boundingBox({ timeout })`` so
+ * callers like ``page.click('#x', { timeout: 5000 })`` can wait longer for
+ * slow-loading elements (#137). Default stays 2000ms when not specified.
+ */
+export async function scrollToElement(
+  page: Page,
+  raw: RawMouse,
+  selector: string,
+  cursorX: number,
+  cursorY: number,
+  cfg: HumanConfig,
+  timeout?: number,
+): Promise<{ box: ElementBounds; cursorX: number; cursorY: number }> {
+  return humanScrollIntoView(
+    page, raw,
+    () => getElementBox(page, selector, timeout),
+    cursorX, cursorY, cfg,
+  );
+}
+
+async function getElementBox(
+  page: Page,
+  selector: string,
+  timeout: number = 2000,
+): Promise<ElementBounds | null> {
   const el = page.locator(selector).first();
   try {
-    const box = await el.boundingBox({ timeout: 2000 });
+    const box = await el.boundingBox({ timeout });
     return box;
   } catch {
     return null;
