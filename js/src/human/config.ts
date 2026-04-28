@@ -201,6 +201,22 @@ export function resolveConfig(
   return { ...base, ...overrides };
 }
 
+/**
+ * Merge a partial overrides object on top of an existing HumanConfig.
+ * Returns a new object — the original ``cfg`` is never mutated.
+ *
+ * Used by per-call overrides such as ``page.type(sel, text, { human_config: { typing_delay: 30 } })``
+ * so the same patched page can type different fields at different speeds
+ * without re-patching.
+ */
+export function mergeConfig(
+  cfg: HumanConfig,
+  overrides?: Partial<HumanConfig> | null,
+): HumanConfig {
+  if (!overrides) return cfg;
+  return { ...cfg, ...overrides };
+}
+
 
 // ---------------------------------------------------------------------------
 // Utility: random number in range

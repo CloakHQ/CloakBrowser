@@ -1297,6 +1297,459 @@ class TestAsyncElementHandle:
 
 
 # =========================================================================
+# 15. Per-call timeout forwarding (issue #137)
+# =========================================================================
+
+class TestPerCallTimeoutForwarding:
+    """page.click('#x', timeout=5000) must forward 5000 to bounding_box(),
+    not silently use the hardcoded 2000ms in scroll."""
+
+    def test_get_element_box_default_timeout(self):
+        """Default timeout stays 2000ms for backwards compatibility."""
+        from cloakbrowser.human.scroll import _get_element_box
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        loc = MagicMock()
+        loc.bounding_box = MagicMock(return_value={"x": 0, "y": 0, "width": 1, "height": 1})
+        page.locator = MagicMock(return_value=MagicMock(first=loc))
+
+        _get_element_box(page, "#x")
+        loc.bounding_box.assert_called_once_with(timeout=2000)
+
+    def test_get_element_box_custom_timeout(self):
+        """Caller can pass a custom timeout that overrides the default."""
+        from cloakbrowser.human.scroll import _get_element_box
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        loc = MagicMock()
+        loc.bounding_box = MagicMock(return_value={"x": 0, "y": 0, "width": 1, "height": 1})
+        page.locator = MagicMock(return_value=MagicMock(first=loc))
+
+        _get_element_box(page, "#x", timeout=5000)
+        loc.bounding_box.assert_called_once_with(timeout=5000)
+
+    def test_scroll_to_element_forwards_timeout(self):
+        """scroll_to_element passes timeout through to bounding_box()."""
+        from cloakbrowser.human.scroll import scroll_to_element
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", None)
+        page = MagicMock()
+        page.viewport_size = {"width": 1280, "height": 720}
+        loc = MagicMock()
+        # Already in viewport so we don't actually scroll — just verify
+        # the timeout was forwarded on the first bounding_box() call.
+        loc.bounding_box = MagicMock(return_value={"x": 100, "y": 200, "width": 50, "height": 30})
+        page.locator = MagicMock(return_value=MagicMock(first=loc))
+
+        raw = MagicMock()
+        scroll_to_element(page, raw, "#x", 0, 0, cfg, timeout=7500)
+        loc.bounding_box.assert_called_with(timeout=7500)
+
+    def test_page_click_forwards_timeout_kwarg(self):
+        """page.click(selector, timeout=...) reaches scroll_to_element.
+
+        Patches scroll_to_element module-side via monkey-patching the
+        cloakbrowser.human module attribute used by patch_page.
+        """
+        import cloakbrowser.human as h
+        from cloakbrowser.human import _CursorState
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock, patch
+
+        cfg = resolve_config("default", {"idle_between_actions": False})
+        cursor = _CursorState()
+        cursor.initialized = True
+        cursor.x = 100
+        cursor.y = 100
+
+        # Build a minimal page mock
+        page = MagicMock()
+        page.click = MagicMock()
+        page.dblclick = MagicMock()
+        page.hover = MagicMock()
+        page.type = MagicMock()
+        page.fill = MagicMock()
+        page.goto = MagicMock()
+        page.is_checked = MagicMock(return_value=False)
+        page.viewport_size = {"width": 1280, "height": 720}
+        page.evaluate = MagicMock(return_value=False)
+        page.context.new_cdp_session = MagicMock(side_effect=Exception("no cdp"))
+        page.mouse = MagicMock()
+        page.keyboard = MagicMock()
+        page.query_selector = MagicMock(return_value=None)
+        page.query_selector_all = MagicMock(return_value=[])
+        page.wait_for_selector = MagicMock(return_value=None)
+        page.main_frame = MagicMock()
+        page.main_frame.child_frames = []
+
+        captured = {}
+        def fake_scroll(page_arg, raw, selector, cx, cy, cfg_arg, timeout=2000):
+            captured["timeout"] = timeout
+            return ({"x": 100, "y": 100, "width": 50, "height": 30}, cx, cy)
+
+        with patch.object(h, "scroll_to_element", side_effect=fake_scroll):
+            h.patch_page(page, cfg, cursor)
+            page.click("#slow-button", timeout=5000)
+
+        assert captured.get("timeout") == 5000, f"expected 5000, got {captured}"
+
+
+# =========================================================================
+# 16. Per-call human_config override (typing speed customization)
+# =========================================================================
+
+class TestPerCallHumanConfigOverride:
+    """page.type('#email', text, human_config={'typing_delay': 30}) lets users
+    override typing speed (and any other HumanConfig field) on a per-call
+    basis without re-patching the page."""
+
+    def test_merge_config_creates_new_instance(self):
+        from cloakbrowser.human.config import resolve_config, merge_config
+
+        base = resolve_config("default", None)
+        merged = merge_config(base, {"typing_delay": 30})
+
+        assert merged.typing_delay == 30
+        assert base.typing_delay != 30  # not mutated
+        # Non-overridden fields are preserved
+        assert merged.mouse_min_steps == base.mouse_min_steps
+
+    def test_merge_config_none_returns_base(self):
+        from cloakbrowser.human.config import resolve_config, merge_config
+
+        base = resolve_config("default", None)
+        merged = merge_config(base, None)
+        assert merged is base
+
+    def test_merge_config_ignores_unknown_keys(self):
+        from cloakbrowser.human.config import resolve_config, merge_config
+
+        base = resolve_config("default", None)
+        # ``not_a_real_field`` is silently dropped — callers shouldn't crash
+        # if they pass typos or future field names.
+        merged = merge_config(base, {"typing_delay": 30, "not_a_real_field": 99})
+        assert merged.typing_delay == 30
+
+    def test_page_type_uses_per_call_typing_delay(self):
+        """page.type(..., human_config={'typing_delay': 30}) reaches human_type
+        with cfg.typing_delay == 30 even when patch was done with default 70."""
+        import cloakbrowser.human as h
+        from cloakbrowser.human import _CursorState
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock, patch
+
+        cfg = resolve_config("default", {
+            "idle_between_actions": False,
+            "field_switch_delay": (0, 1),
+        })
+        assert cfg.typing_delay == 70  # baseline
+
+        cursor = _CursorState()
+        cursor.initialized = True
+        cursor.x = 100
+        cursor.y = 100
+
+        page = MagicMock()
+        page.click = MagicMock()
+        page.dblclick = MagicMock()
+        page.hover = MagicMock()
+        page.type = MagicMock()
+        page.fill = MagicMock()
+        page.goto = MagicMock()
+        page.is_checked = MagicMock(return_value=False)
+        page.viewport_size = {"width": 1280, "height": 720}
+        page.evaluate = MagicMock(return_value=False)
+        page.context.new_cdp_session = MagicMock(side_effect=Exception("no cdp"))
+        page.mouse = MagicMock()
+        page.keyboard = MagicMock()
+        page.query_selector = MagicMock(return_value=None)
+        page.query_selector_all = MagicMock(return_value=[])
+        page.wait_for_selector = MagicMock(return_value=None)
+        page.main_frame = MagicMock()
+        page.main_frame.child_frames = []
+
+        captured = {}
+        def fake_human_type(page_arg, raw, text, cfg_arg, cdp_session=None):
+            captured["typing_delay"] = cfg_arg.typing_delay
+            captured["mistype_chance"] = cfg_arg.mistype_chance
+
+        def fake_scroll(*args, **kwargs):
+            return ({"x": 100, "y": 100, "width": 50, "height": 30}, 100, 100)
+
+        with patch.object(h, "human_type", side_effect=fake_human_type), \
+             patch.object(h, "scroll_to_element", side_effect=fake_scroll):
+            h.patch_page(page, cfg, cursor)
+            page.type(
+                "#email", "hi",
+                human_config={"typing_delay": 30, "mistype_chance": 0},
+            )
+
+        assert captured["typing_delay"] == 30
+        assert captured["mistype_chance"] == 0
+        # Global cfg untouched — per-call override doesn't leak
+        assert cfg.typing_delay == 70
+
+    def test_page_fill_uses_per_call_typing_delay(self):
+        """Same as type, but for fill (which also clears the field first)."""
+        import cloakbrowser.human as h
+        from cloakbrowser.human import _CursorState
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock, patch
+
+        cfg = resolve_config("default", {
+            "idle_between_actions": False,
+            "field_switch_delay": (0, 1),
+        })
+        cursor = _CursorState()
+        cursor.initialized = True
+        cursor.x = 100
+        cursor.y = 100
+
+        page = MagicMock()
+        page.viewport_size = {"width": 1280, "height": 720}
+        page.is_checked = MagicMock(return_value=False)
+        page.evaluate = MagicMock(return_value=False)
+        page.context.new_cdp_session = MagicMock(side_effect=Exception("no cdp"))
+        page.mouse = MagicMock()
+        page.keyboard = MagicMock()
+        page.query_selector = MagicMock(return_value=None)
+        page.query_selector_all = MagicMock(return_value=[])
+        page.wait_for_selector = MagicMock(return_value=None)
+        page.main_frame = MagicMock()
+        page.main_frame.child_frames = []
+
+        captured = {}
+        def fake_human_type(page_arg, raw, text, cfg_arg, cdp_session=None):
+            captured["typing_delay"] = cfg_arg.typing_delay
+
+        def fake_scroll(*args, **kwargs):
+            return ({"x": 100, "y": 100, "width": 50, "height": 30}, 100, 100)
+
+        with patch.object(h, "human_type", side_effect=fake_human_type), \
+             patch.object(h, "scroll_to_element", side_effect=fake_scroll):
+            h.patch_page(page, cfg, cursor)
+            page.fill("#password", "secret", human_config={"typing_delay": 150})
+
+        assert captured["typing_delay"] == 150
+
+    def test_element_handle_type_uses_per_call_human_config(self):
+        """el.type(text, human_config={...}) merges per-call overrides on the
+        ElementHandle path (which doesn't go through page.type)."""
+        from cloakbrowser.human import _patch_single_element_handle_sync, _CursorState
+        from cloakbrowser.human.config import resolve_config
+        import cloakbrowser.human as h
+        from unittest.mock import MagicMock, patch
+
+        cfg = resolve_config("default", {
+            "idle_between_actions": False,
+            "field_switch_delay": (0, 1),
+        })
+        cursor = _CursorState()
+        cursor.initialized = True
+        cursor.x = 50
+        cursor.y = 50
+
+        page = MagicMock()
+        page.viewport_size = {"width": 1280, "height": 720}
+        page._original = MagicMock()
+
+        el = MagicMock()
+        el._human_patched = False
+        el.bounding_box = MagicMock(
+            return_value={"x": 200, "y": 200, "width": 100, "height": 30}
+        )
+        el.evaluate = MagicMock(return_value=True)
+        el.is_checked = MagicMock(return_value=False)
+        el.query_selector = MagicMock(return_value=None)
+        el.query_selector_all = MagicMock(return_value=[])
+        el.wait_for_selector = MagicMock(return_value=None)
+        el.scroll_into_view_if_needed = MagicMock()
+
+        raw_mouse = MagicMock()
+        raw_keyboard = MagicMock()
+
+        captured = {}
+        def fake_human_type(page_arg, raw, text, cfg_arg, cdp_session=None):
+            captured["typing_delay"] = cfg_arg.typing_delay
+
+        with patch.object(h, "human_type", side_effect=fake_human_type):
+            _patch_single_element_handle_sync(
+                el, page, cfg, cursor, raw_mouse, raw_keyboard,
+                page._original, None, None,
+            )
+            el.type("abc", human_config={"typing_delay": 25})
+
+        assert captured["typing_delay"] == 25
+
+
+# =========================================================================
+# 17. scroll_into_view_if_needed humanization
+# =========================================================================
+
+class TestScrollIntoViewIfNeeded:
+    """scroll_into_view_if_needed should run through the same
+    accelerate → cruise → decelerate → overshoot wheel sequence as page.click—
+    not Playwright's instant-snap default."""
+
+    def test_human_scroll_into_view_skips_when_in_viewport(self):
+        """Already-visible elements: no wheel events, just return."""
+        from cloakbrowser.human.scroll import human_scroll_into_view
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", None)
+        page = MagicMock()
+        page.viewport_size = {"width": 1280, "height": 720}
+        raw = MagicMock()
+        # Box is dead-center of viewport — squarely in scroll_target_zone
+        in_view_box = {"x": 200, "y": 300, "width": 50, "height": 30}
+
+        box, cx, cy = human_scroll_into_view(
+            page, raw, lambda: in_view_box, 0, 0, cfg,
+        )
+        assert box == in_view_box
+        assert not raw.wheel.called, "In-viewport elements shouldn't trigger wheel events"
+
+    def test_human_scroll_into_view_scrolls_when_below_fold(self):
+        """Below-fold elements: wheel events fire, eventually box becomes visible."""
+        from cloakbrowser.human.scroll import human_scroll_into_view
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", {
+            "scroll_overshoot_chance": 0,        # deterministic
+            "scroll_pre_move_delay": (0, 1),
+            "scroll_pause_fast": (0, 1),
+            "scroll_pause_slow": (0, 1),
+            "scroll_settle_delay": (0, 1),
+        })
+        page = MagicMock()
+        page.viewport_size = {"width": 1280, "height": 720}
+        raw = MagicMock()
+
+        # First box is far below the fold; subsequent boxes "come into view"
+        # so the loop terminates after a few wheel bursts.
+        boxes = [
+            {"x": 200, "y": 2000, "width": 50, "height": 30},
+            {"x": 200, "y": 1500, "width": 50, "height": 30},
+            {"x": 200, "y": 1000, "width": 50, "height": 30},
+            {"x": 200, "y": 400, "width": 50, "height": 30},   # in viewport
+            {"x": 200, "y": 400, "width": 50, "height": 30},
+            {"x": 200, "y": 400, "width": 50, "height": 30},
+        ]
+        idx = {"i": 0}
+        def get_box():
+            i = min(idx["i"], len(boxes) - 1)
+            idx["i"] += 1
+            return boxes[i]
+
+        human_scroll_into_view(page, raw, get_box, 0, 0, cfg)
+        assert raw.wheel.called, "Below-fold scroll should produce wheel events"
+
+    def test_element_handle_scroll_into_view_if_needed_humanized(self):
+        """el.scroll_into_view_if_needed() routes through human_scroll_into_view."""
+        from cloakbrowser.human import _patch_single_element_handle_sync, _CursorState
+        from cloakbrowser.human.config import resolve_config
+        import cloakbrowser.human as h
+        from unittest.mock import MagicMock, patch
+
+        cfg = resolve_config("default", None)
+        cursor = _CursorState()
+        cursor.initialized = True
+        cursor.x = 50
+        cursor.y = 50
+
+        page = MagicMock()
+        page.viewport_size = {"width": 1280, "height": 720}
+        page._original = MagicMock()
+
+        el = MagicMock()
+        el._human_patched = False
+        el.bounding_box = MagicMock(
+            return_value={"x": 200, "y": 200, "width": 50, "height": 30}
+        )
+        el.evaluate = MagicMock(return_value=False)
+        el.is_checked = MagicMock(return_value=False)
+        el.query_selector = MagicMock(return_value=None)
+        el.query_selector_all = MagicMock(return_value=[])
+        el.wait_for_selector = MagicMock(return_value=None)
+        # Make sure the original method exists so the patch is wired up
+        el.scroll_into_view_if_needed = MagicMock()
+
+        called = {"count": 0}
+        def fake(*args, **kwargs):
+            called["count"] += 1
+            return ({"x": 200, "y": 200, "width": 50, "height": 30}, 100, 100)
+
+        with patch.object(h, "human_scroll_into_view", side_effect=fake):
+            _patch_single_element_handle_sync(
+                el, page, cfg, cursor, MagicMock(), MagicMock(),
+                page._original, None, None,
+            )
+            # Patched method should now invoke our humanized helper
+            el.scroll_into_view_if_needed()
+
+        assert called["count"] >= 1, "humanized scroll helper was never called"
+
+    def test_locator_scroll_into_view_if_needed_humanized(self):
+        """Locator.scroll_into_view_if_needed() also goes through humanized scroll."""
+        import cloakbrowser.human as h
+        from cloakbrowser.human import _CursorState
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock, patch
+
+        # Patch Locator class fresh
+        _ensure_locator_patched()
+
+        from playwright.sync_api._generated import Locator
+
+        cfg = resolve_config("default", None)
+        cursor = _CursorState()
+        cursor.x = 50
+        cursor.y = 50
+        cursor.initialized = True
+
+        page = MagicMock()
+        page._original = MagicMock()
+        page._human_cfg = cfg
+        page._human_cursor = cursor
+        page._human_raw_mouse = MagicMock()
+        page.viewport_size = {"width": 1280, "height": 720}
+
+        # Build a Locator-like object satisfying the patched method
+        loc = MagicMock(spec=Locator)
+        loc.page = page
+        impl_obj = MagicMock()
+        impl_obj._selector = "#x"
+        loc._impl_obj = impl_obj
+        loc.bounding_box = MagicMock(
+            return_value={"x": 100, "y": 100, "width": 50, "height": 30}
+        )
+
+        called = {"count": 0, "cfg": None}
+        def fake(*args, **kwargs):
+            called["count"] += 1
+            # cfg is the 6th positional arg (page, raw, get_box, cx, cy, cfg)
+            called["cfg"] = args[5] if len(args) >= 6 else kwargs.get("cfg")
+            return ({"x": 100, "y": 100, "width": 50, "height": 30}, 200, 200)
+
+        with patch.object(h, "human_scroll_into_view", side_effect=fake):
+            Locator.scroll_into_view_if_needed(
+                loc, human_config={"scroll_overshoot_chance": 0.5},
+            )
+
+        assert called["count"] == 1
+        # Per-call override merged into the cfg passed downstream
+        assert called["cfg"].scroll_overshoot_chance == 0.5
+        # Cursor was updated from the helper's return value
+        assert cursor.x == 200 and cursor.y == 200
+
+
+# =========================================================================
 # Direct runner (backwards compat)
 # =========================================================================
 

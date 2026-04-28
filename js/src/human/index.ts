@@ -23,16 +23,16 @@
  */
 
 import type { Browser, BrowserContext, Page, Frame, CDPSession } from 'playwright-core';
-import { HumanConfig, resolveConfig, rand, randRange, sleep } from './config.js';
+import { HumanConfig, resolveConfig, mergeConfig, rand, randRange, sleep } from './config.js';
 import { RawMouse, RawKeyboard, humanMove, humanClick, clickTarget, humanIdle } from './mouse.js';
 import { humanType } from './keyboard.js';
-import { scrollToElement } from './scroll.js';
+import { scrollToElement, humanScrollIntoView } from './scroll.js';
 import { patchPageElementHandles, patchFrameElementHandles, patchSingleElementHandle } from './elementhandle.js';
 
-export { HumanConfig, resolveConfig } from './config.js';
+export { HumanConfig, resolveConfig, mergeConfig } from './config.js';
 export { humanMove, humanClick, clickTarget, humanIdle } from './mouse.js';
 export { humanType } from './keyboard.js';
-export { scrollToElement } from './scroll.js';
+export { scrollToElement, humanScrollIntoView } from './scroll.js';
 export { patchSingleElementHandle } from './elementhandle.js';
 
 // --- Platform-aware select-all shortcut (macOS uses Meta, others use Control) ---
@@ -305,32 +305,34 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   // --- click ---
   const humanClickFn = async (selector: string, options?: any) => {
     await ensureCursorInit();
-    if (cfg.idle_between_actions) {
-      await humanIdle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    if (callCfg.idle_between_actions) {
+      await humanIdle(raw, rand(callCfg.idle_between_duration[0], callCfg.idle_between_duration[1]), cursor.x, cursor.y, callCfg);
     }
-    const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, cfg);
+    const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, options?.timeout);
     cursor.x = cursorX;
     cursor.y = cursorY;
     const isInput = await isInputElement(stealth, page, selector);
-    const target = clickTarget(box, isInput, cfg);
-    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, cfg);
+    const target = clickTarget(box, isInput, callCfg);
+    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
-    await humanClick(raw, isInput, cfg);
+    await humanClick(raw, isInput, callCfg);
   };
 
   // --- dblclick ---
   const humanDblclickFn = async (selector: string, options?: any) => {
     await ensureCursorInit();
-    if (cfg.idle_between_actions) {
-      await humanIdle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    if (callCfg.idle_between_actions) {
+      await humanIdle(raw, rand(callCfg.idle_between_duration[0], callCfg.idle_between_duration[1]), cursor.x, cursor.y, callCfg);
     }
-    const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, cfg);
+    const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, options?.timeout);
     cursor.x = cursorX;
     cursor.y = cursorY;
     const isInput = await isInputElement(stealth, page, selector);
-    const target = clickTarget(box, isInput, cfg);
-    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, cfg);
+    const target = clickTarget(box, isInput, callCfg);
+    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
     await raw.down({ clickCount: 2 });
@@ -341,38 +343,41 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   // --- hover ---
   const humanHoverFn = async (selector: string, options?: any) => {
     await ensureCursorInit();
-    if (cfg.idle_between_actions) {
-      await humanIdle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), cursor.x, cursor.y, cfg);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    if (callCfg.idle_between_actions) {
+      await humanIdle(raw, rand(callCfg.idle_between_duration[0], callCfg.idle_between_duration[1]), cursor.x, cursor.y, callCfg);
     }
-    const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, cfg);
+    const { box, cursorX, cursorY } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, options?.timeout);
     cursor.x = cursorX;
     cursor.y = cursorY;
-    const target = clickTarget(box, false, cfg);
-    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, cfg);
+    const target = clickTarget(box, false, callCfg);
+    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
   };
 
   // --- type ---
   const humanTypeFn = async (selector: string, text: string, options?: any) => {
-    await sleep(randRange(cfg.field_switch_delay));
-    await humanClickFn(selector);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    await sleep(randRange(callCfg.field_switch_delay));
+    await humanClickFn(selector, options);
     await sleep(rand(100, 250));
     const cdp = await ensureCdp();
-    await humanType(page, rawKb, text, cfg, cdp);
+    await humanType(page, rawKb, text, callCfg, cdp);
   };
 
   // --- fill (clears existing content first) ---
   const humanFillFn = async (selector: string, value: string, options?: any) => {
-    await sleep(randRange(cfg.field_switch_delay));
-    await humanClickFn(selector);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    await sleep(randRange(callCfg.field_switch_delay));
+    await humanClickFn(selector, options);
     await sleep(rand(100, 250));
     await originals.keyboardPress(SELECT_ALL);
     await sleep(rand(30, 80));
     await originals.keyboardPress('Backspace');
     await sleep(rand(50, 150));
     const cdp = await ensureCdp();
-    await humanType(page, rawKb, value, cfg, cdp);
+    await humanType(page, rawKb, value, callCfg, cdp);
   };
 
   // --- clear ---
@@ -426,12 +431,13 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
   // --- pressSequentially ---
   const humanPressSequentiallyFn = async (selector: string, text: string, options?: any) => {
+    const callCfg = mergeConfig(cfg, options?.human_config);
     if (!await isSelectorFocused(stealth, page, selector)) {
-      await humanClickFn(selector);
+      await humanClickFn(selector, options);
     }
     await sleep(rand(100, 250));
     const cdp = await ensureCdp();
-    await humanType(page, rawKb, text, cfg, cdp);
+    await humanType(page, rawKb, text, callCfg, cdp);
   };
 
   // --- tap ---

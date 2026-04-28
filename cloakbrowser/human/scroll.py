@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 from .config import HumanConfig, rand, rand_range, rand_int_range, sleep_ms
 from .mouse import RawMouse, human_move
@@ -18,10 +18,15 @@ def _is_in_viewport(bounds: dict, viewport_height: int, cfg: HumanConfig) -> boo
     return top_edge >= zone_top and bottom_edge <= zone_bottom
 
 
-def _get_element_box(page: Any, selector: str) -> Optional[dict]:
+def _get_element_box(page: Any, selector: str, timeout: float = 2000) -> Optional[dict]:
+    """Locate ``selector`` and return its bounding box.
+
+    The ``timeout`` is forwarded to Playwright's ``boundingBox(timeout=...)``
+    so callers can extend it for slow-loading elements (#172).
+    """
     try:
         el = page.locator(selector).first
-        return el.bounding_box(timeout=2000)
+        return el.bounding_box(timeout=timeout)
     except Exception:
         return None
 
@@ -39,13 +44,21 @@ def _smooth_wheel(raw: RawMouse, delta: int, cfg: HumanConfig) -> None:
         sleep_ms(rand(8, 20))
 
 
-def scroll_to_element(
+def human_scroll_into_view(
     page: Any,
     raw: RawMouse,
-    selector: str,
+    get_box: Callable[[], Optional[dict]],
     cursor_x: float, cursor_y: float,
     cfg: HumanConfig,
 ) -> Tuple[dict, float, float]:
+    """Humanized scrolling that uses an arbitrary ``get_box`` callable
+    instead of a CSS selector.
+
+    Used both by ``scroll_to_element`` (selector-based) and by
+    ``ElementHandle.scroll_into_view_if_needed`` / ``Locator.scroll_into_view_if_needed``
+    (handle-based) so the same accelerate \u2192 cruise \u2192 decelerate \u2192 overshoot
+    behavior runs everywhere.
+    """
     viewport = page.viewport_size
     if not viewport:
         raise RuntimeError("Viewport size not available")
@@ -53,12 +66,12 @@ def scroll_to_element(
     viewport_height = viewport["height"]
     viewport_width = viewport["width"]
 
-    box = _get_element_box(page, selector)
+    box = get_box()
     if box is None:
         sleep_ms(200)
-        box = _get_element_box(page, selector)
+        box = get_box()
         if box is None:
-            raise RuntimeError(f"Element not found: {selector}")
+            raise RuntimeError("Element not found while scrolling into view")
 
     if _is_in_viewport(box, viewport_height, cfg):
         return box, cursor_x, cursor_y
@@ -105,7 +118,7 @@ def scroll_to_element(
 
         # Check visibility every 3 steps
         if i % 3 == 2 or i == total_clicks - 1:
-            box = _get_element_box(page, selector)
+            box = get_box()
             if box and _is_in_viewport(box, viewport_height, cfg):
                 break
         if scrolled >= abs_distance * 1.1:
@@ -125,8 +138,29 @@ def scroll_to_element(
     # Settle
     sleep_ms(rand_range(cfg.scroll_settle_delay))
 
-    box = _get_element_box(page, selector)
+    box = get_box()
     if box is None:
-        raise RuntimeError(f"Element lost after scrolling: {selector}")
+        raise RuntimeError("Element lost after scrolling into view")
 
     return box, cursor_x, cursor_y
+
+
+def scroll_to_element(
+    page: Any,
+    raw: RawMouse,
+    selector: str,
+    cursor_x: float, cursor_y: float,
+    cfg: HumanConfig,
+    timeout: float = 2000,
+) -> Tuple[dict, float, float]:
+    """Selector-based humanized scroll.
+
+    ``timeout`` is forwarded to ``locator.bounding_box(timeout=...)`` so callers
+    such as ``page.click('#x', timeout=5000)`` can wait longer for slow elements
+    (#172). Default stays at 2000ms when not specified.
+    """
+    return human_scroll_into_view(
+        page, raw,
+        lambda: _get_element_box(page, selector, timeout),
+        cursor_x, cursor_y, cfg,
+    )

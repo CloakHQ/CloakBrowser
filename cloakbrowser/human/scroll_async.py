@@ -8,17 +8,22 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any, Optional, Tuple
+from typing import Any, Awaitable, Callable, Optional, Tuple
 
 from .config import HumanConfig, rand, rand_range, rand_int_range, async_sleep_ms
 from .mouse_async import AsyncRawMouse, async_human_move
 from .scroll import _is_in_viewport
 
 
-async def _get_element_box_async(page: Any, selector: str) -> Optional[dict]:
+async def _get_element_box_async(
+    page: Any, selector: str, timeout: float = 2000,
+) -> Optional[dict]:
+    """Async variant. ``timeout`` is forwarded to Playwright's
+    ``boundingBox(timeout=...)`` so callers can extend it for slow-loading
+    elements (#172)."""
     try:
         el = page.locator(selector).first
-        return await el.bounding_box(timeout=2000)
+        return await el.bounding_box(timeout=timeout)
     except Exception:
         return None
 
@@ -36,13 +41,20 @@ async def _async_smooth_wheel(raw: AsyncRawMouse, delta: int, cfg: HumanConfig) 
         await async_sleep_ms(rand(8, 20))
 
 
-async def async_scroll_to_element(
+async def async_human_scroll_into_view(
     page: Any,
     raw: AsyncRawMouse,
-    selector: str,
+    get_box: Callable[[], Awaitable[Optional[dict]]],
     cursor_x: float, cursor_y: float,
     cfg: HumanConfig,
 ) -> Tuple[dict, float, float]:
+    """Humanized scrolling using an arbitrary async ``get_box`` callable.
+
+    Used by both ``async_scroll_to_element`` (selector-based) and the
+    ElementHandle / Locator ``scroll_into_view_if_needed`` patches so all
+    scrolling paths share the same accelerate \u2192 cruise \u2192 decelerate
+    \u2192 overshoot behavior.
+    """
     viewport = page.viewport_size
     if not viewport:
         raise RuntimeError("Viewport size not available")
@@ -50,12 +62,12 @@ async def async_scroll_to_element(
     viewport_height = viewport["height"]
     viewport_width = viewport["width"]
 
-    box = await _get_element_box_async(page, selector)
+    box = await get_box()
     if box is None:
         await async_sleep_ms(200)
-        box = await _get_element_box_async(page, selector)
+        box = await get_box()
         if box is None:
-            raise RuntimeError(f"Element not found: {selector}")
+            raise RuntimeError("Element not found while scrolling into view")
 
     if _is_in_viewport(box, viewport_height, cfg):
         return box, cursor_x, cursor_y
@@ -102,7 +114,7 @@ async def async_scroll_to_element(
 
         # Check visibility every 3 steps
         if i % 3 == 2 or i == total_clicks - 1:
-            box = await _get_element_box_async(page, selector)
+            box = await get_box()
             if box and _is_in_viewport(box, viewport_height, cfg):
                 break
         if scrolled >= abs_distance * 1.1:
@@ -122,8 +134,29 @@ async def async_scroll_to_element(
     # Settle
     await async_sleep_ms(rand_range(cfg.scroll_settle_delay))
 
-    box = await _get_element_box_async(page, selector)
+    box = await get_box()
     if box is None:
-        raise RuntimeError(f"Element lost after scrolling: {selector}")
+        raise RuntimeError("Element lost after scrolling into view")
 
     return box, cursor_x, cursor_y
+
+
+async def async_scroll_to_element(
+    page: Any,
+    raw: AsyncRawMouse,
+    selector: str,
+    cursor_x: float, cursor_y: float,
+    cfg: HumanConfig,
+    timeout: float = 2000,
+) -> Tuple[dict, float, float]:
+    """Selector-based humanized scroll (async).
+
+    ``timeout`` is forwarded to ``locator.bounding_box(timeout=...)`` so callers
+    such as ``page.click('#x', timeout=5000)`` can wait longer for slow elements
+    (#172). Default stays at 2000ms when not specified.
+    """
+    async def _get():
+        return await _get_element_box_async(page, selector, timeout)
+    return await async_human_scroll_into_view(
+        page, raw, _get, cursor_x, cursor_y, cfg,
+    )
