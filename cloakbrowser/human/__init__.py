@@ -421,7 +421,7 @@ def _patch_locator_class_sync():
                     native_kwargs = {k: v for k, v in kwargs.items() if k != "human_config"}
                     return _orig_scroll_into_view(self, **native_kwargs)
                 return
-            timeout = kwargs.get("timeout", 2000)
+            timeout = kwargs.get("timeout", 30000)
             try:
                 _, nx, ny = human_scroll_into_view(
                     page, raw,
@@ -648,7 +648,7 @@ def _patch_locator_class_async():
                     native_kwargs = {k: v for k, v in kwargs.items() if k != "human_config"}
                     await _orig_scroll_into_view(self, **native_kwargs)
                 return
-            timeout = kwargs.get("timeout", 2000)
+            timeout = kwargs.get("timeout", 30000)
 
             async def _get_box():
                 return await self.bounding_box(timeout=timeout)
@@ -868,7 +868,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     def _human_click(selector: str, **kwargs: Any) -> None:
         _ensure_cursor_init()
         call_cfg = merge_config(cfg, kwargs.get("human_config"))
-        timeout = kwargs.get("timeout", 2000)
+        timeout = kwargs.get("timeout", 30000)
         if call_cfg.idle_between_actions:
             human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = scroll_to_element(
@@ -886,7 +886,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     def _human_dblclick(selector: str, **kwargs: Any) -> None:
         _ensure_cursor_init()
         call_cfg = merge_config(cfg, kwargs.get("human_config"))
-        timeout = kwargs.get("timeout", 2000)
+        timeout = kwargs.get("timeout", 30000)
         if call_cfg.idle_between_actions:
             human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = scroll_to_element(
@@ -906,7 +906,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     def _human_hover(selector: str, **kwargs: Any) -> None:
         _ensure_cursor_init()
         call_cfg = merge_config(cfg, kwargs.get("human_config"))
-        timeout = kwargs.get("timeout", 2000)
+        timeout = kwargs.get("timeout", 30000)
         if call_cfg.idle_between_actions:
             human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = scroll_to_element(
@@ -1621,7 +1621,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     async def _human_click(selector: str, **kwargs: Any) -> None:
         await _ensure_cursor_init()
         call_cfg = merge_config(cfg, kwargs.get("human_config"))
-        timeout = kwargs.get("timeout", 2000)
+        timeout = kwargs.get("timeout", 30000)
         if call_cfg.idle_between_actions:
             await async_human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = await async_scroll_to_element(
@@ -1639,7 +1639,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     async def _human_dblclick(selector: str, **kwargs: Any) -> None:
         await _ensure_cursor_init()
         call_cfg = merge_config(cfg, kwargs.get("human_config"))
-        timeout = kwargs.get("timeout", 2000)
+        timeout = kwargs.get("timeout", 30000)
         if call_cfg.idle_between_actions:
             await async_human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = await async_scroll_to_element(
@@ -1659,7 +1659,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
     async def _human_hover(selector: str, **kwargs: Any) -> None:
         await _ensure_cursor_init()
         call_cfg = merge_config(cfg, kwargs.get("human_config"))
-        timeout = kwargs.get("timeout", 2000)
+        timeout = kwargs.get("timeout", 30000)
         if call_cfg.idle_between_actions:
             await async_human_idle(raw_mouse, rand(call_cfg.idle_between_duration[0], call_cfg.idle_between_duration[1]), cursor.x, cursor.y, call_cfg)
         box, cx, cy = await async_scroll_to_element(

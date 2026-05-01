@@ -57,11 +57,7 @@ export async function humanScrollIntoView(
   if (!viewport) throw new Error('Viewport size not available');
 
   let box = await getBox();
-  if (!box) {
-    await sleep(200);
-    box = await getBox();
-    if (!box) throw new Error('Element not found while scrolling into view');
-  }
+  if (!box) throw new Error('Element not found while scrolling into view');
 
   if (isInViewport(box, viewport.height, cfg)) {
     return { box, cursorX, cursorY };
@@ -151,7 +147,7 @@ export async function humanScrollIntoView(
  *
  * ``timeout`` is forwarded to Playwright's ``boundingBox({ timeout })`` so
  * callers like ``page.click('#x', { timeout: 5000 })`` can wait longer for
- * slow-loading elements (#172). Default stays 2000ms when not specified.
+ * slow-loading elements (#172). Default matches Playwright's 30000ms when not specified.
  */
 export async function scrollToElement(
   page: Page,
@@ -172,7 +168,7 @@ export async function scrollToElement(
 async function getElementBox(
   page: Page,
   selector: string,
-  timeout: number = 2000,
+  timeout: number = 30000,
 ): Promise<ElementBounds | null> {
   const el = page.locator(selector).first();
   try {

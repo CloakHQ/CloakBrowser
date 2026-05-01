@@ -18,7 +18,7 @@ def _is_in_viewport(bounds: dict, viewport_height: int, cfg: HumanConfig) -> boo
     return top_edge >= zone_top and bottom_edge <= zone_bottom
 
 
-def _get_element_box(page: Any, selector: str, timeout: float = 2000) -> Optional[dict]:
+def _get_element_box(page: Any, selector: str, timeout: float = 30000) -> Optional[dict]:
     """Locate ``selector`` and return its bounding box.
 
     The ``timeout`` is forwarded to Playwright's ``boundingBox(timeout=...)``
@@ -68,10 +68,7 @@ def human_scroll_into_view(
 
     box = get_box()
     if box is None:
-        sleep_ms(200)
-        box = get_box()
-        if box is None:
-            raise RuntimeError("Element not found while scrolling into view")
+        raise RuntimeError("Element not found while scrolling into view")
 
     if _is_in_viewport(box, viewport_height, cfg):
         return box, cursor_x, cursor_y
@@ -151,13 +148,13 @@ def scroll_to_element(
     selector: str,
     cursor_x: float, cursor_y: float,
     cfg: HumanConfig,
-    timeout: float = 2000,
+    timeout: float = 30000,
 ) -> Tuple[dict, float, float]:
     """Selector-based humanized scroll.
 
     ``timeout`` is forwarded to ``locator.bounding_box(timeout=...)`` so callers
     such as ``page.click('#x', timeout=5000)`` can wait longer for slow elements
-    (#172). Default stays at 2000ms when not specified.
+    (#172). Default matches Playwright's 30000ms when not specified.
     """
     return human_scroll_into_view(
         page, raw,

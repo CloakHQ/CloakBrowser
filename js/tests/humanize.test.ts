@@ -1108,7 +1108,7 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
     expect(boundingBox).toHaveBeenCalledWith({ timeout: 5000 });
   });
 
-  it("default timeout stays 2000ms when not specified", async () => {
+  it("default timeout matches Playwright's 30000ms when not specified", async () => {
     const { scrollToElement } = await import("../src/human/scroll.js");
     const cfg = resolveConfig("default");
 
@@ -1125,7 +1125,7 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
     };
 
     await scrollToElement(page, raw, "#x", 0, 0, cfg);
-    expect(boundingBox).toHaveBeenCalledWith({ timeout: 2000 });
+    expect(boundingBox).toHaveBeenCalledWith({ timeout: 30000 });
   });
 
   it("page.click({ timeout }) reaches scrollToElement", async () => {

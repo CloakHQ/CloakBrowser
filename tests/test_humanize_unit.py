@@ -1305,7 +1305,7 @@ class TestPerCallTimeoutForwarding:
     not silently use the hardcoded 2000ms in scroll."""
 
     def test_get_element_box_default_timeout(self):
-        """Default timeout stays 2000ms for backwards compatibility."""
+        """Default timeout matches Playwright's 30000ms."""
         from cloakbrowser.human.scroll import _get_element_box
         from unittest.mock import MagicMock
 
@@ -1315,7 +1315,7 @@ class TestPerCallTimeoutForwarding:
         page.locator = MagicMock(return_value=MagicMock(first=loc))
 
         _get_element_box(page, "#x")
-        loc.bounding_box.assert_called_once_with(timeout=2000)
+        loc.bounding_box.assert_called_once_with(timeout=30000)
 
     def test_get_element_box_custom_timeout(self):
         """Caller can pass a custom timeout that overrides the default."""
@@ -1387,7 +1387,7 @@ class TestPerCallTimeoutForwarding:
         page.main_frame.child_frames = []
 
         captured = {}
-        def fake_scroll(page_arg, raw, selector, cx, cy, cfg_arg, timeout=2000):
+        def fake_scroll(page_arg, raw, selector, cx, cy, cfg_arg, timeout=30000):
             captured["timeout"] = timeout
             return ({"x": 100, "y": 100, "width": 50, "height": 30}, cx, cy)
 

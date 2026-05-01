@@ -1671,11 +1671,13 @@ describe("Puppeteer: isInputElement stealth integration via patchPage", () => {
       }),
     });
 
+    const mockEl = buildMockElementHandle();
     const page = buildMockPage({
       evaluate: vi.fn(async (...args: any[]) => {
         evaluateCalls.push(args);
         return false;
       }),
+      $: vi.fn(async () => mockEl),
     });
     page.createCDPSession = vi.fn(async () => mockCdp);
 
