@@ -59,7 +59,7 @@ from cloakbrowser import launch
 
 browser = launch()
 page = browser.new_page()
-page.goto("https://protected-site.com")  # no more blocks
+page.goto("https://protected-site.com")  # no more blocks (больше никаких блоков)
 browser.close()
 ```
 
