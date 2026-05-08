@@ -529,16 +529,37 @@ function patchFrames(
   stealth: StealthEval,
 ): void {
   for (const frame of iterFrames(page)) {
-    patchSingleFrame(frame, page, cfg, originals, stealth);
+    patchSingleFrame(frame, page, cfg, cursor, raw, rawKb, originals, stealth);
     // Patch frame-level ElementHandle selectors ($, $$, waitForSelector)
     patchFrameElementHandles(frame, page, cfg, cursor, raw, rawKb, originals, stealth);
   }
+}
+
+function firstFrameLocator(frame: Frame, selector: string): any {
+  const locator = frame.locator(selector) as any;
+  return typeof locator.first === 'function' ? locator.first() : locator;
+}
+
+async function isFrameInputElement(frame: Frame, selector: string): Promise<boolean> {
+  return firstFrameLocator(frame, selector).evaluate((el: Element) => {
+    const tag = el.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea'
+      || el.getAttribute('contenteditable') === 'true';
+  }).catch(() => false);
+}
+
+async function isFrameSelectorFocused(frame: Frame, selector: string): Promise<boolean> {
+  return firstFrameLocator(frame, selector).evaluate((el: Element) => el === document.activeElement)
+    .catch(() => false);
 }
 
 function patchSingleFrame(
   frame: Frame,
   page: Page,
   cfg: HumanConfig,
+  cursor: CursorState,
+  raw: RawMouse,
+  rawKb: RawKeyboard,
   originals: any,
   stealth: StealthEval,
 ): void {
@@ -546,58 +567,123 @@ function patchSingleFrame(
   (frame as any)._humanPatched = true;
 
   // Save originals for methods that need fallback
+  const origFrameClick = frame.click.bind(frame);
+  const origFrameDblclick = frame.dblclick.bind(frame);
+  const origFrameHover = frame.hover.bind(frame);
+  const origFrameType = frame.type.bind(frame);
+  const origFrameFill = frame.fill.bind(frame);
+  const origFrameCheck = frame.check.bind(frame);
+  const origFrameUncheck = frame.uncheck.bind(frame);
   const origFrameSelectOption = frame.selectOption.bind(frame);
+  const origFramePress = frame.press.bind(frame);
+  const origFramePressSequentially = (frame as any).pressSequentially?.bind(frame);
+  const origFrameTap = (frame as any).tap?.bind(frame);
   const origFrameDragAndDrop = frame.dragAndDrop.bind(frame);
 
-  (frame as any).click = async (selector: string, options?: any) => {
-    await (page as any).click(selector, options);
+  const moveToFrameSelector = async (selector: string, options?: any, inputBias = false) => {
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    if (callCfg.idle_between_actions) {
+      await humanIdle(raw, rand(callCfg.idle_between_duration[0], callCfg.idle_between_duration[1]), cursor.x, cursor.y, callCfg);
+    }
+
+    const locator = firstFrameLocator(frame, selector);
+    if (typeof locator.scrollIntoViewIfNeeded === 'function') {
+      await locator.scrollIntoViewIfNeeded({ timeout: options?.timeout }).catch(() => undefined);
+    }
+    const box = await locator.boundingBox({ timeout: options?.timeout ?? 30000 }).catch(() => null);
+    if (!box) return null;
+
+    const isInput = inputBias || await isFrameInputElement(frame, selector);
+    const target = clickTarget(box, isInput, callCfg);
+    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
+    cursor.x = target.x;
+    cursor.y = target.y;
+    return { callCfg, isInput };
   };
+
+  const frameClick = async (selector: string, options?: any) => {
+    const moved = await moveToFrameSelector(selector, options);
+    if (!moved) return origFrameClick(selector, options);
+    await humanClick(raw, moved.isInput, moved.callCfg);
+  };
+
+  const frameHover = async (selector: string, options?: any) => {
+    const moved = await moveToFrameSelector(selector, options, false);
+    if (!moved) return origFrameHover(selector, options);
+  };
+
+  (frame as any).click = frameClick;
 
   (frame as any).dblclick = async (selector: string, options?: any) => {
-    await (page as any).dblclick(selector, options);
+    const moved = await moveToFrameSelector(selector, options);
+    if (!moved) return origFrameDblclick(selector, options);
+    await raw.down({ clickCount: 2 });
+    await sleep(rand(30, 60));
+    await raw.up({ clickCount: 2 });
   };
 
-  (frame as any).hover = async (selector: string, options?: any) => {
-    await (page as any).hover(selector, options);
-  };
+  (frame as any).hover = frameHover;
 
   (frame as any).type = async (selector: string, text: string, options?: any) => {
-    await (page as any).type(selector, text, options);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    await sleep(randRange(callCfg.field_switch_delay));
+    await frameClick(selector, options);
+    await sleep(rand(100, 250));
+    await humanType(page, rawKb, text, callCfg).catch(() => origFrameType(selector, text, options));
   };
 
   (frame as any).fill = async (selector: string, value: string, options?: any) => {
-    await (page as any).fill(selector, value, options);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    await sleep(randRange(callCfg.field_switch_delay));
+    await frameClick(selector, options);
+    await sleep(rand(100, 250));
+    await originals.keyboardPress(SELECT_ALL);
+    await sleep(rand(30, 80));
+    await originals.keyboardPress('Backspace');
+    await sleep(rand(50, 150));
+    await humanType(page, rawKb, value, callCfg).catch(() => origFrameFill(selector, value, options));
   };
 
   (frame as any).check = async (selector: string, options?: any) => {
-    await (page as any).check(selector, options);
+    const checked = await firstFrameLocator(frame, selector).isChecked?.().catch(() => false) ?? false;
+    if (!checked) await frameClick(selector, options).catch(() => origFrameCheck(selector, options));
   };
 
   (frame as any).uncheck = async (selector: string, options?: any) => {
-    await (page as any).uncheck(selector, options);
+    const checked = await firstFrameLocator(frame, selector).isChecked?.().catch(() => true) ?? true;
+    if (checked) await frameClick(selector, options).catch(() => origFrameUncheck(selector, options));
   };
 
   (frame as any).selectOption = async (selector: string, values: any, options?: any) => {
-    await (page as any).hover(selector);
+    await frameHover(selector, options);
     await sleep(rand(100, 300));
     return origFrameSelectOption(selector, values, options);
   };
 
   (frame as any).press = async (selector: string, key: string, options?: any) => {
-    await (page as any).press(selector, key, options);
+    if (!await isFrameSelectorFocused(frame, selector)) {
+      await frameClick(selector, options);
+    }
+    await sleep(rand(50, 150));
+    await originals.keyboardPress(key);
   };
 
   (frame as any).pressSequentially = async (selector: string, text: string, options?: any) => {
-    await (page as any).pressSequentially(selector, text, options);
+    const callCfg = mergeConfig(cfg, options?.human_config);
+    if (!await isFrameSelectorFocused(frame, selector)) {
+      await frameClick(selector, options);
+    }
+    await sleep(rand(100, 250));
+    await humanType(page, rawKb, text, callCfg).catch(() => origFramePressSequentially?.(selector, text, options));
   };
 
   (frame as any).tap = async (selector: string, options?: any) => {
-    await (page as any).tap(selector, options);
+    await frameClick(selector, options).catch(() => origFrameTap?.(selector, options));
   };
 
   (frame as any).clear = async (selector: string, options?: any) => {
-    if (!await isSelectorFocused(stealth, page, selector)) {
-      await (page as any).click(selector);
+    if (!await isFrameSelectorFocused(frame, selector)) {
+      await frameClick(selector, options);
     }
     await sleep(rand(50, 150));
     await originals.keyboardPress(SELECT_ALL);
@@ -606,8 +692,8 @@ function patchSingleFrame(
   };
 
   (frame as any).dragAndDrop = async (source: string, target: string, options?: any) => {
-    const srcBox = await frame.locator(source).boundingBox().catch(() => null);
-    const tgtBox = await frame.locator(target).boundingBox().catch(() => null);
+    const srcBox = await firstFrameLocator(frame, source).boundingBox({ timeout: options?.timeout ?? 30000 }).catch(() => null);
+    const tgtBox = await firstFrameLocator(frame, target).boundingBox({ timeout: options?.timeout ?? 30000 }).catch(() => null);
 
     if (srcBox && tgtBox) {
       const sx = srcBox.x + srcBox.width / 2;
