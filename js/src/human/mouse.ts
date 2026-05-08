@@ -174,12 +174,11 @@ export async function humanClick(
 
 export async function humanIdle(
   raw: RawMouse,
-  seconds: number,
   cx: number,
   cy: number,
   cfg: HumanConfig,
 ): Promise<void> {
-  const endTime = Date.now() + seconds * 1000;
+  const endTime = Date.now() + rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]) * 1000;
   let x = cx;
   let y = cy;
   while (Date.now() < endTime) {

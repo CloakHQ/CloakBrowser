@@ -164,7 +164,7 @@ export function patchSingleElementHandle(
     const target = clickTarget(box, isInp, callCfg);
 
     if (callCfg.idle_between_actions) {
-      await humanIdle(raw, rand(callCfg.idle_between_duration[0], callCfg.idle_between_duration[1]), cursor.x, cursor.y, callCfg);
+      await humanIdle(raw, cursor.x, cursor.y, callCfg);
     }
 
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);

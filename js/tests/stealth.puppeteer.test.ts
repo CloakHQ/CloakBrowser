@@ -533,6 +533,52 @@ describe("Puppeteer: non-ASCII text avoids CDP shift path", () => {
 
 
 // =========================================================================
+// Per-call human config override (Puppeteer page-level)
+// =========================================================================
+describe("Puppeteer: page.type accepts per-call human config override", () => {
+  it("page.type forwards merged config to humanType", async () => {
+    const keyboardMod = await import("../src/human-puppeteer/keyboard.js");
+    const scrollMod = await import("../src/human-puppeteer/scroll.js");
+
+    const cfg = resolveConfig("default", {
+      idle_between_actions: false,
+      field_switch_delay: [0, 1],
+    });
+    expect(cfg.typing_delay).toBe(70);
+
+    let captured: any = null;
+    const typeSpy = vi.spyOn(keyboardMod, "humanType").mockImplementation(
+      async (_page, _raw, _text, callCfg) => { captured = callCfg; },
+    );
+    const scrollSpy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
+      async (_page, _raw, _sel, cx, cy) => ({
+        box: { x: 100, y: 100, width: 50, height: 30 },
+        cursorX: cx,
+        cursorY: cy,
+      }),
+    );
+
+    const { patchPage } = await import("../src/human-puppeteer/index.js");
+    const page = buildMockPage();
+    const cursor = { x: 100, y: 100, initialized: true };
+    patchPage(page as any, cfg, cursor as any);
+
+    await (page as any).type("#email", "hi", {
+      typing_delay: 30,
+      mistype_chance: 0,
+    });
+
+    expect(captured.typing_delay).toBe(30);
+    expect(captured.mistype_chance).toBe(0);
+    expect(cfg.typing_delay).toBe(70);
+
+    typeSpy.mockRestore();
+    scrollSpy.mockRestore();
+  });
+});
+
+
+// =========================================================================
 // patchPage stealth infrastructure (Puppeteer)
 // =========================================================================
 describe("Puppeteer: patchPage stealth infrastructure", () => {
