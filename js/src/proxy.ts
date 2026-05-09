@@ -137,10 +137,12 @@ export function normalizeSocksStringUrl(urlStr: string): string {
       ? (rawPassEnc ? encodeURIComponent(lenientDecodeURIComponent(rawPassEnc)) : "")
       : null;
     const normalized = assembleSocksUrl(scheme, encUser, encPass, hostAndRest);
-    // Emit a debug log when re-encoding actually changed the URL — gives users
-    // who previously hit silent SOCKS5 fallback (#157) visibility into what the
-    // wrapper did. Silent on already-encoded input to avoid false-positive noise.
-    if (normalized !== urlStr) {
+    // Compare credentials, not the full URL: keeps the log condition focused
+    // on real encoding work, not cosmetic differences (parity with the Python
+    // implementation, which has to skip urlparse's hostname lowercasing).
+    const credsChanged = encUser !== rawUserEnc
+      || (hasPassword ? encPass !== rawPassEnc : false);
+    if (credsChanged) {
       console.debug(
         "[cloakbrowser] Auto URL-encoded SOCKS5 proxy credentials (special " +
         "characters detected). Pre-encode the URL to suppress this notice.",

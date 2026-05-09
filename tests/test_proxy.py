@@ -311,6 +311,15 @@ class TestResolveProxyConfig:
             _resolve_proxy_config("socks5://host:1080")
         assert not any("Auto URL-encoded SOCKS5" in r.message for r in caplog.records)
 
+    def test_socks5_string_silent_when_only_cosmetic_change(self, caplog):
+        # urlparse lowercases scheme and hostname, but credentials are
+        # untouched. The log must NOT fire for these cosmetic-only rewrites
+        # (regression for Copilot's review on PR #209).
+        import logging
+        with caplog.at_level(logging.INFO, logger="cloakbrowser"):
+            _resolve_proxy_config("socks5://USER:pass@HOST.com:1080")
+        assert not any("Auto URL-encoded SOCKS5" in r.message for r in caplog.records)
+
     def test_socks5_string_no_creds_unchanged(self):
         _, args = _resolve_proxy_config("socks5://host:1080")
         assert args == ["--proxy-server=socks5://host:1080"]

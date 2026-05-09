@@ -306,4 +306,19 @@ describe("resolveProxyConfig", () => {
       debugSpy.mockRestore();
     }
   });
+
+  it("stays silent when only host case differs (no credential rewrite)", () => {
+    // Parity with Python: log condition must track credential changes, not
+    // cosmetic URL-string differences (regression for Copilot's PR #209 review).
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    try {
+      resolveProxyConfig("socks5://USER:pass@HOST.com:1080");
+      const reencodedCalls = debugSpy.mock.calls
+        .flat()
+        .filter((arg) => typeof arg === "string" && arg.includes("Auto URL-encoded SOCKS5"));
+      expect(reencodedCalls).toHaveLength(0);
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
 });

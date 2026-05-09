@@ -832,19 +832,25 @@ def _normalize_socks_string_url(url: str) -> str:
     # urlparse returns None for absent components, "" for present-but-empty.
     if parsed.username is None and parsed.password is None:
         return url
-    enc_user = quote(unquote(parsed.username), safe="") if parsed.username else ""
+    raw_user = parsed.username or ""
+    enc_user = quote(unquote(raw_user), safe="") if raw_user else ""
     # Preserve the colon separator when password component is present, even if
     # empty, so `user:@host` stays `user:@host`.
     if parsed.password is not None:
-        enc_pass = quote(unquote(parsed.password), safe="") if parsed.password else ""
+        raw_pass = parsed.password
+        enc_pass = quote(unquote(raw_pass), safe="") if raw_pass else ""
     else:
+        raw_pass = None
         enc_pass = None
     normalized = _assemble_socks_url(
         parsed.scheme, parsed.hostname or "", parsed.port,
         enc_user, enc_pass,
         parsed.path, parsed.params, parsed.query, parsed.fragment,
     )
-    if normalized != url:
+    # Compare credentials, not the full URL: urlparse cosmetically lowercases
+    # scheme and hostname, so a full-string compare would falsely fire on
+    # `socks5://USER:pass@HOST.com:1080` even when no encoding work happened.
+    if enc_user != raw_user or enc_pass != raw_pass:
         logger.info(
             "Auto URL-encoded SOCKS5 proxy credentials (special characters "
             "detected). Pre-encode the URL to suppress this notice."
