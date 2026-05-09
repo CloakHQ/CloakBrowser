@@ -813,6 +813,10 @@ def _normalize_socks_string_url(url: str) -> str:
     truncate them at special chars like '='. Idempotent: pre-encoded input stays
     the same (decoded then re-encoded).
 
+    Emits an INFO log when re-encoding actually changes the URL, so users who
+    previously hit silent SOCKS5 fallback (#157) can see what the wrapper did.
+    Silent on already-encoded inputs (no false-positive noise).
+
     On unparseable input (invalid port, broken IPv6 literal, etc.) logs a
     warning and returns the original string — preserves pre-fix pass-through
     behavior so Chromium's own error handling kicks in.
@@ -835,11 +839,17 @@ def _normalize_socks_string_url(url: str) -> str:
         enc_pass = quote(unquote(parsed.password), safe="") if parsed.password else ""
     else:
         enc_pass = None
-    return _assemble_socks_url(
+    normalized = _assemble_socks_url(
         parsed.scheme, parsed.hostname or "", parsed.port,
         enc_user, enc_pass,
         parsed.path, parsed.params, parsed.query, parsed.fragment,
     )
+    if normalized != url:
+        logger.info(
+            "Auto URL-encoded SOCKS5 proxy credentials (special characters "
+            "detected). Pre-encode the URL to suppress this notice."
+        )
+    return normalized
 
 
 def _extract_proxy_url(proxy: str | ProxySettings | None) -> str | None:

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { parseProxyUrl, isSocksProxy, resolveProxyConfig } from "../src/proxy.js";
 import type { LaunchOptions } from "../src/types.js";
 
@@ -261,5 +261,49 @@ describe("resolveProxyConfig", () => {
   it("handles multiple raw '@' in password (splits at last)", () => {
     const { proxyArgs } = resolveProxyConfig("socks5://user:a@b@c@host:1080");
     expect(proxyArgs).toEqual(["--proxy-server=socks5://user:a%40b%40c@host:1080"]);
+  });
+
+  // Visibility for #157: when wrapper actually rewrites the URL, surface a
+  // debug log so users debugging silent SOCKS5 fallback can see what happened.
+  it("logs debug message when SOCKS5 credentials get re-encoded", () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    try {
+      resolveProxyConfig("socks5://user:pass=123@host:1080");
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Auto URL-encoded SOCKS5"),
+      );
+      // Credentials must not leak into the log.
+      const calls = debugSpy.mock.calls.flat().join(" ");
+      expect(calls).not.toContain("pass=123");
+      expect(calls).not.toContain("pass%3D123");
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+
+  it("stays silent when SOCKS5 URL is already encoded (no log spam)", () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    try {
+      resolveProxyConfig("socks5://user:pass%3D123@host:1080");
+      const reencodedCalls = debugSpy.mock.calls
+        .flat()
+        .filter((arg) => typeof arg === "string" && arg.includes("Auto URL-encoded SOCKS5"));
+      expect(reencodedCalls).toHaveLength(0);
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+
+  it("stays silent when SOCKS5 URL has no credentials", () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    try {
+      resolveProxyConfig("socks5://host:1080");
+      const reencodedCalls = debugSpy.mock.calls
+        .flat()
+        .filter((arg) => typeof arg === "string" && arg.includes("Auto URL-encoded SOCKS5"));
+      expect(reencodedCalls).toHaveLength(0);
+    } finally {
+      debugSpy.mockRestore();
+    }
   });
 });
