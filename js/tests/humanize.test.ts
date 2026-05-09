@@ -418,6 +418,49 @@ describe("patchPage frame patching", () => {
     expect(childFrame.locator).toHaveBeenCalledWith("button.submit");
     expect(originalPageClick).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["type", async (frame: any) => frame.type("input.email", "@")],
+    ["fill", async (frame: any) => frame.fill("input.email", "@")],
+    ["pressSequentially", async (frame: any) => frame.pressSequentially("input.email", "@")],
+  ])("passes the page CDP session to frame.%s", async (_name, runFrameAction) => {
+    const { patchPage } = await import("../src/human/index.js");
+
+    const cdpSend = vi.fn(async () => ({}));
+    const childFrame = buildMockFrame();
+    const mainFrame = {
+      ...buildMockFrame(),
+      childFrames: vi.fn(() => [childFrame]),
+    };
+    const page = buildMockPage({ mainFrameReturn: mainFrame });
+    page.context = vi.fn(() => ({
+      pages: vi.fn(() => []),
+      addInitScript: vi.fn(async () => {}),
+      newCDPSession: vi.fn(async () => ({ send: cdpSend })),
+    }));
+
+    const cfg = resolveConfig("default", {
+      field_switch_delay: [0, 0],
+      key_hold: [0, 0],
+      shift_down_delay: [0, 0],
+      shift_up_delay: [0, 0],
+      typing_delay: 0,
+      typing_delay_spread: 0,
+      typing_pause_chance: 0,
+      mistype_chance: 0,
+      mouse_min_steps: 1,
+      mouse_max_steps: 1,
+      idle_between_actions: false,
+    });
+    const cursor = { x: 0, y: 0, initialized: true };
+    patchPage(page as any, cfg, cursor as any);
+
+    await runFrameAction(childFrame);
+
+    const dispatches = cdpSend.mock.calls.filter(([method]) => method === "Input.dispatchKeyEvent");
+    expect(dispatches).toHaveLength(2);
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
 });
 
 // =========================================================================

@@ -607,6 +607,8 @@ function patchSingleFrame(
     await humanClick(raw, moved.isInput, moved.callCfg);
   };
 
+  const getFrameCdp = async () => stealth.getCdpSession().catch(() => null);
+
   const frameHover = async (selector: string, options?: any) => {
     const moved = await moveToFrameSelector(selector, options, false);
     if (!moved) return origFrameHover(selector, options);
@@ -629,7 +631,8 @@ function patchSingleFrame(
     await sleep(randRange(callCfg.field_switch_delay));
     await frameClick(selector, options);
     await sleep(rand(100, 250));
-    await humanType(page, rawKb, text, callCfg).catch(() => origFrameType(selector, text, options));
+    const cdp = await getFrameCdp();
+    await humanType(page, rawKb, text, callCfg, cdp).catch(() => origFrameType(selector, text, options));
   };
 
   (frame as any).fill = async (selector: string, value: string, options?: any) => {
@@ -641,7 +644,8 @@ function patchSingleFrame(
     await sleep(rand(30, 80));
     await originals.keyboardPress('Backspace');
     await sleep(rand(50, 150));
-    await humanType(page, rawKb, value, callCfg).catch(() => origFrameFill(selector, value, options));
+    const cdp = await getFrameCdp();
+    await humanType(page, rawKb, value, callCfg, cdp).catch(() => origFrameFill(selector, value, options));
   };
 
   (frame as any).check = async (selector: string, options?: any) => {
@@ -674,7 +678,8 @@ function patchSingleFrame(
       await frameClick(selector, options);
     }
     await sleep(rand(100, 250));
-    await humanType(page, rawKb, text, callCfg).catch(() => origFramePressSequentially?.(selector, text, options));
+    const cdp = await getFrameCdp();
+    await humanType(page, rawKb, text, callCfg, cdp).catch(() => origFramePressSequentially?.(selector, text, options));
   };
 
   (frame as any).tap = async (selector: string, options?: any) => {
