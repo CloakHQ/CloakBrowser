@@ -63,6 +63,7 @@ def launch(
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
+    extension_paths: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth Chromium browser. Returns a Playwright Browser object.
@@ -111,7 +112,15 @@ def launch(
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless)
+    
+    if extension_paths:
+        abs_paths = [os.path.abspath(p) for p in extension_paths]
+        ext_val = ",".join(abs_paths)
+        args = list(args or [])
+        args.append(f"--load-extension={ext_val}")
+        args.append(f"--disable-extensions-except={ext_val}")
+    
+chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless)
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
 
