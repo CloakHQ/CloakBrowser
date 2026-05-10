@@ -1156,7 +1156,7 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
 // Per-call human config override
 // =========================================================================
 describe("page.type / page.fill accept per-call human config override", () => {
-  it("page.type forwards merged config to humanType", async () => {
+  it("page.type forwards nested human_config to humanType", async () => {
     const keyboardMod = await import("../src/human/keyboard.js");
     const scrollMod = await import("../src/human/scroll.js");
     const { patchPage } = await import("../src/human/index.js");
@@ -1184,8 +1184,7 @@ describe("page.type / page.fill accept per-call human config override", () => {
     patchPage(page as any, cfg, cursor as any);
 
     await (page as any).type("#email", "hi", {
-      typing_delay: 30,
-      mistype_chance: 0,
+      human_config: { typing_delay: 30, mistype_chance: 0 },
     });
 
     expect(captured.typing_delay).toBe(30);
@@ -1197,7 +1196,7 @@ describe("page.type / page.fill accept per-call human config override", () => {
     scrollSpy.mockRestore();
   }, 30000);
 
-  it("page.fill forwards merged config to humanType", async () => {
+  it("page.fill forwards flat config to humanType", async () => {
     const keyboardMod = await import("../src/human/keyboard.js");
     const scrollMod = await import("../src/human/scroll.js");
     const { patchPage } = await import("../src/human/index.js");
