@@ -125,7 +125,11 @@ export function patchSingleElementHandle(
     return children;
   };
 
-  (el as any).waitForSelector = async (selector: string, options?: any) => {
+  (el as any).waitForSelector = async (selector: string, options?: {
+    state?: 'attached' | 'detached' | 'visible' | 'hidden';
+    strict?: boolean;
+    timeout?: number;
+  }) => {
     const child = await origElWaitForSelector(selector, options);
     if (child) patchSingleElementHandle(child, page, cfg, cursor, raw, rawKb, originals, stealth);
     return child;
@@ -133,8 +137,9 @@ export function patchSingleElementHandle(
 
   // --- Helper: get bounding box and move cursor to element ---
   // Accepts a per-call ``callCfg`` so type/fill overrides like
-  // ``el.type(text, { human_config: { typing_delay: 30 } })`` carry through to
-  // mouse movement & idle timing for that single call.
+  // ``el.type(text, { human_config: { typing_delay: 30 } })`` or
+  // ``el.type(text, { typing_delay: 30 })`` carry through to mouse movement
+  // & idle timing for that single call.
   // Also scrolls the element into view first so off-screen elements work
   // (#129, #172 follow-up): otherwise boundingBox() returns null and we'd
   // silently fall back to the unpatched native method.
@@ -174,16 +179,37 @@ export function patchSingleElementHandle(
   };
 
   // --- el.click() ---
-  (el as any).click = async (options?: any) => {
-    const callCfg = mergeConfig(cfg, options?.human_config);
+  (el as any).click = async (options?: Partial<HumanConfig> & ({
+    button?: 'left' | 'right' | 'middle';
+    clickCount?: number;
+    delay?: number;
+    force?: boolean;
+    human_config?: Partial<HumanConfig>;
+    modifiers?: Array<'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift'>;
+    noWaitAfter?: boolean;
+    position?: { x: number; y: number };
+    timeout?: number;
+    trial?: boolean;
+  })) => {
+    const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const info = await moveToElement(callCfg);
     if (!info) return origElClick(options);
     await humanClick(raw, info.isInp, callCfg);
   };
 
   // --- el.dblclick() ---
-  (el as any).dblclick = async (options?: any) => {
-    const callCfg = mergeConfig(cfg, options?.human_config);
+  (el as any).dblclick = async (options?: Partial<HumanConfig> & ({
+    button?: 'left' | 'right' | 'middle';
+    delay?: number;
+    force?: boolean;
+    human_config?: Partial<HumanConfig>;
+    modifiers?: Array<'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift'>;
+    noWaitAfter?: boolean;
+    position?: { x: number; y: number };
+    timeout?: number;
+    trial?: boolean;
+  })) => {
+    const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const info = await moveToElement(callCfg);
     if (!info) return origElDblclick(options);
     await raw.down({ clickCount: 2 });
@@ -192,16 +218,28 @@ export function patchSingleElementHandle(
   };
 
   // --- el.hover() ---
-  (el as any).hover = async (options?: any) => {
-    const callCfg = mergeConfig(cfg, options?.human_config);
+  (el as any).hover = async (options?: Partial<HumanConfig> & ({
+    force?: boolean;
+    human_config?: Partial<HumanConfig>;
+    modifiers?: Array<'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift'>;
+    position?: { x: number; y: number };
+    timeout?: number;
+    trial?: boolean;
+  })) => {
+    const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const info = await moveToElement(callCfg);
     if (!info) return origElHover(options);
     // Just move — no click
   };
 
   // --- el.type() ---
-  (el as any).type = async (text: string, options?: any) => {
-    const callCfg = mergeConfig(cfg, options?.human_config);
+  (el as any).type = async (text: string, options?: Partial<HumanConfig> & ({
+    delay?: number;
+    human_config?: Partial<HumanConfig>;
+    noWaitAfter?: boolean;
+    timeout?: number;
+  })) => {
+    const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const info = await moveToElement(callCfg);
     if (!info) return origElType(text, options);
     await humanClick(raw, info.isInp, callCfg);
@@ -212,8 +250,13 @@ export function patchSingleElementHandle(
   };
 
   // --- el.fill() ---
-  (el as any).fill = async (value: string, options?: any) => {
-    const callCfg = mergeConfig(cfg, options?.human_config);
+  (el as any).fill = async (value: string, options?: Partial<HumanConfig> & ({
+    force?: boolean;
+    human_config?: Partial<HumanConfig>;
+    noWaitAfter?: boolean;
+    timeout?: number;
+  })) => {
+    const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const info = await moveToElement(callCfg);
     if (!info) return origElFill(value, options);
     await humanClick(raw, info.isInp, callCfg);
@@ -229,7 +272,7 @@ export function patchSingleElementHandle(
   };
 
   // --- el.press() ---
-  (el as any).press = async (key: string, options?: any) => {
+  (el as any).press = async (key: string, options?: { delay?: number; noWaitAfter?: boolean; timeout?: number }) => {
     await sleep(rand(20, 60));
     await originals.keyboardDown(key);
     await sleep(randRange(cfg.key_hold));
@@ -237,7 +280,11 @@ export function patchSingleElementHandle(
   };
 
   // --- el.selectOption() ---
-  (el as any).selectOption = async (values: any, options?: any) => {
+  (el as any).selectOption = async (values: any, options?: {
+    force?: boolean;
+    noWaitAfter?: boolean;
+    timeout?: number;
+  }) => {
     const info = await moveToElement();
     if (!info) return origElSelectOption(values, options);
     await humanClick(raw, false, cfg);
@@ -246,7 +293,13 @@ export function patchSingleElementHandle(
   };
 
   // --- el.check() ---
-  (el as any).check = async (options?: any) => {
+  (el as any).check = async (options?: {
+    force?: boolean;
+    noWaitAfter?: boolean;
+    position?: { x: number; y: number };
+    timeout?: number;
+    trial?: boolean;
+  }) => {
     try {
       const checked = await el.isChecked();
       if (checked) return; // Already checked
@@ -257,7 +310,13 @@ export function patchSingleElementHandle(
   };
 
   // --- el.uncheck() ---
-  (el as any).uncheck = async (options?: any) => {
+  (el as any).uncheck = async (options?: {
+    force?: boolean;
+    noWaitAfter?: boolean;
+    position?: { x: number; y: number };
+    timeout?: number;
+    trial?: boolean;
+  }) => {
     try {
       const checked = await el.isChecked();
       if (!checked) return; // Already unchecked
@@ -269,7 +328,13 @@ export function patchSingleElementHandle(
 
   // --- el.setChecked() ---
   if (origElSetChecked) {
-    (el as any).setChecked = async (checked: boolean, options?: any) => {
+    (el as any).setChecked = async (checked: boolean, options?: {
+      force?: boolean;
+      noWaitAfter?: boolean;
+      position?: { x: number; y: number };
+      timeout?: number;
+      trial?: boolean;
+    }) => {
       try {
         const current = await el.isChecked();
         if (current === checked) return;
@@ -281,7 +346,14 @@ export function patchSingleElementHandle(
   }
 
   // --- el.tap() ---
-  (el as any).tap = async (options?: any) => {
+  (el as any).tap = async (options?: {
+    force?: boolean;
+    modifiers?: Array<'Alt' | 'Control' | 'ControlOrMeta' | 'Meta' | 'Shift'>;
+    noWaitAfter?: boolean;
+    position?: { x: number; y: number };
+    timeout?: number;
+    trial?: boolean;
+  }) => {
     const info = await moveToElement();
     if (!info) return origElTap(options);
     await humanClick(raw, info.isInp, cfg);
@@ -302,8 +374,8 @@ export function patchSingleElementHandle(
   // wheel sequence used by page.click() etc. Falls back to the native
   // method if the element is detached or scrolling fails.
   if (origElScrollIntoViewIfNeeded) {
-    (el as any).scrollIntoViewIfNeeded = async (options?: any) => {
-      const callCfg = mergeConfig(cfg, options?.human_config);
+    (el as any).scrollIntoViewIfNeeded = async (options?: Partial<HumanConfig> & ({ human_config?: Partial<HumanConfig>; timeout?: number })) => {
+      const callCfg = mergeConfig(cfg, options?.human_config ?? options);
       const ensureCursorInit = (page as any)._ensureCursorInit;
       if (ensureCursorInit) await ensureCursorInit();
       try {
@@ -360,7 +432,11 @@ export function patchPageElementHandles(
   // Patch page.waitForSelector()
   if (typeof page.waitForSelector === 'function') {
     const origWaitForSelector = page.waitForSelector.bind(page);
-    (page as any).waitForSelector = async (selector: string, options?: any) => {
+    (page as any).waitForSelector = async (selector: string, options?: {
+      state?: 'attached' | 'detached' | 'visible' | 'hidden';
+      strict?: boolean;
+      timeout?: number;
+    }) => {
       const el = await origWaitForSelector(selector, options);
       if (el) patchSingleElementHandle(el, page, cfg, cursor, raw, rawKb, originals, stealth);
       return el;
@@ -408,7 +484,11 @@ export function patchFrameElementHandles(
   // Patch frame.waitForSelector()
   if (typeof frame.waitForSelector === 'function') {
     const origFrameWaitForSelector = frame.waitForSelector.bind(frame);
-    (frame as any).waitForSelector = async (selector: string, options?: any) => {
+    (frame as any).waitForSelector = async (selector: string, options?: {
+      state?: 'attached' | 'detached' | 'visible' | 'hidden';
+      strict?: boolean;
+      timeout?: number;
+    }) => {
       const el = await origFrameWaitForSelector(selector, options);
       if (el) patchSingleElementHandle(el, page, cfg, cursor, raw, rawKb, originals, stealth);
       return el;
