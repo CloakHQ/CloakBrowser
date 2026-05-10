@@ -22,6 +22,7 @@ const GEOIP_DB_URL =
   "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb";
 const GEOIP_DB_FILENAME = "GeoLite2-City.mmdb";
 const GEOIP_UPDATE_INTERVAL_MS = 30 * 86_400_000; // 30 days
+const DEFAULT_GEOIP_TIMEOUT_MS = 5_000;
 
 /** Country ISO code → BCP 47 locale (covers ~90% of proxy traffic). */
 export const COUNTRY_LOCALE_MAP: Record<string, string> = {
@@ -84,6 +85,41 @@ export async function resolveProxyGeo(
     return { timezone, locale, exitIp: ip };
   } catch {
     return { timezone: null, locale: null, exitIp: ip };
+  }
+}
+
+class GeoipTimeoutError extends Error {}
+
+function getGeoipTimeoutMs(): number {
+  const raw = process.env.CLOAKBROWSER_GEOIP_TIMEOUT_MS ?? process.env.CLOAKBROWSER_GEOIP_TIMEOUT;
+  if (!raw) return DEFAULT_GEOIP_TIMEOUT_MS;
+  const timeout = Number(raw);
+  if (!Number.isFinite(timeout)) {
+    console.warn(`[cloakbrowser] Invalid CLOAKBROWSER_GEOIP_TIMEOUT_MS=${raw}; using ${DEFAULT_GEOIP_TIMEOUT_MS}ms`);
+    return DEFAULT_GEOIP_TIMEOUT_MS;
+  }
+  return Math.max(timeout, 0);
+}
+
+async function withGeoipTimeout<T>(promise: Promise<T>, timeoutMs = getGeoipTimeoutMs()): Promise<T | null> {
+  if (timeoutMs <= 0) return promise;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new GeoipTimeoutError()), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } catch (err) {
+    if (err instanceof GeoipTimeoutError) {
+      console.warn(`[cloakbrowser] GeoIP resolution timed out after ${timeoutMs}ms; continuing without GeoIP`);
+      return null;
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -261,7 +297,10 @@ async function downloadGeoipDb(dest: string): Promise<void> {
 
   const tmpPath = `${dest}.tmp.${Date.now()}`;
   try {
-    const response = await fetch(GEOIP_DB_URL, { redirect: "follow" });
+    const response = await fetch(GEOIP_DB_URL, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(getGeoipTimeoutMs()),
+    });
     if (!response.ok || !response.body) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -329,11 +368,19 @@ export async function maybeResolveGeoip(
 
   // When both tz/locale are explicit, still resolve exit IP for WebRTC
   if (options.timezone && options.locale) {
-    const exitIp = await resolveExitIp(proxyUrl) ?? undefined;
+    const timeoutMs = getGeoipTimeoutMs();
+    const exitIp = await withGeoipTimeout(resolveExitIp(proxyUrl), timeoutMs) ?? undefined;
     return { timezone: options.timezone, locale: options.locale, exitIp };
   }
 
-  const { timezone: geoTz, locale: geoLocale, exitIp: geoExitIp } = await resolveProxyGeo(proxyUrl);
+  const geoResult = await withGeoipTimeout(resolveProxyGeo(proxyUrl));
+  if (!geoResult) {
+    return {
+      timezone: options.timezone,
+      locale: options.locale,
+    };
+  }
+  const { timezone: geoTz, locale: geoLocale, exitIp: geoExitIp } = geoResult;
   const exitIp = geoExitIp ?? undefined;
   return {
     timezone: options.timezone ?? geoTz ?? undefined,

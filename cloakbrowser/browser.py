@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
+import threading
 from typing import Any, Literal, TypedDict
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
@@ -24,6 +26,8 @@ from .download import ensure_binary
 from .human.config import HumanConfigOverrides, HumanPreset
 
 logger = logging.getLogger("cloakbrowser")
+
+DEFAULT_GEOIP_TIMEOUT_SECONDS = 5.0
 
 # Sentinel to distinguish "viewport not provided" from "viewport=None" (disable emulation)
 _VIEWPORT_UNSET = object()
@@ -896,18 +900,73 @@ def maybe_resolve_geoip(
     if not proxy_url:
         return timezone, locale, None
 
+    geoip_timeout = _get_geoip_timeout_seconds()
+
     # When both tz/locale are explicit, still resolve exit IP for WebRTC
     if timezone is not None and locale is not None:
         from .geoip import _resolve_exit_ip
-        exit_ip = _resolve_exit_ip(proxy_url)
+        exit_ip = _call_geoip_with_timeout(_resolve_exit_ip, proxy_url, timeout=geoip_timeout)
         return timezone, locale, exit_ip
 
-    geo_tz, geo_locale, exit_ip = resolve_proxy_geo_with_ip(proxy_url)
+    geo_result = _call_geoip_with_timeout(
+        resolve_proxy_geo_with_ip,
+        proxy_url,
+        timeout=geoip_timeout,
+    )
+    if geo_result is None:
+        return timezone, locale, None
+    geo_tz, geo_locale, exit_ip = geo_result
     if timezone is None:
         timezone = geo_tz
     if locale is None:
         locale = geo_locale
     return timezone, locale, exit_ip
+
+
+def _get_geoip_timeout_seconds() -> float:
+    raw = os.getenv("CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS") or os.getenv("CLOAKBROWSER_GEOIP_TIMEOUT")
+    if not raw:
+        return DEFAULT_GEOIP_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS=%r; using %.1fs",
+            raw,
+            DEFAULT_GEOIP_TIMEOUT_SECONDS,
+        )
+        return DEFAULT_GEOIP_TIMEOUT_SECONDS
+    return max(timeout, 0.0)
+
+
+def _call_geoip_with_timeout(func: Any, *args: Any, timeout: float) -> Any:
+    """Run GeoIP network work with a bounded wait; return None on timeout.
+
+    GeoIP resolution can involve proxy tunnels, DNS, and first-use DB download.
+    Keep launch bounded without changing the public launch API. A timeout of 0
+    disables the bound for users who explicitly want to wait indefinitely.
+    """
+    if timeout <= 0:
+        return func(*args)
+
+    results: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def _target() -> None:
+        try:
+            results.put((True, func(*args)))
+        except Exception as exc:
+            results.put((False, exc))
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    try:
+        ok, value = results.get(timeout=timeout)
+    except queue.Empty:
+        logger.warning("GeoIP resolution timed out after %.1fs; continuing without GeoIP", timeout)
+        return None
+    if ok:
+        return value
+    raise value
 
 
 def _resolve_webrtc_args(

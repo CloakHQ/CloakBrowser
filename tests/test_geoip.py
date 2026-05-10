@@ -1,6 +1,7 @@
 """Unit tests for GeoIP-based timezone/locale detection."""
 
 from unittest.mock import patch
+import time
 
 import pytest
 
@@ -142,6 +143,22 @@ def test_maybe_resolve_fills_both():
         assert tz == "Europe/Berlin"
         assert loc == "de-DE"
         assert ip == "5.6.7.8"
+
+
+def test_maybe_resolve_geoip_timeout_returns_existing_values(monkeypatch):
+    """A hung GeoIP lookup should not block launch indefinitely."""
+    def _hang(_proxy_url):
+        time.sleep(1)
+        return "Europe/Berlin", "de-DE", "5.6.7.8"
+
+    monkeypatch.setenv("CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS", "0.05")
+    with patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip", side_effect=_hang):
+        start = time.monotonic()
+        tz, loc, ip = maybe_resolve_geoip(True, "http://proxy:8080", None, "fr-FR")
+        elapsed = time.monotonic() - start
+
+    assert (tz, loc, ip) == (None, "fr-FR", None)
+    assert elapsed < 0.5
 
 
 # ---------------------------------------------------------------------------

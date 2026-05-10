@@ -1,5 +1,16 @@
-import { describe, it, expect } from "vitest";
-import { COUNTRY_LOCALE_MAP, resolveProxyIp } from "../src/geoip.js";
+import { describe, it, expect, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { COUNTRY_LOCALE_MAP, maybeResolveGeoip, resolveProxyIp } from "../src/geoip.js";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  delete process.env.CLOAKBROWSER_GEOIP_TIMEOUT_MS;
+  delete process.env.CLOAKBROWSER_CACHE_DIR;
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 describe("resolveProxyIp", () => {
   it("returns literal IPv4 from proxy URL", async () => {
@@ -37,6 +48,27 @@ describe("resolveProxyIp", () => {
     expect(await resolveProxyIp("http://10.50.96.5:8888")).toBe("10.50.96.5");
   });
 });
+
+describe("maybeResolveGeoip", () => {
+  it("returns quickly when GeoIP resolution times out", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-timeout-"));
+    tempDirs.push(cacheDir);
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+    process.env.CLOAKBROWSER_GEOIP_TIMEOUT_MS = "25";
+
+    const start = performance.now();
+    const result = await maybeResolveGeoip({
+      geoip: true,
+      proxy: "http://203.0.113.10:8080",
+      locale: "fr-FR",
+    });
+    const elapsed = performance.now() - start;
+
+    expect(result).toEqual({ timezone: undefined, locale: "fr-FR" });
+    expect(elapsed).toBeLessThan(500);
+  });
+});
+
 
 describe("COUNTRY_LOCALE_MAP", () => {
   it("contains common countries", () => {
