@@ -130,7 +130,7 @@ export function patchSingleElementHandle(
     strict?: boolean;
     timeout?: number;
   }) => {
-    const child = await origElWaitForSelector(selector, options);
+    const child = await origElWaitForSelector(selector, options ?? {});
     if (child) patchSingleElementHandle(child, page, cfg, cursor, raw, rawKb, originals, stealth);
     return child;
   };
@@ -437,7 +437,7 @@ export function patchPageElementHandles(
       strict?: boolean;
       timeout?: number;
     }) => {
-      const el = await origWaitForSelector(selector, options);
+      const el = await origWaitForSelector(selector, options ?? {});
       if (el) patchSingleElementHandle(el, page, cfg, cursor, raw, rawKb, originals, stealth);
       return el;
     };
@@ -489,7 +489,7 @@ export function patchFrameElementHandles(
       strict?: boolean;
       timeout?: number;
     }) => {
-      const el = await origFrameWaitForSelector(selector, options);
+      const el = await origFrameWaitForSelector(selector, options ?? {});
       if (el) patchSingleElementHandle(el, page, cfg, cursor, raw, rawKb, originals, stealth);
       return el;
     };
