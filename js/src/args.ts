@@ -1,7 +1,7 @@
 /**
  * Shared argument builder for Playwright and Puppeteer wrappers.
  */
-
+import path from "path";
 import type { LaunchOptions } from "./types.js";
 import { getDefaultStealthArgs } from "./config.js";
 
@@ -54,6 +54,17 @@ export function buildArgs(options: LaunchOptions): string[] {
       }
       seen.set(k, flag);
     }
+  }
+
+    if (options.extensionPaths?.length) {
+    const absPaths = options.extensionPaths.map(p => path.resolve(p));
+    const joined = absPaths.join(",");
+
+    seen.set("--load-extension", `--load-extension=${joined}`);
+    seen.set(
+      "--disable-extensions-except",
+      `--disable-extensions-except=${joined}`
+    );
   }
   return [...seen.values()];
 }
