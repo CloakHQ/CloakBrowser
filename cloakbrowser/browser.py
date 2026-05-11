@@ -120,7 +120,7 @@ def launch(
         args.append(f"--load-extension={ext_val}")
         args.append(f"--disable-extensions-except={ext_val}")
     
-chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless)
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
 
@@ -167,6 +167,7 @@ async def launch_async(  # noqa: C901
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
+    extension_paths: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch(). Returns a Playwright Browser object.
@@ -261,6 +262,7 @@ def launch_persistent_context(
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
+    extension_paths: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser with a persistent profile and return a BrowserContext.
@@ -385,6 +387,7 @@ async def launch_persistent_context_async(
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
+    extension_paths: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_persistent_context().
@@ -510,6 +513,7 @@ def launch_context(
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
+    extension_paths: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser and return a BrowserContext with common options pre-set.
@@ -609,6 +613,7 @@ async def launch_context_async(
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
+    extension_paths: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_context().
