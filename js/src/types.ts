@@ -17,6 +17,8 @@ export interface LaunchOptions {
   proxy?: string | { server: string; bypass?: string; username?: string; password?: string };
   /** Additional Chromium CLI arguments. */
   args?: string[];
+  /** Chrome extension paths to load. */
+  extensionPaths?: string[];
   /** Include default stealth fingerprint args (default: true). Set false to use custom --fingerprint flags. */
   stealthArgs?: boolean;
   /** IANA timezone, e.g. "America/New_York". Sets --fingerprint-timezone binary flag. */
