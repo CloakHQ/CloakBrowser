@@ -146,16 +146,14 @@ def test_maybe_resolve_fills_both():
 
 
 def test_maybe_resolve_geoip_timeout_returns_existing_values(monkeypatch):
-    """A hung GeoIP lookup should not block launch indefinitely."""
-    def _hang(_proxy_url):
-        time.sleep(1)
-        return "Europe/Berlin", "de-DE", "5.6.7.8"
-
+    """A stalled proxy lookup should not block launch indefinitely."""
+    mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()
     monkeypatch.setenv("CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS", "0.05")
-    with patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip", side_effect=_hang):
-        start = time.monotonic()
-        tz, loc, ip = maybe_resolve_geoip(True, "http://proxy:8080", None, "fr-FR")
-        elapsed = time.monotonic() - start
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
+            start = time.monotonic()
+            tz, loc, ip = maybe_resolve_geoip(True, "http://203.0.113.10:8080", None, "fr-FR")
+            elapsed = time.monotonic() - start
 
     assert (tz, loc, ip) == (None, "fr-FR", None)
     assert elapsed < 0.5

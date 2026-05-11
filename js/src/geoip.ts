@@ -69,10 +69,18 @@ export async function resolveProxyGeo(
   const dbPath = await ensureGeoipDb();
   if (!dbPath) return { timezone: null, locale: null, exitIp: null };
 
+  const timeoutMs = getGeoipTimeoutMs();
+  const deadline = deadlineFromTimeout(timeoutMs);
+
   // Exit IP (through proxy) is most accurate — gateway DNS may differ from exit
-  let ip = await resolveExitIp(proxyUrl);
-  if (!ip) ip = await resolveProxyIp(proxyUrl);
-  if (!ip) return { timezone: null, locale: null, exitIp: null };
+  let ip = await resolveExitIp(proxyUrl, remainingMs(deadline));
+  if (!ip && !deadlineExpired(deadline)) ip = await resolveProxyIp(proxyUrl);
+  if (!ip || deadlineExpired(deadline)) {
+    if (deadlineExpired(deadline)) {
+      console.warn(`[cloakbrowser] GeoIP resolution timed out after ${timeoutMs}ms; continuing without GeoIP`);
+    }
+    return { timezone: null, locale: null, exitIp: null };
+  }
 
   try {
     const buf = fs.readFileSync(dbPath);
@@ -88,39 +96,28 @@ export async function resolveProxyGeo(
   }
 }
 
-class GeoipTimeoutError extends Error {}
-
 function getGeoipTimeoutMs(): number {
-  const raw = process.env.CLOAKBROWSER_GEOIP_TIMEOUT_MS ?? process.env.CLOAKBROWSER_GEOIP_TIMEOUT;
+  const raw = process.env.CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS;
   if (!raw) return DEFAULT_GEOIP_TIMEOUT_MS;
-  const timeout = Number(raw);
-  if (!Number.isFinite(timeout)) {
-    console.warn(`[cloakbrowser] Invalid CLOAKBROWSER_GEOIP_TIMEOUT_MS=${raw}; using ${DEFAULT_GEOIP_TIMEOUT_MS}ms`);
+  const timeoutSeconds = Number(raw);
+  if (!Number.isFinite(timeoutSeconds)) {
+    console.warn(`[cloakbrowser] Invalid CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS=${raw}; using ${DEFAULT_GEOIP_TIMEOUT_MS / 1000}s`);
     return DEFAULT_GEOIP_TIMEOUT_MS;
   }
-  return Math.max(timeout, 0);
+  return Math.max(timeoutSeconds, 0) * 1000;
 }
 
-async function withGeoipTimeout<T>(promise: Promise<T>, timeoutMs = getGeoipTimeoutMs()): Promise<T | null> {
-  if (timeoutMs <= 0) return promise;
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new GeoipTimeoutError()), timeoutMs);
-        timer.unref?.();
-      }),
-    ]);
-  } catch (err) {
-    if (err instanceof GeoipTimeoutError) {
-      console.warn(`[cloakbrowser] GeoIP resolution timed out after ${timeoutMs}ms; continuing without GeoIP`);
-      return null;
-    }
-    throw err;
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+function deadlineFromTimeout(timeoutMs: number): number | null {
+  return timeoutMs > 0 ? performance.now() + timeoutMs : null;
+}
+
+function remainingMs(deadline: number | null): number | undefined {
+  if (deadline === null) return undefined;
+  return Math.max(deadline - performance.now(), 0);
+}
+
+function deadlineExpired(deadline: number | null): boolean {
+  return deadline !== null && performance.now() >= deadline;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +161,8 @@ const IP_ECHO_URLS = [
   "https://ifconfig.me/ip",
 ];
 
-async function resolveExitIp(proxyUrl: string): Promise<string | null> {
+async function resolveExitIp(proxyUrl: string, timeoutMs?: number): Promise<string | null> {
+  const deadline = timeoutMs && timeoutMs > 0 ? performance.now() + timeoutMs : null;
   const isSocks = isSocksProxy(proxyUrl);
 
   // SOCKS5: tunnel through the SOCKS5 proxy via socks-proxy-agent
@@ -180,9 +178,11 @@ async function resolveExitIp(proxyUrl: string): Promise<string | null> {
     const agent = new SocksProxyAgent(proxyUrl);
 
     for (const echoUrl of IP_ECHO_URLS) {
+      const remaining = remainingMs(deadline);
+      if (remaining !== undefined && remaining <= 0) return null;
       try {
         const ip = await new Promise<string | null>((resolve) => {
-          const req = https.request(echoUrl, { agent, timeout: 10_000 }, (res) => {
+          const req = https.request(echoUrl, { agent, timeout: Math.min(10_000, remaining ?? 10_000) }, (res) => {
             let data = "";
             res.on("data", (chunk: Buffer) => (data += chunk.toString()));
             res.on("end", () => {
@@ -209,6 +209,8 @@ async function resolveExitIp(proxyUrl: string): Promise<string | null> {
     const proxyUrlObj = new URL(proxyUrl);
 
     for (const echoUrl of IP_ECHO_URLS) {
+      const remaining = remainingMs(deadline);
+      if (remaining !== undefined && remaining <= 0) return null;
       try {
         const ip = await new Promise<string | null>((resolve, reject) => {
           const targetUrl = new URL(echoUrl);
@@ -226,13 +228,13 @@ async function resolveExitIp(proxyUrl: string): Promise<string | null> {
                     ).toString("base64"),
                 }
               : {},
-            timeout: 10_000,
+            timeout: Math.min(10_000, remaining ?? 10_000),
           });
 
           connectReq.on("connect", (_res, socket) => {
             const req = https.request(
               echoUrl,
-              { socket, timeout: 5_000 } as any,
+              { socket, timeout: Math.min(5_000, remaining ?? 5_000) } as any,
               (res) => {
                 let data = "";
                 res.on("data", (chunk: Buffer) => (data += chunk.toString()));
@@ -299,7 +301,6 @@ async function downloadGeoipDb(dest: string): Promise<void> {
   try {
     const response = await fetch(GEOIP_DB_URL, {
       redirect: "follow",
-      signal: AbortSignal.timeout(getGeoipTimeoutMs()),
     });
     if (!response.ok || !response.body) {
       throw new Error(`HTTP ${response.status}`);
@@ -369,11 +370,11 @@ export async function maybeResolveGeoip(
   // When both tz/locale are explicit, still resolve exit IP for WebRTC
   if (options.timezone && options.locale) {
     const timeoutMs = getGeoipTimeoutMs();
-    const exitIp = await withGeoipTimeout(resolveExitIp(proxyUrl), timeoutMs) ?? undefined;
+    const exitIp = await resolveExitIp(proxyUrl, timeoutMs) ?? undefined;
     return { timezone: options.timezone, locale: options.locale, exitIp };
   }
 
-  const geoResult = await withGeoipTimeout(resolveProxyGeo(proxyUrl));
+  const geoResult = await resolveProxyGeo(proxyUrl);
   if (!geoResult) {
     return {
       timezone: options.timezone,
@@ -410,7 +411,7 @@ export async function resolveWebrtcArgs(
   }
 
   try {
-    const ip = await resolveExitIp(proxyUrl);
+    const ip = await resolveExitIp(proxyUrl, getGeoipTimeoutMs());
     const result = [...args];
     if (ip) {
       result[idx] = `--fingerprint-webrtc-ip=${ip}`;

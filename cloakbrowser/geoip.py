@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import socket
 import tempfile
 import threading
@@ -27,6 +28,8 @@ GEOIP_DB_URL = (
 )
 GEOIP_DB_FILENAME = "GeoLite2-City.mmdb"
 GEOIP_UPDATE_INTERVAL = 30 * 86_400  # 30 days
+DEFAULT_GEOIP_TIMEOUT_SECONDS = 5.0
+GEOIP_TIMEOUT_ENV = "CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS"
 
 # Country ISO code → BCP 47 locale (covers ~90 % of proxy traffic)
 COUNTRY_LOCALE_MAP: dict[str, str] = {
@@ -77,11 +80,16 @@ def resolve_proxy_geo_with_ip(
     if db_path is None:
         return None, None, None
 
+    timeout = _get_geoip_timeout_seconds()
+    deadline = _deadline_from_timeout(timeout)
+
     # Exit IP (through proxy) is most accurate — gateway DNS may differ from exit
-    ip = _resolve_exit_ip(proxy_url)
-    if ip is None:
+    ip = _resolve_exit_ip(proxy_url, timeout=_remaining_seconds(deadline))
+    if ip is None and not _deadline_expired(deadline):
         ip = _resolve_proxy_ip(proxy_url)
-    if ip is None:
+    if ip is None or _deadline_expired(deadline):
+        if deadline is not None and _deadline_expired(deadline):
+            logger.warning("GeoIP resolution timed out after %.1fs; continuing without GeoIP", timeout)
         return None, None, None
 
     try:
@@ -152,13 +160,62 @@ _IP_ECHO_URLS = [
 ]
 
 
-def _resolve_exit_ip(proxy_url: str) -> str | None:
+def _get_geoip_timeout_seconds() -> float:
+    raw = os.getenv(GEOIP_TIMEOUT_ENV)
+    if not raw:
+        return DEFAULT_GEOIP_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; using %.1fs",
+            GEOIP_TIMEOUT_ENV,
+            raw,
+            DEFAULT_GEOIP_TIMEOUT_SECONDS,
+        )
+        return DEFAULT_GEOIP_TIMEOUT_SECONDS
+    return max(timeout, 0.0)
+
+
+def _deadline_from_timeout(timeout: float) -> float | None:
+    if timeout <= 0:
+        return None
+    return time.monotonic() + timeout
+
+
+def _remaining_seconds(deadline: float | None) -> float | None:
+    if deadline is None:
+        return None
+    return max(deadline - time.monotonic(), 0.0)
+
+
+def _deadline_expired(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def resolve_proxy_exit_ip(proxy_url: str) -> str | None:
+    """Resolve only the proxy exit IP, bounded by the GeoIP timeout."""
+    timeout = _get_geoip_timeout_seconds()
+    deadline = _deadline_from_timeout(timeout)
+    ip = _resolve_exit_ip(proxy_url, timeout=timeout)
+    if ip is None and _deadline_expired(deadline):
+        logger.warning("GeoIP resolution timed out after %.1fs; continuing without GeoIP", timeout)
+    return ip
+
+
+def _resolve_exit_ip(proxy_url: str, timeout: float | None = None) -> str | None:
     """Discover the proxy's actual exit IP by connecting through it."""
     import httpx
 
+    deadline = _deadline_from_timeout(timeout or 0)
+
     for url in _IP_ECHO_URLS:
         try:
-            resp = httpx.get(url, proxy=proxy_url, timeout=10.0)
+            remaining = _remaining_seconds(deadline)
+            if remaining is not None and remaining <= 0:
+                return None
+            request_timeout = min(10.0, remaining) if remaining is not None else 10.0
+            resp = httpx.get(url, proxy=proxy_url, timeout=request_timeout)
             resp.raise_for_status()
             ip = resp.text.strip()
             # Validate it looks like an IP
