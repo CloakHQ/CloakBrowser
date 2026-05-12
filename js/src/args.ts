@@ -56,7 +56,7 @@ export function buildArgs(options: LaunchOptions): string[] {
     }
   }
 
-    if (options.extensionPaths?.length) {
+  if (options.extensionPaths?.length) {
     const absPaths = options.extensionPaths.map(p => path.resolve(p));
     const joined = absPaths.join(",");
 
