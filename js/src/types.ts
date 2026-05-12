@@ -25,6 +25,8 @@ export interface LaunchOptions {
   locale?: string;
   /** Auto-detect timezone/locale from proxy IP (requires: npm install mmdb-lib). */
   geoip?: boolean;
+  /** Enable Docker GPU acceleration flags. Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1. */
+  gpuAccel?: boolean;
   /** Raw options passed directly to playwright/puppeteer launch(). */
   launchOptions?: Record<string, unknown>;
   /** Enable human-like mouse, keyboard, and scroll behavior. */
