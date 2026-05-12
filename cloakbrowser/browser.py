@@ -112,15 +112,8 @@ def launch(
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    
-    if extension_paths:
-        abs_paths = [os.path.abspath(p) for p in extension_paths]
-        ext_val = ",".join(abs_paths)
-        args = list(args or [])
-        args.append(f"--load-extension={ext_val}")
-        args.append(f"--disable-extensions-except={ext_val}")
-    
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless)
+        
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
 
@@ -211,7 +204,7 @@ async def launch_async(  # noqa: C901
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
 
     logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(chrome_args))
 
@@ -316,7 +309,7 @@ def launch_persistent_context(
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
 
     logger.debug(
         "Launching persistent stealth Chromium (headless=%s, user_data_dir=%s)",
@@ -443,7 +436,7 @@ async def launch_persistent_context_async(
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
 
     logger.debug(
         "Launching persistent stealth Chromium async (headless=%s, user_data_dir=%s)",
@@ -955,6 +948,7 @@ def build_args(
     timezone: str | None = None,
     locale: str | None = None,
     headless: bool = True,
+    extension_paths: list[str] | None = None,
 ) -> list[str]:
     """Combine stealth args with user-provided args and locale flags.
 
@@ -997,6 +991,15 @@ def build_args(
             if key in seen:
                 logger.debug("Arg override: %s -> %s", seen[key], flag)
             seen[key] = flag
+
+    if extension_paths:
+        abs_paths = [os.path.abspath(p) for p in extension_paths]
+        ext_val = ",".join(abs_paths)
+    
+        seen["--load-extension"] = f"--load-extension={ext_val}"
+        seen["--disable-extensions-except"] = (
+            f"--disable-extensions-except={ext_val}"
+        )
 
     return list(seen.values())
 
