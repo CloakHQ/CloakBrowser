@@ -46,6 +46,7 @@ js/dist/
 *.whl
 AGENTS.md
 .beads
+result
 
 # Private docs (launch posts, strategy)
 docs/
