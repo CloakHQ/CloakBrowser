@@ -580,6 +580,7 @@ Access the original un-patched Playwright page at `page._original` if you need r
 | `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
 | `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Set to `true` to skip SHA-256 verification after download |
 | `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | `5` | Max seconds for GeoIP resolution before continuing without it |
+| `CLOAKBROWSER_GPU_ACCEL` | — | Set to `1` to opt in to Docker GPU acceleration flags |
 
 ## Fingerprint Management
 
@@ -856,6 +857,12 @@ services:
       retries: 3
       start_period: 10s
 ```
+
+### GPU acceleration in Docker
+
+GPU acceleration is opt-in. Set `CLOAKBROWSER_GPU_ACCEL=1` to add Chromium's EGL, GPU rasterization, GPU blocklist bypass, and Linux Vaapi video decode flags. If you use NVIDIA GPUs, install the NVIDIA Container Toolkit on the Docker host and add a GPU device reservation to your Compose service.
+
+See [`examples/docker-compose.gpu.yml`](examples/docker-compose.gpu.yml) for a complete Compose example. If you run CloakBrowser inside your own multi-container stack, mirror the environment variable and GPU reservation in that service.
 
 **Per-connection fingerprint seeds** — run multiple browser identities from a single container. Each unique seed spawns a separate Chrome process with its own fingerprint:
 

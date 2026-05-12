@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any, Literal, TypedDict
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
@@ -65,6 +66,7 @@ def launch(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth Chromium browser. Returns a Playwright Browser object.
@@ -92,6 +94,8 @@ def launch(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        gpu_accel: Enable Docker GPU acceleration flags (default False).
+            Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -114,8 +118,15 @@ def launch(
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-        
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
+    chrome_args = build_args(
+        stealth_args,
+        (args or []) + proxy_extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+        gpu_accel=gpu_accel,
+    )
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
 
@@ -163,6 +174,7 @@ async def launch_async(  # noqa: C901
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch(). Returns a Playwright Browser object.
@@ -180,6 +192,8 @@ async def launch_async(  # noqa: C901
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        gpu_accel: Enable Docker GPU acceleration flags (default False).
+            Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -207,7 +221,15 @@ async def launch_async(  # noqa: C901
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
+    chrome_args = build_args(
+        stealth_args,
+        (args or []) + proxy_extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+        gpu_accel=gpu_accel,
+    )
 
     logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(chrome_args))
 
@@ -259,6 +281,7 @@ def launch_persistent_context(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser with a persistent profile and return a BrowserContext.
@@ -289,6 +312,8 @@ def launch_persistent_context(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        gpu_accel: Enable Docker GPU acceleration flags (default False).
+            Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -313,7 +338,15 @@ def launch_persistent_context(
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
+    chrome_args = build_args(
+        stealth_args,
+        (args or []) + proxy_extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+        gpu_accel=gpu_accel,
+    )
 
     logger.debug(
         "Launching persistent stealth Chromium (headless=%s, user_data_dir=%s)",
@@ -385,6 +418,7 @@ async def launch_persistent_context_async(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_persistent_context().
@@ -412,6 +446,8 @@ async def launch_persistent_context_async(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        gpu_accel: Enable Docker GPU acceleration flags (default False).
+            Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -441,7 +477,15 @@ async def launch_persistent_context_async(
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
+    chrome_args = build_args(
+        stealth_args,
+        (args or []) + proxy_extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+        gpu_accel=gpu_accel,
+    )
 
     logger.debug(
         "Launching persistent stealth Chromium async (headless=%s, user_data_dir=%s)",
@@ -971,6 +1015,7 @@ def build_args(
     locale: str | None = None,
     headless: bool = True,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
 ) -> list[str]:
     """Combine stealth args with user-provided args and locale flags.
 
@@ -992,6 +1037,13 @@ def build_args(
     import platform as _platform
     if not headless or _platform.system() == "Windows":
         seen["--ignore-gpu-blocklist"] = "--ignore-gpu-blocklist"
+
+    if gpu_accel or os.environ.get("CLOAKBROWSER_GPU_ACCEL"):
+        seen["--use-gl"] = "--use-gl=egl"
+        seen["--enable-gpu-rasterization"] = "--enable-gpu-rasterization"
+        seen["--ignore-gpu-blocklist"] = "--ignore-gpu-blocklist"
+        if sys.platform.startswith("linux"):
+            seen["--enable-features"] = "--enable-features=VaapiVideoDecoder"
 
     if extra_args:
         for arg in extra_args:
