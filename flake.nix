@@ -16,17 +16,25 @@
 
       forAllSystems = lib.genAttrs supportedSystems;
 
-      chromiumVersion = "146.0.7680.177.3";
-
       packageInfo = {
         x86_64-linux = {
           platformTag = "linux-x64";
+          version = "146.0.7680.177.3";
           hash = "sha256-WvAn+q+x/vmTPreEwJS3ZHBt4io3KizuhLwRf8SrU38=";
         };
         aarch64-linux = {
           platformTag = "linux-arm64";
+          version = "146.0.7680.177.3";
           hash = "sha256-i3HOU7T9ExMnMxox+6ODXXGILRm/qr3njdD1OQvRb0U=";
         };
+      };
+
+      cloakbrowserBinaryLicense = {
+        shortName = "cloakbrowser-binary";
+        fullName = "CloakBrowser Binary License";
+        url = "https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md";
+        free = false;
+        redistributable = false;
       };
 
       mkPkgs = system: import nixpkgs {
@@ -86,11 +94,23 @@
         wqy_zenhei
       ];
 
+      desktopPackages = pkgs: with pkgs; [
+        adwaita-icon-theme
+        gsettings-desktop-schemas
+        xdg-utils
+      ];
+
       mkCloakBrowserChromium = pkgs: system:
         let
           info = packageInfo.${system} or (throw "CloakBrowser flake package currently supports only x86_64-linux and aarch64-linux.");
           archiveName = "cloakbrowser-${info.platformTag}.tar.gz";
+          chromiumVersion = info.version;
           libs = runtimeLibraries pkgs;
+          desktopDeps = desktopPackages pkgs;
+          fonts = fontPackages pkgs;
+          fontsConf = pkgs.makeFontsConf {
+            fontDirectories = fonts;
+          };
         in
         pkgs.stdenvNoCC.mkDerivation {
           pname = "cloakbrowser-chromium";
@@ -108,7 +128,7 @@
             makeWrapper
           ];
 
-          buildInputs = libs;
+          buildInputs = libs ++ desktopDeps;
           runtimeDependencies = libs;
 
           installPhase = ''
@@ -117,19 +137,27 @@
             mkdir -p "$out/lib/cloakbrowser" "$out/bin"
             tar -xzf "$src" -C "$out/lib/cloakbrowser"
             chmod +x "$out/lib/cloakbrowser/chrome"
+            chmod +x "$out/lib/cloakbrowser/chromedriver"
 
             runHook postInstall
           '';
 
           postFixup = ''
             makeWrapper "$out/lib/cloakbrowser/chrome" "$out/bin/cloakbrowser-chrome" \
+              --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath libs}" \
+              --prefix XDG_DATA_DIRS : "$GSETTINGS_SCHEMAS_PATH:$XDG_ICON_DIRS" \
+              --suffix PATH : "${lib.makeBinPath [ pkgs.xdg-utils ]}" \
+              --set FONTCONFIG_FILE "${fontsConf}" \
+              --set CHROME_WRAPPER "cloakbrowser-chrome"
+
+            makeWrapper "$out/lib/cloakbrowser/chromedriver" "$out/bin/cloakbrowser-chromedriver" \
               --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath libs}"
           '';
 
           meta = {
             description = "Official CloakBrowser patched Chromium binary";
             homepage = "https://github.com/CloakHQ/CloakBrowser";
-            license = lib.licenses.unfreeRedistributable;
+            license = cloakbrowserBinaryLicense;
             mainProgram = "cloakbrowser-chrome";
             platforms = supportedSystems;
             sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
@@ -145,6 +173,28 @@
         {
           inherit cloakbrowserChromium;
           default = cloakbrowserChromium;
+        });
+
+      apps = forAllSystems (system:
+        let
+          cloakbrowserChromium = self.packages.${system}.cloakbrowserChromium;
+        in
+        {
+          default = {
+            type = "app";
+            program = "${cloakbrowserChromium}/bin/cloakbrowser-chrome";
+            meta.description = "Run CloakBrowser Chromium";
+          };
+          cloakbrowser-chrome = {
+            type = "app";
+            program = "${cloakbrowserChromium}/bin/cloakbrowser-chrome";
+            meta.description = "Run CloakBrowser Chromium";
+          };
+          cloakbrowser-chromedriver = {
+            type = "app";
+            program = "${cloakbrowserChromium}/bin/cloakbrowser-chromedriver";
+            meta.description = "Run the CloakBrowser Chromedriver binary";
+          };
         });
 
       devShells = forAllSystems (system:
@@ -180,9 +230,7 @@
             ++ runtimeLibraries pkgs
             ++ fontPackages pkgs;
 
-            shellHook = ''
-              export CLOAKBROWSER_BINARY_PATH="${cloakbrowserChromium}/bin/cloakbrowser-chrome"
-            '';
+            CLOAKBROWSER_BINARY_PATH = "${cloakbrowserChromium}/bin/cloakbrowser-chrome";
           };
         });
     };
