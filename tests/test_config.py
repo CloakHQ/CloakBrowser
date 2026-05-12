@@ -26,17 +26,17 @@ class TestGetBinaryPath:
     def test_linux(self):
         with patch("cloakbrowser.config.platform.system", return_value="Linux"):
             path = get_binary_path("145.0.0.0")
-            assert str(path).endswith("chromium-145.0.0.0/chrome")
+            assert path.as_posix().endswith("chromium-145.0.0.0/chrome")
 
     def test_darwin(self):
         with patch("cloakbrowser.config.platform.system", return_value="Darwin"):
             path = get_binary_path("145.0.0.0")
-            assert str(path).endswith("chromium-145.0.0.0/Chromium.app/Contents/MacOS/Chromium")
+            assert path.as_posix().endswith("chromium-145.0.0.0/Chromium.app/Contents/MacOS/Chromium")
 
     def test_windows(self):
         with patch("cloakbrowser.config.platform.system", return_value="Windows"):
             path = get_binary_path("145.0.0.0")
-            assert str(path).endswith("chromium-145.0.0.0/chrome.exe")
+            assert path.as_posix().endswith("chromium-145.0.0.0/chrome.exe")
 
 
 # ---------------------------------------------------------------------------

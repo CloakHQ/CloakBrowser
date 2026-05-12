@@ -133,7 +133,7 @@ class TestParseCliArgs:
     @patch("os.path.exists", return_value=False)
     def test_default_data_dir_bare_metal(self, _mock):
         result = _default_data_dir()
-        assert result.endswith(".cloakbrowser/cloakserve")
+        assert Path(result).parts[-2:] == (".cloakbrowser", "cloakserve")
 
 
 # ---------------------------------------------------------------------------
