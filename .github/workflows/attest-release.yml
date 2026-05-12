@@ -16,9 +16,10 @@ jobs:
       contents: write      # Download release assets
     steps:
       - name: Download release binaries
-        run: gh release download ${{ github.event.inputs.tag }} --repo CloakHQ/cloakbrowser --pattern "cloakbrowser-*.tar.gz" --pattern "cloakbrowser-*.zip"
+        run: gh release download "$RELEASE_TAG" --repo CloakHQ/cloakbrowser --pattern "cloakbrowser-*.tar.gz" --pattern "cloakbrowser-*.zip"
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag }}
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
