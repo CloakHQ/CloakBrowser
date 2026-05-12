@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import warnings
 from typing import Any, Literal, TypedDict
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
@@ -38,6 +39,62 @@ def _resolve_timezone(timezone: str | None, kwargs: dict[str, Any]) -> str | Non
         else:
             kwargs.pop("timezone_id")
     return timezone
+
+
+_GEOIP_CONTEXT_PROXY_WARNING = (
+    "geoip=True was set at browser launch, but proxy= was passed to "
+    "browser.new_context(); GeoIP timezone/locale are resolved only at launch "
+    "time, so this per-context proxy will not update --fingerprint-timezone or "
+    "--lang. Pass proxy= to launch()/launch_async() with geoip=True, or pass "
+    "explicit timezone= and locale= to launch()/launch_async() for the proxy "
+    "region."
+)
+
+
+def _patch_context_geoip_warning(browser: Any, geoip: bool) -> None:
+    """Warn once when a geoip-enabled browser gets a per-context proxy."""
+    if not geoip:
+        return
+
+    original_new_context = browser.new_context
+    warned = False
+
+    def _has_context_proxy(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        return kwargs.get("proxy") is not None or bool(
+            args and isinstance(args[0], dict) and args[0].get("proxy") is not None
+        )
+
+    def _patched_new_context(*args: Any, **kwargs: Any) -> Any:
+        nonlocal warned
+        if not warned and _has_context_proxy(args, kwargs):
+            warned = True
+            warnings.warn(_GEOIP_CONTEXT_PROXY_WARNING, UserWarning, stacklevel=2)
+        return original_new_context(*args, **kwargs)
+
+    browser.new_context = _patched_new_context
+
+
+def _patch_context_geoip_warning_async(browser: Any, geoip: bool) -> None:
+    """Async variant of _patch_context_geoip_warning()."""
+    if not geoip:
+        return
+
+    original_new_context = browser.new_context
+    warned = False
+
+    def _has_context_proxy(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        return kwargs.get("proxy") is not None or bool(
+            args and isinstance(args[0], dict) and args[0].get("proxy") is not None
+        )
+
+    async def _patched_new_context(*args: Any, **kwargs: Any) -> Any:
+        nonlocal warned
+        if not warned and _has_context_proxy(args, kwargs):
+            warned = True
+            warnings.warn(_GEOIP_CONTEXT_PROXY_WARNING, UserWarning, stacklevel=2)
+        return await original_new_context(*args, **kwargs)
+
+    browser.new_context = _patched_new_context
 
 
 class _ProxySettingsRequired(TypedDict):
@@ -137,6 +194,8 @@ def launch(
 
     browser.close = _close_with_cleanup
 
+    _patch_context_geoip_warning(browser, geoip)
+
     # Human-like behavioral patching
     if humanize:
         from .human import patch_browser
@@ -226,6 +285,8 @@ async def launch_async(  # noqa: C901
             await pw.stop()
 
     browser.close = _close_with_cleanup
+
+    _patch_context_geoip_warning_async(browser, geoip)
 
     # Human-like behavioral patching (async variant)
     if humanize:

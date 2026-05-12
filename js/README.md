@@ -134,6 +134,12 @@ const context = await launchContext({ proxy: 'http://proxy:8080', geoip: true })
 const browser = await launch({ proxy: 'http://proxy:8080', geoip: true, timezone: 'Europe/London' });
 ```
 
+#### GeoIP + Multiple Contexts
+
+`geoip: true` resolves timezone and locale once before Chromium launches, then applies them through process-level binary flags. It cannot derive a different timezone or locale from proxies passed later to `browser.newContext({ proxy })`.
+
+For multiple regional proxies, either launch one browser per proxy with `proxy` and `geoip` set at launch time, or pass explicit `timezone` and `locale` to `launch()` / `launchContext()` so they match the proxy region. CloakBrowser warns once when `geoip` is enabled at launch and a per-context proxy is used later.
+
 > **Note:** For rotating residential proxies, the DNS-resolved IP may differ from the exit IP. Pass explicit `timezone`/`locale` in those cases.
 
 ### CLI

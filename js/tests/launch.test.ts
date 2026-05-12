@@ -44,6 +44,63 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)(
   }
 );
 
+describe("launch geoip context proxy warning (unit)", () => {
+  let mockContext: any;
+  let mockBrowser: any;
+  let mockChromium: any;
+  const origEnv = process.env.CLOAKBROWSER_BINARY_PATH;
+
+  beforeEach(() => {
+    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
+    mockContext = { close: vi.fn() };
+    mockBrowser = {
+      newContext: vi.fn().mockResolvedValue(mockContext),
+      close: vi.fn(),
+    };
+    mockChromium = { launch: vi.fn().mockResolvedValue(mockBrowser) };
+
+    vi.doMock("playwright-core", () => ({ chromium: mockChromium }));
+    vi.doMock("../src/geoip.js", () => ({
+      maybeResolveGeoip: vi.fn().mockResolvedValue({ timezone: "Europe/Berlin", locale: "de-DE" }),
+      resolveWebrtcArgs: vi.fn().mockImplementation((opts: any) => Promise.resolve(opts.args)),
+    }));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../src/geoip.js");
+    vi.resetModules();
+    if (origEnv) {
+      process.env.CLOAKBROWSER_BINARY_PATH = origEnv;
+    } else {
+      delete process.env.CLOAKBROWSER_BINARY_PATH;
+    }
+  });
+
+  it("warns once when geoip launch is followed by per-context proxy", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { launch } = await import("../src/playwright.js");
+
+    const browser = await launch({ geoip: true });
+    await browser.newContext({ proxy: { server: "http://proxy-1:8080" } });
+    await browser.newContext({ proxy: { server: "http://proxy-2:8080" } });
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain("geoip: true was set at browser launch");
+    expect(warnSpy.mock.calls[0][0]).toContain("browser.newContext()");
+  });
+
+  it("does not warn when proxy is only passed at launch", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { launch } = await import("../src/playwright.js");
+
+    const browser = await launch({ proxy: "http://proxy:8080", geoip: true });
+    await browser.newContext();
+
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // launchContext / launchPersistentContext unit tests (mock playwright-core)
 // ---------------------------------------------------------------------------
