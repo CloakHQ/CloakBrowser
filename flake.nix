@@ -207,8 +207,8 @@
             hatchling
             httpx
             playwright
-            pytest_8_3
-            pytest-asyncio_0
+            pytest
+            pytest-asyncio
             socksio
             websockets
           ]);
