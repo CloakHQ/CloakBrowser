@@ -549,7 +549,7 @@ def launch_context(
     # so it applies to ALL contexts, not just the default one.
     # locale and timezone are set via binary flags only — no CDP emulation.
     browser = launch(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
-                     timezone=timezone, locale=locale, backend=backend)
+                     timezone=timezone, locale=locale, backend=backend, extension_paths=extension_paths)
 
     context_kwargs: dict[str, Any] = {}
     if user_agent:
@@ -668,7 +668,7 @@ async def launch_context_async(
     # so it applies to ALL contexts, not just the default one.
     # locale and timezone are set via binary flags only — no CDP emulation.
     browser = await launch_async(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
-                                 timezone=timezone, locale=locale, backend=backend)
+                                 timezone=timezone, locale=locale, backend=backend, extension_paths=extension_paths)
 
     context_kwargs: dict[str, Any] = {}
     if user_agent:
