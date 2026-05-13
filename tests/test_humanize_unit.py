@@ -43,6 +43,48 @@ class _FakeRawMouse:
         pass
 
 
+class _AsyncFakeRawMouse:
+    def __init__(self):
+        self.moves = []
+        self.wheels = []
+        self.clicks = []
+
+    async def move(self, x, y, **kw):
+        self.moves.append((x, y))
+
+    async def down(self, **kw):
+        self.clicks.append("down")
+
+    async def up(self, **kw):
+        self.clicks.append("up")
+
+    async def wheel(self, dx, dy):
+        self.wheels.append((dx, dy))
+
+
+class _AsyncFakeLocator:
+    def __init__(self, result):
+        self.result = result
+        self.timeout = None
+        self.first = self
+
+    async def bounding_box(self, timeout=30000):
+        self.timeout = timeout
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+class _AsyncFakePage:
+    def __init__(self, box, viewport=None):
+        self.viewport_size = {"width": 800, "height": 600} if viewport is None else viewport
+        self.locator_obj = _AsyncFakeLocator(box)
+
+    def locator(self, selector):
+        self.selector = selector
+        return self.locator_obj
+
+
 # =========================================================================
 # 1. Config resolution
 # =========================================================================
@@ -191,6 +233,319 @@ class TestAsyncCompat:
         from cloakbrowser.human.config import async_sleep_ms
         import asyncio
         assert asyncio.iscoroutinefunction(async_sleep_ms)
+
+    @pytest.mark.asyncio
+    async def test_async_keyboard_cdp_shift_symbol(self, monkeypatch):
+        from cloakbrowser.human.config import HumanConfig
+        import cloakbrowser.human.keyboard_async as keyboard_async
+
+        class Raw:
+            def __init__(self):
+                self.calls = []
+
+            async def down(self, key):
+                self.calls.append(("down", key))
+
+            async def up(self, key):
+                self.calls.append(("up", key))
+
+            async def insert_text(self, text):
+                self.calls.append(("insert_text", text))
+
+        class CDP:
+            def __init__(self):
+                self.calls = []
+
+            async def send(self, method, params):
+                self.calls.append((method, params))
+
+        async def no_sleep(_ms):
+            return None
+
+        monkeypatch.setattr(keyboard_async, "async_sleep_ms", no_sleep)
+        cfg = HumanConfig(
+            shift_down_delay=(0, 0),
+            shift_up_delay=(0, 0),
+            key_hold=(0, 0),
+        )
+        raw = Raw()
+        cdp = CDP()
+
+        await keyboard_async._type_shift_symbol(None, raw, "!", cfg, cdp)
+
+        assert raw.calls == [("down", "Shift"), ("up", "Shift")]
+        assert [call[1]["type"] for call in cdp.calls] == ["keyDown", "keyUp"]
+        assert cdp.calls[0][1]["modifiers"] == 8
+
+    @pytest.mark.asyncio
+    async def test_async_keyboard_fallback_shift_symbol(self, monkeypatch):
+        from cloakbrowser.human.config import HumanConfig
+        import cloakbrowser.human.keyboard_async as keyboard_async
+
+        class Raw:
+            def __init__(self):
+                self.calls = []
+
+            async def down(self, key):
+                self.calls.append(("down", key))
+
+            async def up(self, key):
+                self.calls.append(("up", key))
+
+            async def insert_text(self, text):
+                self.calls.append(("insert_text", text))
+
+        class Page:
+            def __init__(self):
+                self.evaluated = []
+
+            async def evaluate(self, script, arg):
+                self.evaluated.append((script, arg))
+
+        async def no_sleep(_ms):
+            return None
+
+        monkeypatch.setattr(keyboard_async, "async_sleep_ms", no_sleep)
+        cfg = HumanConfig(
+            shift_down_delay=(0, 0),
+            shift_up_delay=(0, 0),
+            key_hold=(0, 0),
+        )
+        raw = Raw()
+        page = Page()
+
+        await keyboard_async._type_shift_symbol(page, raw, "!", cfg)
+
+        assert raw.calls == [("down", "Shift"), ("insert_text", "!"), ("up", "Shift")]
+        assert page.evaluated[0][1] == "!"
+
+    @pytest.mark.asyncio
+    async def test_async_human_type_non_ascii_and_mistype(self, monkeypatch):
+        from cloakbrowser.human.config import HumanConfig
+        import cloakbrowser.human.keyboard_async as keyboard_async
+
+        class Raw:
+            def __init__(self):
+                self.calls = []
+
+            async def down(self, key):
+                self.calls.append(("down", key))
+
+            async def up(self, key):
+                self.calls.append(("up", key))
+
+            async def insert_text(self, text):
+                self.calls.append(("insert_text", text))
+
+        async def no_sleep(_ms):
+            return None
+
+        monkeypatch.setattr(keyboard_async, "async_sleep_ms", no_sleep)
+        monkeypatch.setattr(keyboard_async.random, "random", lambda: 0.0)
+        monkeypatch.setattr(keyboard_async, "_get_nearby_key", lambda _ch: "s")
+        cfg = HumanConfig(
+            mistype_chance=1.0,
+            key_hold=(0, 0),
+            typing_pause_chance=0,
+            typing_delay=0,
+            typing_delay_spread=0,
+            mistype_delay_notice=(0, 0),
+            mistype_delay_correct=(0, 0),
+        )
+        raw = Raw()
+
+        await keyboard_async.async_human_type(None, raw, "aЖ", cfg)
+
+        assert ("down", "s") in raw.calls
+        assert ("down", "Backspace") in raw.calls
+        assert ("insert_text", "Ж") in raw.calls
+
+    @pytest.mark.asyncio
+    async def test_async_mouse_move_short_distance_returns_without_move(self):
+        from cloakbrowser.human.config import HumanConfig
+        from cloakbrowser.human.mouse_async import async_human_move
+
+        raw = _AsyncFakeRawMouse()
+
+        await async_human_move(raw, 10, 10, 10.5, 10.5, HumanConfig())
+
+        assert raw.moves == []
+
+    @pytest.mark.asyncio
+    async def test_async_mouse_move_with_overshoot(self, monkeypatch):
+        from cloakbrowser.human.config import HumanConfig
+        import cloakbrowser.human.mouse_async as mouse_async
+
+        async def no_sleep(_ms):
+            return None
+
+        monkeypatch.setattr(mouse_async, "async_sleep_ms", no_sleep)
+        monkeypatch.setattr(mouse_async.random, "random", lambda: 0.0)
+        cfg = HumanConfig(
+            mouse_min_steps=2,
+            mouse_max_steps=2,
+            mouse_steps_divisor=1000,
+            mouse_wobble_max=0,
+            mouse_burst_size=(99, 99),
+            mouse_overshoot_chance=1.0,
+            mouse_overshoot_px=(4, 4),
+        )
+        raw = _AsyncFakeRawMouse()
+
+        await mouse_async.async_human_move(raw, 0, 0, 10, 0, cfg)
+
+        assert raw.moves[-2] == (14, 0)
+        assert raw.moves[-1][0] in (8, 9, 10, 11, 12)
+
+    @pytest.mark.asyncio
+    async def test_async_human_click_input_and_button(self, monkeypatch):
+        from cloakbrowser.human.config import HumanConfig
+        import cloakbrowser.human.mouse_async as mouse_async
+
+        async def no_sleep(_ms):
+            return None
+
+        monkeypatch.setattr(mouse_async, "async_sleep_ms", no_sleep)
+        raw = _AsyncFakeRawMouse()
+        cfg = HumanConfig(
+            click_aim_delay_input=(0, 0),
+            click_aim_delay_button=(0, 0),
+            click_hold_input=(0, 0),
+            click_hold_button=(0, 0),
+        )
+
+        await mouse_async.async_human_click(raw, True, cfg)
+        await mouse_async.async_human_click(raw, False, cfg)
+
+        assert raw.clicks == ["down", "up", "down", "up"]
+
+    @pytest.mark.asyncio
+    async def test_async_human_idle_moves_until_time_expires(self, monkeypatch):
+        from cloakbrowser.human.config import HumanConfig
+        import cloakbrowser.human.mouse_async as mouse_async
+        import time as time_module
+
+        times = [0.0, 0.0, 2.0]
+
+        async def no_sleep(_ms):
+            return None
+
+        def monotonic():
+            if len(times) > 1:
+                return times.pop(0)
+            return times[0]
+
+        monkeypatch.setattr(time_module, "monotonic", monotonic)
+        monkeypatch.setattr(mouse_async, "async_sleep_ms", no_sleep)
+        monkeypatch.setattr(mouse_async.random, "random", lambda: 1.0)
+        raw = _AsyncFakeRawMouse()
+
+        await mouse_async.async_human_idle(raw, 1.0, 5, 6, HumanConfig(idle_drift_px=1, idle_pause_range=(0, 0)))
+
+        assert raw.moves == [(6, 7)]
+
+    @pytest.mark.asyncio
+    async def test_async_get_element_box_handles_success_and_error(self):
+        from cloakbrowser.human.scroll_async import _get_element_box_async
+
+        page = _AsyncFakePage({"x": 1, "y": 2, "width": 3, "height": 4})
+        assert await _get_element_box_async(page, "#x", timeout=123) == {
+            "x": 1,
+            "y": 2,
+            "width": 3,
+            "height": 4,
+        }
+        assert page.locator_obj.timeout == 123
+
+        failing_page = _AsyncFakePage(RuntimeError("missing"))
+        assert await _get_element_box_async(failing_page, "#x") is None
+
+    @pytest.mark.asyncio
+    async def test_async_scroll_into_view_errors_and_visible_fast_path(self):
+        from cloakbrowser.human.config import HumanConfig
+        from cloakbrowser.human.scroll_async import async_human_scroll_into_view
+
+        raw = _AsyncFakeRawMouse()
+        cfg = HumanConfig()
+
+        with pytest.raises(RuntimeError, match="Viewport size not available"):
+            await async_human_scroll_into_view(_AsyncFakePage(None, viewport={}), raw, lambda: None, 1, 2, cfg)
+
+        async def no_box():
+            return None
+
+        with pytest.raises(RuntimeError, match="Element not found"):
+            await async_human_scroll_into_view(_AsyncFakePage(None), raw, no_box, 1, 2, cfg)
+
+        async def visible_box():
+            return {"x": 10, "y": 200, "width": 10, "height": 10}
+
+        box, x, y = await async_human_scroll_into_view(_AsyncFakePage(None), raw, visible_box, 1, 2, cfg)
+        assert box["y"] == 200
+        assert (x, y) == (1, 2)
+
+    @pytest.mark.asyncio
+    async def test_async_scroll_into_view_scrolls_overshoots_and_loses_element(self, monkeypatch):
+        from cloakbrowser.human.config import HumanConfig
+        import cloakbrowser.human.scroll_async as scroll_async
+
+        async def no_sleep(_ms):
+            return None
+
+        async def no_move(raw, start_x, start_y, end_x, end_y, cfg):
+            raw.moves.append((round(end_x), round(end_y)))
+
+        boxes = iter([
+            {"x": 0, "y": 1000, "width": 10, "height": 10},
+            {"x": 0, "y": 1000, "width": 10, "height": 10},
+            None,
+        ])
+
+        async def get_box():
+            return next(boxes)
+
+        monkeypatch.setattr(scroll_async, "async_sleep_ms", no_sleep)
+        monkeypatch.setattr(scroll_async, "async_human_move", no_move)
+        monkeypatch.setattr(scroll_async.random, "random", lambda: 0.0)
+        monkeypatch.setattr(scroll_async, "rand", lambda a, b: a)
+        monkeypatch.setattr(scroll_async, "rand_range", lambda value: value[0])
+        monkeypatch.setattr(scroll_async, "rand_int_range", lambda value: int(value[0]))
+        cfg = HumanConfig(
+            scroll_delta_base=(300, 300),
+            scroll_delta_variance=0,
+            scroll_accel_steps=(1, 1),
+            scroll_decel_steps=(1, 1),
+            scroll_pause_slow=(0, 0),
+            scroll_pause_fast=(0, 0),
+            scroll_pre_move_delay=(0, 0),
+            scroll_overshoot_chance=1.0,
+            scroll_overshoot_px=(40, 40),
+            scroll_settle_delay=(0, 0),
+        )
+        raw = _AsyncFakeRawMouse()
+
+        with pytest.raises(RuntimeError, match="Element lost after scrolling into view"):
+            await scroll_async.async_human_scroll_into_view(_AsyncFakePage(None), raw, get_box, 1, 2, cfg)
+
+        assert raw.moves
+        assert raw.wheels
+
+    @pytest.mark.asyncio
+    async def test_async_scroll_to_element_uses_locator_get_box(self, monkeypatch):
+        from cloakbrowser.human.config import HumanConfig
+        import cloakbrowser.human.scroll_async as scroll_async
+
+        async def fake_scroll(page, raw, get_box, cursor_x, cursor_y, cfg):
+            return await get_box(), cursor_x, cursor_y
+
+        monkeypatch.setattr(scroll_async, "async_human_scroll_into_view", fake_scroll)
+        page = _AsyncFakePage({"x": 3, "y": 4, "width": 5, "height": 6})
+        result = await scroll_async.async_scroll_to_element(
+            page, _AsyncFakeRawMouse(), "#target", 7, 8, HumanConfig(), timeout=456
+        )
+
+        assert result[0]["x"] == 3
+        assert page.locator_obj.timeout == 456
 
 
 # =========================================================================
