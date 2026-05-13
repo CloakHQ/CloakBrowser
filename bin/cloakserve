@@ -367,7 +367,16 @@ def parse_connection_params(query_string: str) -> dict:
 def _ws_scheme(request: web.Request) -> str:
     """Return 'wss' if client connected via HTTPS (e.g. TLS-terminating proxy), else 'ws'."""
     proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    proto = proto.split(",", 1)[0].strip().lower()
     return "wss" if proto == "https" else "ws"
+
+
+def _external_host(request: web.Request) -> str:
+    """Return the public host to use in rewritten CDP WebSocket URLs."""
+    forwarded_host = request.headers.get("X-Forwarded-Host")
+    if forwarded_host:
+        return forwarded_host.split(",", 1)[0].strip()
+    return request.headers.get("Host", f"localhost:{request.app['port']}")
 
 
 async def handle_root(request: web.Request) -> web.Response:
@@ -418,7 +427,7 @@ async def handle_json_version(request: web.Request) -> web.Response:
         return web.json_response({"error": "CDP endpoint unreachable"}, status=502)
 
     # Rewrite webSocketDebuggerUrl to route through our multiplexer
-    host = request.headers.get("Host", f"localhost:{request.app['port']}")
+    host = _external_host(request)
     seed_key = params["seed"]
     if seed_key:
         ws_path = f"fingerprint/{seed_key}/devtools/browser"
@@ -459,7 +468,7 @@ async def handle_json_list(request: web.Request) -> web.Response:
         logger.error("Failed to reach Chrome CDP (port %d): %s", cp.cdp_port, exc)
         return web.json_response({"error": "CDP endpoint unreachable"}, status=502)
 
-    host = request.headers.get("Host", f"localhost:{request.app['port']}")
+    host = _external_host(request)
     scheme = _ws_scheme(request)
     seed_key = params["seed"]
 
