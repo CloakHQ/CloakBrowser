@@ -170,6 +170,13 @@ class TestExternalHost:
         })
         assert _external_host(request) == "public.example.com"
 
+    def test_blank_forwarded_host_falls_back_to_host_header(self):
+        request = self._Request({
+            "Host": "internal:9222",
+            "X-Forwarded-Host": "   ",
+        })
+        assert _external_host(request) == "internal:9222"
+
     def test_falls_back_to_host_header(self):
         request = self._Request({"Host": "localhost:9222"})
         assert _external_host(request) == "localhost:9222"

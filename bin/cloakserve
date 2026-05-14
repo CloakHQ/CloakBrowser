@@ -373,10 +373,13 @@ def _ws_scheme(request: web.Request) -> str:
 
 def _external_host(request: web.Request) -> str:
     """Return the public host to use in rewritten CDP WebSocket URLs."""
+    fallback_host = request.headers.get("Host") or f"localhost:{request.app['port']}"
     forwarded_host = request.headers.get("X-Forwarded-Host")
     if forwarded_host:
-        return forwarded_host.split(",", 1)[0].strip()
-    return request.headers.get("Host", f"localhost:{request.app['port']}")
+        public_host = forwarded_host.split(",", 1)[0].strip()
+        if public_host:
+            return public_host
+    return fallback_host
 
 
 async def handle_root(request: web.Request) -> web.Response:
