@@ -18,6 +18,7 @@ Client:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -29,7 +30,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 from pathlib import Path
 
@@ -64,6 +65,91 @@ BASE_CDP_PORT = 5100
 
 SAFE_SEED_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 RESERVED_SEEDS = {"__default__"}
+TRUSTED_WS_ORIGINS = {"devtools://devtools", "chrome-devtools://devtools"}
+
+
+def _host_port_from_netloc(netloc: str, default_port: int) -> tuple[str, int] | None:
+    """Return a normalized (host, port) pair for an Origin/Host netloc."""
+    if "," in netloc:
+        return None
+    try:
+        parsed = urlparse(f"//{netloc.strip()}")
+        authority = parsed.netloc.rsplit("@", 1)[-1]
+        if (
+            not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or authority.endswith(":")
+            or parsed.path
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        return (parsed.hostname.lower(), parsed.port if parsed.port is not None else default_port)
+    except ValueError:
+        return None
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    """Return True for localhost and loopback IP literals."""
+    hostname = hostname.strip("[]").rstrip(".").lower()
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _origin_is_allowed(
+    origin: str | None,
+    host: str | None,
+    request_scheme: str = "http",
+) -> bool:
+    """Return True when a WebSocket Origin is safe to proxy to local CDP."""
+    if origin is None:
+        # Playwright/Puppeteer and other non-browser CDP clients commonly omit
+        # Origin. Keep those clients working while rejecting browser-origin CSRF.
+        return True
+
+    origin = origin.strip()
+    if not origin or origin.lower() == "null":
+        return False
+    if origin in TRUSTED_WS_ORIGINS:
+        return True
+
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+
+    if parsed.scheme not in ("http", "https"):
+        return False
+    if parsed.path or parsed.params or parsed.query or parsed.fragment:
+        return False
+
+    origin_default_port = 443 if parsed.scheme == "https" else 80
+    request_scheme = request_scheme.split(",", 1)[0].strip().lower()
+    request_default_port = 443 if request_scheme in ("https", "wss") else 80
+    origin_host = _host_port_from_netloc(parsed.netloc, origin_default_port)
+    request_host = _host_port_from_netloc(host or "", request_default_port)
+    if origin_host is None or request_host is None:
+        return False
+    if not _is_loopback_host(request_host[0]):
+        return False
+    return origin_host == request_host
+
+
+def _reject_untrusted_origin(request: web.Request) -> web.Response | None:
+    """Reject browser-origin WebSocket upgrades that would expose local CDP."""
+    origin = request.headers.get("Origin")
+    host = request.headers.get("Host")
+    scheme = request.headers.get("X-Forwarded-Proto", getattr(request, "scheme", "http"))
+    if _origin_is_allowed(origin, host, request_scheme=scheme):
+        return None
+    logger.warning("Rejected CDP WebSocket from untrusted Origin %r for Host %r", origin, host)
+    return web.Response(status=403, text="Forbidden: untrusted WebSocket origin\n")
 
 
 # ---------------------------------------------------------------------------
@@ -527,8 +613,12 @@ async def proxy_cdp_websocket(
         logger.error("%s error: %s", label, exc)
 
 
-async def handle_ws_default(request: web.Request) -> web.WebSocketResponse:
+async def handle_ws_default(request: web.Request) -> web.StreamResponse:
     """WebSocket proxy for default (no-seed) Chrome: /devtools/{type}/{guid}"""
+    rejected = _reject_untrusted_origin(request)
+    if rejected is not None:
+        return rejected
+
     pool: ChromePool = request.app["pool"]
     path = request.match_info.get("path", "")
 
@@ -546,8 +636,12 @@ async def handle_ws_default(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
-async def handle_ws_seed(request: web.Request) -> web.WebSocketResponse:
+async def handle_ws_seed(request: web.Request) -> web.StreamResponse:
     """WebSocket proxy for seed-specific Chrome: /fingerprint/{seed}/devtools/{type}/{guid}"""
+    rejected = _reject_untrusted_origin(request)
+    if rejected is not None:
+        return rejected
+
     pool: ChromePool = request.app["pool"]
     seed = request.match_info["seed"]
     path = request.match_info.get("path", "")
