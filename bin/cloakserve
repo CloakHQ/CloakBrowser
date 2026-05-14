@@ -364,12 +364,6 @@ def parse_connection_params(query_string: str) -> dict:
 # HTTP handlers
 # ---------------------------------------------------------------------------
 
-def _ws_scheme(request: web.Request) -> str:
-    """Return 'wss' if client connected via HTTPS (e.g. TLS-terminating proxy), else 'ws'."""
-    proto = request.headers.get("X-Forwarded-Proto", request.scheme)
-    return "wss" if proto == "https" else "ws"
-
-
 PUBLIC_BIND_SECURITY_WARNING = (
     "cloakserve is listening on 0.0.0.0 without authentication. "
     "CDP grants full browser control; publish port 9222 only to trusted "
@@ -383,6 +377,12 @@ def _bind_security_warnings(host: str) -> list[str]:
     if normalized in {"0.0.0.0", "::", "[::]"}:
         return [PUBLIC_BIND_SECURITY_WARNING]
     return []
+
+
+def _ws_scheme(request: web.Request) -> str:
+    """Return 'wss' if client connected via HTTPS (e.g. TLS-terminating proxy), else 'ws'."""
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    return "wss" if proto == "https" else "ws"
 
 
 async def handle_root(request: web.Request) -> web.Response:

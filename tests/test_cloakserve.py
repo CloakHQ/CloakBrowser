@@ -25,7 +25,6 @@ parse_connection_params = _mod.parse_connection_params
 parse_cli_args = _mod.parse_cli_args
 ChromePool = _mod.ChromePool
 _default_data_dir = _mod._default_data_dir
-_bind_security_warnings = _mod._bind_security_warnings
 SAFE_SEED_RE = _mod.SAFE_SEED_RE
 RESERVED_SEEDS = _mod.RESERVED_SEEDS
 
@@ -210,19 +209,19 @@ class TestBindSecurityWarnings:
     """Warn when cloakserve is reachable on all interfaces without auth."""
 
     def test_public_ipv4_bind_warns_about_unauthenticated_cdp(self):
-        warnings = _bind_security_warnings("0.0.0.0")
+        warnings = _mod._bind_security_warnings("0.0.0.0")
         assert len(warnings) == 1
         assert "without authentication" in warnings[0]
         assert "CDP" in warnings[0]
 
     def test_public_ipv6_bind_warns_about_unauthenticated_cdp(self):
-        warnings = _bind_security_warnings("::")
+        warnings = _mod._bind_security_warnings("::")
         assert len(warnings) == 1
         assert "without authentication" in warnings[0]
 
     def test_loopback_bind_has_no_warning(self):
-        assert _bind_security_warnings("127.0.0.1") == []
-        assert _bind_security_warnings("localhost") == []
+        assert _mod._bind_security_warnings("127.0.0.1") == []
+        assert _mod._bind_security_warnings("localhost") == []
 
     def test_root_diagnostics_include_public_bind_warning(self):
         request = SimpleNamespace(app={
@@ -233,7 +232,7 @@ class TestBindSecurityWarnings:
         response = asyncio.run(_mod.handle_root(request))
         payload = json.loads(response.text)
 
-        assert payload["warnings"] == _bind_security_warnings("0.0.0.0")
+        assert payload["warnings"] == _mod._bind_security_warnings("0.0.0.0")
 
 
 # ---------------------------------------------------------------------------
