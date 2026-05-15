@@ -44,6 +44,29 @@ function filterStealthCtxOptions(ctx?: BrowserContextOptions): Partial<BrowserCo
   return rest;
 }
 
+const GEOIP_CONTEXT_PROXY_WARNING =
+  "[cloakbrowser] geoip: true was set at browser launch, but proxy was passed " +
+  "to browser.newContext(); GeoIP timezone/locale are resolved only at launch " +
+  "time, so this per-context proxy will not update --fingerprint-timezone or " +
+  "--lang. Pass proxy to launch() with geoip: true, or pass explicit timezone " +
+  "and locale to launch() for the proxy region.";
+
+function patchContextGeoipWarning(browser: Browser, geoip?: boolean): void {
+  if (!geoip) return;
+
+  const origNewContext = browser.newContext.bind(browser);
+  let warned = false;
+
+  browser.newContext = (async (...args: Parameters<typeof origNewContext>) => {
+    const contextOptions = args[0] as BrowserContextOptions | undefined;
+    if (!warned && contextOptions?.proxy !== undefined) {
+      warned = true;
+      console.warn(GEOIP_CONTEXT_PROXY_WARNING);
+    }
+    return origNewContext(...args);
+  }) as typeof browser.newContext;
+}
+
 /**
  * Launch stealth Chromium browser via Playwright.
  *
@@ -77,6 +100,8 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     ...(proxyOption ? { proxy: proxyOption } : {}),
     ...options.launchOptions,
   });
+
+  patchContextGeoipWarning(browser, options.geoip);
 
   // Human-like behavioral patching
   if (options.humanize) {

@@ -463,6 +463,12 @@ const ctx = await launchPersistentContext({
 
 > **Note:** Each example above is standalone — not meant to run as one block.
 
+### GeoIP + Multiple Contexts
+
+`geoip=True` / `geoip: true` resolves timezone and locale once before Chromium launches, then applies them through process-level binary flags. It cannot derive a different timezone or locale from proxies passed later to `browser.new_context(proxy=...)` or `browser.newContext({ proxy })`.
+
+For multiple regional proxies, either launch one browser per proxy with `proxy` and `geoip` set at launch time, or pass explicit `timezone` and `locale` to `launch()` / `launch_async()` / `launchContext()` so they match the proxy region. CloakBrowser warns once when `geoip` is enabled at launch and a per-context proxy is used later.
+
 All Python options work in JS: `stealthArgs: false` to disable defaults, `geoip: true` to auto-detect timezone/locale from proxy IP.
 
 ### Puppeteer
