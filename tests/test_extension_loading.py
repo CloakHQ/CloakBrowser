@@ -15,7 +15,7 @@ def test_extension_loading(mock_playwright_import, mock_ensure_binary):
     mock_pw.chromium.launch.return_value = mock_browser
 
     mock_pw_manager = MagicMock()
-    mock_pw_manager.start.return_value = mock_pw
+    mock_pw_manager.return_value.start.return_value = mock_pw
 
     mock_playwright_import.return_value = mock_pw_manager
 
