@@ -958,17 +958,16 @@ def build_args(
     locale: str | None = None,
     headless: bool = True,
 ) -> list[str]:
-    """Combine stealth args with user-provided args and locale flags.
-
-    Deduplicates by flag key (everything before '=').
-    Priority: stealth defaults < user args < dedicated params (timezone/locale).
-    """
+    """Combine stealth args with user-provided args and locale flags."""
     seen: dict[str, str] = {}
 
     if stealth_args:
         for arg in get_default_stealth_args():
             seen[arg.split("=", 1)[0]] = arg
-
+    # disable Critical Client Hints to prevent hangs when geoips or proxies are used (#243)
+    client_hint_features = "ClientHintsMetaEquivalentHTTPEquivAcceptCH,CriticalClientHint,AcceptCHFrame"
+    seen["--disable-features"] = f"--disable-features={client_hint_features}"
+    
     # GPU blocklist bypass:
     # - Headed mode (all platforms): Chromium blocks WebGL on software GPUs
     #   in Docker/Xvfb. Flag lets SwiftShader serve WebGL. See issue #56.
