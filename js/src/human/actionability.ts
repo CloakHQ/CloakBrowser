@@ -206,6 +206,15 @@ const POINTER_EVENTS_LOCATOR_JS = `(expected, coords) => {
   return { hit: false, reason: 'covered', covering: target.tagName || 'unknown' };
 }`;
 
+const POINTER_EVENTS_HANDLE_JS = `(expected, coords) => {
+  const target = document.elementFromPoint(coords.x, coords.y);
+  if (!target) return { hit: false, reason: 'no_element_at_point', covering: 'none' };
+  let node = target;
+  while (node) { if (node === expected) return { hit: true }; node = node.parentNode; }
+  if (expected.contains(target)) return { hit: true };
+  return { hit: false, reason: 'covered', covering: target.tagName || 'unknown' };
+}`;
+
 export async function checkPointerEvents(
   pageOrFrame: Page | Frame,
   selector: string,
@@ -308,19 +317,12 @@ export async function checkPointerEventsHandle(
   const deadline = Date.now() + timeout;
   let attempt = 0;
 
-  const js = `(expected) => {
-    const target = document.elementFromPoint(${x}, ${y});
-    if (!target) return { hit: false, reason: 'no_element_at_point', covering: 'none' };
-    let node = target;
-    while (node) { if (node === expected) return { hit: true }; node = node.parentNode; }
-    if (expected.contains(target)) return { hit: true };
-    return { hit: false, reason: 'covered', covering: target.tagName || 'unknown' };
-  }`;
+  const coords = { x, y };
 
   while (true) {
     let result: any;
     try {
-      result = await el.evaluate(js);
+      result = await el.evaluate(POINTER_EVENTS_HANDLE_JS, coords);
     } catch {
       result = null;
     }

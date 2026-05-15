@@ -1039,7 +1039,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         except Exception:
             checked = False
         if not checked:
-            _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force)
+            _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
 
     def _human_uncheck(selector: str, **kwargs: Any) -> None:
         force = kwargs.get("force", False)
@@ -1056,7 +1056,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         except Exception:
             checked = True
         if checked:
-            _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force)
+            _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
 
     def _human_select_option(selector: str, value: Any = None, **kwargs: Any) -> Any:
         force = kwargs.get("force", False)
@@ -1068,7 +1068,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
         if not force:
             ensure_actionable(page, selector, CHECKS_FOCUS, timeout=_remaining_ms(), force=force)
-        _human_hover(selector, _skip_checks=True, timeout=_remaining_ms(), force=force)
+        _human_hover(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
         sleep_ms(rand(100, 300))
         return originals.select_option(selector, value, **kwargs)
 
@@ -1083,7 +1083,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         if not force:
             ensure_actionable(page, selector, CHECKS_FOCUS, timeout=_remaining_ms(), force=force)
         if not _is_selector_focused(page, selector):
-            _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force)
+            _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
         sleep_ms(rand(50, 150))
         originals.keyboard_press(key)
 
@@ -1938,7 +1938,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         except Exception:
             checked = False
         if not checked:
-            await _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force)
+            await _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
 
     async def _human_uncheck(selector: str, **kwargs: Any) -> None:
         force = kwargs.get("force", False)
@@ -1955,7 +1955,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         except Exception:
             checked = True
         if checked:
-            await _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force)
+            await _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
 
     async def _human_press(selector: str, key: str, **kwargs: Any) -> None:
         force = kwargs.get("force", False)
@@ -1968,7 +1968,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         if not force:
             await async_ensure_actionable(page, selector, CHECKS_FOCUS, timeout=_remaining_ms(), force=force)
         if not await _async_is_selector_focused(page, selector):
-            await _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force)
+            await _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
         await async_sleep_ms(rand(50, 150))
         await originals.keyboard_press(key)
 
@@ -1982,7 +1982,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
         if not force:
             await async_ensure_actionable(page, selector, CHECKS_FOCUS, timeout=_remaining_ms(), force=force)
-        await _human_hover(selector, _skip_checks=True, timeout=_remaining_ms(), force=force)
+        await _human_hover(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
         await async_sleep_ms(rand(100, 300))
         return await originals.select_option(selector, value, **kwargs)
 

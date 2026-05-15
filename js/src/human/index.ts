@@ -456,7 +456,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
     if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
     if (!await isSelectorFocused(stealth, page, selector)) {
-      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force } as any);
+      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     }
     await sleep(rand(50, 150));
     await originals.keyboardPress(SELECT_ALL);
@@ -478,7 +478,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     }
     const checked = await originals.isChecked(selector).catch(() => false);
     if (!checked) {
-      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force } as any);
+      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     }
   };
 
@@ -496,7 +496,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     }
     const checked = await originals.isChecked(selector).catch(() => true);
     if (checked) {
-      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force } as any);
+      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     }
   };
 
@@ -508,7 +508,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const remainingMs = () => Math.max(0, deadline - Date.now());
 
     if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
-    await humanHoverFn(selector, { _skipChecks: true, timeout: remainingMs(), force } as any);
+    await humanHoverFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     await sleep(rand(100, 300));
     return originals.selectOption(selector, values, options);
   };
@@ -522,7 +522,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
     if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
     if (!await isSelectorFocused(stealth, page, selector)) {
-      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force } as any);
+      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     }
     await sleep(rand(50, 150));
     await originals.keyboardPress(key);
@@ -538,7 +538,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
     if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
     if (!await isSelectorFocused(stealth, page, selector)) {
-      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force } as any);
+      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     }
     await sleep(rand(100, 250));
     const cdp = await ensureCdp();

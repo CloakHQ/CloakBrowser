@@ -23,6 +23,7 @@ from .actionability import (
     _BACKOFF_MS,
     _boxes_differ,
     _POINTER_EVENTS_LOCATOR_JS,
+    _POINTER_EVENTS_HANDLE_JS,
 )
 
 
@@ -226,18 +227,11 @@ async def async_check_pointer_events_handle(
     deadline = time.monotonic() + timeout / 1000.0
     attempt = 0
 
-    js = f"""(expected) => {{
-        const target = document.elementFromPoint({x}, {y});
-        if (!target) return {{ hit: false, reason: 'no_element_at_point', covering: 'none' }};
-        let node = target;
-        while (node) {{ if (node === expected) return {{ hit: true }}; node = node.parentNode; }}
-        if (expected.contains(target)) return {{ hit: true }};
-        return {{ hit: false, reason: 'covered', covering: target.tagName || 'unknown' }};
-    }}"""
+    coords = {"x": x, "y": y}
 
     while True:
         try:
-            result = await el.evaluate(js)
+            result = await el.evaluate(_POINTER_EVENTS_HANDLE_JS, coords)
         except Exception:
             result = None
 
