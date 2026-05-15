@@ -338,3 +338,145 @@ class TestSafeRmtree:
         pool._safe_rmtree(traversal)
 
         assert victim.exists(), "Traversal path must not be deleted"
+
+
+# ---------------------------------------------------------------------------
+# CLI: --host and --auth-token (#217)
+# ---------------------------------------------------------------------------
+
+
+class TestHostAndAuthCli:
+    def test_host_defaults_to_none(self):
+        config, _ = parse_cli_args([])
+        assert config["host"] is None
+
+    def test_custom_host(self):
+        config, passthrough = parse_cli_args(["--host=127.0.0.1"])
+        assert config["host"] == "127.0.0.1"
+        assert "--host=127.0.0.1" not in passthrough
+
+    def test_auth_token_defaults_to_none(self):
+        config, _ = parse_cli_args([])
+        assert config["auth_token"] is None
+
+    def test_auth_token_from_cli(self):
+        config, passthrough = parse_cli_args(["--auth-token=s3cret"])
+        assert config["auth_token"] == "s3cret"
+        assert "--auth-token=s3cret" not in passthrough
+
+    def test_auth_token_from_env(self, monkeypatch):
+        monkeypatch.setenv("CLOAKSERVE_AUTH_TOKEN", "envsecret")
+        config, _ = parse_cli_args([])
+        assert config["auth_token"] == "envsecret"
+
+    def test_cli_token_beats_env_token(self, monkeypatch):
+        monkeypatch.setenv("CLOAKSERVE_AUTH_TOKEN", "envsecret")
+        config, _ = parse_cli_args(["--auth-token=clisecret"])
+        assert config["auth_token"] == "clisecret"
+
+
+# ---------------------------------------------------------------------------
+# auth_middleware (#217)
+# ---------------------------------------------------------------------------
+
+
+class TestAuthMiddleware:
+    """Verify the shared-secret middleware behaves correctly.
+
+    Each test wires the middleware into a minimal aiohttp app and uses
+    aiohttp_client (pytest-aiohttp not required — we use the loop fixture).
+    """
+
+    def _build_app(self, token: str | None):
+        from aiohttp import web
+        app = web.Application(middlewares=[_mod.auth_middleware])
+        app["auth_token"] = token
+
+        async def root(_request):
+            return web.json_response({"ok": True})
+
+        async def json_version(_request):
+            return web.json_response({"Browser": "test"})
+
+        async def devtools(_request):
+            return web.json_response({"path": "ok"})
+
+        app.router.add_get("/", root)
+        app.router.add_get("/json/version", json_version)
+        app.router.add_get("/devtools/browser/abc", devtools)
+        app.router.add_get("/fingerprint/abc/devtools/browser/xyz", devtools)
+        return app
+
+    async def _get_status_and_body(self, app, path, *, headers=None, params=None):
+        from aiohttp.test_utils import TestServer, TestClient
+        async with TestServer(app) as server:
+            async with TestClient(server) as client:
+                async with client.get(
+                    path, headers=headers or {}, params=params or {},
+                ) as resp:
+                    body = None
+                    try:
+                        body = await resp.json()
+                    except Exception:
+                        pass
+                    return resp.status, body
+
+    @pytest.mark.asyncio
+    async def test_no_token_configured_allows_all_routes(self):
+        app = self._build_app(token=None)
+        for path in ["/", "/json/version", "/devtools/browser/abc"]:
+            status, _ = await self._get_status_and_body(app, path)
+            assert status == 200, f"{path} should be open when no token set"
+
+    @pytest.mark.asyncio
+    async def test_root_status_route_always_open(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(app, "/")
+        assert status == 200, "/ must stay reachable for health checks"
+
+    @pytest.mark.asyncio
+    async def test_json_route_rejects_missing_token(self):
+        app = self._build_app(token="s3cret")
+        status, body = await self._get_status_and_body(app, "/json/version")
+        assert status == 401
+        assert body and "Authentication required" in body.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_json_route_rejects_wrong_token(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(
+            app, "/json/version",
+            headers={"Authorization": "Bearer wrong"},
+        )
+        assert status == 401
+
+    @pytest.mark.asyncio
+    async def test_json_route_accepts_correct_bearer(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(
+            app, "/json/version",
+            headers={"Authorization": "Bearer s3cret"},
+        )
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_json_route_accepts_correct_query_param(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(
+            app, "/json/version", params={"token": "s3cret"},
+        )
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_devtools_ws_path_protected(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(app, "/devtools/browser/abc")
+        assert status == 401
+
+    @pytest.mark.asyncio
+    async def test_fingerprint_ws_path_protected(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(
+            app, "/fingerprint/abc/devtools/browser/xyz",
+        )
+        assert status == 401

@@ -18,6 +18,7 @@ Client:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -364,6 +365,59 @@ def parse_connection_params(query_string: str) -> dict:
 # HTTP handlers
 # ---------------------------------------------------------------------------
 
+def _extract_request_token(request: web.Request) -> str | None:
+    """Pull an auth token from the request.
+
+    Accepts either ``Authorization: Bearer <token>`` (preferred — keeps the
+    secret out of access logs) or ``?token=<token>`` (compat for clients
+    that can't set headers, e.g. ``connect_over_cdp`` URL strings).
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[len("Bearer "):].strip() or None
+    token = request.query.get("token")
+    return token or None
+
+
+@web.middleware
+async def auth_middleware(
+    request: web.Request, handler
+) -> web.StreamResponse:
+    """Require a shared-secret token on protected routes when configured.
+
+    When ``auth_token`` is unset, all routes are open (backwards-compatible).
+    When set, ``/json/*`` and ``/devtools/*`` (incl. ``/fingerprint/*``)
+    routes require the token; ``/`` (status) stays open so health checks
+    keep working.
+
+    The token comparison is constant-time so the endpoint cannot be used as
+    a length / prefix oracle.
+    """
+    expected = request.app.get("auth_token")
+    if not expected:
+        return await handler(request)
+
+    path = request.path
+    if path == "/" or path == "":
+        return await handler(request)
+    if not (path.startswith("/json") or path.startswith("/devtools")
+            or path.startswith("/fingerprint/")):
+        return await handler(request)
+
+    presented = _extract_request_token(request) or ""
+    # ``compare_digest`` requires equal-length bytes; encode both sides.
+    if not hmac.compare_digest(presented.encode("utf-8"),
+                               expected.encode("utf-8")):
+        logger.warning(
+            "Rejected unauthenticated request to %s from %s",
+            path, request.remote,
+        )
+        return web.json_response(
+            {"error": "Authentication required"}, status=401,
+        )
+    return await handler(request)
+
+
 def _ws_scheme(request: web.Request) -> str:
     """Return 'wss' if client connected via HTTPS (e.g. TLS-terminating proxy), else 'ws'."""
     proto = request.headers.get("X-Forwarded-Proto", request.scheme)
@@ -596,12 +650,16 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
         "default_seed": None,
         "default_locale": None,
         "default_timezone": None,
+        "host": None,
+        "auth_token": None,
     }
     passthrough = []
     # Flags consumed by cloakserve (not passed to Chrome)
     consumed_prefixes = (
         "--port=",
         "--data-dir=",
+        "--host=",
+        "--auth-token=",
         "--remote-debugging-port=",
         "--remote-debugging-address=",
     )
@@ -611,6 +669,10 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
             config["port"] = int(arg.split("=", 1)[1])
         elif arg.startswith("--data-dir="):
             config["data_dir"] = arg.split("=", 1)[1]
+        elif arg.startswith("--host="):
+            config["host"] = arg.split("=", 1)[1].strip() or None
+        elif arg.startswith("--auth-token="):
+            config["auth_token"] = arg.split("=", 1)[1] or None
         elif arg == "--headless=false" or arg == "--headless=False":
             config["headless"] = False
             passthrough.append(arg)
@@ -628,6 +690,12 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
 
     if config["data_dir"] is None:
         config["data_dir"] = _default_data_dir()
+
+    # Auth token via env var when not on the CLI (avoid token-in-process-list).
+    if config["auth_token"] is None:
+        env_token = os.environ.get("CLOAKSERVE_AUTH_TOKEN")
+        if env_token:
+            config["auth_token"] = env_token
 
     return config, passthrough
 
@@ -657,9 +725,10 @@ def main() -> None:
         default_timezone=config["default_timezone"],
     )
 
-    app = web.Application()
+    app = web.Application(middlewares=[auth_middleware])
     app["pool"] = pool
     app["port"] = config["port"]
+    app["auth_token"] = config["auth_token"]
 
     # Routes
     app.router.add_get("/", handle_root)
@@ -685,8 +754,24 @@ def main() -> None:
         port,
     )
 
-    in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-    host = "0.0.0.0" if in_container else "127.0.0.1"
+    if config["host"]:
+        host = config["host"]
+    else:
+        in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+        host = "0.0.0.0" if in_container else "127.0.0.1"
+
+    # Warn loudly if the CDP surface is reachable beyond loopback without a
+    # shared-secret token. Inside a container the auto-detect picks 0.0.0.0
+    # so port-forwarded deployments hit this path by default. (#217)
+    if host not in ("127.0.0.1", "::1", "localhost") and not config["auth_token"]:
+        logger.warning(
+            "cloakserve is binding to %s with no --auth-token set. The CDP "
+            "endpoint will be reachable to anyone who can talk to this "
+            "address — set --auth-token=<secret> (or CLOAKSERVE_AUTH_TOKEN) "
+            "to require Bearer auth on /json and /devtools routes.",
+            host,
+        )
+
     web.run_app(app, host=host, port=port, print=None)
 
 
