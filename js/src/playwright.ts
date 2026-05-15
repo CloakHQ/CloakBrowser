@@ -3,7 +3,7 @@
  * Mirrors Python cloakbrowser/browser.py.
  */
 
-import type { Browser, BrowserContext, BrowserContextOptions } from "playwright-core";
+import type { Browser, BrowserContext, BrowserContextOptions, LaunchOptions as PlaywrightLaunchOptions } from "playwright-core";
 import type { LaunchOptions, LaunchContextOptions, LaunchPersistentContextOptions } from "./types.js";
 import { DEFAULT_VIEWPORT, IGNORE_DEFAULT_ARGS } from "./config.js";
 import { buildArgs } from "./args.js";
@@ -45,6 +45,52 @@ function filterStealthCtxOptions(ctx?: BrowserContextOptions): Partial<BrowserCo
 }
 
 /**
+ * Build Playwright launch options for CloakBrowser without starting Chromium.
+ *
+ * Useful when integrating CloakBrowser with a custom Playwright build or another
+ * wrapper that needs to call `chromium.launch()` itself.
+ */
+export async function buildLaunchOptions(
+  options: LaunchOptions = {}
+): Promise<PlaywrightLaunchOptions> {
+  const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
+  const { exitIp, ...resolved } = await maybeResolveGeoip(options);
+  const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy);
+  let resolvedArgs = await resolveWebrtcArgs(options);
+  if (exitIp && !(resolvedArgs ?? []).some(a => a.startsWith("--fingerprint-webrtc-ip"))) {
+    resolvedArgs = [...(resolvedArgs ?? []), `--fingerprint-webrtc-ip=${exitIp}`];
+  }
+  const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
+
+  return {
+    executablePath: binaryPath,
+    headless: options.headless ?? true,
+    args,
+    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
+    ...(proxyOption ? { proxy: proxyOption } : {}),
+    ...options.launchOptions,
+  } as PlaywrightLaunchOptions;
+}
+
+/**
+ * Apply CloakBrowser's human-like behavioral layer to an existing Playwright browser.
+ */
+export async function humanizeBrowser(
+  browser: Browser,
+  options: LaunchOptions = {}
+): Promise<void> {
+  if (!options.humanize) return;
+
+  const { patchBrowser } = await import('./human/index.js');
+  const { resolveConfig } = await import('./human/config.js');
+  const cfg = resolveConfig(
+    options.humanPreset ?? 'default',
+    options.humanConfig,
+  );
+  patchBrowser(browser, cfg);
+}
+
+/**
  * Launch stealth Chromium browser via Playwright.
  *
  * @example
@@ -59,36 +105,8 @@ function filterStealthCtxOptions(ctx?: BrowserContextOptions): Partial<BrowserCo
  */
 export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright-core");
-
-  const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
-  const { exitIp, ...resolved } = await maybeResolveGeoip(options);
-  const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy);
-  let resolvedArgs = await resolveWebrtcArgs(options);
-  if (exitIp && !(resolvedArgs ?? []).some(a => a.startsWith("--fingerprint-webrtc-ip"))) {
-    resolvedArgs = [...(resolvedArgs ?? []), `--fingerprint-webrtc-ip=${exitIp}`];
-  }
-  const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
-
-  const browser = await chromium.launch({
-    executablePath: binaryPath,
-    headless: options.headless ?? true,
-    args,
-    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
-    ...(proxyOption ? { proxy: proxyOption } : {}),
-    ...options.launchOptions,
-  });
-
-  // Human-like behavioral patching
-  if (options.humanize) {
-    const { patchBrowser } = await import('./human/index.js');
-    const { resolveConfig } = await import('./human/config.js');
-    const cfg = resolveConfig(
-      options.humanPreset ?? 'default',
-      options.humanConfig,
-    );
-    patchBrowser(browser, cfg);
-  }
-
+  const browser = await chromium.launch(await buildLaunchOptions(options));
+  await humanizeBrowser(browser, options);
   return browser;
 }
 

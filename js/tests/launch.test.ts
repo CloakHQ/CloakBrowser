@@ -21,6 +21,70 @@ describe("binaryInfo", () => {
   });
 });
 
+describe("composable Playwright launch helpers", () => {
+  const origBinaryPath = process.env.CLOAKBROWSER_BINARY_PATH;
+
+  beforeEach(() => {
+    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    if (origBinaryPath) {
+      process.env.CLOAKBROWSER_BINARY_PATH = origBinaryPath;
+    } else {
+      delete process.env.CLOAKBROWSER_BINARY_PATH;
+    }
+  });
+
+  it("exports buildLaunchOptions and humanizeBrowser from the package entrypoint", async () => {
+    const entry = await import("../src/index.js");
+
+    expect(entry.buildLaunchOptions).toBeTypeOf("function");
+    expect(entry.humanizeBrowser).toBeTypeOf("function");
+  });
+
+  it("buildLaunchOptions returns Playwright options without launching a browser", async () => {
+    const { buildLaunchOptions } = await import("../src/index.js");
+
+    const options = await buildLaunchOptions({
+      headless: false,
+      proxy: "http://user:pass@proxy.example:8080",
+      args: ["--custom-flag"],
+      launchOptions: { timeout: 1234 },
+    });
+
+    expect(options.executablePath).toBe("/fake/chrome");
+    expect(options.headless).toBe(false);
+    expect(options.args).toContain("--custom-flag");
+    expect(options.ignoreDefaultArgs).toContain("--enable-automation");
+    expect(options.proxy).toEqual({
+      server: "http://proxy.example:8080",
+      username: "user",
+      password: "pass",
+    });
+    expect(options.timeout).toBe(1234);
+  });
+
+  it("humanizeBrowser patches an existing browser only when requested", async () => {
+    const { humanizeBrowser } = await import("../src/index.js");
+    const browser = {
+      contexts: () => [],
+      newContext: vi.fn(async () => ({})),
+      newPage: vi.fn(async () => ({ context: () => ({}) })),
+    };
+    const originalNewContext = browser.newContext;
+
+    await humanizeBrowser(browser as any, { humanize: false });
+    expect(browser.newContext).toBe(originalNewContext);
+
+    await humanizeBrowser(browser as any, { humanize: true });
+    expect(browser.newContext).not.toBe(originalNewContext);
+  });
+});
+
 // Integration tests require the binary — run with:
 //   CLOAKBROWSER_BINARY_PATH=/path/to/chrome npm test
 describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)(
