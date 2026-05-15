@@ -1,11 +1,10 @@
 """Shared test fixtures."""
 
-import os
-
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _clean_backend_env(monkeypatch):
-    """Ensure CLOAKBROWSER_BACKEND doesn't leak into tests from the host environment."""
+def _clean_env(monkeypatch):
+    """Ensure host-level wrapper env vars don't leak into tests."""
     monkeypatch.delenv("CLOAKBROWSER_BACKEND", raising=False)
+    monkeypatch.delenv("CLOAKBROWSER_GPU_ACCEL", raising=False)

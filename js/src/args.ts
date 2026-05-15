@@ -29,6 +29,14 @@ export function buildArgs(options: LaunchOptions): string[] {
   if (options.headless === false || process.platform === "win32") {
     seen.set("--ignore-gpu-blocklist", "--ignore-gpu-blocklist");
   }
+  if (options.gpuAccel || process.env.CLOAKBROWSER_GPU_ACCEL) {
+    seen.set("--use-gl", "--use-gl=egl");
+    seen.set("--enable-gpu-rasterization", "--enable-gpu-rasterization");
+    seen.set("--ignore-gpu-blocklist", "--ignore-gpu-blocklist");
+    if (process.platform === "linux") {
+      seen.set("--enable-features", "--enable-features=VaapiVideoDecoder");
+    }
+  }
   if (options.args) {
     for (const arg of options.args) {
       const key = arg.split("=")[0];
