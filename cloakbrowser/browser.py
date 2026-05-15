@@ -75,6 +75,7 @@ def launch(
             Dict: {"server": "http://proxy:8080", "bypass": ".google.com", ...}
             — passed directly to Playwright.
         args: Additional Chromium CLI arguments to pass.
+        extension_paths: List of Chrome extension paths to load.
         stealth_args: Include default stealth fingerprint args (default True).
             Set to False if you want to pass your own --fingerprint flags.
         timezone: IANA timezone (e.g. 'America/New_York'). Sets --fingerprint-timezone binary flag.
@@ -169,6 +170,7 @@ async def launch_async(  # noqa: C901
         headless: Run in headless mode (default True).
         proxy: Proxy URL string or Playwright proxy dict (see launch() for details).
         args: Additional Chromium CLI arguments to pass.
+        extension_paths: List of Chrome extension paths to load.
         stealth_args: Include default stealth fingerprint args (default True).
         timezone: IANA timezone (e.g. 'America/New_York'). Sets --fingerprint-timezone binary flag.
         locale: BCP 47 locale (e.g. 'en-US'). Sets --lang binary flag.
@@ -271,6 +273,7 @@ def launch_persistent_context(
         headless: Run in headless mode (default True).
         proxy: Proxy URL string or Playwright proxy dict (see launch() for details).
         args: Additional Chromium CLI arguments.
+        extension_paths: List of Chrome extension paths to load.
         stealth_args: Include default stealth fingerprint args (default True).
         user_agent: Custom user agent string.
         viewport: Viewport size dict, e.g. {"width": 1920, "height": 1080}.
@@ -395,6 +398,7 @@ async def launch_persistent_context_async(
         headless: Run in headless mode (default True).
         proxy: Proxy URL string or Playwright proxy dict (see launch() for details).
         args: Additional Chromium CLI arguments.
+        extension_paths: List of Chrome extension paths to load.
         stealth_args: Include default stealth fingerprint args (default True).
         user_agent: Custom user agent string.
         viewport: Viewport size dict, e.g. {"width": 1920, "height": 1080}.
@@ -518,6 +522,7 @@ def launch_context(
         headless: Run in headless mode (default True).
         proxy: Proxy URL string or Playwright proxy dict (see launch() for details).
         args: Additional Chromium CLI arguments.
+        extension_paths: List of Chrome extension paths to load.
         stealth_args: Include default stealth fingerprint args (default True).
         user_agent: Custom user agent string.
         viewport: Viewport size dict, e.g. {"width": 1920, "height": 1080}.
@@ -620,6 +625,7 @@ async def launch_context_async(
         headless: Run in headless mode (default True).
         proxy: Proxy URL string or Playwright proxy dict (see launch() for details).
         args: Additional Chromium CLI arguments.
+        extension_paths: List of Chrome extension paths to load.
         stealth_args: Include default stealth fingerprint args (default True).
         user_agent: Custom user agent string.
         viewport: Viewport size dict, e.g. {"width": 1920, "height": 1080}.
