@@ -76,6 +76,28 @@ class TestParseConnectionParams:
         result = parse_connection_params("fingerprint=111&fingerprint=222")
         assert result["seed"] == "111"
 
+    def test_token_query_param_is_not_forwarded_to_chrome(self):
+        """``token`` is the auth-flow secret (#217); it must NEVER fall through
+        to the generic ``--fingerprint-{key}={val}`` branch, or the secret
+        would leak to Chrome's argv (visible in ``ps``) and emit an
+        unsupported flag."""
+        qs = "fingerprint=1&token=super-secret-token-value"
+        result = parse_connection_params(qs)
+        for arg in result["extra_args"]:
+            assert "token" not in arg.lower(), (
+                f"token query param leaked into Chrome args: {arg!r}"
+            )
+        assert "--fingerprint-token=super-secret-token-value" not in result["extra_args"]
+        # Sanity: the non-token fingerprint setup is otherwise untouched.
+        assert result["seed"] == "1"
+
+    def test_token_query_param_alone_is_silently_consumed(self):
+        """A bare ``?token=`` (no other params) yields a clean parse — no
+        leaked args and no error."""
+        result = parse_connection_params("token=abc")
+        assert result["seed"] is None
+        assert result["extra_args"] == []
+
 
 # ---------------------------------------------------------------------------
 # parse_cli_args
@@ -338,3 +360,301 @@ class TestSafeRmtree:
         pool._safe_rmtree(traversal)
 
         assert victim.exists(), "Traversal path must not be deleted"
+
+
+# ---------------------------------------------------------------------------
+# CLI: --host and --auth-token (#217)
+# ---------------------------------------------------------------------------
+
+
+class TestHostAndAuthCli:
+    def test_host_defaults_to_none(self):
+        config, _ = parse_cli_args([])
+        assert config["host"] is None
+
+    def test_custom_host(self):
+        config, passthrough = parse_cli_args(["--host=127.0.0.1"])
+        assert config["host"] == "127.0.0.1"
+        assert "--host=127.0.0.1" not in passthrough
+
+    def test_auth_token_defaults_to_none(self):
+        config, _ = parse_cli_args([])
+        assert config["auth_token"] is None
+
+    def test_auth_token_from_cli(self):
+        config, passthrough = parse_cli_args(["--auth-token=s3cret"])
+        assert config["auth_token"] == "s3cret"
+        assert "--auth-token=s3cret" not in passthrough
+
+    def test_auth_token_from_env(self, monkeypatch):
+        monkeypatch.setenv("CLOAKSERVE_AUTH_TOKEN", "envsecret")
+        config, _ = parse_cli_args([])
+        assert config["auth_token"] == "envsecret"
+
+    def test_cli_token_beats_env_token(self, monkeypatch):
+        monkeypatch.setenv("CLOAKSERVE_AUTH_TOKEN", "envsecret")
+        config, _ = parse_cli_args(["--auth-token=clisecret"])
+        assert config["auth_token"] == "clisecret"
+
+
+# ---------------------------------------------------------------------------
+# auth_middleware (#217)
+# ---------------------------------------------------------------------------
+
+
+class TestAuthMiddleware:
+    """Verify the shared-secret middleware behaves correctly.
+
+    Each test wires the middleware into a minimal aiohttp app and uses
+    aiohttp_client (pytest-aiohttp not required — we use the loop fixture).
+    """
+
+    def _build_app(self, token: str | None):
+        from aiohttp import web
+        app = web.Application(middlewares=[_mod.auth_middleware])
+        app["auth_token"] = token
+
+        async def root(_request):
+            return web.json_response({"ok": True})
+
+        async def json_version(_request):
+            return web.json_response({"Browser": "test"})
+
+        async def devtools(_request):
+            return web.json_response({"path": "ok"})
+
+        app.router.add_get("/", root)
+        app.router.add_get("/json/version", json_version)
+        app.router.add_get("/devtools/browser/abc", devtools)
+        app.router.add_get("/fingerprint/abc/devtools/browser/xyz", devtools)
+        return app
+
+    async def _get_status_and_body(self, app, path, *, headers=None, params=None):
+        from aiohttp.test_utils import TestServer, TestClient
+        async with TestServer(app) as server:
+            async with TestClient(server) as client:
+                async with client.get(
+                    path, headers=headers or {}, params=params or {},
+                ) as resp:
+                    body = None
+                    try:
+                        body = await resp.json()
+                    except Exception:
+                        pass
+                    return resp.status, body
+
+    @pytest.mark.asyncio
+    async def test_no_token_configured_allows_all_routes(self):
+        app = self._build_app(token=None)
+        for path in ["/", "/json/version", "/devtools/browser/abc"]:
+            status, _ = await self._get_status_and_body(app, path)
+            assert status == 200, f"{path} should be open when no token set"
+
+    @pytest.mark.asyncio
+    async def test_root_status_route_always_open(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(app, "/")
+        assert status == 200, "/ must stay reachable for health checks"
+
+    @pytest.mark.asyncio
+    async def test_json_route_rejects_missing_token(self):
+        app = self._build_app(token="s3cret")
+        status, body = await self._get_status_and_body(app, "/json/version")
+        assert status == 401
+        assert body and "Authentication required" in body.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_json_route_rejects_wrong_token(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(
+            app, "/json/version",
+            headers={"Authorization": "Bearer wrong"},
+        )
+        assert status == 401
+
+    @pytest.mark.asyncio
+    async def test_json_route_accepts_correct_bearer(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(
+            app, "/json/version",
+            headers={"Authorization": "Bearer s3cret"},
+        )
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_json_route_accepts_correct_query_param(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(
+            app, "/json/version", params={"token": "s3cret"},
+        )
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_devtools_ws_path_protected(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(app, "/devtools/browser/abc")
+        assert status == 401
+
+    @pytest.mark.asyncio
+    async def test_fingerprint_ws_path_protected(self):
+        app = self._build_app(token="s3cret")
+        status, _ = await self._get_status_and_body(
+            app, "/fingerprint/abc/devtools/browser/xyz",
+        )
+        assert status == 401
+
+
+# ---------------------------------------------------------------------------
+# webSocketDebuggerUrl token propagation (#217 review follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestAppendTokenQuery:
+    """Unit tests for the ``_append_token_query`` helper that propagates the
+    auth token onto rewritten WebSocket URLs.  Without this, a client that
+    authenticates ``/json/version`` via ``?token=`` gets back a
+    ``ws://.../devtools/...`` URL with no token, and the WS handshake
+    immediately fails with 401 — which breaks the Playwright
+    ``connect_over_cdp(URL_STRING)`` use case the PR advertises."""
+
+    def test_returns_url_unchanged_when_no_token(self):
+        url = "ws://host:9222/devtools/browser/abc"
+        assert _mod._append_token_query(url, None) == url
+        assert _mod._append_token_query(url, "") == url
+
+    def test_appends_token_when_no_existing_query(self):
+        out = _mod._append_token_query(
+            "ws://host:9222/devtools/browser/abc", "s3cret",
+        )
+        assert out == "ws://host:9222/devtools/browser/abc?token=s3cret"
+
+    def test_appends_with_ampersand_when_query_exists(self):
+        out = _mod._append_token_query(
+            "ws://host:9222/devtools/browser/abc?keepme=1", "s3cret",
+        )
+        assert out == "ws://host:9222/devtools/browser/abc?keepme=1&token=s3cret"
+
+    def test_token_is_url_encoded(self):
+        out = _mod._append_token_query(
+            "ws://host:9222/devtools/browser/abc",
+            "token with spaces & special=chars",
+        )
+        # `quote(..., safe='')` encodes spaces, ampersands, equals.
+        assert "token=token%20with%20spaces%20%26%20special%3Dchars" in out
+
+    def test_fingerprint_ws_url_gets_token_too(self):
+        """The /fingerprint/<seed>/devtools/... rewrite branch must also
+        propagate — same client compat concern."""
+        out = _mod._append_token_query(
+            "ws://host:9222/fingerprint/abc/devtools/browser/xyz", "s3cret",
+        )
+        assert out.endswith("?token=s3cret")
+
+
+class TestHandleJsonVersionTokenPropagation:
+    """End-to-end test that exercises ``handle_json_version`` against a
+    stubbed Chrome upstream, asserting the rewritten ``webSocketDebuggerUrl``
+    carries ``?token=`` when ``auth_token`` is configured on the app.
+
+    This is the regression coverage requested in review of #217 — without
+    the propagation the rewritten URL would be unauthenticated and the
+    Playwright ``connect_over_cdp(URL_STRING)`` flow would 401 on the WS
+    handshake immediately after a successful ``/json/version`` probe.
+    """
+
+    class _StubProc:
+        def __init__(self, port: int):
+            self.cdp_port = port
+
+    class _StubPool:
+        def __init__(self, port: int):
+            self._port = port
+
+        async def get_or_launch(self, **_kwargs):
+            return TestHandleJsonVersionTokenPropagation._StubProc(self._port)
+
+    async def _serve_chrome_upstream(self, payload: dict):
+        """Spin up a minimal aiohttp server that returns ``payload`` from
+        ``/json/version``.  Returns ``(host, port, server, runner)`` and the
+        caller is responsible for ``await runner.cleanup()``."""
+        from aiohttp import web
+        app = web.Application()
+
+        async def _v(_request):
+            return web.json_response(payload)
+
+        app.router.add_get("/json/version", _v)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        sock = site._server.sockets[0]
+        port = sock.getsockname()[1]
+        return "127.0.0.1", port, runner
+
+    @pytest.mark.asyncio
+    async def test_json_version_propagates_token_to_ws_url(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer, TestClient
+
+        upstream_payload = {
+            "Browser": "Chrome/120",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:5100/devtools/browser/abc-guid",
+        }
+        _host, port, runner = await self._serve_chrome_upstream(upstream_payload)
+        try:
+            app = web.Application(middlewares=[_mod.auth_middleware])
+            app["pool"] = self._StubPool(port)
+            app["port"] = 9222
+            app["auth_token"] = "rev-secret"
+            app.router.add_get("/json/version", _mod.handle_json_version)
+
+            async with TestServer(app) as server:
+                async with TestClient(server) as client:
+                    # Authenticate via ?token= (the URL-string compat flow).
+                    async with client.get(
+                        "/json/version", params={"token": "rev-secret"},
+                    ) as resp:
+                        assert resp.status == 200
+                        data = await resp.json()
+
+            ws = data.get("webSocketDebuggerUrl", "")
+            assert "/devtools/browser/abc-guid" in ws, (
+                f"WS URL not rewritten correctly: {ws!r}"
+            )
+            assert "token=rev-secret" in ws, (
+                f"WS URL missing ?token=: {ws!r} (breaks connect_over_cdp URL flow)"
+            )
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_json_version_no_token_when_auth_unconfigured(self):
+        """Without ``auth_token`` set, the rewritten URL stays clean — we
+        don't add a bogus ``?token=`` query param."""
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer, TestClient
+
+        upstream_payload = {
+            "Browser": "Chrome/120",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:5100/devtools/browser/abc-guid",
+        }
+        _host, port, runner = await self._serve_chrome_upstream(upstream_payload)
+        try:
+            app = web.Application(middlewares=[_mod.auth_middleware])
+            app["pool"] = self._StubPool(port)
+            app["port"] = 9222
+            app["auth_token"] = None
+            app.router.add_get("/json/version", _mod.handle_json_version)
+
+            async with TestServer(app) as server:
+                async with TestClient(server) as client:
+                    async with client.get("/json/version") as resp:
+                        assert resp.status == 200
+                        data = await resp.json()
+
+            ws = data.get("webSocketDebuggerUrl", "")
+            assert "?token=" not in ws
+            assert "&token=" not in ws
+        finally:
+            await runner.cleanup()
