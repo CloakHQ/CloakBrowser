@@ -325,8 +325,16 @@ class ChromePool:
 # Query param parsing
 # ---------------------------------------------------------------------------
 
-# Params that need special handling (not simple --fingerprint-{name}= mapping)
-SPECIAL_PARAMS = {"fingerprint", "proxy", "geoip", "locale", "timezone"}
+# Params that need special handling (not simple --fingerprint-{name}= mapping).
+# ``token`` is reserved for the ``?token=<secret>`` auth flow (see
+# ``auth_middleware``).  It MUST be excluded from the generic branch below —
+# otherwise the value would fall through and get forwarded into Chrome's
+# args as ``--fingerprint-token=<secret>``, leaking the auth secret to
+# child process argv (visible in ``ps``) and emitting an unsupported flag.
+# Surfaced in review of #217 fix.
+SPECIAL_PARAMS = {
+    "fingerprint", "proxy", "geoip", "locale", "timezone", "token",
+}
 
 
 def parse_connection_params(query_string: str) -> dict:
@@ -418,6 +426,24 @@ async def auth_middleware(
     return await handler(request)
 
 
+def _append_token_query(url: str, token: str | None) -> str:
+    """Append ``?token=<token>`` to a rewritten WebSocket URL when auth is on.
+
+    The middleware accepts auth via either ``Authorization: Bearer`` or
+    ``?token=`` (compat for ``connect_over_cdp(URL_STRING)`` clients that
+    cannot set request headers).  After ``/json/version`` or ``/json/list``
+    rewrites the WebSocket URL, the client follows that URL to open a WS
+    handshake — without the token propagated onto the WS URL, the auth
+    middleware rejects the handshake with 401 and breaks the URL-string
+    use case. Surfaced in review of #217 fix.
+    """
+    if not token:
+        return url
+    sep = "&" if "?" in url else "?"
+    from urllib.parse import quote
+    return f"{url}{sep}token={quote(token, safe='')}"
+
+
 def _ws_scheme(request: web.Request) -> str:
     """Return 'wss' if client connected via HTTPS (e.g. TLS-terminating proxy), else 'ws'."""
     proto = request.headers.get("X-Forwarded-Proto", request.scheme)
@@ -484,7 +510,10 @@ async def handle_json_version(request: web.Request) -> web.Response:
     guid = orig_ws.rsplit("/", 1)[-1] if "/devtools/" in orig_ws else ""
 
     scheme = _ws_scheme(request)
-    data["webSocketDebuggerUrl"] = f"{scheme}://{host}/{ws_path}/{guid}"
+    auth_token = request.app.get("auth_token")
+    data["webSocketDebuggerUrl"] = _append_token_query(
+        f"{scheme}://{host}/{ws_path}/{guid}", auth_token,
+    )
     return web.json_response(data)
 
 
@@ -516,16 +545,20 @@ async def handle_json_list(request: web.Request) -> web.Response:
     host = request.headers.get("Host", f"localhost:{request.app['port']}")
     scheme = _ws_scheme(request)
     seed_key = params["seed"]
+    auth_token = request.app.get("auth_token")
 
     for entry in data:
         if "webSocketDebuggerUrl" in entry:
             ws_tail = entry["webSocketDebuggerUrl"].split("/devtools/")[-1]
             if seed_key:
-                entry["webSocketDebuggerUrl"] = (
+                rewritten = (
                     f"{scheme}://{host}/fingerprint/{seed_key}/devtools/{ws_tail}"
                 )
             else:
-                entry["webSocketDebuggerUrl"] = f"{scheme}://{host}/devtools/{ws_tail}"
+                rewritten = f"{scheme}://{host}/devtools/{ws_tail}"
+            entry["webSocketDebuggerUrl"] = _append_token_query(
+                rewritten, auth_token,
+            )
 
     return web.json_response(data)
 
