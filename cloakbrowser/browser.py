@@ -253,6 +253,7 @@ def launch_persistent_context(
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
+    extensions: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser with a persistent profile and return a BrowserContext.
@@ -265,7 +266,8 @@ def launch_persistent_context(
         user_data_dir: Path to the directory where browser profile data is stored.
             Created automatically if it doesn't exist. Reuse the same path across
             sessions to restore cookies, localStorage, cached credentials, etc.
-        headless: Run in headless mode (default True).
+        headless: Run in headless mode (default True). Forced to False if extensions
+            are provided, since extensions only execute in headed mode.
         proxy: Proxy URL string or Playwright proxy dict (see launch() for details).
         args: Additional Chromium CLI arguments.
         stealth_args: Include default stealth fingerprint args (default True).
@@ -282,6 +284,9 @@ def launch_persistent_context(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        extensions: List of Chrome extension IDs to install (e.g., ['nkbihfbeogaeaoehlefnkodbefgpgknn']).
+            Extensions are downloaded from Chrome Web Store and stored in the profile.
+            Automatically sets headless=False since extensions don't run headless.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -290,10 +295,15 @@ def launch_persistent_context(
 
     Example:
         >>> from cloakbrowser import launch_persistent_context
-        >>> ctx = launch_persistent_context("./my-profile", headless=False)
+        >>> # Launch with MetaMask extension
+        >>> ctx = launch_persistent_context(
+        ...     "./my-profile",
+        ...     extensions=['nkbihfbeogaeaoehlefnkodbefgpgknn'],
+        ...     headless=False  # Extensions require headed mode
+        ... )
         >>> page = ctx.new_page()
-        >>> page.goto("https://protected-site.com")
-        >>> ctx.close()  # Profile is saved; re-use path next run to restore state.
+        >>> page.goto("https://uniswap.org")
+        >>> ctx.close()
     """
     sync_playwright = _import_sync_playwright(_resolve_backend(backend))
 
@@ -306,11 +316,41 @@ def launch_persistent_context(
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless)
+
+    # Handle extensions: download/extract and prepare CLI args
+    effective_headless = headless
+    if extensions:
+        from .extensions import download_and_extract_extension
+        
+        extension_paths = []
+        for ext_id in extensions:
+            try:
+                ext_path = download_and_extract_extension(ext_id, user_data_dir)
+                extension_paths.append(ext_path)
+            except Exception as e:
+                logger.warning(f"Failed to install extension {ext_id}: {e}")
+
+        if extension_paths:
+            # Extensions don't run in headless mode — force headed
+            effective_headless = False
+            logger.info(f"Extensions loaded, forcing headless=False")
+            
+            # Add extension CLI args
+            paths_str = ",".join(extension_paths)
+            extension_args = [
+                f"--load-extension={paths_str}",
+                f"--disable-extensions-except={paths_str}",
+            ]
+            if args:
+                args = list(args) + extension_args
+            else:
+                args = extension_args
+
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=effective_headless)
 
     logger.debug(
         "Launching persistent stealth Chromium (headless=%s, user_data_dir=%s)",
-        headless,
+        effective_headless,
         user_data_dir,
     )
 
@@ -333,7 +373,7 @@ def launch_persistent_context(
     context = pw.chromium.launch_persistent_context(
         user_data_dir=os.fspath(user_data_dir),
         executable_path=binary_path,
-        headless=headless,
+        headless=effective_headless,
         args=chrome_args,
         ignore_default_args=IGNORE_DEFAULT_ARGS,
         **proxy_kwargs,
@@ -377,6 +417,7 @@ async def launch_persistent_context_async(
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
+    extensions: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_persistent_context().
@@ -388,7 +429,8 @@ async def launch_persistent_context_async(
     Args:
         user_data_dir: Path to the directory where browser profile data is stored.
             Created automatically if it doesn't exist.
-        headless: Run in headless mode (default True).
+        headless: Run in headless mode (default True). Forced to False if extensions
+            are provided, since extensions only execute in headed mode.
         proxy: Proxy URL string or Playwright proxy dict (see launch() for details).
         args: Additional Chromium CLI arguments.
         stealth_args: Include default stealth fingerprint args (default True).
@@ -403,6 +445,9 @@ async def launch_persistent_context_async(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        extensions: List of Chrome extension IDs to install (e.g., ['nkbihfbeogaeaoehlefnkodbefgpgknn']).
+            Extensions are downloaded from Chrome Web Store and stored in the profile.
+            Automatically sets headless=False since extensions don't run headless.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -414,9 +459,13 @@ async def launch_persistent_context_async(
         >>> from cloakbrowser import launch_persistent_context_async
         >>>
         >>> async def main():
-        ...     ctx = await launch_persistent_context_async("./my-profile", headless=False)
+        ...     ctx = await launch_persistent_context_async(
+        ...         "./my-profile",
+        ...         extensions=['nkbihfbeogaeaoehlefnkodbefgpgknn'],
+        ...         headless=False
+        ...     )
         ...     page = await ctx.new_page()
-        ...     await page.goto("https://protected-site.com")
+        ...     await page.goto("https://uniswap.org")
         ...     await ctx.close()
         >>>
         >>> asyncio.run(main())
@@ -432,11 +481,41 @@ async def launch_persistent_context_async(
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless)
+
+    # Handle extensions: download/extract and prepare CLI args
+    effective_headless = headless
+    if extensions:
+        from .extensions import download_and_extract_extension
+        
+        extension_paths = []
+        for ext_id in extensions:
+            try:
+                ext_path = download_and_extract_extension(ext_id, user_data_dir)
+                extension_paths.append(ext_path)
+            except Exception as e:
+                logger.warning(f"Failed to install extension {ext_id}: {e}")
+
+        if extension_paths:
+            # Extensions don't run in headless mode — force headed
+            effective_headless = False
+            logger.info(f"Extensions loaded, forcing headless=False")
+            
+            # Add extension CLI args
+            paths_str = ",".join(extension_paths)
+            extension_args = [
+                f"--load-extension={paths_str}",
+                f"--disable-extensions-except={paths_str}",
+            ]
+            if args:
+                args = list(args) + extension_args
+            else:
+                args = extension_args
+
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=effective_headless)
 
     logger.debug(
         "Launching persistent stealth Chromium async (headless=%s, user_data_dir=%s)",
-        headless,
+        effective_headless,
         user_data_dir,
     )
 
@@ -459,7 +538,7 @@ async def launch_persistent_context_async(
     context = await pw.chromium.launch_persistent_context(
         user_data_dir=os.fspath(user_data_dir),
         executable_path=binary_path,
-        headless=headless,
+        headless=effective_headless,
         args=chrome_args,
         ignore_default_args=IGNORE_DEFAULT_ARGS,
         **proxy_kwargs,

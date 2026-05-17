@@ -377,6 +377,49 @@ Supports all the same options as `launch_context()`: `proxy`, `user_agent`, `vie
 
 Async version: `launch_persistent_context_async()`.
 
+#### Chrome Extensions
+
+CloakBrowser supports automatic installation and injection of Chrome extensions when launching a persistent profile — just like anti-detect browsers (GoLogin, etc.).
+
+Extensions are downloaded from the Chrome Web Store, extracted, and stored in the profile. They persist across sessions and are automatically loaded on each launch.
+
+```python
+from cloakbrowser import launch_persistent_context
+
+# Install MetaMask and uBlock Origin
+ctx = launch_persistent_context(
+    "./my-profile",
+    extensions=[
+        "nkbihfbeogaeaoehlefnkodbefgpgknn",  # MetaMask
+        "cjpalhdlnbpafiamejdnhcphjbkeiagm",  # uBlock Origin
+    ],
+    # headless=True  (automatically set to False; extensions don't run headless)
+)
+
+page = ctx.new_page()
+page.goto("https://app.uniswap.org")
+
+# MetaMask is now available
+has_ethereum = page.evaluate("typeof window.ethereum !== 'undefined'")
+print(f"MetaMask detected: {has_ethereum}")
+
+ctx.close()
+```
+
+**How it works:**
+- Extension IDs are standard Chrome Web Store IDs (e.g., find them at `https://chrome.google.com/webstore/`)
+- On first launch, extensions are downloaded and extracted to `{profile_dir}/extensions/{extension_id}/`
+- On subsequent launches with the same profile, cached extensions are used (no re-download)
+- Headless mode is automatically disabled (`headless=False`) — extensions only run in headed mode
+- Extensions are loaded with `--load-extension` and `--disable-extensions-except` flags
+
+**Error handling:**
+- Invalid extension IDs are logged and skipped (browser still launches)
+- Network timeouts or corrupted archives are caught and logged
+- Extensions are cached — if download fails, the cached version is used next time
+
+**Storage quota:** Extensions increase the apparent storage quota (quota check is one factor in browser fingerprinting). If you're using FingerprintJS or similar detection, this may need adjustment — see the storage quota section above.
+
 **Storage quota and detection tradeoff:** By default, the binary normalizes storage quota to pass FingerprintJS, which blocks persistent contexts that report non-incognito quota values. This means detection services that penalize incognito mode (like BrowserScan's `notPrivate` check, -10 points) will still flag it. If your target site penalizes incognito but doesn't use FingerprintJS, set a higher quota to appear as a regular profile:
 
 ```python
@@ -679,6 +722,232 @@ browser = launch(args=[
 ])
 ```
 
+## How to Use Extensions
+
+### Simple Example
+
+```python
+from cloakbrowser import launch_persistent_context
+
+# Download and install MetaMask
+ctx = launch_persistent_context(
+    "./my-profile",
+    extensions=["nkbihfbeogaeaoehlefnkodbefgpgknn"],  # MetaMask ID
+)
+
+page = ctx.new_page()
+page.goto("https://app.uniswap.org")
+
+# MetaMask is now available
+has_metamask = page.evaluate("typeof window.ethereum !== 'undefined'")
+print(f"MetaMask available: {has_metamask}")
+
+ctx.close()
+```
+
+### Finding Extension IDs
+
+Chrome extension IDs are 32 lowercase hexadecimal characters:
+- **MetaMask**: `nkbihfbeogaeaoehlefnkodbefgpgknn`
+- **uBlock Origin**: `cjpalhdlnbpafiamejdnhcphjbkeiagm`
+
+Find any extension at: `https://chrome.google.com/webstore/` → Copy the ID from the URL
+
+Example URL: `https://chrome.google.com/webstore/detail/metamask/nkbihfbeogaeaoehlefnkodbefgpgknn`
+- Extension ID: `nkbihfbeogaeaoehlefnkodbefgpgknn`
+
+### Installation Workflow
+
+**First Run (takes 1-3 minutes):**
+```python
+from cloakbrowser import launch_persistent_context
+
+ctx = launch_persistent_context(
+    "./my-profile",
+    extensions=["nkbihfbeogaeaoehlefnkodbefgpgknn"]
+)
+page = ctx.new_page()
+page.goto("https://example.com")
+ctx.close()
+```
+
+**Subsequent Runs (instant):**
+```python
+ctx = launch_persistent_context(
+    "./my-profile",
+    extensions=["nkbihfbeogaeaoehlefnkodbefgpgknn"]
+)
+# All files are cached, launches instantly
+```
+
+## Performance
+
+| Stage | Time | Notes |
+|---|---|---|
+| 1st run (extension download) | 30-60 sec | Downloaded once per profile, cached |
+| 1st browser launch | 5-10 sec | Stealth patches, extension injection |
+| Subsequent launches | 1-2 sec | Everything cached, instant startup |
+
+## Debugging
+
+### Enable verbose output:
+
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+from cloakbrowser import launch_persistent_context
+
+ctx = launch_persistent_context(
+    "./my-profile",
+    extensions=["nkbihfbeogaeaoehlefnkodbefgpgknn"]
+)
+```
+
+This shows:
+- Download progress
+- Extension extraction progress
+- Chrome args being used
+- Any errors or warnings
+
+### Check cached extensions:
+
+```python
+from pathlib import Path
+
+profile_dir = Path("./my-profile")
+extensions_dir = profile_dir / "extensions"
+
+if extensions_dir.exists():
+    for ext_dir in extensions_dir.iterdir():
+        files = list(ext_dir.glob("*"))
+        print(f"Extension {ext_dir.name}: {len(files)} files")
+```
+
+### Verify extension is loaded:
+
+```python
+from cloakbrowser import launch_persistent_context
+
+ctx = launch_persistent_context(
+    "./my-profile",
+    extensions=["nkbihfbeogaeaoehlefnkodbefgpgknn"]
+)
+
+page = ctx.new_page()
+page.goto("https://example.com")
+
+# Check MetaMask
+has_metamask = page.evaluate("""
+    () => {
+        console.log('Checking for MetaMask...');
+        console.log('window.ethereum:', typeof window.ethereum);
+        return typeof window.ethereum !== 'undefined';
+    }
+""")
+
+print(f"MetaMask available: {has_metamask}")
+ctx.close()
+```
+
+## Common Issues
+
+### "Nothing happens" when running example
+
+**Solution**: The script IS running, but it's downloading. Watch for:
+- Progress messages like `Download progress: 19% (101/535 MB)`
+- Browser window appearing (may take 1-3 minutes on first run)
+
+**Tip**: Run with verbose logging to see progress:
+```bash
+PYTHONUNBUFFERED=1 python -u examples/extensions_example.py
+```
+
+### Extension not appearing
+
+**Check:**
+1. Valid extension ID? (Find at https://chrome.google.com/webstore/)
+2. Internet connection? (Required to download from Chrome Web Store)
+3. Disk space? (~550 MB for Chromium + extensions)
+4. Profile writable? (Check file permissions)
+
+**Debug:**
+```python
+from cloakbrowser import download_and_extract_extension
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+
+try:
+    path = download_and_extract_extension(
+        "nkbihfbeogaeaoehlefnkodbefgpgknn",
+        "./my-profile"
+    )
+    print(f"Extension downloaded to: {path}")
+except Exception as e:
+    print(f"Error: {e}")
+    import traceback
+    traceback.print_exc()
+```
+
+### Multiple extensions slow startup
+
+**Each extension adds:**
+- 30-60 sec download (first time, cached after)
+- 1-2 sec launch time per extension
+
+**Optimization:**
+- Pre-download extensions: `download_and_extract_extension(id, profile_dir)`
+- Reuse profiles: Same profile_dir = cached extensions
+- Install in parallel if using async: `launch_persistent_context_async()`
+
+## Next Steps
+
+1. **Read the docs**: `README.md` → Search for "Chrome Extensions"
+2. **Try the example**: `python examples/extensions_example.py`
+3. **Test your extension**: Replace MetaMask ID with your target extension
+4. **Integrate with your bot**: Add to your scraping/automation workflow
+
+## API Reference
+
+### `launch_persistent_context()`
+
+```python
+ctx = launch_persistent_context(
+    user_data_dir="./my-profile",
+    extensions=["ext_id_1", "ext_id_2"],  # Optional, list of IDs
+    headless=False,  # Auto-set to False if extensions provided
+)
+```
+
+### `download_and_extract_extension()`
+
+```python
+from cloakbrowser import download_and_extract_extension
+
+path = download_and_extract_extension(
+    extension_id="nkbihfbeogaeaoehlefnkodbefgpgknn",
+    profile_dir="./my-profile"
+)
+# Returns: /abs/path/to/my-profile/extensions/nkbihfbeogaeaoehlefnkodbefgpgknn
+```
+
+### `get_extension_paths()`
+
+```python
+from cloakbrowser import get_extension_paths
+
+paths = get_extension_paths(
+    extension_ids=["ext_id_1", "ext_id_2"],
+    profile_dir="./my-profile"
+)
+# Returns: [path_to_ext1, path_to_ext2, ...]
+```
+
+---
+
+**Still having issues?** Check the examples and ensure internet connectivity, disk space, and proper permissions.
+
 ## Examples
 
 **Python** — see [`examples/`](examples/):
@@ -687,6 +956,7 @@ browser = launch(args=[
 - [`recaptcha_score.py`](examples/recaptcha_score.py) — Check your reCAPTCHA v3 score
 - [`stealth_test.py`](examples/stealth_test.py) — Run against 6 detection sites
 - [`fingerprint_scan_test.py`](examples/fingerprint_scan_test.py) — Test against fingerprint-scan.com and CreepJS
+- [`extension_example.py`](examples/extension_example.py) — Automatically install and inject Chrome extensions
 
 **JavaScript** — see [`js/examples/`](js/examples/):
 - [`basic-playwright.ts`](js/examples/basic-playwright.ts) — Playwright launch and load
@@ -1197,3 +1467,4 @@ Issues and PRs welcome. If something isn't working, [open an issue](https://gith
 - [@manaskarra](https://github.com/manaskarra) — iframe scope fix for humanized frame actions, GeoIP timeout guard
 - [@Youhai020616](https://github.com/Youhai020616) — SOCKS5 credential encoding logging
 - [@AlexTech314](https://github.com/AlexTech314) — AWS Lambda integration
+- [@siddhant-bayas](https://github.com/siddhant-bayas) — Profile Extension Pre-installation & Injection
