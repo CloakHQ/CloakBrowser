@@ -45,6 +45,72 @@ function filterStealthCtxOptions(ctx?: BrowserContextOptions): Partial<BrowserCo
 }
 
 /**
+ * Build the LaunchOptions object that {@link launch} would forward to
+ * `chromium.launch()`. Use this when you want to drive your own
+ * `playwright-core` (or a modified Playwright build) and only need the
+ * cloakbrowser launch-arg pipeline — binary path, geoip resolution, proxy
+ * resolution, WebRTC arg resolution, and stealth arg merging.
+ *
+ * @example
+ * ```ts
+ * import { chromium } from 'playwright-core';
+ * import { buildLaunchOptions } from 'cloakbrowser';
+ *
+ * const opts = await buildLaunchOptions({ headless: false });
+ * const browser = await chromium.launch(opts);
+ * ```
+ */
+export async function buildLaunchOptions(
+  options: LaunchOptions = {}
+): Promise<Record<string, unknown>> {
+  const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
+  const { exitIp, ...resolved } = await maybeResolveGeoip(options);
+  const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy);
+  let resolvedArgs = await resolveWebrtcArgs(options);
+  if (exitIp && !(resolvedArgs ?? []).some(a => a.startsWith("--fingerprint-webrtc-ip"))) {
+    resolvedArgs = [...(resolvedArgs ?? []), `--fingerprint-webrtc-ip=${exitIp}`];
+  }
+  const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
+
+  return {
+    executablePath: binaryPath,
+    headless: options.headless ?? true,
+    args,
+    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
+    ...(proxyOption ? { proxy: proxyOption } : {}),
+    ...options.launchOptions,
+  };
+}
+
+/**
+ * Apply cloakbrowser's human-like behavioral patches to a Browser instance.
+ * No-op when `options.humanize` is falsy — safe to call unconditionally after
+ * launching the browser yourself.
+ *
+ * @example
+ * ```ts
+ * import { chromium } from 'playwright-core';
+ * import { buildLaunchOptions, humanizeBrowser } from 'cloakbrowser';
+ *
+ * const browser = await chromium.launch(await buildLaunchOptions(options));
+ * await humanizeBrowser(browser, options);
+ * ```
+ */
+export async function humanizeBrowser(
+  browser: Browser,
+  options: LaunchOptions = {}
+): Promise<void> {
+  if (!options.humanize) return;
+  const { patchBrowser } = await import('./human/index.js');
+  const { resolveConfig } = await import('./human/config.js');
+  const cfg = resolveConfig(
+    options.humanPreset ?? 'default',
+    options.humanConfig,
+  );
+  patchBrowser(browser, cfg);
+}
+
+/**
  * Launch stealth Chromium browser via Playwright.
  *
  * @example
@@ -59,36 +125,8 @@ function filterStealthCtxOptions(ctx?: BrowserContextOptions): Partial<BrowserCo
  */
 export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright-core");
-
-  const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
-  const { exitIp, ...resolved } = await maybeResolveGeoip(options);
-  const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy);
-  let resolvedArgs = await resolveWebrtcArgs(options);
-  if (exitIp && !(resolvedArgs ?? []).some(a => a.startsWith("--fingerprint-webrtc-ip"))) {
-    resolvedArgs = [...(resolvedArgs ?? []), `--fingerprint-webrtc-ip=${exitIp}`];
-  }
-  const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
-
-  const browser = await chromium.launch({
-    executablePath: binaryPath,
-    headless: options.headless ?? true,
-    args,
-    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
-    ...(proxyOption ? { proxy: proxyOption } : {}),
-    ...options.launchOptions,
-  });
-
-  // Human-like behavioral patching
-  if (options.humanize) {
-    const { patchBrowser } = await import('./human/index.js');
-    const { resolveConfig } = await import('./human/config.js');
-    const cfg = resolveConfig(
-      options.humanPreset ?? 'default',
-      options.humanConfig,
-    );
-    patchBrowser(browser, cfg);
-  }
-
+  const browser = await chromium.launch(await buildLaunchOptions(options));
+  await humanizeBrowser(browser, options);
   return browser;
 }
 
