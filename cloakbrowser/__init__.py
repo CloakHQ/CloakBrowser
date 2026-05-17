@@ -14,6 +14,7 @@ Usage:
 from .browser import launch, launch_async, launch_context, launch_context_async, launch_persistent_context, launch_persistent_context_async, ProxySettings, build_args, maybe_resolve_geoip
 from .config import CHROMIUM_VERSION, get_default_stealth_args
 from .download import binary_info, check_for_update, clear_cache, ensure_binary
+from .text_utils import shorten_label, normalize_whitespace, truncate_middle
 from ._version import __version__
 
 # Human-like behavioral layer (optional)
