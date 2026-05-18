@@ -3,6 +3,7 @@
 import asyncio
 import importlib.machinery
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -283,6 +284,41 @@ class TestHandlerURLRewriting:
         orig = "ws://127.0.0.1:5100/devtools/page/DEF-456"
         result = self._rewrite_list_entry(orig, "host:443", "seed1", scheme="wss")
         assert result == "wss://host:443/fingerprint/seed1/devtools/page/DEF-456"
+
+
+# ---------------------------------------------------------------------------
+# Bind security warnings
+# ---------------------------------------------------------------------------
+
+
+class TestBindSecurityWarnings:
+    """Warn when cloakserve is reachable on all interfaces without auth."""
+
+    def test_public_ipv4_bind_warns_about_unauthenticated_cdp(self):
+        warnings = _mod._bind_security_warnings("0.0.0.0")
+        assert len(warnings) == 1
+        assert "without authentication" in warnings[0]
+        assert "CDP" in warnings[0]
+
+    def test_public_ipv6_bind_warns_about_unauthenticated_cdp(self):
+        warnings = _mod._bind_security_warnings("::")
+        assert len(warnings) == 1
+        assert "without authentication" in warnings[0]
+
+    def test_loopback_bind_has_no_warning(self):
+        assert _mod._bind_security_warnings("127.0.0.1") == []
+        assert _mod._bind_security_warnings("localhost") == []
+
+    def test_root_diagnostics_include_public_bind_warning(self):
+        request = SimpleNamespace(app={
+            "host": "0.0.0.0",
+            "pool": SimpleNamespace(_processes={}, _connections={}),
+        })
+
+        response = asyncio.run(_mod.handle_root(request))
+        payload = json.loads(response.text)
+
+        assert payload["warnings"] == _mod._bind_security_warnings("0.0.0.0")
 
 
 # ---------------------------------------------------------------------------

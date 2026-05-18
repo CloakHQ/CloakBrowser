@@ -450,6 +450,21 @@ def parse_connection_params(query_string: str) -> dict:
 # HTTP handlers
 # ---------------------------------------------------------------------------
 
+PUBLIC_BIND_SECURITY_WARNING = (
+    "cloakserve is listening on 0.0.0.0 without authentication. "
+    "CDP grants full browser control; publish port 9222 only to trusted "
+    "interfaces or place it behind an authenticated reverse proxy."
+)
+
+
+def _bind_security_warnings(host: str) -> list[str]:
+    """Return diagnostics warnings for unsafe cloakserve bind settings."""
+    normalized = host.strip().lower()
+    if normalized in {"0.0.0.0", "::", "[::]"}:
+        return [PUBLIC_BIND_SECURITY_WARNING]
+    return []
+
+
 def _ws_scheme(request: web.Request) -> str:
     """Return 'wss' if client connected via HTTPS (e.g. TLS-terminating proxy), else 'ws'."""
     proto = request.headers.get("X-Forwarded-Proto", request.scheme)
@@ -471,11 +486,15 @@ async def handle_root(request: web.Request) -> web.Response:
                 "locale": proc.locale,
                 "proxy": proc.proxy,
             }
-    return web.json_response({
+    response = {
         "status": "ok",
         "active": len(processes),
         "processes": processes,
-    })
+    }
+    warnings = _bind_security_warnings(request.app.get("host", ""))
+    if warnings:
+        response["warnings"] = warnings
+    return web.json_response(response)
 
 
 async def handle_json_version(request: web.Request) -> web.Response:
@@ -755,6 +774,10 @@ def main() -> None:
     app["pool"] = pool
     app["port"] = config["port"]
 
+    in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+    host = "0.0.0.0" if in_container else "127.0.0.1"
+    app["host"] = host
+
     # Routes
     app.router.add_get("/", handle_root)
     app.router.add_get("/json/version", handle_json_version)
@@ -779,8 +802,8 @@ def main() -> None:
         port,
     )
 
-    in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-    host = "0.0.0.0" if in_container else "127.0.0.1"
+    for warning in _bind_security_warnings(host):
+        logger.warning(warning)
     web.run_app(app, host=host, port=port, print=None)
 
 

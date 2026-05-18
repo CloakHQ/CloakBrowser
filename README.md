@@ -836,6 +836,8 @@ docker stop cloak && docker rm cloak
 > **Security:** CDP gives full control over the browser (execute JS, read pages, access files).
 > The examples bind to `127.0.0.1` so only your machine can connect. Never expose port 9222
 > to the public internet without additional authentication.
+> In containers, `cloakserve` listens on `0.0.0.0` internally so Docker port publishing works;
+> if the service is reachable on all interfaces, startup logs and `GET /` diagnostics include a warning.
 
 ### Docker Compose
 
