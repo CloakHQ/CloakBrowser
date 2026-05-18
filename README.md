@@ -815,6 +815,26 @@ print(page.title())
 browser.close()
 ```
 
+If your framework needs a direct WebSocket endpoint, fetch Chrome's discovery document and use the rewritten `webSocketDebuggerUrl`. The URL points back through `cloakserve` so the CDP proxy can keep per-seed routing intact:
+
+```bash
+curl http://localhost:9222/json/version | jq -r .webSocketDebuggerUrl
+# ws://localhost:9222/devtools/browser/<browser-id>
+
+curl 'http://localhost:9222/json/version?fingerprint=11111' | jq -r .webSocketDebuggerUrl
+# ws://localhost:9222/fingerprint/11111/devtools/browser/<browser-id>
+```
+
+When `cloakserve` runs behind a reverse proxy or TLS terminator, forward the public host/protocol headers so generated WebSocket URLs use the address clients can actually reach:
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-Host $host;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+With those headers, `/json/version` returns public endpoints such as `wss://cdp.example.com/fingerprint/11111/devtools/browser/<browser-id>` instead of an internal container host.
+
 Pass extra flags to the browser:
 
 ```bash
