@@ -123,6 +123,36 @@ def build_launch_options(
     }
 
 
+def humanize_browser(
+    browser: Any,
+    preset: HumanPreset = "default",
+    config: HumanConfigOverrides | None = None,
+) -> None:
+    """Apply humanize behavioral patches to an existing sync Playwright Browser.
+
+    Use this when you launched the browser yourself and want the same human-like
+    mouse, keyboard, and scroll patching that ``launch(humanize=True)`` applies.
+    """
+    from .human import patch_browser
+    from .human.config import resolve_config
+
+    cfg = resolve_config(preset, config)
+    patch_browser(browser, cfg)
+
+
+def humanize_browser_async(
+    browser: Any,
+    preset: HumanPreset = "default",
+    config: HumanConfigOverrides | None = None,
+) -> None:
+    """Apply humanize behavioral patches to an existing async Playwright Browser."""
+    from .human import patch_browser_async
+    from .human.config import resolve_config
+
+    cfg = resolve_config(preset, config)
+    patch_browser_async(browser, cfg)
+
+
 def launch(
     headless: bool = True,
     proxy: str | ProxySettings | None = None,
@@ -208,15 +238,12 @@ def launch(
 
     # Human-like behavioral patching
     if humanize:
-        from .human import patch_browser
-        from .human.config import resolve_config
-        cfg = resolve_config(human_preset, human_config)
-        patch_browser(browser, cfg)
+        humanize_browser(browser, human_preset, human_config)
 
     return browser
 
 
-async def launch_async(  # noqa: C901
+async def launch_async(
     headless: bool = True,
     proxy: str | ProxySettings | None = None,
     args: list[str] | None = None,
@@ -266,26 +293,22 @@ async def launch_async(  # noqa: C901
     """
     async_playwright = _import_async_playwright(_resolve_backend(backend))
 
-    binary_path = ensure_binary()
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy)
-    args = _resolve_webrtc_args(args, proxy)
-    if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
-        args = list(args or [])
-        args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
-
-    logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(chrome_args))
-
-    pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        executable_path=binary_path,
+    launch_opts = build_launch_options(
         headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **proxy_kwargs,
+        proxy=proxy,
+        args=args,
+        stealth_args=stealth_args,
+        timezone=timezone,
+        locale=locale,
+        geoip=geoip,
+        extension_paths=extension_paths,
         **kwargs,
     )
+
+    logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(launch_opts["args"]))
+
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(**launch_opts)
 
     # Patch close() to also stop the Playwright instance
     _original_close = browser.close
@@ -300,10 +323,7 @@ async def launch_async(  # noqa: C901
 
     # Human-like behavioral patching (async variant)
     if humanize:
-        from .human import patch_browser_async
-        from .human.config import resolve_config
-        cfg = resolve_config(human_preset, human_config)
-        patch_browser_async(browser, cfg)
+        humanize_browser_async(browser, human_preset, human_config)
 
     return browser
 
