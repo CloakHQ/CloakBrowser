@@ -52,6 +52,107 @@ class ProxySettings(_ProxySettingsRequired, total=False):
     password: str
 
 
+def build_launch_options(
+    headless: bool = True,
+    proxy: str | ProxySettings | None = None,
+    args: list[str] | None = None,
+    stealth_args: bool = True,
+    timezone: str | None = None,
+    locale: str | None = None,
+    geoip: bool = False,
+    extension_paths: list[str] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Build the kwargs dict that ``launch()`` would forward to ``playwright.chromium.launch()``.
+
+    Use this when you already have a running Playwright instance (e.g. shared across
+    several stealth backends) and want to call ``pw.chromium.launch(**opts)`` yourself
+    instead of letting cloakbrowser start its own Playwright server.
+
+    Performs every step ``launch()`` does up to (but not including) the call to
+    ``pw.chromium.launch(...)``: resolves the stealth binary path, runs geoip
+    lookup, resolves proxy config, resolves WebRTC args, and runs ``build_args``.
+
+    Args:
+        headless: Run in headless mode (default True).
+        proxy: Proxy URL string or Playwright proxy dict (see ``launch()``).
+        args: Additional Chromium CLI arguments to pass.
+        stealth_args: Include default stealth fingerprint args (default True).
+        timezone: IANA timezone (e.g. 'America/New_York').
+        locale: BCP 47 locale (e.g. 'en-US').
+        geoip: Auto-detect timezone/locale from proxy IP (default False).
+        extension_paths: List of Chrome extension paths to load.
+        **kwargs: Extra keys merged into the returned dict (e.g. ``downloads_path``).
+
+    Returns:
+        Dict with ``executable_path``, ``headless``, ``args``, ``ignore_default_args``,
+        an optional ``proxy`` Playwright dict (HTTP/HTTPS proxies only — SOCKS5 is
+        injected as a ``--proxy-server`` arg instead), and any extra ``**kwargs``.
+
+    Example:
+        >>> from playwright.sync_api import sync_playwright
+        >>> from cloakbrowser import build_launch_options
+        >>> opts = build_launch_options(headless=False, proxy="http://u:p@host:1")
+        >>> pw = sync_playwright().start()
+        >>> browser = pw.chromium.launch(**opts)
+    """
+    binary_path = ensure_binary()
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy)
+    args = _resolve_webrtc_args(args, proxy)
+    if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
+        args = list(args or [])
+        args.append(f"--fingerprint-webrtc-ip={exit_ip}")
+
+    chrome_args = build_args(
+        stealth_args,
+        (args or []) + proxy_extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+    )
+
+    return {
+        "executable_path": binary_path,
+        "headless": headless,
+        "args": chrome_args,
+        "ignore_default_args": IGNORE_DEFAULT_ARGS,
+        **proxy_kwargs,
+        **kwargs,
+    }
+
+
+def humanize_browser(
+    browser: Any,
+    preset: HumanPreset = "default",
+    config: HumanConfigOverrides | None = None,
+) -> None:
+    """Apply humanize behavioral patches to an existing sync Playwright Browser.
+
+    Use this when you launched the browser yourself and want the same human-like
+    mouse, keyboard, and scroll patching that ``launch(humanize=True)`` applies.
+    """
+    from .human import patch_browser
+    from .human.config import resolve_config
+
+    cfg = resolve_config(preset, config)
+    patch_browser(browser, cfg)
+
+
+def humanize_browser_async(
+    browser: Any,
+    preset: HumanPreset = "default",
+    config: HumanConfigOverrides | None = None,
+) -> None:
+    """Apply humanize behavioral patches to an existing async Playwright Browser."""
+    from .human import patch_browser_async
+    from .human.config import resolve_config
+
+    cfg = resolve_config(preset, config)
+    patch_browser_async(browser, cfg)
+
+
 def launch(
     headless: bool = True,
     proxy: str | ProxySettings | None = None,
@@ -107,27 +208,22 @@ def launch(
     """
     sync_playwright = _import_sync_playwright(_resolve_backend(backend))
 
-    binary_path = ensure_binary()
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy)
-    args = _resolve_webrtc_args(args, proxy)
-    if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
-        args = list(args or [])
-        args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-        
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
-
-    logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
-
-    pw = sync_playwright().start()
-    browser = pw.chromium.launch(
-        executable_path=binary_path,
+    launch_opts = build_launch_options(
         headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **proxy_kwargs,
+        proxy=proxy,
+        args=args,
+        stealth_args=stealth_args,
+        timezone=timezone,
+        locale=locale,
+        geoip=geoip,
+        extension_paths=extension_paths,
         **kwargs,
     )
+
+    logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(launch_opts["args"]))
+
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(**launch_opts)
 
     # Patch close() to also stop the Playwright instance
     _original_close = browser.close
@@ -142,15 +238,12 @@ def launch(
 
     # Human-like behavioral patching
     if humanize:
-        from .human import patch_browser
-        from .human.config import resolve_config
-        cfg = resolve_config(human_preset, human_config)
-        patch_browser(browser, cfg)
+        humanize_browser(browser, human_preset, human_config)
 
     return browser
 
 
-async def launch_async(  # noqa: C901
+async def launch_async(
     headless: bool = True,
     proxy: str | ProxySettings | None = None,
     args: list[str] | None = None,
@@ -200,26 +293,22 @@ async def launch_async(  # noqa: C901
     """
     async_playwright = _import_async_playwright(_resolve_backend(backend))
 
-    binary_path = ensure_binary()
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy)
-    args = _resolve_webrtc_args(args, proxy)
-    if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
-        args = list(args or [])
-        args.append(f"--fingerprint-webrtc-ip={exit_ip}")
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths)
-
-    logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(chrome_args))
-
-    pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        executable_path=binary_path,
+    launch_opts = build_launch_options(
         headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **proxy_kwargs,
+        proxy=proxy,
+        args=args,
+        stealth_args=stealth_args,
+        timezone=timezone,
+        locale=locale,
+        geoip=geoip,
+        extension_paths=extension_paths,
         **kwargs,
     )
+
+    logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(launch_opts["args"]))
+
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(**launch_opts)
 
     # Patch close() to also stop the Playwright instance
     _original_close = browser.close
@@ -234,10 +323,7 @@ async def launch_async(  # noqa: C901
 
     # Human-like behavioral patching (async variant)
     if humanize:
-        from .human import patch_browser_async
-        from .human.config import resolve_config
-        cfg = resolve_config(human_preset, human_config)
-        patch_browser_async(browser, cfg)
+        humanize_browser_async(browser, human_preset, human_config)
 
     return browser
 
