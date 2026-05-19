@@ -53,6 +53,8 @@ class ProxySettings(_ProxySettingsRequired, total=False):
 
 
 def launch(
+    playwright=None,
+    browser_type=None,    
     headless: bool = True,
     proxy: str | ProxySettings | None = None,
     args: list[str] | None = None,
@@ -119,24 +121,33 @@ def launch(
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
 
-    pw = sync_playwright().start()
-    browser = pw.chromium.launch(
-        executable_path=binary_path,
-        headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **proxy_kwargs,
-        **kwargs,
-    )
+    own_playwright = False
+
+if playwright is None:
+    playwright = sync_playwright().start()
+    own_playwright = True
+
+if browser_type is None:
+    browser_type = playwright.chromium
+
+browser = browser_type.launch(
+    executable_path=binary_path,
+    headless=headless,
+    args=chrome_args,
+    ignore_default_args=IGNORE_DEFAULT_ARGS,
+    **proxy_kwargs,
+    **kwargs,
+)
 
     # Patch close() to also stop the Playwright instance
     _original_close = browser.close
 
     def _close_with_cleanup() -> None:
-        try:
-            _original_close()
-        finally:
-            pw.stop()
+    try:
+        _original_close()
+    finally:
+        if own_playwright:
+            playwright.stop()
 
     browser.close = _close_with_cleanup
 
