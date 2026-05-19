@@ -917,7 +917,7 @@ CMD ["python", "/app/your_script.py"]
 docker build -t cloakbrowser .
 ```
 
-CloakBrowser works identically local, in Docker, and on VPS. No environment-specific config needed.
+CloakBrowser works identically locally, in Docker, and on VPS. No environment-specific config needed.
 
 **Note:** If you run CloakBrowser inside a web server with uvloop (e.g., `uvicorn[standard]`), use `--loop asyncio` to avoid subprocess pipe hangs.
 
