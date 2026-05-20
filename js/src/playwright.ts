@@ -91,6 +91,40 @@ export async function humanizeBrowser(
 }
 
 /**
+ * Build Playwright browser context options for CloakBrowser without creating a context.
+ */
+export function buildContextOptions(
+  options: LaunchContextOptions = {}
+): BrowserContextOptions {
+  return {
+    // contextOptions first — explicit wrapper fields below override it.
+    // filterStealthCtxOptions strips locale/timezoneId to prevent CDP detection.
+    ...filterStealthCtxOptions(options.contextOptions),
+    ...(options.userAgent ? { userAgent: options.userAgent } : {}),
+    viewport: options.viewport === undefined ? DEFAULT_VIEWPORT : options.viewport,
+    ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
+  };
+}
+
+/**
+ * Apply CloakBrowser's human-like behavioral layer to an existing Playwright context.
+ */
+export async function humanizeContext(
+  context: BrowserContext,
+  options: LaunchContextOptions = {}
+): Promise<void> {
+  if (!options.humanize) return;
+
+  const { patchContext } = await import('./human/index.js');
+  const { resolveConfig } = await import('./human/config.js');
+  const cfg = resolveConfig(
+    options.humanPreset ?? 'default',
+    options.humanConfig,
+  );
+  patchContext(context, cfg);
+}
+
+/**
  * Launch stealth Chromium browser via Playwright.
  *
  * @example
@@ -144,14 +178,7 @@ export async function launchContext(
 
   let context: BrowserContext;
   try {
-    context = await browser.newContext({
-      // contextOptions first — explicit wrapper fields below override it.
-      // filterStealthCtxOptions strips locale/timezoneId to prevent CDP detection.
-      ...filterStealthCtxOptions(options.contextOptions),
-      ...(options.userAgent ? { userAgent: options.userAgent } : {}),
-      viewport: options.viewport === undefined ? DEFAULT_VIEWPORT : options.viewport,
-      ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
-    });
+    context = await browser.newContext(buildContextOptions(options));
   } catch (err) {
     await browser.close();
     throw err;
@@ -164,16 +191,7 @@ export async function launchContext(
     await browser.close();
   };
 
-  // Human-like behavioral patching
-  if (options.humanize) {
-    const { patchContext } = await import('./human/index.js');
-    const { resolveConfig } = await import('./human/config.js');
-    const cfg = resolveConfig(
-      options.humanPreset ?? 'default',
-      options.humanConfig,
-    );
-    patchContext(context, cfg);
-  }
+  await humanizeContext(context, options);
 
   return context;
 }
@@ -199,12 +217,9 @@ export async function launchContext(
  * await context.close();
  * ```
  */
-export async function launchPersistentContext(
+export async function buildPersistentContextOptions(
   options: LaunchPersistentContextOptions
-): Promise<BrowserContext> {
-  options = resolveTimezone(options);
-  const { chromium } = await import("playwright-core");
-
+): Promise<PlaywrightLaunchOptions & BrowserContextOptions> {
   const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
   const { exitIp, ...resolved } = await maybeResolveGeoip(options);
   const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy);
@@ -214,9 +229,7 @@ export async function launchPersistentContext(
   }
   const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
 
-  // locale and timezone are set via binary flags (--lang, --fingerprint-timezone)
-  // — NOT via Playwright context kwargs which use detectable CDP emulation.
-  const context = await chromium.launchPersistentContext(options.userDataDir, {
+  return {
     executablePath: binaryPath,
     headless: options.headless ?? true,
     args,
@@ -229,18 +242,21 @@ export async function launchPersistentContext(
     viewport: options.viewport === undefined ? DEFAULT_VIEWPORT : options.viewport,
     ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
     ...options.launchOptions,
-  });
+  } as PlaywrightLaunchOptions & BrowserContextOptions;
+}
 
-  // Human-like behavioral patching
-  if (options.humanize) {
-    const { patchContext } = await import('./human/index.js');
-    const { resolveConfig } = await import('./human/config.js');
-    const cfg = resolveConfig(
-      options.humanPreset ?? 'default',
-      options.humanConfig,
-    );
-    patchContext(context, cfg);
-  }
+export async function launchPersistentContext(
+  options: LaunchPersistentContextOptions
+): Promise<BrowserContext> {
+  options = resolveTimezone(options);
+  const { chromium } = await import("playwright-core");
+
+  const context = await chromium.launchPersistentContext(
+    options.userDataDir,
+    await buildPersistentContextOptions(options),
+  );
+
+  await humanizeContext(context, options);
 
   return context;
 }

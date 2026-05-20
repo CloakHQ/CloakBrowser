@@ -39,11 +39,14 @@ describe("composable Playwright launch helpers", () => {
     }
   });
 
-  it("exports buildLaunchOptions and humanizeBrowser from the package entrypoint", async () => {
+  it("exports composable Playwright helpers from the package entrypoint", async () => {
     const entry = await import("../src/index.js");
 
     expect(entry.buildLaunchOptions).toBeTypeOf("function");
     expect(entry.humanizeBrowser).toBeTypeOf("function");
+    expect(entry.buildContextOptions).toBeTypeOf("function");
+    expect(entry.humanizeContext).toBeTypeOf("function");
+    expect(entry.buildPersistentContextOptions).toBeTypeOf("function");
   });
 
   it("buildLaunchOptions returns Playwright options without launching a browser", async () => {
@@ -68,6 +71,26 @@ describe("composable Playwright launch helpers", () => {
     expect(options.timeout).toBe(1234);
   });
 
+  it("buildContextOptions returns Playwright context options without creating a context", async () => {
+    const { buildContextOptions } = await import("../src/index.js");
+
+    const options = buildContextOptions({
+      userAgent: "Explicit/1.0",
+      viewport: { width: 1280, height: 720 },
+      colorScheme: "dark",
+      contextOptions: {
+        userAgent: "ShouldBeOverridden/9.9",
+        viewport: { width: 9999, height: 9999 },
+        permissions: ["geolocation"],
+      },
+    });
+
+    expect(options.userAgent).toBe("Explicit/1.0");
+    expect(options.viewport).toEqual({ width: 1280, height: 720 });
+    expect(options.colorScheme).toBe("dark");
+    expect(options.permissions).toEqual(["geolocation"]);
+  });
+
   it("humanizeBrowser patches an existing browser only when requested", async () => {
     const { humanizeBrowser } = await import("../src/index.js");
     const browser = {
@@ -82,6 +105,42 @@ describe("composable Playwright launch helpers", () => {
 
     await humanizeBrowser(browser as any, { humanize: true });
     expect(browser.newContext).not.toBe(originalNewContext);
+  });
+
+  it("humanizeContext is a no-op when humanize is undefined or false", async () => {
+    const { humanizeContext } = await import("../src/index.js");
+    const context = {
+      pages: vi.fn(() => []),
+      on: vi.fn(),
+      newPage: vi.fn(async () => ({})),
+    };
+    const originalNewPage = context.newPage;
+
+    await humanizeContext(context as any);
+    expect(context.newPage).toBe(originalNewPage);
+
+    await humanizeContext(context as any, { humanize: false });
+    expect(context.newPage).toBe(originalNewPage);
+  });
+
+  it("buildPersistentContextOptions returns launchPersistentContext options without launching", async () => {
+    const { buildPersistentContextOptions } = await import("../src/index.js");
+
+    const options = await buildPersistentContextOptions({
+      userDataDir: "/tmp/profile",
+      headless: false,
+      args: ["--custom-flag"],
+      timezone: "Asia/Tokyo",
+      launchOptions: { timeout: 1234 },
+    });
+
+    expect(options.executablePath).toBe("/fake/chrome");
+    expect(options.headless).toBe(false);
+    expect(options.args).toContain("--custom-flag");
+    expect(options.args).toContain("--fingerprint-timezone=Asia/Tokyo");
+    expect(options.ignoreDefaultArgs).toContain("--enable-automation");
+    expect(options.viewport).toEqual(DEFAULT_VIEWPORT);
+    expect(options.timeout).toBe(1234);
   });
 });
 
