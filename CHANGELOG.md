@@ -8,6 +8,8 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+- **[wrapper]** **New**: agent-friendly CLI subcommands — `doctor`, `profile list/path`, `screenshot`, `dump`, `eval`, `open` with `--json` output for automation workflows (#274, #275)
+
 ## [0.3.30] — 2026-05-21
 
 - **[binary]** New build 146.0.7680.177.5 for Linux x64 + Windows x64 — 58 source-level fingerprint patches (up from 57)
