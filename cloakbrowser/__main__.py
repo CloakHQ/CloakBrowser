@@ -84,6 +84,21 @@ def main() -> None:
     sub.add_parser("update", help="Check for and download a newer binary")
     sub.add_parser("clear-cache", help="Remove all cached binaries")
 
+    # Agent-friendly subcommands
+    from .cli.doctor import add_subparser as _add_doctor
+    from .cli.profile import add_subparser as _add_profile
+    from .cli.screenshot import add_subparser as _add_screenshot
+    from .cli.dump import add_subparser as _add_dump
+    from .cli.eval import add_subparser as _add_eval
+    from .cli.open import add_subparser as _add_open
+
+    _add_doctor(sub)
+    _add_profile(sub)
+    _add_screenshot(sub)
+    _add_dump(sub)
+    _add_eval(sub)
+    _add_open(sub)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -99,7 +114,13 @@ def main() -> None:
     }
 
     try:
-        commands[args.command](args)
+        if args.command in commands:
+            commands[args.command](args)
+        elif hasattr(args, "func"):
+            args.func(args)
+        else:
+            print(f"Unknown command: {args.command}", file=sys.stderr)
+            sys.exit(2)
     except KeyboardInterrupt:
         sys.exit(130)
     except Exception as e:

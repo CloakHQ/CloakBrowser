@@ -8,6 +8,8 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+- **[wrapper]** **New**: agent-friendly CLI subcommands — `doctor`, `profile list/path`, `screenshot`, `dump`, `eval`, `open` with `--json` output for automation workflows (#274, #275)
+
 ## [0.3.28] — 2026-05-11
 
 - **[wrapper]** **Security**: `cloakserve` — sanitize fingerprint seed to prevent path traversal, bind to `127.0.0.1` on bare metal, detect Podman containers (#217)
