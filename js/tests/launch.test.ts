@@ -39,11 +39,48 @@ describe("composable Playwright launch helpers", () => {
     }
   });
 
-  it("exports buildLaunchOptions and humanizeBrowser from the package entrypoint", async () => {
+  it("exports composable helpers from the package entrypoint", async () => {
     const entry = await import("../src/index.js");
 
     expect(entry.buildLaunchOptions).toBeTypeOf("function");
+    expect(entry.buildContextOptions).toBeTypeOf("function");
     expect(entry.humanizeBrowser).toBeTypeOf("function");
+  });
+
+  it("buildContextOptions returns Playwright context options without launching a browser", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { buildContextOptions } = await import("../src/index.js");
+
+    const options = buildContextOptions({
+      userAgent: "Explicit/1.0",
+      viewport: { width: 1280, height: 720 },
+      colorScheme: "dark",
+      contextOptions: {
+        userAgent: "Context/9.9",
+        viewport: { width: 9999, height: 9999 },
+        colorScheme: "light",
+        storageState: "state.json",
+        locale: "de-DE",
+        timezoneId: "Europe/Berlin",
+      },
+    });
+
+    expect(options).toMatchObject({
+      userAgent: "Explicit/1.0",
+      viewport: { width: 1280, height: 720 },
+      colorScheme: "dark",
+      storageState: "state.json",
+    });
+    expect(options.locale).toBeUndefined();
+    expect(options.timezoneId).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("buildContextOptions applies DEFAULT_VIEWPORT by default and allows null viewport", async () => {
+    const { buildContextOptions } = await import("../src/index.js");
+
+    expect(buildContextOptions().viewport).toEqual(DEFAULT_VIEWPORT);
+    expect(buildContextOptions({ viewport: null }).viewport).toBeNull();
   });
 
   it("buildLaunchOptions returns Playwright options without launching a browser", async () => {

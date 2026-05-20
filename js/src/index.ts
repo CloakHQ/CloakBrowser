@@ -16,7 +16,7 @@
  */
 
 // Launch functions (Playwright API)
-export { launch, launchContext, launchPersistentContext, buildLaunchOptions, humanizeBrowser } from "./playwright.js";
+export { launch, launchContext, launchPersistentContext, buildLaunchOptions, buildContextOptions, humanizeBrowser } from "./playwright.js";
 
 // Binary management
 export { ensureBinary, clearCache, binaryInfo, checkForUpdate } from "./download.js";
