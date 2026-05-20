@@ -264,7 +264,8 @@ def _ensure_geoip_db() -> Path | None:
 
 
 def _download_geoip_db(dest: Path) -> None:
-    """Atomic download of GeoLite2-City.mmdb via httpx."""
+    """Atomic download of GeoLite2-City.mmdb via httpx with SHA-256 verification."""
+    import hashlib
     import httpx
 
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -273,6 +274,7 @@ def _download_geoip_db(dest: Path) -> None:
     tmp_fd, tmp_name = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
     tmp_path = Path(tmp_name)
     try:
+        sha256 = hashlib.sha256()
         with httpx.stream(
             "GET", GEOIP_DB_URL, follow_redirects=True, timeout=300.0
         ) as resp:
@@ -283,6 +285,7 @@ def _download_geoip_db(dest: Path) -> None:
             with open(tmp_fd, "wb") as f:
                 for chunk in resp.iter_bytes(chunk_size=65_536):
                     f.write(chunk)
+                    sha256.update(chunk)
                     downloaded += len(chunk)
                     if total:
                         pct = downloaded * 100 // total
@@ -290,11 +293,51 @@ def _download_geoip_db(dest: Path) -> None:
                             last_pct = pct
                             logger.info("GeoIP download: %d %%", pct)
 
+        actual_hash = sha256.hexdigest()
+        expected_hash = _fetch_geoip_checksum()
+        if expected_hash and actual_hash != expected_hash:
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"GeoIP database checksum mismatch!\n"
+                f"  Expected: {expected_hash}\n"
+                f"  Got:      {actual_hash}\n"
+                f"  The file may be corrupted or tampered with."
+            )
+        if expected_hash:
+            logger.info("GeoIP checksum verified: SHA-256 OK")
+        else:
+            logger.warning("GeoIP SHA-256SUMS not available — skipping checksum verification")
+
         tmp_path.rename(dest)
         logger.info("GeoIP database ready: %s", dest)
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
+
+
+def _fetch_geoip_checksum() -> str | None:
+    """Fetch the expected SHA-256 hash for GeoLite2-City.mmdb.
+
+    Looks for a SHA256SUMS file alongside the database URL.
+    Returns the hex digest or None if unavailable.
+    """
+    import httpx
+
+    checksums_url = GEOIP_DB_URL.rsplit("/", 1)[0] + "/SHA256SUMS"
+    for url in (checksums_url, "https://github.com/P3TERX/GeoLite.mmdb/raw/download/SHA256SUMS"):
+        try:
+            resp = httpx.get(url, follow_redirects=True, timeout=10.0)
+            resp.raise_for_status()
+            for line in resp.text.strip().splitlines():
+                parts = line.strip().split(None, 1)
+                if len(parts) == 2:
+                    hash_val, filename = parts
+                    filename = filename.lstrip("*")
+                    if filename == GEOIP_DB_FILENAME:
+                        return hash_val.lower()
+        except Exception:
+            continue
+    return None
 
 
 def _maybe_trigger_update(db_path: Path) -> None:
