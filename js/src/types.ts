@@ -48,6 +48,8 @@ export interface LaunchContextOptions extends LaunchOptions {
   timezoneId?: string;
   /** Color scheme preference — 'light', 'dark', or 'no-preference'. */
   colorScheme?: "light" | "dark" | "no-preference";
+  /** Default search engine — 'google', 'bing', or 'duckduckgo'. */
+  searchEngine?: "google" | "bing" | "duckduckgo";
   /**
    * Extra options forwarded directly to Playwright's `browser.newContext()` —
    * e.g. `storageState`, `permissions`, `geolocation`, `extraHTTPHeaders`,
