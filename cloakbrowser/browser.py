@@ -556,6 +556,7 @@ def launch_context(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser and return a BrowserContext with common options pre-set.
@@ -599,7 +600,8 @@ def launch_context(
     # so it applies to ALL contexts, not just the default one.
     # locale and timezone are set via binary flags only — no CDP emulation.
     browser = launch(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
-                     timezone=timezone, locale=locale, backend=backend, extension_paths=extension_paths)
+                     timezone=timezone, locale=locale, backend=backend, extension_paths=extension_paths,
+                     gpu_accel=gpu_accel)
 
     context_kwargs: dict[str, Any] = {}
     if user_agent:
@@ -657,6 +659,7 @@ async def launch_context_async(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_context().
@@ -719,7 +722,8 @@ async def launch_context_async(
     # so it applies to ALL contexts, not just the default one.
     # locale and timezone are set via binary flags only — no CDP emulation.
     browser = await launch_async(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
-                                 timezone=timezone, locale=locale, backend=backend, extension_paths=extension_paths)
+                                 timezone=timezone, locale=locale, backend=backend, extension_paths=extension_paths,
+                                 gpu_accel=gpu_accel)
 
     context_kwargs: dict[str, Any] = {}
     if user_agent:
