@@ -18,6 +18,10 @@
 <a href="https://ko-fi.com/cloakhq"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support on Ko-fi"></a>
 </p>
 
+<p align="center">
+🌐 <b>Read in:</b> <b>English</b> · <a href="README.th.md">ไทย (Thai)</a>
+</p>
+
 <br>
 
 <h3 align="center">Stealth Chromium that passes every bot detection test.</h3>
