@@ -55,12 +55,12 @@ class TestBuildProxyKwargs:
         assert kwargs == {"proxy": {"server": "http://proxy:8080"}}
         assert args == []
 
-    def test_proxy_with_auth(self):
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
+    def test_proxy_with_auth(self, *_):
         kwargs, args = _resolve_proxy_config("http://user:pass@proxy:8080")
-        assert kwargs == {
-            "proxy": {"server": "http://proxy:8080", "username": "user", "password": "pass"}
-        }
-        assert args == []
+        assert kwargs == {}
+        assert args == ["--proxy-server=http://user:pass@proxy:8080"]
 
     def test_proxy_dict_passthrough(self):
         proxy_dict = {"server": "http://proxy:8080", "bypass": ".google.com,localhost"}
@@ -68,7 +68,9 @@ class TestBuildProxyKwargs:
         assert kwargs == {"proxy": proxy_dict}
         assert args == []
 
-    def test_proxy_dict_with_auth(self):
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
+    def test_proxy_dict_with_auth(self, *_):
         proxy_dict = {
             "server": "http://proxy:8080",
             "username": "user",
@@ -76,8 +78,11 @@ class TestBuildProxyKwargs:
             "bypass": ".example.com",
         }
         kwargs, args = _resolve_proxy_config(proxy_dict)
-        assert kwargs == {"proxy": proxy_dict}
-        assert args == []
+        assert kwargs == {}
+        assert args == [
+            "--proxy-server=http://user:pass@proxy:8080",
+            "--proxy-bypass-list=.example.com",
+        ]
 
 
 class TestMaybeResolveGeoip:
@@ -183,11 +188,12 @@ class TestBareProxyFormat:
         r = _parse_proxy_url("proxy:8080")
         assert r == {"server": "proxy:8080"}
 
-    def test_resolve_proxy_config_bare(self):
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
+    def test_resolve_proxy_config_bare(self, *_):
         kwargs, args = _resolve_proxy_config("user:pass@proxy:8080")
-        assert kwargs["proxy"]["username"] == "user"
-        assert kwargs["proxy"]["password"] == "pass"
-        assert "user" not in kwargs["proxy"]["server"]
+        assert kwargs == {}
+        assert args == ["--proxy-server=http://user:pass@proxy:8080"]
 
 
 class TestIsSocksProxy:
@@ -219,11 +225,17 @@ class TestResolveProxyConfig:
         assert kwargs == {}
         assert args == []
 
-    def test_http_string_returns_playwright_dict(self):
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
+    def test_http_string_with_creds_returns_chrome_arg(self, *_):
         kwargs, args = _resolve_proxy_config("http://user:pass@proxy:8080")
+        assert kwargs == {}
+        assert args == ["--proxy-server=http://user:pass@proxy:8080"]
+
+    def test_http_string_no_creds_returns_playwright_dict(self):
+        kwargs, args = _resolve_proxy_config("http://proxy:8080")
         assert "proxy" in kwargs
         assert kwargs["proxy"]["server"] == "http://proxy:8080"
-        assert kwargs["proxy"]["username"] == "user"
         assert args == []
 
     def test_http_dict_passthrough(self):
@@ -374,3 +386,95 @@ class TestResolveProxyConfig:
         # Port 0 is an unusual but valid URL component; don't silently strip it.
         _, args = _resolve_proxy_config("socks5://user:pass=1@host:0")
         assert args[0] == "--proxy-server=socks5://user:pass%3D1@host:0"
+
+    # --- HTTP with credentials → --proxy-server (supported platforms + version) ---
+
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
+    def test_http_string_with_creds_on_supported_platform(self, *_):
+        kwargs, args = _resolve_proxy_config("http://user:pass@proxy:8080")
+        assert kwargs == {}
+        assert args == ["--proxy-server=http://user:pass@proxy:8080"]
+
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
+    def test_http_dict_with_creds_on_supported_platform(self, *_):
+        proxy = {"server": "http://proxy:8080", "username": "user", "password": "pass"}
+        kwargs, args = _resolve_proxy_config(proxy)
+        assert kwargs == {}
+        assert args == ["--proxy-server=http://user:pass@proxy:8080"]
+
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
+    def test_http_dict_with_creds_and_bypass(self, *_):
+        proxy = {
+            "server": "http://proxy:8080",
+            "username": "user",
+            "password": "pass",
+            "bypass": ".google.com",
+        }
+        kwargs, args = _resolve_proxy_config(proxy)
+        assert kwargs == {}
+        assert "--proxy-server=http://user:pass@proxy:8080" in args
+        assert "--proxy-bypass-list=.google.com" in args
+
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
+    def test_http_string_encodes_special_chars_in_password(self, *_):
+        _, args = _resolve_proxy_config("http://user:pass=123@proxy:8080")
+        assert args == ["--proxy-server=http://user:pass%3D123@proxy:8080"]
+
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
+    def test_http_string_encoding_idempotent(self, *_):
+        _, args = _resolve_proxy_config("http://user:pass%3D123@proxy:8080")
+        assert args == ["--proxy-server=http://user:pass%3D123@proxy:8080"]
+
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="windows-x64")
+    def test_http_string_with_creds_on_windows(self, *_):
+        kwargs, args = _resolve_proxy_config("http://user:pass@proxy:8080")
+        assert kwargs == {}
+        assert args == ["--proxy-server=http://user:pass@proxy:8080"]
+
+    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.3")
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
+    def test_http_with_creds_old_version_falls_back(self, *_):
+        kwargs, args = _resolve_proxy_config("http://user:pass@proxy:8080")
+        assert "proxy" in kwargs
+        assert args == []
+
+    # --- HTTP with credentials on unsupported platform → fallback to Playwright ---
+
+    @patch("cloakbrowser.config.get_platform_tag", return_value="darwin-arm64")
+    def test_http_string_with_creds_on_macos_falls_back(self, _mock):
+        kwargs, args = _resolve_proxy_config("http://user:pass@proxy:8080")
+        assert "proxy" in kwargs
+        assert kwargs["proxy"]["username"] == "user"
+        assert args == []
+
+    @patch("cloakbrowser.config.get_platform_tag", return_value="darwin-arm64")
+    def test_http_dict_with_creds_on_macos_falls_back(self, _mock):
+        proxy = {"server": "http://proxy:8080", "username": "user", "password": "pass"}
+        kwargs, args = _resolve_proxy_config(proxy)
+        assert kwargs == {"proxy": proxy}
+        assert args == []
+
+    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-arm64")
+    def test_http_string_with_creds_on_linux_arm_falls_back(self, _mock):
+        kwargs, args = _resolve_proxy_config("http://user:pass@proxy:8080")
+        assert "proxy" in kwargs
+        assert args == []
+
+    # --- HTTP without credentials (all platforms) ---
+
+    def test_http_no_creds_returns_playwright_dict(self):
+        kwargs, args = _resolve_proxy_config("http://proxy:8080")
+        assert "proxy" in kwargs
+        assert args == []
+
+    def test_http_dict_no_creds_returns_playwright_dict(self):
+        proxy = {"server": "http://proxy:8080", "bypass": ".example.com"}
+        kwargs, args = _resolve_proxy_config(proxy)
+        assert kwargs == {"proxy": proxy}
+        assert args == []

@@ -19,8 +19,8 @@
       packageInfo = {
         x86_64-linux = {
           platformTag = "linux-x64";
-          version = "146.0.7680.177.3";
-          hash = "sha256-WvAn+q+x/vmTPreEwJS3ZHBt4io3KizuhLwRf8SrU38=";
+          version = "146.0.7680.177.5";
+          hash = "sha256-ShK83pX6G7G+7ytBq15cJ8Nr544749DayMZNcFIWZw4=";
         };
         aarch64-linux = {
           platformTag = "linux-arm64";

@@ -8,6 +8,15 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+## [0.3.30] — 2026-05-21
+
+- **[binary]** New build 146.0.7680.177.5 for Linux x64 + Windows x64 — 58 source-level fingerprint patches (up from 57)
+- **[binary]** Rendering consistency improvements across Linux and Windows — corrected GPU, display, and graphics parameters to match stock Chrome 146 profiles
+- **[binary]** Windows: native GPU/rendering values now pass through directly instead of being spoofed, matching real hardware behavior
+- **[binary]** Storage normalization fix for Windows
+- **[binary]** HTTP proxy inline credential support at the network layer
+- **[wrapper]** Update `PLATFORM_CHROMIUM_VERSIONS` for linux-x64 and windows-x64 to 146.0.7680.177.5
+
 ## [0.3.29] — 2026-05-20
 
 - **[wrapper]** **Security**: `cloakserve` — guard WebSocket origins to prevent browser-origin CSRF via CDP proxy (thanks [@0xlally](https://github.com/0xlally) for the report, [@honor2030](https://github.com/honor2030) for the fix, #239, #240)

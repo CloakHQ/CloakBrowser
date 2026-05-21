@@ -2,6 +2,8 @@
  * Shared proxy URL parsing for Playwright and Puppeteer wrappers.
  */
 
+import { getChromiumVersion, getPlatformTag, parseVersion } from "./config.js";
+
 export interface ParsedProxy {
   server: string;
   username?: string;
@@ -155,11 +157,106 @@ export function normalizeSocksStringUrl(urlStr: string): string {
   }
 }
 
+const HTTP_PROXY_INLINE_AUTH_MIN_VERSION = "146.0.7680.177.5";
+const HTTP_PROXY_INLINE_AUTH_PLATFORMS = new Set(["linux-x64", "windows-x64"]);
+
+export function supportsHttpProxyInlineAuth(): boolean {
+  try {
+    const tag = getPlatformTag();
+    if (!HTTP_PROXY_INLINE_AUTH_PLATFORMS.has(tag)) return false;
+    const current = parseVersion(getChromiumVersion());
+    const minimum = parseVersion(HTTP_PROXY_INLINE_AUTH_MIN_VERSION);
+    for (let i = 0; i < Math.max(current.length, minimum.length); i++) {
+      if ((current[i] ?? 0) > (minimum[i] ?? 0)) return true;
+      if ((current[i] ?? 0) < (minimum[i] ?? 0)) return false;
+    }
+    return true; // equal = supported
+  } catch {
+    return false;
+  }
+}
+
+function hasCredentials(proxy: string | ProxyDict): boolean {
+  if (typeof proxy === "string") return proxy.includes("@");
+  return !!proxy.username;
+}
+
+/**
+ * Reconstruct an HTTP(S) proxy URL with inline credentials from a proxy dict.
+ */
+export function reconstructHttpUrl(proxy: ProxyDict): string {
+  if (!proxy.username) return proxy.server;
+  const url = new URL(ensureProxyScheme(proxy.server));
+  url.username = encodeURIComponent(proxy.username);
+  if (proxy.password) url.password = encodeURIComponent(proxy.password);
+  return url.href.replace(/\/$/, "");
+}
+
+/**
+ * Re-encode credentials in an HTTP(S) proxy URL string for --proxy-server.
+ * Same pattern as normalizeSocksStringUrl.
+ */
+export function normalizeHttpStringUrl(urlStr: string): string {
+  const normalized = urlStr.includes("://") ? urlStr : `http://${urlStr}`;
+  const schemeMatch = normalized.match(/^([a-z][a-z0-9+\-.]*):\/\/(.*)$/i);
+  if (!schemeMatch) return normalized;
+  const [, scheme, rest] = schemeMatch;
+  const hostStart = rest.search(/[/?#]/);
+  const authority = hostStart === -1 ? rest : rest.slice(0, hostStart);
+  const suffix = hostStart === -1 ? "" : rest.slice(hostStart);
+  const atIdx = authority.lastIndexOf("@");
+  if (atIdx === -1) return normalized;
+  const userinfo = authority.slice(0, atIdx);
+  const hostPart = authority.slice(atIdx + 1);
+  const bracketEnd = hostPart.lastIndexOf("]");
+  const portColonIdx = hostPart.indexOf(":", Math.max(bracketEnd, 0));
+  if (portColonIdx !== -1) {
+    const portStr = hostPart.slice(portColonIdx + 1);
+    if (portStr && !/^\d+$/.test(portStr)) {
+      console.warn(`[cloakbrowser] Malformed HTTP proxy URL, passing through unchanged: invalid port`);
+      return normalized;
+    }
+  }
+  const hostAndRest = hostPart + suffix;
+  const colonIdx = userinfo.indexOf(":");
+  const rawUserEnc = colonIdx === -1 ? userinfo : userinfo.slice(0, colonIdx);
+  const hasPassword = colonIdx !== -1;
+  const rawPassEnc = hasPassword ? userinfo.slice(colonIdx + 1) : "";
+  try {
+    const encUser = rawUserEnc ? encodeURIComponent(lenientDecodeURIComponent(rawUserEnc)) : "";
+    const encPass = hasPassword
+      ? (rawPassEnc ? encodeURIComponent(lenientDecodeURIComponent(rawPassEnc)) : "")
+      : null;
+    let userinfoPart: string;
+    if (encPass !== null) {
+      userinfoPart = `${encUser}:${encPass}@`;
+    } else if (encUser) {
+      userinfoPart = `${encUser}@`;
+    } else {
+      userinfoPart = "";
+    }
+    const result = `${scheme}://${userinfoPart}${hostAndRest}`;
+    const credsChanged = encUser !== rawUserEnc
+      || (hasPassword ? encPass !== rawPassEnc : false);
+    if (credsChanged) {
+      console.info(
+        "[cloakbrowser] Auto URL-encoded HTTP proxy credentials (special " +
+        "characters detected). Pre-encode the URL to suppress this notice.",
+      );
+    }
+    return result;
+  } catch (e) {
+    console.warn(`[cloakbrowser] Could not normalize HTTP proxy URL, passing through unchanged: ${(e as Error).message}`);
+    return normalized;
+  }
+}
+
 /**
  * Resolve proxy into Playwright option and/or Chrome args.
  *
- * Playwright rejects SOCKS5 proxies with credentials in its proxy dict,
- * so SOCKS5 is passed via --proxy-server Chrome arg instead.
+ * Proxies with credentials (SOCKS5 or HTTP/HTTPS on supported platforms) are
+ * passed via Chrome's --proxy-server flag with inline credentials, bypassing
+ * Playwright's CDP auth interceptor which breaks on some proxies (#182).
  */
 export function resolveProxyConfig(proxy: string | ProxyDict | undefined): ProxyConfig {
   if (!proxy) return { proxyArgs: [] };
@@ -177,7 +274,19 @@ export function resolveProxyConfig(proxy: string | ProxyDict | undefined): Proxy
     return { proxyArgs: args };
   }
 
-  // HTTP/HTTPS: use Playwright's proxy dict
+  // HTTP/HTTPS with credentials on supported platforms: bypass Playwright's
+  // CDP auth interceptor, use Chrome's preemptive Proxy-Authorization (#182).
+  if (hasCredentials(proxy) && supportsHttpProxyInlineAuth()) {
+    if (typeof proxy === "string") {
+      return { proxyArgs: [`--proxy-server=${normalizeHttpStringUrl(proxy)}`] };
+    }
+    const httpUrl = reconstructHttpUrl(proxy);
+    const args = [`--proxy-server=${httpUrl}`];
+    if (proxy.bypass) args.push(`--proxy-bypass-list=${proxy.bypass}`);
+    return { proxyArgs: args };
+  }
+
+  // HTTP/HTTPS without credentials (or unsupported platform): use Playwright's proxy dict
   if (typeof proxy === "string") {
     return { proxyOption: parseProxyUrl(proxy), proxyArgs: [] };
   }

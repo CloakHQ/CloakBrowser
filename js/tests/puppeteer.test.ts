@@ -84,16 +84,39 @@ describe("puppeteer launch", () => {
     expect(callArgs.args).toContain("--proxy-bypass-list=.google.com,localhost");
   });
 
-  it("monkey-patches newPage for proxy auth", async () => {
-    const { launch } = await import("../src/puppeteer.js");
-    const browser = await launch({ proxy: "http://user:pass@proxy:8080" });
+  it("uses page.authenticate fallback for http proxy on unsupported platform", async () => {
+    const config = await import("../src/config.js");
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("darwin-arm64");
+    try {
+      const { launch } = await import("../src/puppeteer.js");
+      const browser = await launch({ proxy: "http://user:pass@proxy:8080" });
 
-    // newPage should auto-authenticate
-    const page = await browser.newPage();
-    expect(page.authenticate).toHaveBeenCalledWith({
-      username: "user",
-      password: "pass",
-    });
+      const page = await browser.newPage();
+      expect(page.authenticate).toHaveBeenCalledWith({
+        username: "user",
+        password: "pass",
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("passes inline creds via --proxy-server on supported platform (no page.authenticate)", async () => {
+    const config = await import("../src/config.js");
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("linux-x64");
+    vi.spyOn(config, "getChromiumVersion").mockReturnValue("146.0.7680.177.5");
+    try {
+      const { launch } = await import("../src/puppeteer.js");
+      const browser = await launch({ proxy: "http://user:pass@proxy:8080" });
+
+      const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
+      expect(callArgs.args).toContain("--proxy-server=http://user:pass@proxy:8080");
+
+      const page = await browser.newPage();
+      expect(page.authenticate).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("injects timezone and locale as binary flags", async () => {
@@ -189,18 +212,24 @@ describe("puppeteer launchPersistentContext", () => {
     expect(callArgs.args.some((a: string) => a.startsWith("--fingerprint="))).toBe(true);
   });
 
-  it("handles proxy auth with persistent context", async () => {
-    const { launchPersistentContext } = await import("../src/puppeteer.js");
-    const browser = await launchPersistentContext({
-      userDataDir: "./my-profile",
-      proxy: "http://user:pass@proxy:8080",
-    });
+  it("uses page.authenticate fallback for http proxy in persistent context on unsupported platform", async () => {
+    const config = await import("../src/config.js");
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("darwin-arm64");
+    try {
+      const { launchPersistentContext } = await import("../src/puppeteer.js");
+      const browser = await launchPersistentContext({
+        userDataDir: "./my-profile",
+        proxy: "http://user:pass@proxy:8080",
+      });
 
-    const page = await browser.newPage();
-    expect(page.authenticate).toHaveBeenCalledWith({
-      username: "user",
-      password: "pass",
-    });
+      const page = await browser.newPage();
+      expect(page.authenticate).toHaveBeenCalledWith({
+        username: "user",
+        password: "pass",
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("keeps SOCKS5 credentials in --proxy-server URL", async () => {

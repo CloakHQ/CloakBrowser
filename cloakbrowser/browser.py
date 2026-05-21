@@ -864,7 +864,7 @@ def _ensure_proxy_scheme(proxy_url: str) -> str:
     return proxy_url if "://" in proxy_url else f"http://{proxy_url}"
 
 
-def _assemble_socks_url(
+def _assemble_proxy_url(
     scheme: str,
     host: str,
     port: int | None,
@@ -875,7 +875,7 @@ def _assemble_socks_url(
     query: str = "",
     fragment: str = "",
 ) -> str:
-    """Build a SOCKS URL from already-percent-encoded credentials and host parts.
+    """Build a proxy URL from already-percent-encoded credentials and host parts.
 
     ``enc_pass is None`` means no password (no colon in userinfo). Empty string
     means present-but-empty (colon preserved). This mirrors the distinction
@@ -906,7 +906,7 @@ def _reconstruct_socks_url(proxy: ProxySettings) -> str:
     enc_user = quote(username, safe="")
     # Dict convention: empty/missing password → no colon.
     enc_pass = quote(password, safe="") if password else None
-    return _assemble_socks_url(
+    return _assemble_proxy_url(
         parsed.scheme, parsed.hostname or "", parsed.port,
         enc_user, enc_pass, parsed.path,
     )
@@ -946,7 +946,7 @@ def _normalize_socks_string_url(url: str) -> str:
     else:
         raw_pass = None
         enc_pass = None
-    normalized = _assemble_socks_url(
+    normalized = _assemble_proxy_url(
         parsed.scheme, parsed.hostname or "", parsed.port,
         enc_user, enc_pass,
         parsed.path, parsed.params, parsed.query, parsed.fragment,
@@ -1151,6 +1151,81 @@ def _parse_proxy_url(proxy: str) -> dict[str, Any]:
     return result
 
 
+def _has_credentials(proxy: str | ProxySettings) -> bool:
+    """Check if the proxy has inline or dict-level credentials."""
+    if isinstance(proxy, dict):
+        return bool(proxy.get("username"))
+    return "@" in proxy
+
+
+def _reconstruct_http_url(proxy: ProxySettings) -> str:
+    """Reconstruct an HTTP(S) proxy URL with inline credentials from a Playwright proxy dict."""
+    server = proxy.get("server", "")
+    username = proxy.get("username", "")
+    password = proxy.get("password", "")
+    if not username:
+        return server
+    parsed = urlparse(_ensure_proxy_scheme(server))
+    enc_user = quote(username, safe="")
+    enc_pass = quote(password, safe="") if password else None
+    return _assemble_proxy_url(
+        parsed.scheme, parsed.hostname or "", parsed.port,
+        enc_user, enc_pass, parsed.path,
+    )
+
+
+def _normalize_http_string_url(url: str) -> str:
+    """Re-encode credentials in an HTTP(S) proxy URL string for --proxy-server.
+
+    Same pattern as ``_normalize_socks_string_url`` — decode then re-encode to
+    ensure Chromium's proxy URL parser handles special chars correctly.
+    """
+    normalized = url if "://" in url else f"http://{url}"
+    try:
+        parsed = urlparse(normalized)
+        _ = parsed.port
+    except ValueError as e:
+        logger.warning("Malformed HTTP proxy URL, passing through unchanged: %s", e)
+        return normalized
+    if parsed.username is None and parsed.password is None:
+        return normalized
+    raw_user = parsed.username or ""
+    enc_user = quote(unquote(raw_user), safe="") if raw_user else ""
+    if parsed.password is not None:
+        raw_pass = parsed.password
+        enc_pass = quote(unquote(raw_pass), safe="") if raw_pass else ""
+    else:
+        raw_pass = None
+        enc_pass = None
+    result = _assemble_proxy_url(
+        parsed.scheme, parsed.hostname or "", parsed.port,
+        enc_user, enc_pass,
+        parsed.path, parsed.params, parsed.query, parsed.fragment,
+    )
+    if enc_user != raw_user or enc_pass != raw_pass:
+        logger.info(
+            "Auto URL-encoded HTTP proxy credentials (special characters "
+            "detected). Pre-encode the URL to suppress this notice."
+        )
+    return result
+
+
+_HTTP_PROXY_INLINE_AUTH_MIN_VERSION = "146.0.7680.177.5"
+_HTTP_PROXY_INLINE_AUTH_PLATFORMS = {"linux-x64", "windows-x64"}
+
+
+def _supports_http_proxy_inline_auth() -> bool:
+    """Check if the current platform's binary supports HTTP proxy inline credentials.
+
+    Requires both a supported platform AND a binary version with preemptive proxy auth.
+    """
+    from .config import get_platform_tag, get_chromium_version, _version_tuple
+    tag = get_platform_tag()
+    if tag not in _HTTP_PROXY_INLINE_AUTH_PLATFORMS:
+        return False
+    return _version_tuple(get_chromium_version()) >= _version_tuple(_HTTP_PROXY_INLINE_AUTH_MIN_VERSION)
+
+
 def _is_socks_proxy(proxy: str | ProxySettings | None) -> bool:
     """Check if the proxy uses SOCKS5 protocol."""
     if proxy is None:
@@ -1164,8 +1239,9 @@ def _resolve_proxy_config(
 ) -> tuple[dict[str, Any], list[str]]:
     """Resolve proxy into Playwright kwargs and Chrome args.
 
-    Playwright rejects SOCKS5 proxies with credentials in its proxy dict,
-    so SOCKS5 is passed via --proxy-server Chrome arg instead.
+    Proxies with credentials (SOCKS5 or HTTP/HTTPS) are passed via Chrome's
+    --proxy-server flag with inline credentials, bypassing Playwright's CDP
+    auth interceptor which breaks on some proxies and Google domains (#182).
 
     Returns:
         (proxy_kwargs, extra_chrome_args) — one or both will be empty.
@@ -1186,7 +1262,20 @@ def _resolve_proxy_config(
         # passwords at '=' and other special chars (#157).
         return {}, [f"--proxy-server={_normalize_socks_string_url(proxy)}"]
 
-    # HTTP/HTTPS: use Playwright's proxy dict as before
+    # HTTP/HTTPS with credentials on supported platforms: bypass Playwright's
+    # CDP auth interceptor, pass directly to Chrome via --proxy-server with
+    # inline creds. Chrome sends Proxy-Authorization preemptively, avoiding
+    # the 407 round-trip that breaks on some proxies (#182).
+    if _has_credentials(proxy) and _supports_http_proxy_inline_auth():
+        if isinstance(proxy, dict):
+            url = _reconstruct_http_url(proxy)
+            extra_args = [f"--proxy-server={url}"]
+            if proxy.get("bypass"):
+                extra_args.append(f"--proxy-bypass-list={proxy['bypass']}")
+            return {}, extra_args
+        return {}, [f"--proxy-server={_normalize_http_string_url(proxy)}"]
+
+    # HTTP/HTTPS without credentials: use Playwright's proxy dict
     if isinstance(proxy, dict):
         return {"proxy": proxy}, []
     return {"proxy": _parse_proxy_url(proxy)}, []

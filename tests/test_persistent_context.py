@@ -188,10 +188,11 @@ def test_persistent_context_close_stops_pw(_mock_geoip, _mock_bin):
     pw.stop.assert_called_once()
 
 
+@patch("cloakbrowser.config.get_platform_tag", return_value="darwin-arm64")
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
-def test_persistent_context_proxy_string(_mock_geoip, _mock_bin):
-    """Proxy string parsed and passed."""
+def test_persistent_context_proxy_string(_mock_geoip, _mock_bin, _mock_platform):
+    """Proxy string parsed and passed (unsupported platform → Playwright dict)."""
     pw_cm, pw, context = _make_mock_pw_and_context()
 
     with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):

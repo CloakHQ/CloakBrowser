@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { parseProxyUrl, isSocksProxy, resolveProxyConfig } from "../src/proxy.js";
+import { parseProxyUrl, isSocksProxy, resolveProxyConfig, reconstructHttpUrl, normalizeHttpStringUrl } from "../src/proxy.js";
+import * as config from "../src/config.js";
 import type { LaunchOptions } from "../src/types.js";
 
 describe("parseProxyUrl", () => {
@@ -153,10 +154,15 @@ describe("resolveProxyConfig", () => {
     expect(proxyArgs).toEqual([]);
   });
 
-  it("returns playwright dict for http string", () => {
-    const { proxyOption, proxyArgs } = resolveProxyConfig("http://user:pass@proxy:8080");
-    expect(proxyOption).toEqual({ server: "http://proxy:8080", username: "user", password: "pass" });
-    expect(proxyArgs).toEqual([]);
+  it("returns playwright dict for http string on unsupported platform", () => {
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("darwin-arm64");
+    try {
+      const { proxyOption, proxyArgs } = resolveProxyConfig("http://user:pass@proxy:8080");
+      expect(proxyOption).toEqual({ server: "http://proxy:8080", username: "user", password: "pass" });
+      expect(proxyArgs).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("returns playwright dict for http dict", () => {
@@ -319,6 +325,98 @@ describe("resolveProxyConfig", () => {
       expect(reencodedCalls).toHaveLength(0);
     } finally {
       debugSpy.mockRestore();
+    }
+  });
+
+  // --- HTTP with credentials → --proxy-server (supported platform + version) ---
+
+  it("routes http string with creds through --proxy-server on linux-x64 v177.5", () => {
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("linux-x64");
+    vi.spyOn(config, "getChromiumVersion").mockReturnValue("146.0.7680.177.5");
+    try {
+      const { proxyOption, proxyArgs } = resolveProxyConfig("http://user:pass@proxy:8080");
+      expect(proxyOption).toBeUndefined();
+      expect(proxyArgs).toEqual(["--proxy-server=http://user:pass@proxy:8080"]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("routes http dict with creds through --proxy-server on linux-x64 v177.5", () => {
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("linux-x64");
+    vi.spyOn(config, "getChromiumVersion").mockReturnValue("146.0.7680.177.5");
+    try {
+      const { proxyOption, proxyArgs } = resolveProxyConfig({
+        server: "http://proxy:8080",
+        username: "user",
+        password: "pass",
+      });
+      expect(proxyOption).toBeUndefined();
+      expect(proxyArgs).toEqual(["--proxy-server=http://user:pass@proxy:8080"]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("includes bypass for http dict with creds on windows-x64 v177.5", () => {
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("windows-x64");
+    vi.spyOn(config, "getChromiumVersion").mockReturnValue("146.0.7680.177.5");
+    try {
+      const { proxyArgs } = resolveProxyConfig({
+        server: "http://proxy:8080",
+        username: "user",
+        password: "pass",
+        bypass: ".google.com",
+      });
+      expect(proxyArgs).toContain("--proxy-server=http://user:pass@proxy:8080");
+      expect(proxyArgs).toContain("--proxy-bypass-list=.google.com");
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("encodes special chars in http proxy password on supported platform v177.5", () => {
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("linux-x64");
+    vi.spyOn(config, "getChromiumVersion").mockReturnValue("146.0.7680.177.5");
+    try {
+      const { proxyArgs } = resolveProxyConfig("http://user:pass=123@proxy:8080");
+      expect(proxyArgs).toEqual(["--proxy-server=http://user:pass%3D123@proxy:8080"]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("falls back on linux-x64 with old version (pre-inline-auth)", () => {
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("linux-x64");
+    vi.spyOn(config, "getChromiumVersion").mockReturnValue("146.0.7680.177.3");
+    try {
+      const { proxyOption, proxyArgs } = resolveProxyConfig("http://user:pass@proxy:8080");
+      expect(proxyOption).toBeDefined();
+      expect(proxyArgs).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("falls back to playwright dict for http with creds on darwin-arm64", () => {
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("darwin-arm64");
+    try {
+      const { proxyOption, proxyArgs } = resolveProxyConfig("http://user:pass@proxy:8080");
+      expect(proxyOption).toEqual({ server: "http://proxy:8080", username: "user", password: "pass" });
+      expect(proxyArgs).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("falls back to playwright dict for http with creds on linux-arm64", () => {
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("linux-arm64");
+    try {
+      const { proxyOption, proxyArgs } = resolveProxyConfig("http://user:pass@proxy:8080");
+      expect(proxyOption).toBeDefined();
+      expect(proxyArgs).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 });
