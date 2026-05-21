@@ -55,6 +55,13 @@ export async function buildLaunchOptions(
 ): Promise<PlaywrightLaunchOptions> {
   const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
   const { exitIp, ...resolved } = await maybeResolveGeoip(options);
+  if (options.geoip && !options.proxy) {
+    console.warn(
+      "geoip=true without proxy at launch - timezone/locale will default to " +
+      "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass " +
+      "proxy at launch() or set explicit timezone/locale."
+    );
+  }
   const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy);
   let resolvedArgs = await resolveWebrtcArgs(options);
   if (exitIp && !(resolvedArgs ?? []).some(a => a.startsWith("--fingerprint-webrtc-ip"))) {
@@ -132,6 +139,13 @@ export async function launchContext(
   options = resolveTimezone(options);
   // Resolve geoip BEFORE launch() to avoid double-resolution
   const { exitIp, ...resolved } = await maybeResolveGeoip(options);
+  if (options.geoip && !options.proxy) {
+    console.warn(
+      "geoip=true without proxy at launch - timezone/locale will default to " +
+      "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass " +
+      "proxy at launch() or set explicit timezone/locale."
+    );
+  }
   let launchArgs = await resolveWebrtcArgs(options);
   // Inject geoip exit IP for WebRTC spoofing (free — no extra HTTP call)
   if (exitIp && !(launchArgs ?? []).some(a => a.startsWith("--fingerprint-webrtc-ip"))) {
@@ -207,6 +221,13 @@ export async function launchPersistentContext(
 
   const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
   const { exitIp, ...resolved } = await maybeResolveGeoip(options);
+  if (options.geoip && !options.proxy) {
+    console.warn(
+      "geoip=true without proxy at launch - timezone/locale will default to " +
+      "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass " +
+      "proxy at launch() or set explicit timezone/locale."
+    );
+  }
   const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy);
   let resolvedArgs = await resolveWebrtcArgs(options);
   if (exitIp && !(resolvedArgs ?? []).some(a => a.startsWith("--fingerprint-webrtc-ip"))) {
