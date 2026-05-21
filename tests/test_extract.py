@@ -1,11 +1,10 @@
 """Unit tests for archive extraction — path traversal protection, flattening, permissions."""
 
 import io
-import os
 import platform
-import stat
 import tarfile
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -23,7 +22,7 @@ from cloakbrowser.download import (
 # ---------------------------------------------------------------------------
 
 
-def _create_tar_gz(tmp_path, members: dict[str, bytes]) -> "Path":
+def _create_tar_gz(tmp_path, members: dict[str, bytes]) -> Path:
     """Create a tar.gz with given {name: content} members."""
     archive = tmp_path / "test.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
@@ -36,7 +35,9 @@ def _create_tar_gz(tmp_path, members: dict[str, bytes]) -> "Path":
 
 class TestExtractTar:
     def test_basic(self, tmp_path):
-        archive = _create_tar_gz(tmp_path, {"chrome": b"binary", "lib/libfoo.so": b"lib"})
+        archive = _create_tar_gz(
+            tmp_path, {"chrome": b"binary", "lib/libfoo.so": b"lib"}
+        )
         dest = tmp_path / "out"
         dest.mkdir()
         _extract_tar(archive, dest)
@@ -54,6 +55,35 @@ class TestExtractTar:
         dest.mkdir()
         with pytest.raises(RuntimeError, match="path traversal"):
             _extract_tar(archive, dest)
+
+    def test_sibling_prefix_traversal_blocked(self, tmp_path):
+        """Containment should use path ancestry, not string prefixes."""
+        archive = tmp_path / "evil.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            info = tarfile.TarInfo(name="../out_evil/owned.txt")
+            content = b"evil"
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(RuntimeError, match="path traversal"):
+            _extract_tar(archive, dest)
+        assert not (tmp_path / "out_evil" / "owned.txt").exists()
+
+    def test_symlink_entry_path_traversal_blocked(self, tmp_path):
+        archive = tmp_path / "symlink-path.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            sym = tarfile.TarInfo(name="../out_evil/link")
+            sym.type = tarfile.SYMTYPE
+            sym.linkname = "chrome"
+            tar.addfile(sym)
+
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(RuntimeError, match="path traversal"):
+            _extract_tar(archive, dest)
+        assert not (tmp_path / "out_evil" / "link").exists()
 
     def test_suspicious_symlink_skipped(self, tmp_path):
         """Symlinks with absolute targets are skipped (logged as warning)."""
@@ -83,7 +113,7 @@ class TestExtractTar:
 # ---------------------------------------------------------------------------
 
 
-def _create_zip(tmp_path, members: dict[str, bytes]) -> "Path":
+def _create_zip(tmp_path, members: dict[str, bytes]) -> Path:
     """Create a zip with given {name: content} members."""
     archive = tmp_path / "test.zip"
     with zipfile.ZipFile(archive, "w") as zf:
@@ -94,7 +124,9 @@ def _create_zip(tmp_path, members: dict[str, bytes]) -> "Path":
 
 class TestExtractZip:
     def test_basic(self, tmp_path):
-        archive = _create_zip(tmp_path, {"chrome.exe": b"binary", "lib/foo.dll": b"lib"})
+        archive = _create_zip(
+            tmp_path, {"chrome.exe": b"binary", "lib/foo.dll": b"lib"}
+        )
         dest = tmp_path / "out"
         dest.mkdir()
         _extract_zip(archive, dest)
@@ -110,6 +142,17 @@ class TestExtractZip:
         dest.mkdir()
         with pytest.raises(RuntimeError, match="path traversal"):
             _extract_zip(archive, dest)
+
+    def test_sibling_prefix_traversal_blocked(self, tmp_path):
+        archive = tmp_path / "evil.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("../out_evil/owned.txt", "evil")
+
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(RuntimeError, match="path traversal"):
+            _extract_zip(archive, dest)
+        assert not (tmp_path / "out_evil" / "owned.txt").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +212,9 @@ class TestFlatten:
 
 
 class TestPermissions:
-    @pytest.mark.skipif(platform.system() == "Windows", reason="chmod not applicable on Windows")
+    @pytest.mark.skipif(
+        platform.system() == "Windows", reason="chmod not applicable on Windows"
+    )
     def test_make_executable(self, tmp_path):
         binary = tmp_path / "chrome"
         binary.write_bytes(b"binary")

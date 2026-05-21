@@ -179,12 +179,16 @@ def _verify_download_checksum(file_path: Path, version: str | None = None) -> No
     tarball_name = get_archive_name()
 
     if checksums is None:
-        logger.warning("SHA256SUMS not available for this release — skipping checksum verification")
+        logger.warning(
+            "SHA256SUMS not available for this release — skipping checksum verification"
+        )
         return
 
     expected = checksums.get(tarball_name)
     if expected is None:
-        logger.warning("SHA256SUMS found but no entry for %s — skipping verification", tarball_name)
+        logger.warning(
+            "SHA256SUMS found but no entry for %s — skipping verification", tarball_name
+        )
         return
 
     _verify_checksum(file_path, expected)
@@ -247,7 +251,9 @@ def _download_file(url: str, dest: Path) -> None:
     """Download a file with progress logging."""
     logger.info("Downloading from %s", url)
 
-    with httpx.stream("GET", url, follow_redirects=True, timeout=DOWNLOAD_TIMEOUT) as response:
+    with httpx.stream(
+        "GET", url, follow_redirects=True, timeout=DOWNLOAD_TIMEOUT
+    ) as response:
         response.raise_for_status()
 
         total = int(response.headers.get("content-length", 0))
@@ -283,6 +289,7 @@ def _extract_archive(
     # Clean existing dir if partial download existed
     if dest_dir.exists():
         import shutil
+
         shutil.rmtree(dest_dir)
 
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -310,21 +317,38 @@ def _extract_archive(
         logger.info("Binary ready: %s", bp)
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    """Return whether path is contained by parent after resolution."""
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
 def _extract_tar(archive_path: Path, dest_dir: Path) -> None:
     """Extract tar.gz archive with path traversal protection."""
+    resolved_dest = dest_dir.resolve()
     with tarfile.open(archive_path, "r:gz") as tar:
         safe_members = []
         for member in tar.getmembers():
+            member_path = (dest_dir / member.name).resolve()
+            if not _is_relative_to(member_path, resolved_dest):
+                raise RuntimeError(f"Archive contains path traversal: {member.name}")
+
             # Allow symlinks — macOS .app bundles require them (Framework layout)
             if member.issym() or member.islnk():
                 link_target = member.linkname
-                if os.path.isabs(link_target) or ".." in link_target.split("/"):
-                    logger.warning("Skipping suspicious symlink: %s -> %s", member.name, link_target)
+                link_path = (member_path.parent / link_target).resolve()
+                if os.path.isabs(link_target) or not _is_relative_to(
+                    link_path, resolved_dest
+                ):
+                    logger.warning(
+                        "Skipping suspicious symlink: %s -> %s",
+                        member.name,
+                        link_target,
+                    )
                     continue
-            else:
-                member_path = (dest_dir / member.name).resolve()
-                if not str(member_path).startswith(str(dest_dir.resolve())):
-                    raise RuntimeError(f"Archive contains path traversal: {member.name}")
             safe_members.append(member)
 
         tar.extractall(dest_dir, members=safe_members)
@@ -334,10 +358,11 @@ def _extract_zip(archive_path: Path, dest_dir: Path) -> None:
     """Extract zip archive with path traversal protection."""
     import zipfile
 
+    resolved_dest = dest_dir.resolve()
     with zipfile.ZipFile(archive_path, "r") as zf:
         for info in zf.infolist():
             member_path = (dest_dir / info.filename).resolve()
-            if not str(member_path).startswith(str(dest_dir.resolve())):
+            if not _is_relative_to(member_path, resolved_dest):
                 raise RuntimeError(f"Archive contains path traversal: {info.filename}")
         zf.extractall(dest_dir)
 
@@ -419,6 +444,7 @@ def binary_info() -> dict:
 # Auto-update
 # ---------------------------------------------------------------------------
 
+
 def check_for_update() -> str | None:
     """Manually check for a newer Chromium version. Returns new version or None.
 
@@ -470,9 +496,7 @@ def _get_latest_chromium_version() -> str | None:
     so Linux-only releases won't be offered to macOS users.
     """
     try:
-        resp = httpx.get(
-            GITHUB_API_URL, params={"per_page": 10}, timeout=10.0
-        )
+        resp = httpx.get(GITHUB_API_URL, params={"per_page": 10}, timeout=10.0)
         resp.raise_for_status()
         platform_tarball = get_archive_name()
         for release in resp.json():
