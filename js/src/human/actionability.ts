@@ -197,8 +197,11 @@ export async function ensureStable(
 // Pointer-events check (post-scroll, at actual click coordinates)
 // ---------------------------------------------------------------------------
 
-const POINTER_EVENTS_LOCATOR_JS = `(expected, coords) => {
-  const target = document.elementFromPoint(coords.x, coords.y);
+const POINTER_EVENTS_LOCATOR_JS = `(expected, data) => {
+  const rect = expected.getBoundingClientRect();
+  const frameOffsetX = data.box ? data.box.x - rect.x : 0;
+  const frameOffsetY = data.box ? data.box.y - rect.y : 0;
+  const target = document.elementFromPoint(data.x - frameOffsetX, data.y - frameOffsetY);
   if (!target) return { hit: false, reason: 'no_element_at_point', covering: 'none' };
   let node = target;
   while (node) { if (node === expected) return { hit: true }; node = node.parentNode; }
@@ -206,8 +209,11 @@ const POINTER_EVENTS_LOCATOR_JS = `(expected, coords) => {
   return { hit: false, reason: 'covered', covering: target.tagName || 'unknown' };
 }`;
 
-const POINTER_EVENTS_HANDLE_JS = `(expected, coords) => {
-  const target = document.elementFromPoint(coords.x, coords.y);
+const POINTER_EVENTS_HANDLE_JS = `(expected, data) => {
+  const rect = expected.getBoundingClientRect();
+  const frameOffsetX = data.box ? data.box.x - rect.x : 0;
+  const frameOffsetY = data.box ? data.box.y - rect.y : 0;
+  const target = document.elementFromPoint(data.x - frameOffsetX, data.y - frameOffsetY);
   if (!target) return { hit: false, reason: 'no_element_at_point', covering: 'none' };
   let node = target;
   while (node) { if (node === expected) return { hit: true }; node = node.parentNode; }
@@ -225,18 +231,18 @@ export async function checkPointerEvents(
 ): Promise<void> {
   const deadline = Date.now() + timeout;
   let attempt = 0;
-  const coords = { x, y };
 
   while (true) {
     let result: any = null;
     try {
       const loc = pageOrFrame.locator(selector).first();
-      result = await loc.evaluate(POINTER_EVENTS_LOCATOR_JS, coords);
+      const box = await loc.boundingBox({ timeout: Math.max(1, Math.min(deadline - Date.now(), 1000)) });
+      result = await loc.evaluate(POINTER_EVENTS_LOCATOR_JS, { x, y, box });
     } catch {
       result = null;
     }
 
-    if (result && result.hit) return;
+    if (!result || result.hit) return;
     const covering = (result as any)?.covering ?? 'unknown';
     if (Date.now() >= deadline) throw new ElementNotReceivingEventsError(selector, covering);
 
@@ -317,17 +323,16 @@ export async function checkPointerEventsHandle(
   const deadline = Date.now() + timeout;
   let attempt = 0;
 
-  const coords = { x, y };
-
   while (true) {
     let result: any;
     try {
-      result = await el.evaluate(POINTER_EVENTS_HANDLE_JS, coords);
+      const box = await el.boundingBox();
+      result = await el.evaluate(POINTER_EVENTS_HANDLE_JS, { x, y, box });
     } catch {
       result = null;
     }
 
-    if (result && result.hit) return;
+    if (!result || result.hit) return;
 
     const covering = (result as any)?.covering ?? 'unknown';
     if (Date.now() >= deadline) throw new ElementNotReceivingEventsError('<ElementHandle>', covering);
