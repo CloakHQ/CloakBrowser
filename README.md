@@ -42,7 +42,7 @@ Same API, same code — just swap the import. <strong>3 lines of code, 30 second
 - **Works with AI agents and automation frameworks** — drop-in stealth for browser-use, Crawl4AI, Scrapling, Stagehand, LangChain, Selenium, and more. See [integrations](#framework-integrations).
 
 <details>
-<summary><strong>Latest: v0.3.31 (Chromium 146.0.7680.177.5)</strong></summary>
+<summary>See all features</summary>
 
 - **58 fingerprint patches** — rendering consistency improvements across Linux and Windows, corrected GPU/display/graphics parameters to match stock Chrome 146 profiles
 - **Windows native GPU passthrough** — real hardware values pass through directly instead of being spoofed, matching real browser behavior
@@ -59,6 +59,19 @@ Same API, same code — just swap the import. <strong>3 lines of code, 30 second
 - **Stealthy with zero flags** — binary auto-generates a random fingerprint seed at startup. No configuration required
 - **Timezone & locale from proxy IP** — `launch(proxy="...", geoip=True)` auto-detects timezone and locale
 - **Persistent profiles** — `launch_persistent_context()` keeps cookies and localStorage across sessions, bypasses incognito detection
+</details>
+
+<details>
+<summary><strong>Latest: v0.3.31 (Chromium 146.0.7680.177.5) changelog</strong></summary>
+
+## [0.3.31] — 2026-05-26
+
+- **[wrapper]** Route HTTP proxy credentials through `--proxy-server` flag, removing the need for Playwright's proxy auth handler on HTTP proxies
+- **[wrapper]** JS: export `buildContextOptions` helper for custom context creation (thanks [@honor2030](https://github.com/honor2030), #262)
+- **[wrapper]** Humanize: fix iframe coordinate offset in pointer-events check (thanks [@eofreternal](https://github.com/eofreternal), #303)
+- **[wrapper]** Humanize: use shared deadline for timeout budget in frame and ElementHandle methods (#307)
+- **[docker]** Clean up stale Xvfb lock so container survives restarts (thanks [@sparanoid](https://github.com/sparanoid), #284)
+- **[meta]** Add pip and npm ecosystems to Dependabot, bump GitHub Actions (#309)
 
 See the full [CHANGELOG.md](CHANGELOG.md) for details.
 </details>
