@@ -691,25 +691,6 @@ browser = launch(
 )
 ```
 
-### Examples
-
-```python
-# Pin a seed for a persistent identity
-browser = launch(args=["--fingerprint=42069"])
-
-# Full control — disable defaults, set everything yourself
-browser = launch(stealth_args=False, args=[
-    "--fingerprint=42069",
-    "--fingerprint-platform=windows",
-])
-
-# Override GPU to look like a specific machine
-browser = launch(args=[
-    "--fingerprint-gpu-vendor=Intel Inc.",
-    "--fingerprint-gpu-renderer=Intel Iris OpenGL Engine",
-])
-```
-
 ## Examples
 
 **Python** — see [`examples/`](examples/):
