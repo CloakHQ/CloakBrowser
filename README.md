@@ -29,28 +29,91 @@ Not a patched config. Not a JS injection. A real Chromium binary with fingerprin
 <br>
 
 <p align="center">
-<img src="https://i.imgur.com/IvB0It7.gif" width="600" alt="Cloudflare Turnstile — 3 Tests Passing">
-<br><em>Cloudflare Turnstile — 3 live tests passing (headed mode, macOS)</em>
-</p>
-
-<br>
-
-<p align="center">
 Drop-in Playwright/Puppeteer replacement for Python and JavaScript.<br>
 Same API, same code — just swap the import. <strong>3 lines of code, 30 seconds to unblock.</strong>
 </p>
 
 - **58 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, WebRTC, network timing, automation signals, CDP input behavior
 - **`humanize=True`** — human-like mouse curves, keyboard timing, and scroll patterns. One flag, behavioral detection passes
-- **0.9 reCAPTCHA v3 score** — human-level, server-verified
-- **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — tested against 30+ detection sites
+- Passes **reCAPTCHA v3, CloudFlare Turnstile, FingerprintJS, BrowserScan, and many more** - tested against 30+ detection sites
 - **Auto-updating binary** — background update checks, always on the latest stealth build
 - **`pip install cloakbrowser`** or **`npm install cloakbrowser`** — binary auto-downloads, zero config
 - **Free and open source** — no subscriptions, no usage limits
+- **Works with AI agents and automation frameworks** — drop-in stealth for browser-use, Crawl4AI, Scrapling, Stagehand, LangChain, Selenium, and more. See [integrations](#framework-integrations).
+
+<details>
+<summary>See all features</summary>
+
+- **58 fingerprint patches** — rendering consistency improvements across Linux and Windows, corrected GPU/display/graphics parameters to match stock Chrome 146 profiles
+- **Windows native GPU passthrough** — real hardware values pass through directly instead of being spoofed, matching real browser behavior
+- **HTTP proxy inline credentials** — new network-layer support for proxies with inline authentication
+- **`extension_paths`** — load Chrome extensions in all launch functions
+- **Humanize actionability** — auto-wait for visible, enabled, stable elements before humanized actions
+- **Per-call `human_config`** — override humanize settings on individual method calls
+- **Composable JS helpers** — `buildLaunchOptions()` and `humanizeBrowser()` for custom Playwright integrations
+- **Native SOCKS5 proxy** — `proxy="socks5://user:pass@host:port"` works directly in all launch functions, Python + JS. QUIC/HTTP3 tunnels through SOCKS5 via UDP ASSOCIATE
+- **Proxy signal removal** — DNS/connect/SSL timing zeroed, proxy cache headers stripped, Proxy-Connection header leak removed
+- **Chromium 146 upgrade** — rebased all patches from 145.0.7632.x to 146.0.7680.177
+- **WebRTC IP spoofing** — `--fingerprint-webrtc-ip=auto` resolves your proxy's exit IP and spoofs WebRTC ICE candidates. Auto-injected when using `geoip=True` (no extra network call)
+- **`humanize=True`** — one flag makes all mouse, keyboard, and scroll interactions behave like a real user. Bézier curves, per-character typing, realistic scroll patterns
+- **Stealthy with zero flags** — binary auto-generates a random fingerprint seed at startup. No configuration required
+- **Timezone & locale from proxy IP** — `launch(proxy="...", geoip=True)` auto-detects timezone and locale
+- **Persistent profiles** — `launch_persistent_context()` keeps cookies and localStorage across sessions, bypasses incognito detection
+- **Access to closed shadow roots** - `--enable-blink-features=FakeShadowRoot` enables a flag in elements which is added at the engine-level. Learn more [here](#fake-shadow-root)
+</details>
+
+<details>
+<summary><strong>Latest: v0.3.31 (Chromium 146.0.7680.177.5) changelog</strong></summary>
+
+## [0.3.31] — 2026-05-26
+
+- **[wrapper]** Route HTTP proxy credentials through `--proxy-server` flag, removing the need for Playwright's proxy auth handler on HTTP proxies
+- **[wrapper]** JS: export `buildContextOptions` helper for custom context creation (thanks [@honor2030](https://github.com/honor2030), #262)
+- **[wrapper]** Humanize: fix iframe coordinate offset in pointer-events check (thanks [@eofreternal](https://github.com/eofreternal), #303)
+- **[wrapper]** Humanize: use shared deadline for timeout budget in frame and ElementHandle methods (#307)
+- **[docker]** Clean up stale Xvfb lock so container survives restarts (thanks [@sparanoid](https://github.com/sparanoid), #284)
+- **[meta]** Add pip and npm ecosystems to Dependabot, bump GitHub Actions (#309)
+
+See the full [CHANGELOG.md](CHANGELOG.md) for details.
+</details>
 
 **Try it now** — no install needed:
 ```bash
 docker run --rm cloakhq/cloakbrowser cloaktest
+```
+
+See [Troubleshooting](#troubleshooting) for site-specific issues (FingerprintJS, Kasada, reCAPTCHA).
+
+## Install
+
+**Python:**
+```bash
+pip install cloakbrowser
+```
+
+**JavaScript / Node.js:**
+```bash
+# With Playwright
+npm install cloakbrowser playwright-core
+
+# With Puppeteer
+npm install cloakbrowser puppeteer-core
+```
+
+On first run, the browse binary is automatically downloaded by the CloakBrowser package and cached locally.
+
+**Migrating from Playwright?** One-line change:
+
+```diff
+- from playwright.sync_api import sync_playwright
+- pw = sync_playwright().start()
+- browser = pw.chromium.launch()
++ from cloakbrowser import launch
++ browser = launch()
+
+page = browser.new_page()
+page.goto("https://example.com")
+# ... rest of your code works unchanged
 ```
 
 **Python:**
@@ -75,8 +138,14 @@ await browser.close();
 
 Also works with Puppeteer: `import { launch } from 'cloakbrowser/puppeteer'` ([details](#puppeteer))
 
+
 **For sites with anti-bot protection**, add a residential proxy and these flags:
 
+**Optional:** Auto-detect timezone/locale from proxy IP:
+```bash
+pip install cloakbrowser[geoip]
+```
+Python
 ```python
 browser = launch(
     proxy="http://user:pass@residential-proxy:port",  # residential IP, not datacenter
@@ -86,6 +155,7 @@ browser = launch(
 )
 ```
 
+JavaScript
 ```javascript
 const browser = await launch({
     proxy: 'http://user:pass@residential-proxy:port',
@@ -95,46 +165,42 @@ const browser = await launch({
 });
 ```
 
-See [Troubleshooting](#troubleshooting) for site-specific issues (FingerprintJS, Kasada, reCAPTCHA).
+### Framework Integrations
 
-## Install
+CloakBrowser works with any framework that uses Playwright or Chromium:
 
-**Python:**
-```bash
-pip install cloakbrowser
+```python
+# Option 1: Framework launches our binary directly (Selenium, Stagehand, UC)
+from cloakbrowser.download import ensure_binary
+from cloakbrowser.config import get_default_stealth_args
+binary_path = ensure_binary()          # auto-downloads if needed
+stealth_args = get_default_stealth_args()  # all fingerprint flags
+
+# Option 2: CloakBrowser launches first, framework connects via CDP (browser-use, Crawl4AI, Scrapling)
+from cloakbrowser import launch_async
+browser = await launch_async(args=["--remote-debugging-port=9242"])
+# Connect your framework to http://127.0.0.1:9242 — all stealth flags are set
+# Note: humanize requires the wrapper (see below)
 ```
 
-**JavaScript / Node.js:**
-```bash
-# With Playwright
-npm install cloakbrowser playwright-core
+> **Humanize over CDP**: Stealth fingerprint patches work automatically over CDP, but `humanize=True` is a wrapper-level feature. If you connect to CloakBrowser via CDP from a separate script, import the patching functions to add humanization:
+>
+> ```js
+> import { patchBrowser, resolveConfig } from 'cloakbrowser/human';
+> patchBrowser(browser, resolveConfig('default'));
+> ```
 
-# With Puppeteer
-npm install cloakbrowser puppeteer-core
-```
-
-On first run, the stealth Chromium binary is automatically downloaded (~200MB, cached locally).
-
-**Optional:** Auto-detect timezone/locale from proxy IP:
-```bash
-pip install cloakbrowser[geoip]
-```
-
-**Migrating from Playwright?** One-line change:
-
-```diff
-- from playwright.sync_api import sync_playwright
-- pw = sync_playwright().start()
-- browser = pw.chromium.launch()
-+ from cloakbrowser import launch
-+ browser = launch()
-
-page = browser.new_page()
-page.goto("https://example.com")
-# ... rest of your code works unchanged
-```
-
-> ⭐ **Star** to show support — **[Watch releases](https://github.com/CloakHQ/CloakBrowser/subscription)** to get notified when new builds drop.
+| Framework | Language | Example |
+|-----------|----------|---------|
+| [browser-use](https://github.com/browser-use/browser-use) | Python | [`browser_use_example.py`](examples/integrations/browser_use_example.py) |
+| [Crawl4AI](https://github.com/unclecode/crawl4ai) | Python | [`crawl4ai_example.py`](examples/integrations/crawl4ai_example.py) |
+| [Crawlee](https://github.com/apify/crawlee-python) | Python | [`crawlee_example.py`](examples/integrations/crawlee_example.py) |
+| [Scrapling](https://github.com/D4Vinci/Scrapling) | Python | [`scrapling_example.py`](examples/integrations/scrapling_example.py) |
+| [Stagehand](https://github.com/browserbase/stagehand) | TypeScript | [`stagehand.ts`](js/examples/stagehand.ts) |
+| [LangChain](https://github.com/langchain-ai/langchain) | Python | [`langchain_loader.py`](examples/integrations/langchain_loader.py) |
+| [Selenium](https://github.com/SeleniumHQ/selenium) | Python | [`selenium_example.py`](examples/integrations/selenium_example.py) |
+| [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) | Python | [`undetected_chromedriver.py`](examples/integrations/undetected_chromedriver.py) |
+| [agent-browser](https://github.com/nichochar/agent-browser) | Shell | [`agent_browser.sh`](examples/integrations/agent_browser.sh) |
 
 ## Browser Profile Manager
 
@@ -150,39 +216,9 @@ Open [http://localhost:8080](http://localhost:8080). Create a profile. Click **L
 
 ---
 
-## Latest: v0.3.31 (Chromium 146.0.7680.177.5)
-
-- **58 fingerprint patches** — rendering consistency improvements across Linux and Windows, corrected GPU/display/graphics parameters to match stock Chrome 146 profiles
-- **Windows native GPU passthrough** — real hardware values pass through directly instead of being spoofed, matching real browser behavior
-- **HTTP proxy inline credentials** — new network-layer support for proxies with inline authentication
-- **`extension_paths`** — load Chrome extensions in all launch functions
-- **Humanize actionability** — auto-wait for visible, enabled, stable elements before humanized actions
-- **Per-call `human_config`** — override humanize settings on individual method calls
-- **Composable JS helpers** — `buildLaunchOptions()` and `humanizeBrowser()` for custom Playwright integrations
-- **Native SOCKS5 proxy** — `proxy="socks5://user:pass@host:port"` works directly in all launch functions, Python + JS. QUIC/HTTP3 tunnels through SOCKS5 via UDP ASSOCIATE
-- **Proxy signal removal** — DNS/connect/SSL timing zeroed, proxy cache headers stripped, Proxy-Connection header leak removed
-- **Chromium 146 upgrade** — rebased all patches from 145.0.7632.x to 146.0.7680.177
-- **WebRTC IP spoofing** — `--fingerprint-webrtc-ip=auto` resolves your proxy's exit IP and spoofs WebRTC ICE candidates. Auto-injected when using `geoip=True` (no extra network call)
-- **`humanize=True`** — one flag makes all mouse, keyboard, and scroll interactions behave like a real user. Bézier curves, per-character typing, realistic scroll patterns
-- **Stealthy with zero flags** — binary auto-generates a random fingerprint seed at startup. No configuration required
-- **Timezone & locale from proxy IP** — `launch(proxy="...", geoip=True)` auto-detects timezone and locale
-- **Persistent profiles** — `launch_persistent_context()` keeps cookies and localStorage across sessions, bypasses incognito detection
-
-See the full [CHANGELOG.md](CHANGELOG.md) for details.
-
-## Why CloakBrowser?
-
-- **Config-level patches break** — `playwright-stealth`, `undetected-chromedriver`, and `puppeteer-extra` inject JavaScript or tweak flags. Every Chrome update breaks them. Antibot systems detect the patches themselves.
-- **CloakBrowser patches Chromium source code** — fingerprints are modified at the C++ level, compiled into the binary. Detection sites see a real browser because it *is* a real browser.
-- **Source-level stealth** — C++ patches handle fingerprints (GPU, screen, UA, hardware reporting) at the binary level. No JavaScript injection, no config-level hacks. Most stealth tools only patch at the surface.
-- **Same behavior everywhere** — works identically local, in Docker, and on VPS. No environment-specific patches or config needed.
-- **Works with AI agents and automation frameworks** — drop-in stealth for browser-use, Crawl4AI, Scrapling, Stagehand, LangChain, Selenium, and more. See [integrations](#framework-integrations).
-
-CloakBrowser doesn't solve CAPTCHAs — it prevents them from appearing. No CAPTCHA-solving services, no proxy rotation built in — bring your own proxies, use the Playwright API you already know.
-
 ## Test Results
 
-All tests verified against live detection services. Last tested: Apr 2026 (Chromium 146).
+All tests verified against 30+ live detection services. Last tested: Apr 2026 (Chromium 146).
 
 | Detection Service | Stock Playwright | CloakBrowser | Notes |
 |---|---|---|---|
@@ -200,9 +236,9 @@ All tests verified against live detection services. Last tested: Apr 2026 (Chrom
 | UA string | `HeadlessChrome` | **`Chrome/146.0.0.0`** | No headless leak |
 | CDP detection | Detected | **Not detected** | `isAutomatedWithCDP: false` |
 | TLS fingerprint | Mismatch | **Identical to Chrome** | ja3n/ja4/akamai match |
-| | | **Tested against 30+ detection sites** | |
 
-### Proof
+<details>
+<summary><strong>Proof</strong></summary>
 
 <p align="center">
 <img src="https://i.imgur.com/hvIQyMv.png" width="600" alt="reCAPTCHA v3 — Score 0.9">
@@ -228,35 +264,71 @@ All tests verified against live detection services. Last tested: Apr 2026 (Chrom
 <img src="https://i.imgur.com/srCcFtK.png" width="600" alt="deviceandbrowserinfo.com — You are human!">
 <br><em>deviceandbrowserinfo.com behavioral bot detection — "You are human!" with humanize=True (24/24 signals passed)</em>
 </p>
+</details>
 
-## Comparison
+## Configuration
 
-| Feature | Playwright | playwright-stealth | undetected-chromedriver | Camoufox | CloakBrowser |
-|---|---|---|---|---|---|
-| reCAPTCHA v3 score | 0.1 | 0.3-0.5 | 0.3-0.7 | 0.7-0.9 | **0.9** |
-| Cloudflare Turnstile | Fail | Sometimes | Sometimes | Pass | **Pass** |
-| Patch level | None | JS injection | Config patches | C++ (Firefox) | **C++ (Chromium)** |
-| Survives Chrome updates | N/A | Breaks often | Breaks often | Yes | **Yes** |
-| Maintained | Yes | Stale | Stale | Unstable | **Active** |
-| Browser engine | Chromium | Chromium | Chrome | Firefox | **Chromium** |
-| Playwright API | Native | Native | No (Selenium) | No | **Native** |
+You can configure these enviornment variables if you'd like to override some functionality.
 
-## How It Works
+| Env Variable | Default | Description |
+|---|---|---|
+| `CLOAKBROWSER_BINARY_PATH` | — | Skip download, use a local Chromium binary |
+| `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
+| `CLOAKBROWSER_DOWNLOAD_URL` | `cloakbrowser.dev` | Custom download URL for binary |
+| `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
+| `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Set to `true` to skip SHA-256 verification after download |
+| `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | `5` | Max seconds for GeoIP resolution before continuing without it |
 
-CloakBrowser is a thin wrapper (Python + JavaScript) around a custom-built Chromium binary:
+## Fingerprint Management
 
-1. **You install** → `pip install cloakbrowser` or `npm install cloakbrowser`
-2. **First launch** → binary auto-downloads for your platform (Chromium 146)
-3. **Every launch** → Playwright or Puppeteer starts with our binary + stealth args
-4. **You write code** → standard Playwright/Puppeteer API, nothing new to learn
+The binary is **stealthy by default** — no flags needed. It auto-generates a random fingerprint seed at startup and spoofs all detectable values (GPU, hardware specs, screen dimensions, canvas, WebGL, audio, fonts). Every launch produces a fresh, coherent identity.
 
-The binary includes 58 source-level patches covering canvas, WebGL, audio, fonts, GPU, screen properties, WebRTC, network timing, hardware reporting, automation signal removal, and CDP input behavior mimicking.
+**How fingerprinting works:**
 
-These are compiled into the Chromium binary — not injected via JavaScript, not set via flags.
+| Scenario | What happens |
+|----------|-------------|
+| **No flags** | Random seed auto-generated at startup. GPU, screen, hardware specs, and all noise patches are spoofed automatically. Fresh identity each launch. |
+| **`--fingerprint=seed`** | Deterministic identity from the seed. Same seed = same fingerprint across launches. Use this for session persistence (returning visitor). |
+| **`--fingerprint=seed` + explicit flags** | Explicit flags override individual auto-generated values. The seed fills in everything else. |
 
-Binary downloads are verified with SHA-256 checksums to ensure integrity.
+The binary detects its platform at compile time — a macOS binary reports as macOS with Apple GPU, a Linux binary reports as Linux with NVIDIA GPU. The **wrapper** overrides this on Linux by passing `--fingerprint-platform=windows`, so sessions appear as Windows desktops (more common fingerprint, harder to cluster). Use `--fingerprint-platform` for cross-platform spoofing when running the binary directly.
 
-## API
+> **Tip: Use a fixed seed when revisiting the same site.** A random seed makes every session look like a different device — which can be suspicious when hitting the same site repeatedly from the same IP. For reCAPTCHA v3 Enterprise and similar scoring systems, a fixed seed produces a consistent fingerprint across sessions, making you look like a returning visitor:
+> ```python
+> browser = launch(args=["--fingerprint=12345"])
+> ```
+> ```javascript
+> const browser = await launch({ args: ['--fingerprint=12345'] });
+> ```
+
+### Default Fingerprint
+
+Every `launch()` call sets these automatically. The **wrapper** applies platform-aware defaults — on Linux it spoofs as Windows for a more common fingerprint, on macOS it runs as a native Mac browser:
+
+| Flag | Linux/Windows Default | macOS Default | Controls |
+|------|--------------|---------------|----------|
+| `--fingerprint` | Random (10000–99999) | Random (10000–99999) | Master seed for canvas, WebGL, audio, fonts, client rects |
+| `--fingerprint-platform` | `windows` | `macos` | `navigator.platform`, User-Agent OS, GPU pool selection |
+
+The binary auto-generates everything else from the seed: GPU, hardware concurrency, device memory, and screen dimensions. Each seed produces a unique, consistent fingerprint. Override with explicit flags if needed.
+
+> **Using the binary directly?** It works out of the box with zero flags -- the binary auto-spoofs everything. Pass `--fingerprint=seed` for a persistent identity, or use explicit flags like `--fingerprint-gpu-renderer` to override any auto-generated value.
+
+See [Additional Flags](#additional-flags) for more custom flags to play around with.
+
+
+### Fake Shadow root
+Enable access to all Shadow Roots (even closed ones) with the flag `--enable-blink-features=FakeShadowRoot`
+The flag adds element.fakeShadowRoot which returns the shadow root even when it's closed (element.shadowRoot returns null for closed shadow DOM).
+Enable with `--enable-blink-features=FakeShadowRoot`, then access via page.evaluate:
+
+```javascript
+const host = document.querySelector('custom-element');
+const root = host.fakeShadowRoot; // works on closed shadow DOM
+root.querySelector('button').click();
+```
+
+## API documentation
 
 ### `launch()`
 
@@ -450,7 +522,9 @@ ensure_binary()
 
 CloakBrowser ships a TypeScript package with full type definitions. Choose Playwright or Puppeteer — same stealth binary underneath.
 
-### Playwright (default)
+> **Note:** Each examples below are standalone — not meant to run as one block.
+
+### Playwright (recommended)
 
 ```javascript
 import { launch, launchContext, launchPersistentContext } from 'cloakbrowser';
@@ -479,13 +553,11 @@ const page = await context.newPage();
 
 // Persistent profile — cookies/localStorage survive restarts, avoids incognito detection
 const ctx = await launchPersistentContext({
-  userDataDir: './chrome-profile',
+  userDataDir: './chrome-profile', // Optionally leave this as an empty string to create a temporary persistent profile that is automatically cleaned up by Plawright after the browser closes
   headless: false,
   proxy: 'http://user:pass@proxy:8080',
 });
 ```
-
-> **Note:** Each example above is standalone — not meant to run as one block.
 
 All Python options work in JS: `stealthArgs: false` to disable defaults, `geoip: true` to auto-detect timezone/locale from proxy IP.
 
@@ -590,54 +662,6 @@ Access the original un-patched Playwright page at `page._original` if you need r
 >
 > **Note (Puppeteer):** Both selector-based methods (`page.click()`, `page.type()`) and ElementHandle methods (`el.click()`, `el.type()`) are fully humanized. `page.$()`, `page.$$()`, and `page.waitForSelector()` return patched handles automatically.
 
-> Contributed by [@evelaa123](https://github.com/evelaa123) — full Playwright and Puppeteer API coverage.
-
-## Configuration
-
-| Env Variable | Default | Description |
-|---|---|---|
-| `CLOAKBROWSER_BINARY_PATH` | — | Skip download, use a local Chromium binary |
-| `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
-| `CLOAKBROWSER_DOWNLOAD_URL` | `cloakbrowser.dev` | Custom download URL for binary |
-| `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
-| `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Set to `true` to skip SHA-256 verification after download |
-| `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | `5` | Max seconds for GeoIP resolution before continuing without it |
-
-## Fingerprint Management
-
-The binary is **stealthy by default** — no flags needed. It auto-generates a random fingerprint seed at startup and spoofs all detectable values (GPU, hardware specs, screen dimensions, canvas, WebGL, audio, fonts). Every launch produces a fresh, coherent identity.
-
-**How fingerprinting works:**
-
-| Scenario | What happens |
-|----------|-------------|
-| **No flags** | Random seed auto-generated at startup. GPU, screen, hardware specs, and all noise patches are spoofed automatically. Fresh identity each launch. |
-| **`--fingerprint=seed`** | Deterministic identity from the seed. Same seed = same fingerprint across launches. Use this for session persistence (returning visitor). |
-| **`--fingerprint=seed` + explicit flags** | Explicit flags override individual auto-generated values. The seed fills in everything else. |
-
-The binary detects its platform at compile time — a macOS binary reports as macOS with Apple GPU, a Linux binary reports as Linux with NVIDIA GPU. The **wrapper** overrides this on Linux by passing `--fingerprint-platform=windows`, so sessions appear as Windows desktops (more common fingerprint, harder to cluster). Use `--fingerprint-platform` for cross-platform spoofing when running the binary directly.
-
-> **Tip: Use a fixed seed when revisiting the same site.** A random seed makes every session look like a different device — which can be suspicious when hitting the same site repeatedly from the same IP. For reCAPTCHA v3 Enterprise and similar scoring systems, a fixed seed produces a consistent fingerprint across sessions, making you look like a returning visitor:
-> ```python
-> browser = launch(args=["--fingerprint=12345"])
-> ```
-> ```javascript
-> const browser = await launch({ args: ['--fingerprint=12345'] });
-> ```
-
-### Default Fingerprint
-
-Every `launch()` call sets these automatically. The **wrapper** applies platform-aware defaults — on Linux it spoofs as Windows for a more common fingerprint, on macOS it runs as a native Mac browser:
-
-| Flag | Linux/Windows Default | macOS Default | Controls |
-|------|--------------|---------------|----------|
-| `--fingerprint` | Random (10000–99999) | Random (10000–99999) | Master seed for canvas, WebGL, audio, fonts, client rects |
-| `--fingerprint-platform` | `windows` | `macos` | `navigator.platform`, User-Agent OS, GPU pool selection |
-
-The binary auto-generates everything else from the seed: GPU, hardware concurrency, device memory, and screen dimensions. Each seed produces a unique, consistent fingerprint. Override with explicit flags if needed.
-
-> **Using the binary directly?** It works out of the box with zero flags -- the binary auto-spoofs everything. Pass `--fingerprint=seed` for a persistent identity, or use explicit flags like `--fingerprint-gpu-renderer` to override any auto-generated value.
-
 ### Additional Flags
 
 Supported by the binary but **not set by default** — pass via `args` to customize:
@@ -665,51 +689,6 @@ Supported by the binary but **not set by default** — pass via `args` to custom
 
 > **Note:** All stealth tests were verified with the default fingerprint config above. Changing these flags may affect detection results — test your configuration before using in production.
 
-### Font Setup on Linux
-
-**Required for aggressive anti-bot sites (Kasada, Akamai).** These systems render emoji on a hidden canvas and hash the pixel output. Minimal Linux environments (Docker, cloud VMs) often lack emoji and extended fonts, producing hashes that don't match any real browser. Install standard font packages to fix this:
-
-```bash
-sudo apt install -y fonts-noto-color-emoji fonts-freefont-ttf fonts-unifont \
-    fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf
-```
-
-The Docker image (`cloakhq/cloakbrowser`) ships with these pre-installed. If you run the binary directly on a Linux server or in a custom Docker image, install them manually.
-
-**Optional: Windows fonts for CreepJS font enumeration.** The packages above fix anti-bot canvas checks but won't improve your CreepJS font score. For that, you need actual Windows fonts (Segoe UI, Calibri, Bahnschrift, etc.) from a Windows machine's `C:\Windows\Fonts\` directory — `ttf-mscorefonts-installer` only has old XP-era fonts and isn't enough.
-
-```bash
-mkdir -p ~/.local/share/fonts/windows
-cp /path/to/windows/fonts/*.ttf ~/.local/share/fonts/windows/
-cp /path/to/windows/fonts/*.TTF ~/.local/share/fonts/windows/
-fc-cache -f  # mandatory for manually copied fonts
-```
-
-```python
-browser = launch(
-    args=["--fingerprint-fonts-dir=/home/user/.local/share/fonts/windows"],
-)
-```
-
-### Examples
-
-```python
-# Pin a seed for a persistent identity
-browser = launch(args=["--fingerprint=42069"])
-
-# Full control — disable defaults, set everything yourself
-browser = launch(stealth_args=False, args=[
-    "--fingerprint=42069",
-    "--fingerprint-platform=windows",
-])
-
-# Override GPU to look like a specific machine
-browser = launch(args=[
-    "--fingerprint-gpu-vendor=Intel Inc.",
-    "--fingerprint-gpu-renderer=Intel Iris OpenGL Engine",
-])
-```
-
 ## Examples
 
 **Python** — see [`examples/`](examples/):
@@ -723,43 +702,6 @@ browser = launch(args=[
 - [`basic-playwright.ts`](js/examples/basic-playwright.ts) — Playwright launch and load
 - [`basic-puppeteer.ts`](js/examples/basic-puppeteer.ts) — Puppeteer launch and load
 - [`stealth-test.ts`](js/examples/stealth-test.ts) — Run against 6 detection sites
-
-### Framework Integrations
-
-CloakBrowser works with any framework that uses Playwright or Chromium:
-
-```python
-# Option 1: Framework launches our binary directly (Selenium, Stagehand, UC)
-from cloakbrowser.download import ensure_binary
-from cloakbrowser.config import get_default_stealth_args
-binary_path = ensure_binary()          # auto-downloads if needed
-stealth_args = get_default_stealth_args()  # all fingerprint flags
-
-# Option 2: CloakBrowser launches first, framework connects via CDP (browser-use, Crawl4AI, Scrapling)
-from cloakbrowser import launch_async
-browser = await launch_async(args=["--remote-debugging-port=9242"])
-# Connect your framework to http://127.0.0.1:9242 — all stealth flags are set
-# Note: humanize requires the wrapper (see below)
-```
-
-> **Humanize over CDP**: Stealth fingerprint patches work automatically over CDP, but `humanize=True` is a wrapper-level feature. If you connect to CloakBrowser via CDP from a separate script, import the patching functions to add humanization:
->
-> ```js
-> import { patchBrowser, resolveConfig } from 'cloakbrowser/human';
-> patchBrowser(browser, resolveConfig('default'));
-> ```
-
-| Framework | Stars | Language | Example |
-|-----------|-------|----------|---------|
-| [browser-use](https://github.com/browser-use/browser-use) | 70K | Python | [`browser_use_example.py`](examples/integrations/browser_use_example.py) |
-| [Crawl4AI](https://github.com/unclecode/crawl4ai) | 58K | Python | [`crawl4ai_example.py`](examples/integrations/crawl4ai_example.py) |
-| [Crawlee](https://github.com/apify/crawlee-python) | 8.6K | Python | [`crawlee_example.py`](examples/integrations/crawlee_example.py) |
-| [Scrapling](https://github.com/D4Vinci/Scrapling) | 21K | Python | [`scrapling_example.py`](examples/integrations/scrapling_example.py) |
-| [Stagehand](https://github.com/browserbase/stagehand) | 21K | TypeScript | [`stagehand.ts`](js/examples/stagehand.ts) |
-| [LangChain](https://github.com/langchain-ai/langchain) | 100K+ | Python | [`langchain_loader.py`](examples/integrations/langchain_loader.py) |
-| [Selenium](https://github.com/SeleniumHQ/selenium) | — | Python | [`selenium_example.py`](examples/integrations/selenium_example.py) |
-| [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) | 12K | Python | [`undetected_chromedriver.py`](examples/integrations/undetected_chromedriver.py) |
-| [agent-browser](https://github.com/nichochar/agent-browser) | — | Shell | [`agent_browser.sh`](examples/integrations/agent_browser.sh) |
 
 ### Deployment Integrations
 
@@ -1077,7 +1019,47 @@ For persistent contexts (`launch_persistent_context` / `launchPersistentContext`
 
 On minimal Linux environments, missing font packages cause canvas emoji rendering to produce hashes that anti-bot systems don't recognize. This is the most common cause of blocks on aggressive sites after proxy, geoip, and headed mode are already set up correctly.
 
-Install the font packages listed in [Font Setup on Linux](#font-setup-on-linux) above.
+Install standard font packages to fix this:
+
+```bash
+sudo apt install -y fonts-noto-color-emoji fonts-freefont-ttf fonts-unifont \
+    fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf
+```
+
+The Docker image (`cloakhq/cloakbrowser`) ships with these pre-installed. If you run the binary directly on a Linux server or in a custom Docker image, install them manually.
+
+**Optional: Windows fonts for CreepJS font enumeration.** The packages above fix anti-bot canvas checks but won't improve your CreepJS font score. For that, you need actual Windows fonts (Segoe UI, Calibri, Bahnschrift, etc.) from a Windows machine's `C:\Windows\Fonts\` directory — `ttf-mscorefonts-installer` only has old XP-era fonts and isn't enough.
+
+```bash
+mkdir -p ~/.local/share/fonts/windows
+cp /path/to/windows/fonts/*.ttf ~/.local/share/fonts/windows/
+cp /path/to/windows/fonts/*.TTF ~/.local/share/fonts/windows/
+fc-cache -f  # mandatory for manually copied fonts
+```
+
+```python
+browser = launch(
+    args=["--fingerprint-fonts-dir=/home/user/.local/share/fonts/windows"],
+)
+```
+
+---
+
+### Detected by Cloudflare
+
+If you're being blocked by Cloudflare's "verifying the security of your device" page, make sure you applied everything in the "Detected by FingerprintJS" section. If that is still happening, make sure you're not using headless mode by setting headless to false like this:
+
+```python
+browser = launch(
+    headless: False
+)
+```
+
+If you're running the browser on a server, use `xvfb-run`:
+
+First: install xvbf: `apt install xvfb`
+
+Then, run your command just prefixed with `xvfb-run` like this: `xvfb-run [insert regular command here to run your program]`
 
 ---
 
@@ -1215,10 +1197,6 @@ Other tips for maximizing reCAPTCHA scores:
 - **Spend 15+ seconds on the page** before triggering reCAPTCHA — short visits score lower
 - **Space out requests** — back-to-back `grecaptcha.execute()` calls from the same session get penalized. Wait 30+ seconds between pages with reCAPTCHA
 - **Use a fixed fingerprint seed** for consistent device identity across sessions (see [Fingerprint Management](#fingerprint-management))
-- **Use `page.type()` instead of `page.fill()`** for form filling — `fill()` sets values directly without keyboard events, which reCAPTCHA's behavioral analysis flags. `type()` with a delay simulates real keystrokes:
-  ```python
-  page.type("#email", "user@example.com", delay=50)
-  ```
 - **Minimize `page.evaluate()` calls** before the reCAPTCHA check fires — each one sends CDP traffic
 
 ## FAQ
