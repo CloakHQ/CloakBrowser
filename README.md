@@ -59,6 +59,7 @@ Same API, same code — just swap the import. <strong>3 lines of code, 30 second
 - **Stealthy with zero flags** — binary auto-generates a random fingerprint seed at startup. No configuration required
 - **Timezone & locale from proxy IP** — `launch(proxy="...", geoip=True)` auto-detects timezone and locale
 - **Persistent profiles** — `launch_persistent_context()` keeps cookies and localStorage across sessions, bypasses incognito detection
+- **Access to closed shadow roots** - `--enable-blink-features=FakeShadowRoot` enables a flag in elements which is added at the engine-level. Learn more [here](#fake-shadow-root)
 </details>
 
 <details>
@@ -314,6 +315,18 @@ The binary auto-generates everything else from the seed: GPU, hardware concurren
 > **Using the binary directly?** It works out of the box with zero flags -- the binary auto-spoofs everything. Pass `--fingerprint=seed` for a persistent identity, or use explicit flags like `--fingerprint-gpu-renderer` to override any auto-generated value.
 
 See [Additional Flags](#additional-flags) for more custom flags to play around with.
+
+
+### Fake Shadow root
+Enable access to all Shadow Roots (even closed ones) with the flag `--enable-blink-features=FakeShadowRoot`
+The flag adds element.fakeShadowRoot which returns the shadow root even when it's closed (element.shadowRoot returns null for closed shadow DOM).
+Enable with `--enable-blink-features=FakeShadowRoot`, then access via page.evaluate:
+
+```javascript
+const host = document.querySelector('custom-element');
+const root = host.fakeShadowRoot; // works on closed shadow DOM
+root.querySelector('button').click();
+```
 
 ## API documentation
 
