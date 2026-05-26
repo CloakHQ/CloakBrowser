@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import {
   CHROMIUM_VERSION,
   getArchiveExt,
@@ -10,6 +10,22 @@ import {
   getFallbackDownloadUrl,
 } from "../src/config.js";
 import { _buildArgsForTest, resolveTimezone } from "../src/playwright.js";
+
+const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const originalGpuAccel = process.env.CLOAKBROWSER_GPU_ACCEL;
+
+afterEach(() => {
+  Object.defineProperty(process, "platform", originalPlatform);
+  if (originalGpuAccel === undefined) {
+    delete process.env.CLOAKBROWSER_GPU_ACCEL;
+  } else {
+    process.env.CLOAKBROWSER_GPU_ACCEL = originalGpuAccel;
+  }
+});
+
+function setPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", { ...originalPlatform, value: platform });
+}
 
 describe("config", () => {
   it("CHROMIUM_VERSION matches expected format", () => {
@@ -180,6 +196,45 @@ describe("buildArgs deduplication", () => {
     expect(args).toContain("--disable-gpu");
     expect(args).toContain("--no-zygote");
     expect(args).toContain("--no-sandbox");
+  });
+});
+
+describe("buildArgs GPU acceleration", () => {
+  it("leaves GPU acceleration flags off by default", () => {
+    delete process.env.CLOAKBROWSER_GPU_ACCEL;
+    const args = _buildArgsForTest({});
+    expect(args).not.toContain("--use-gl=egl");
+    expect(args).not.toContain("--enable-gpu-rasterization");
+    expect(args).not.toContain("--enable-features=VaapiVideoDecoder");
+  });
+
+  it("CLOAKBROWSER_GPU_ACCEL adds Linux GPU flags", () => {
+    process.env.CLOAKBROWSER_GPU_ACCEL = "1";
+    setPlatform("linux");
+    const args = _buildArgsForTest({});
+    expect(args).toContain("--use-gl=egl");
+    expect(args).toContain("--enable-gpu-rasterization");
+    expect(args).toContain("--ignore-gpu-blocklist");
+    expect(args).toContain("--enable-features=VaapiVideoDecoder");
+  });
+
+  it("skips VaapiVideoDecoder off Linux", () => {
+    process.env.CLOAKBROWSER_GPU_ACCEL = "1";
+    setPlatform("darwin");
+    const args = _buildArgsForTest({});
+    expect(args).toContain("--use-gl=egl");
+    expect(args).toContain("--enable-gpu-rasterization");
+    expect(args).not.toContain("--enable-features=VaapiVideoDecoder");
+  });
+
+  it("gpuAccel option adds GPU flags without the environment variable", () => {
+    delete process.env.CLOAKBROWSER_GPU_ACCEL;
+    setPlatform("linux");
+    const args = _buildArgsForTest({ gpuAccel: true });
+    expect(args).toContain("--use-gl=egl");
+    expect(args).toContain("--enable-gpu-rasterization");
+    expect(args).toContain("--ignore-gpu-blocklist");
+    expect(args).toContain("--enable-features=VaapiVideoDecoder");
   });
 });
 
