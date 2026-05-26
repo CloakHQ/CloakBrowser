@@ -43,6 +43,7 @@ Same API, same code — just swap the import. <strong>3 lines of code, 30 second
 
 <details>
 <summary><strong>Latest: v0.3.31 (Chromium 146.0.7680.177.5)</strong></summary>
+
 - **58 fingerprint patches** — rendering consistency improvements across Linux and Windows, corrected GPU/display/graphics parameters to match stock Chrome 146 profiles
 - **Windows native GPU passthrough** — real hardware values pass through directly instead of being spoofed, matching real browser behavior
 - **HTTP proxy inline credentials** — new network-layer support for proxies with inline authentication
