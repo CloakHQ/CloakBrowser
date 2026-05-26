@@ -576,7 +576,6 @@ def launch_context(
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
-    search_engine: Literal["google", "bing", "duckduckgo"] | None = None,
     geoip: bool = False,
     backend: str | None = None,
     humanize: bool = False,
@@ -603,7 +602,6 @@ def launch_context(
         timezone: IANA timezone (e.g. 'America/New_York').
         color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
             Default: None (uses Chromium default, which is 'light').
-        search_engine: Default search engine — 'google', 'bing', or 'duckduckgo'.
         geoip: Auto-detect timezone/locale from proxy IP (default False).
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
@@ -640,14 +638,6 @@ def launch_context(
         context_kwargs["viewport"] = viewport
     if color_scheme:
         context_kwargs["color_scheme"] = color_scheme
-    if search_engine:
-        # launch_context has no user_data_dir — Preferences file cannot be written.
-        # Use launch_persistent_context() to set a default search engine.
-        logger.warning(
-            "search_engine=%r requires a persistent profile (use launch_persistent_context); "
-            "ignored for launch_context.",
-            search_engine,
-        )
     context_kwargs.update(kwargs)
 
     try:
@@ -687,7 +677,6 @@ async def launch_context_async(
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
-    search_engine: Literal["google", "bing", "duckduckgo"] | None = None,
     geoip: bool = False,
     backend: str | None = None,
     humanize: bool = False,
@@ -715,7 +704,6 @@ async def launch_context_async(
         locale: Browser locale, e.g. "en-US".
         timezone: IANA timezone (e.g. 'America/New_York').
         color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
-        search_engine: Default search engine — 'google', 'bing', or 'duckduckgo'.
         geoip: Auto-detect timezone/locale from proxy IP (default False).
         backend: Playwright backend — 'playwright' (default) or 'patchright'.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
@@ -770,14 +758,6 @@ async def launch_context_async(
         context_kwargs["viewport"] = viewport
     if color_scheme:
         context_kwargs["color_scheme"] = color_scheme
-    if search_engine:
-        # launch_context_async has no user_data_dir — Preferences file cannot be written.
-        # Use launch_persistent_context_async() to set a default search engine.
-        logger.warning(
-            "search_engine=%r requires a persistent profile (use launch_persistent_context_async); "
-            "ignored for launch_context_async.",
-            search_engine,
-        )
     context_kwargs.update(kwargs)
 
     # Catch BaseException (not just Exception) so that asyncio.CancelledError
