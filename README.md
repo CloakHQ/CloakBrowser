@@ -997,6 +997,24 @@ browser = launch(
 
 ---
 
+### Detected by Cloudflare
+
+If you're being blocked by Cloudflare's "verifying the security of your device" page, make sure you applied everything in the "Detected by FingerprintJS" section. If that is still happening, make sure you're not using headless mode by setting headless to false like this:
+
+```python
+browser = launch(
+    headless: False
+)
+```
+
+If you're running the browser on a server, use `xvfb-run`:
+
+First: install xvbf: `apt install xvfb`
+
+Then, run your command just prefixed with `xvfb-run` like this: `xvfb-run [insert regular command here to run your program]`
+
+---
+
 ### Sites challenge fresh sessions but work after first visit
 
 Some sites challenge first-time visitors with no cookies over HTTP/2. This affects all Chromium browsers, not just CloakBrowser. Use a persistent profile to warm up cookies once, then reuse across sessions:
