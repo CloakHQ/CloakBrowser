@@ -665,32 +665,6 @@ Supported by the binary but **not set by default** — pass via `args` to custom
 
 > **Note:** All stealth tests were verified with the default fingerprint config above. Changing these flags may affect detection results — test your configuration before using in production.
 
-### Font Setup on Linux
-
-**Required for aggressive anti-bot sites (Kasada, Akamai).** These systems render emoji on a hidden canvas and hash the pixel output. Minimal Linux environments (Docker, cloud VMs) often lack emoji and extended fonts, producing hashes that don't match any real browser. Install standard font packages to fix this:
-
-```bash
-sudo apt install -y fonts-noto-color-emoji fonts-freefont-ttf fonts-unifont \
-    fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf
-```
-
-The Docker image (`cloakhq/cloakbrowser`) ships with these pre-installed. If you run the binary directly on a Linux server or in a custom Docker image, install them manually.
-
-**Optional: Windows fonts for CreepJS font enumeration.** The packages above fix anti-bot canvas checks but won't improve your CreepJS font score. For that, you need actual Windows fonts (Segoe UI, Calibri, Bahnschrift, etc.) from a Windows machine's `C:\Windows\Fonts\` directory — `ttf-mscorefonts-installer` only has old XP-era fonts and isn't enough.
-
-```bash
-mkdir -p ~/.local/share/fonts/windows
-cp /path/to/windows/fonts/*.ttf ~/.local/share/fonts/windows/
-cp /path/to/windows/fonts/*.TTF ~/.local/share/fonts/windows/
-fc-cache -f  # mandatory for manually copied fonts
-```
-
-```python
-browser = launch(
-    args=["--fingerprint-fonts-dir=/home/user/.local/share/fonts/windows"],
-)
-```
-
 ## Examples
 
 **Python** — see [`examples/`](examples/):
@@ -1038,7 +1012,29 @@ For persistent contexts (`launch_persistent_context` / `launchPersistentContext`
 
 On minimal Linux environments, missing font packages cause canvas emoji rendering to produce hashes that anti-bot systems don't recognize. This is the most common cause of blocks on aggressive sites after proxy, geoip, and headed mode are already set up correctly.
 
-Install the font packages listed in [Font Setup on Linux](#font-setup-on-linux) above.
+Install standard font packages to fix this:
+
+```bash
+sudo apt install -y fonts-noto-color-emoji fonts-freefont-ttf fonts-unifont \
+    fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf
+```
+
+The Docker image (`cloakhq/cloakbrowser`) ships with these pre-installed. If you run the binary directly on a Linux server or in a custom Docker image, install them manually.
+
+**Optional: Windows fonts for CreepJS font enumeration.** The packages above fix anti-bot canvas checks but won't improve your CreepJS font score. For that, you need actual Windows fonts (Segoe UI, Calibri, Bahnschrift, etc.) from a Windows machine's `C:\Windows\Fonts\` directory — `ttf-mscorefonts-installer` only has old XP-era fonts and isn't enough.
+
+```bash
+mkdir -p ~/.local/share/fonts/windows
+cp /path/to/windows/fonts/*.ttf ~/.local/share/fonts/windows/
+cp /path/to/windows/fonts/*.TTF ~/.local/share/fonts/windows/
+fc-cache -f  # mandatory for manually copied fonts
+```
+
+```python
+browser = launch(
+    args=["--fingerprint-fonts-dir=/home/user/.local/share/fonts/windows"],
+)
+```
 
 ---
 
