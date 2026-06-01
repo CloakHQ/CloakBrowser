@@ -5,7 +5,8 @@ import path from "path";
 import type { LaunchOptions } from "./types.js";
 import { getDefaultStealthArgs } from "./config.js";
 
-const DEBUG = /\bcloakbrowser\b/.test(process.env.DEBUG ?? "");
+const nodeProcess = (globalThis as any).process;
+const DEBUG = /\bcloakbrowser\b/.test(nodeProcess?.env?.DEBUG ?? "");
 
 /**
  * Build deduplicated Chromium CLI args from stealth defaults + user overrides.
@@ -26,7 +27,7 @@ export function buildArgs(options: LaunchOptions): string[] {
   // - Windows (all modes): Chromium's GPU blocklist blocks WebGPU for the
   //   Microsoft Basic Render Driver. Dawn's adapter_blocklist bypass alone
   //   isn't enough. Linux doesn't need it.
-  if (options.headless === false || process.platform === "win32") {
+  if (options.headless === false || nodeProcess.platform === "win32") {
     seen.set("--ignore-gpu-blocklist", "--ignore-gpu-blocklist");
   }
   if (options.args) {
