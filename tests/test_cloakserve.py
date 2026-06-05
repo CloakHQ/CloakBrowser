@@ -93,6 +93,7 @@ class TestParseCliArgs:
         assert config["port"] == 9222
         assert config["headless"] is True
         assert config["data_dir"] is not None
+        assert config["idle_timeout"] == 0.0
         assert passthrough == []
 
     def test_custom_port(self):
@@ -130,6 +131,31 @@ class TestParseCliArgs:
     def test_data_dir_not_in_passthrough(self):
         _, passthrough = parse_cli_args(["--data-dir=/tmp/test"])
         assert not any(a.startswith("--data-dir=") for a in passthrough)
+
+    def test_idle_timeout_not_in_passthrough(self):
+        config, passthrough = parse_cli_args(["--idle-timeout=30", "--no-sandbox"])
+        assert config["idle_timeout"] == 30.0
+        assert "--idle-timeout=30" not in passthrough
+        assert "--no-sandbox" in passthrough
+
+    @pytest.mark.parametrize("value", ["0", "off", "false", "none", "disabled"])
+    def test_idle_timeout_disabled_values(self, value):
+        config, _ = parse_cli_args([f"--idle-timeout={value}"])
+        assert config["idle_timeout"] == 0.0
+
+    def test_idle_timeout_env_default(self, monkeypatch):
+        monkeypatch.setenv("CLOAKSERVE_IDLE_TIMEOUT", "2.5")
+        config, _ = parse_cli_args([])
+        assert config["idle_timeout"] == 2.5
+
+    def test_idle_timeout_cli_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("CLOAKSERVE_IDLE_TIMEOUT", "2.5")
+        config, _ = parse_cli_args(["--idle-timeout=9"])
+        assert config["idle_timeout"] == 9.0
+
+    def test_idle_timeout_rejects_negative_values(self):
+        with pytest.raises(ValueError):
+            parse_cli_args(["--idle-timeout=-1"])
 
     @patch("os.path.exists", return_value=True)
     def test_default_data_dir_docker(self, _mock):
@@ -431,12 +457,21 @@ class TestHandlerURLRewriting:
 class TestConnectionTracking:
     """Test ChromePool.connect() / disconnect() without real Chrome."""
 
-    def _make_pool(self):
+    def _make_pool(self, idle_timeout: float = 0.0):
         return ChromePool(
             binary="/fake/chrome",
             global_args=[],
             headless=True,
             data_dir="/tmp/test-cloakserve",
+            idle_timeout=idle_timeout,
+        )
+
+    def _track_process(self, pool, seed="seed1"):
+        pool._processes[seed] = SimpleNamespace()
+
+    def _track_live_process(self, pool, seed="seed1"):
+        pool._processes[seed] = SimpleNamespace(
+            process=SimpleNamespace(poll=lambda: None),
         )
 
     def test_connect_increments(self):
@@ -472,6 +507,83 @@ class TestConnectionTracking:
         pool.disconnect("a")
         assert pool._connections["a"] == 1
         assert pool._connections["b"] == 1
+
+    def test_idle_cleanup_disabled_by_default(self):
+        async def run():
+            pool = self._make_pool()
+            self._track_process(pool)
+
+            pool.connect("seed1")
+            pool.disconnect("seed1")
+
+            await asyncio.sleep(0)
+            assert pool._idle_tasks == {}
+
+        asyncio.run(run())
+
+    def test_disconnect_to_zero_schedules_idle_cleanup(self):
+        async def run():
+            pool = self._make_pool(idle_timeout=0.01)
+            self._track_process(pool)
+            cleaned = []
+
+            async def fake_cleanup(seed):
+                cleaned.append(seed)
+                pool._processes.pop(seed, None)
+
+            pool._cleanup_process = fake_cleanup
+            pool.connect("seed1")
+            pool.disconnect("seed1")
+
+            assert "seed1" in pool._idle_tasks
+            await asyncio.sleep(0.05)
+            assert cleaned == ["seed1"]
+            assert "seed1" not in pool._idle_tasks
+
+        asyncio.run(run())
+
+    def test_reconnect_cancels_pending_idle_cleanup(self):
+        async def run():
+            pool = self._make_pool(idle_timeout=0.03)
+            self._track_process(pool)
+            cleaned = []
+
+            async def fake_cleanup(seed):
+                cleaned.append(seed)
+                pool._processes.pop(seed, None)
+
+            pool._cleanup_process = fake_cleanup
+            pool.connect("seed1")
+            pool.disconnect("seed1")
+            assert "seed1" in pool._idle_tasks
+
+            pool.connect("seed1")
+            await asyncio.sleep(0.06)
+
+            assert cleaned == []
+            assert pool._connections["seed1"] == 1
+            assert "seed1" not in pool._idle_tasks
+
+        asyncio.run(run())
+
+    def test_discovery_refreshes_pending_idle_cleanup(self):
+        async def run():
+            pool = self._make_pool(idle_timeout=1.0)
+            self._track_live_process(pool)
+
+            pool.connect("seed1")
+            pool.disconnect("seed1")
+            first_task = pool._idle_tasks["seed1"]
+
+            await pool.get_or_launch("seed1")
+            second_task = pool._idle_tasks["seed1"]
+
+            assert second_task is not first_task
+            pool._cancel_idle_cleanup("seed1")
+            await asyncio.sleep(0)
+            assert "seed1" not in pool._idle_tasks
+
+        asyncio.run(run())
 
 
 # ---------------------------------------------------------------------------
