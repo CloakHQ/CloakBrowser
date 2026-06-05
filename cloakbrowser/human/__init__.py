@@ -485,11 +485,10 @@ def _patch_locator_class_sync():
 
     def _humanized_select_option(self, value=None, **kwargs):
         if _is_humanized(self):
-            fwd = _forward_kwargs(kwargs)
-            selector = _get_selector(self)
-            self.page.hover(selector, **fwd)
-            sleep_ms(rand(100, 300))
-            _orig_select_option(self, value, **kwargs)
+            # Delegate to the page-level select_option (like click/hover/fill) so
+            # the hover + native select share a single timeout budget instead of
+            # each restarting the full clock (~2x bug).
+            self.page.select_option(_get_selector(self), value, **_forward_kwargs(kwargs))
         else:
             _orig_select_option(self, value, **kwargs)
 
@@ -731,11 +730,10 @@ def _patch_locator_class_async():
 
     async def _humanized_select_option(self, value=None, **kwargs):
         if _is_humanized(self):
-            fwd = _forward_kwargs(kwargs)
-            selector = _get_selector(self)
-            await self.page.hover(selector, **fwd)
-            await async_sleep_ms(rand(100, 300))
-            await _orig_select_option(self, value, **kwargs)
+            # Delegate to the page-level select_option (like click/hover/fill) so
+            # the hover + native select share a single timeout budget instead of
+            # each restarting the full clock (~2x bug).
+            await self.page.select_option(_get_selector(self), value, **_forward_kwargs(kwargs))
         else:
             await _orig_select_option(self, value, **kwargs)
 
@@ -1071,6 +1069,10 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         _human_hover(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
         sleep_ms(rand(100, 300))
         pw_kwargs = {k: v for k, v in kwargs.items() if k not in ("human_config", "force")}
+        # Share the timeout budget: the native select_option must use the time
+        # remaining after actionability + hover, not restart the full clock
+        # (otherwise a slow element can wait up to ~2x the requested timeout).
+        pw_kwargs["timeout"] = max(1, _remaining_ms())
         return originals.select_option(selector, value, **pw_kwargs)
 
     def _human_press(selector: str, key: str, **kwargs: Any) -> None:
@@ -1388,11 +1390,13 @@ def _patch_single_element_handle_sync(
         if not force:
             ensure_actionable_handle(page, el, CHECKS_FOCUS, timeout=_remaining_ms(), force=force)
         info = _move_to_element()
+        # Share the timeout budget so the native select_option uses the time
+        # remaining after actionability + move, not a fresh full timeout.
         if info is None:
-            return _orig_select_option(value, **kwargs)
+            return _orig_select_option(value, **{**kwargs, "timeout": max(1, _remaining_ms())})
         human_click(raw_mouse, False, cfg)
         sleep_ms(rand(100, 300))
-        return _orig_select_option(value, **kwargs)
+        return _orig_select_option(value, **{**kwargs, "timeout": max(1, _remaining_ms())})
 
     # --- el.check() ---
     def _human_el_check(**kwargs: Any) -> None:
@@ -1592,9 +1596,17 @@ def _patch_single_frame_sync(
         page.uncheck(selector, **kwargs)
 
     def _frame_select_option(selector: str, value: Any = None, **kwargs: Any) -> Any:
-        page.hover(selector, **kwargs)
+        # Share one deadline across the hover and the native select_option so the
+        # two sequential waits don't each consume the full timeout (~2x bug).
+        timeout = kwargs.get("timeout", 30000)
+        deadline = time.monotonic() + timeout / 1000.0
+
+        def _remaining_ms():
+            return max(1, (deadline - time.monotonic()) * 1000)
+
+        page.hover(selector, **{**kwargs, "timeout": _remaining_ms()})
         sleep_ms(rand(100, 300))
-        return _orig_frame_select_option(selector, value, **kwargs)
+        return _orig_frame_select_option(selector, value, **{**kwargs, "timeout": _remaining_ms()})
 
     def _frame_press(selector: str, key: str, **kwargs: Any) -> None:
         page.press(selector, key, **kwargs)
@@ -2013,6 +2025,10 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await _human_hover(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
         await async_sleep_ms(rand(100, 300))
         pw_kwargs = {k: v for k, v in kwargs.items() if k not in ("human_config", "force")}
+        # Share the timeout budget: the native select_option must use the time
+        # remaining after actionability + hover, not restart the full clock
+        # (otherwise a slow element can wait up to ~2x the requested timeout).
+        pw_kwargs["timeout"] = max(1, _remaining_ms())
         return await originals.select_option(selector, value, **pw_kwargs)
 
     async def _human_mouse_move(x: float, y: float, **kwargs: Any) -> None:
@@ -2317,11 +2333,13 @@ def _patch_single_element_handle_async(
         if not force:
             await async_ensure_actionable_handle(page, el, CHECKS_FOCUS, timeout=_remaining_ms(), force=force)
         info = await _move_to_element()
+        # Share the timeout budget so the native select_option uses the time
+        # remaining after actionability + move, not a fresh full timeout.
         if info is None:
-            return await _orig_select_option(value, **kwargs)
+            return await _orig_select_option(value, **{**kwargs, "timeout": max(1, _remaining_ms())})
         await async_human_click(raw_mouse, False, cfg)
         await async_sleep_ms(rand(100, 300))
-        return await _orig_select_option(value, **kwargs)
+        return await _orig_select_option(value, **{**kwargs, "timeout": max(1, _remaining_ms())})
 
     # --- el.check() ---
     async def _human_el_check(**kwargs: Any) -> None:
@@ -2521,9 +2539,17 @@ def _patch_single_frame_async(
         await page.uncheck(selector, **kwargs)
 
     async def _frame_select_option(selector: str, value: Any = None, **kwargs: Any) -> Any:
-        await page.hover(selector, **kwargs)
+        # Share one deadline across the hover and the native select_option so the
+        # two sequential waits don't each consume the full timeout (~2x bug).
+        timeout = kwargs.get("timeout", 30000)
+        deadline = time.monotonic() + timeout / 1000.0
+
+        def _remaining_ms():
+            return max(1, (deadline - time.monotonic()) * 1000)
+
+        await page.hover(selector, **{**kwargs, "timeout": _remaining_ms()})
         await async_sleep_ms(rand(100, 300))
-        return await _orig_frame_select_option(selector, value, **kwargs)
+        return await _orig_frame_select_option(selector, value, **{**kwargs, "timeout": _remaining_ms()})
 
     async def _frame_press(selector: str, key: str, **kwargs: Any) -> None:
         await page.press(selector, key, **kwargs)

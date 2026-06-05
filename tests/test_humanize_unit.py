@@ -1475,6 +1475,125 @@ class TestPerCallTimeoutForwarding:
 
 
 # =========================================================================
+# 15b. select_option shared timeout budget (issue #307 follow-up)
+# =========================================================================
+
+class TestSelectOptionTimeoutBudget:
+    """select_option must share ONE timeout budget across actionability +
+    hover + the native select, instead of restarting the full clock on the
+    native call (which let a slow element wait up to ~2x the requested
+    timeout). Same class of bug as #307, on the select_option paths the
+    original fix didn't cover."""
+
+    def _build_page_mock(self):
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        page.click = MagicMock()
+        page.dblclick = MagicMock()
+        page.hover = MagicMock()
+        page.type = MagicMock()
+        page.fill = MagicMock()
+        page.goto = MagicMock()
+        page.select_option = MagicMock()
+        page.is_checked = MagicMock(return_value=False)
+        page.viewport_size = {"width": 1280, "height": 720}
+        page.evaluate = MagicMock(return_value={"hit": True})
+        page.context.new_cdp_session = MagicMock(side_effect=Exception("no cdp"))
+        page.mouse = MagicMock()
+        page.keyboard = MagicMock()
+        page.query_selector = MagicMock(return_value=None)
+        page.query_selector_all = MagicMock(return_value=[])
+        page.wait_for_selector = MagicMock(return_value=None)
+        page.main_frame = MagicMock()
+        page.main_frame.child_frames = []
+        return page
+
+    def test_page_select_option_uses_remaining_timeout(self):
+        """The native select_option receives the REMAINING budget, not 5000."""
+        import cloakbrowser.human as h
+        from cloakbrowser.human import _CursorState
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import patch
+
+        cfg = resolve_config("default", {"idle_between_actions": False})
+        cursor = _CursorState()
+        cursor.initialized = True
+        cursor.x = 100
+        cursor.y = 100
+
+        page = self._build_page_mock()
+        # Captured before patch — this is the object that `originals.select_option`
+        # will call inside the humanized wrapper.
+        native = page.select_option
+
+        def fake_scroll(page_arg, raw, selector, cx, cy, cfg_arg, timeout=30000):
+            return ({"x": 100, "y": 100, "width": 50, "height": 30}, cx, cy, False)
+
+        with patch.object(h, "scroll_to_element", side_effect=fake_scroll), \
+             patch.object(h, "ensure_actionable"), \
+             patch.object(h, "check_pointer_events"):
+            h.patch_page(page, cfg, cursor)
+            page.select_option("#dropdown", "opt1", timeout=5000)
+
+        assert native.called, "native select_option should be invoked"
+        passed_timeout = native.call_args.kwargs.get("timeout")
+        assert passed_timeout is not None, "native must receive a timeout kwarg"
+        # hover + the 100-300ms human pause consume part of the budget, so the
+        # native call must get strictly less than the requested 5000 (and > 0).
+        assert 0 < passed_timeout < 5000, f"expected reduced timeout, got {passed_timeout}"
+
+    def test_locator_select_option_delegates_to_page(self):
+        """Locator.select_option delegates to page.select_option (one budget)."""
+        _ensure_locator_patched()
+        from unittest.mock import MagicMock
+        from playwright.sync_api._generated import Locator
+
+        page = MagicMock()
+        page._original = MagicMock()
+        page._human_cfg = MagicMock()
+        page.select_option = MagicMock()
+
+        loc = MagicMock()
+        loc.page = page
+        loc._impl_obj = MagicMock()
+        loc._impl_obj._selector = "#dropdown"
+
+        Locator.select_option(loc, "opt1", timeout=5000)
+
+        page.select_option.assert_called_once()
+        args, kwargs = page.select_option.call_args
+        assert args[0] == "#dropdown"
+        assert args[1] == "opt1"
+        assert kwargs.get("timeout") == 5000
+
+    def test_frame_select_option_uses_remaining_timeout(self):
+        """Frame.select_option shares the deadline across hover + native select."""
+        from cloakbrowser.human import _patch_single_frame_sync, _CursorState
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", None)
+        cursor = _CursorState()
+        page = MagicMock()
+        page._original = MagicMock()
+        page.hover = MagicMock()
+        frame = MagicMock()
+        frame._human_patched = False
+        native = frame.select_option  # captured before patch
+
+        _patch_single_frame_sync(
+            frame, page, cfg, cursor, MagicMock(), MagicMock(), page._original
+        )
+        frame.select_option("#dropdown", "opt1", timeout=5000)
+
+        assert native.called, "native frame.select_option should be invoked"
+        passed_timeout = native.call_args.kwargs.get("timeout")
+        assert passed_timeout is not None
+        assert 0 < passed_timeout < 5000, f"expected reduced timeout, got {passed_timeout}"
+
+
+# =========================================================================
 # 16. Per-call human_config override (typing speed customization)
 # =========================================================================
 
