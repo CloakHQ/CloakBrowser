@@ -22,6 +22,7 @@ from urllib.parse import quote, unquote, urlparse, urlunparse
 from .config import DEFAULT_VIEWPORT, IGNORE_DEFAULT_ARGS, get_default_stealth_args
 from .download import ensure_binary
 from .human.config import HumanConfigOverrides, HumanPreset
+from .widevine import seed_widevine_hint
 
 logger = logging.getLogger("cloakbrowser")
 
@@ -336,6 +337,8 @@ def launch_persistent_context(
         context_kwargs["color_scheme"] = color_scheme
     context_kwargs.update(kwargs)
 
+    seed_widevine_hint(user_data_dir, binary_path)
+
     pw = sync_playwright().start()
     context = pw.chromium.launch_persistent_context(
         user_data_dir=os.fspath(user_data_dir),
@@ -463,6 +466,8 @@ async def launch_persistent_context_async(
     if color_scheme:
         context_kwargs["color_scheme"] = color_scheme
     context_kwargs.update(kwargs)
+
+    seed_widevine_hint(user_data_dir, binary_path)
 
     pw = await async_playwright().start()
     context = await pw.chromium.launch_persistent_context(

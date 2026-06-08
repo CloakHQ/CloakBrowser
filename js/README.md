@@ -202,6 +202,18 @@ if (newVersion) console.log(`Updated to ${newVersion}`);
 | `CLOAKBROWSER_DOWNLOAD_URL` | `cloakbrowser.dev` | Custom download URL |
 | `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
 | `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Set to `true` to skip SHA-256 verification after download |
+| `CLOAKBROWSER_WIDEVINE_CDM` | — | Path to a sideloaded `WidevineCdm` directory (overrides auto-detection next to the binary) |
+| `CLOAKBROWSER_WIDEVINE` | `1` | Set to `0` to disable automatic Widevine hint-file seeding for persistent contexts |
+
+### Widevine / DRM
+
+The binary supports Widevine, but the CDM is proprietary and can't be redistributed. Sideload it once by copying a `WidevineCdm/` directory from a real Chrome install next to the binary (full steps in [#96](https://github.com/CloakHQ/CloakBrowser/issues/96)):
+
+```bash
+cp -r /opt/google/chrome/WidevineCdm ~/.cloakbrowser/chromium-<version>/WidevineCdm
+```
+
+With the CDM in place, `launchPersistentContext()` enables Widevine on the **first** launch — the wrapper auto-seeds the CDM hint file into the profile. This plays DRM-protected video (Netflix, Spotify Web) and makes a persistent profile present as a regular Chrome install to detection services that probe for DRM/EME support. **Linux only.** A sideloaded CDM is the opt-in (no flag); set `CLOAKBROWSER_WIDEVINE_CDM` for a custom path or `CLOAKBROWSER_WIDEVINE=0` to disable. See the [main README](https://github.com/CloakHQ/CloakBrowser#widevine--drm) for details.
 
 ## Migrate From Playwright
 

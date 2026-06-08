@@ -258,3 +258,32 @@ async def test_persistent_context_async_timezone_id_alias(_mock_bin):
     call_kwargs = pw.chromium.launch_persistent_context.call_args[1]
     assert "--fingerprint-timezone=Europe/Paris" in call_kwargs["args"]
     assert "timezone_id" not in call_kwargs
+
+
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
+@patch("cloakbrowser.browser.seed_widevine_hint")
+def test_persistent_context_seeds_widevine(_mock_seed, _mock_geoip, _mock_bin):
+    """Sync persistent launch seeds the Widevine hint with the profile path."""
+    pw_cm, pw, context = _make_mock_pw_and_context()
+
+    with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):
+        from cloakbrowser.browser import launch_persistent_context
+        launch_persistent_context("/tmp/profile")
+
+    _mock_seed.assert_called_once_with("/tmp/profile", "/fake/chrome")
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
+@patch("cloakbrowser.browser.seed_widevine_hint")
+async def test_persistent_context_async_seeds_widevine(_mock_seed, _mock_geoip, _mock_bin):
+    """Async persistent launch seeds the Widevine hint with the profile path."""
+    pw_cm, pw, context = _make_mock_async_pw_and_context()
+
+    with patch("playwright.async_api.async_playwright", return_value=pw_cm):
+        from cloakbrowser.browser import launch_persistent_context_async
+        await launch_persistent_context_async("/tmp/profile")
+
+    _mock_seed.assert_called_once_with("/tmp/profile", "/fake/chrome")

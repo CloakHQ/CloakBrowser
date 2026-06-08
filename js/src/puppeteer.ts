@@ -11,6 +11,7 @@ import { buildArgs } from "./args.js";
 import { ensureBinary } from "./download.js";
 import { isSocksProxy, normalizeHttpStringUrl, parseProxyUrl, reconstructHttpUrl, resolveProxyConfig, supportsHttpProxyInlineAuth } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs } from "./geoip.js";
+import { seedWidevineHint } from "./widevine.js";
 
 /** Resolve binary path, geoip, webrtc, and build final Chrome args. */
 async function resolveArgs(options: LaunchOptions): Promise<{ binaryPath: string; args: string[] }> {
@@ -154,6 +155,8 @@ export async function launchPersistentContext(
   const puppeteer = await import("puppeteer-core");
   const { binaryPath, args } = await resolveArgs(options);
   const proxyAuth = resolveProxy(options, args);
+
+  seedWidevineHint(options.userDataDir, binaryPath);
 
   const browser = await puppeteer.default.launch({
     ...options.launchOptions,

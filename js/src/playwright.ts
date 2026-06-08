@@ -10,6 +10,7 @@ import { buildArgs } from "./args.js";
 import { ensureBinary } from "./download.js";
 import { resolveProxyConfig } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs } from "./geoip.js";
+import { seedWidevineHint } from "./widevine.js";
 
 /** @internal Accept both timezone and timezoneId — either works, no warning. Exported for testing. */
 export function resolveTimezone<T extends { timezone?: string; timezoneId?: string }>(options: T): T {
@@ -226,6 +227,8 @@ export async function launchPersistentContext(
     resolvedArgs = [...(resolvedArgs ?? []), `--fingerprint-webrtc-ip=${exitIp}`];
   }
   const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
+
+  seedWidevineHint(options.userDataDir, binaryPath);
 
   // locale and timezone are set via binary flags (--lang, --fingerprint-timezone)
   // — NOT via Playwright context kwargs which use detectable CDP emulation.
