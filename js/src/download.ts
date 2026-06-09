@@ -30,6 +30,7 @@ import {
   getFallbackDownloadUrl,
   getLocalBinaryOverride,
   getPlatformTag,
+  isSafeVersionTag,
   versionNewer,
 } from "./config.js";
 
@@ -211,18 +212,29 @@ async function downloadAndExtract(version?: string): Promise<void> {
 }
 
 async function verifyDownloadChecksum(filePath: string, version?: string): Promise<void> {
+  // Fails closed: a missing SHA256SUMS, or one with no entry for this platform's
+  // archive, means the binary is unverified and the download is rejected. Set
+  // CLOAKBROWSER_SKIP_CHECKSUM=true to bypass (handled by the caller).
   const checksums = await fetchChecksums(version);
   const tarballName = getArchiveName();
 
   if (!checksums) {
-    console.warn("[cloakbrowser] SHA256SUMS not available for this release — skipping checksum verification");
-    return;
+    throw new Error(
+      `Could not fetch SHA256SUMS for this release, so the downloaded binary ` +
+      `(${tarballName}) cannot be integrity-verified. Refusing to use an unverified ` +
+      `binary. If you are using a custom CLOAKBROWSER_DOWNLOAD_URL, publish a ` +
+      `SHA256SUMS file alongside the archive, or set CLOAKBROWSER_SKIP_CHECKSUM=true ` +
+      `to bypass this check at your own risk.`
+    );
   }
 
   const expected = checksums.get(tarballName);
   if (!expected) {
-    console.warn(`[cloakbrowser] SHA256SUMS found but no entry for ${tarballName} — skipping verification`);
-    return;
+    throw new Error(
+      `SHA256SUMS was fetched but contains no entry for ${tarballName}, so the ` +
+      `downloaded binary cannot be integrity-verified. Refusing to use an unverified ` +
+      `binary. Set CLOAKBROWSER_SKIP_CHECKSUM=true to bypass at your own risk.`
+    );
   }
 
   await verifyChecksum(filePath, expected);
@@ -246,7 +258,12 @@ export async function fetchChecksums(version?: string): Promise<Map<string, stri
         signal: AbortSignal.timeout(10_000),
       });
       if (!resp.ok) continue;
-      return parseChecksums(await resp.text());
+      const parsed = parseChecksums(await resp.text());
+      // A redirect to an HTML error/login page (or any non-SHA256SUMS body)
+      // parses to an empty map. Treat that as "not found here" and try the next
+      // mirror, so a misbehaving primary can't shadow a good fallback (and can't
+      // satisfy the fail-closed check with junk).
+      if (parsed.size > 0) return parsed;
     } catch {
       continue;
     }
@@ -424,12 +441,19 @@ async function extractZip(archivePath: string, destDir: string): Promise<void> {
 
   if (process.platform === "win32") {
     // PowerShell 5.1's Expand-Archive uses .NET FileStream which can conflict
-    // with recently-closed Node.js file handles. Use ZipFile API directly.
+    // with recently-closed Node.js file handles. Use the ZipFile API directly.
+    // Pass the paths via environment variables rather than interpolating them
+    // into the -Command string, so a path containing a single quote (or other
+    // PowerShell metacharacter) cannot break out of the literal and execute as
+    // code. The paths are read inside PowerShell as $env: values (plain data).
     execFileSync("powershell", [
       "-NoProfile", "-Command",
       `Add-Type -AssemblyName System.IO.Compression.FileSystem; ` +
-      `[System.IO.Compression.ZipFile]::ExtractToDirectory('${archivePath}', '${destDir}')`,
-    ], { timeout: 120_000 });
+      `[System.IO.Compression.ZipFile]::ExtractToDirectory($env:CLOAKBROWSER_ZIP_SRC, $env:CLOAKBROWSER_ZIP_DEST)`,
+    ], {
+      timeout: 120_000,
+      env: { ...process.env, CLOAKBROWSER_ZIP_SRC: archivePath, CLOAKBROWSER_ZIP_DEST: destDir },
+    });
   } else {
     execFileSync("unzip", ["-o", archivePath, "-d", destDir], { timeout: 120_000 });
   }
@@ -511,11 +535,17 @@ export async function getLatestChromiumVersion(): Promise<string | null> {
     const platformTarball = getArchiveName();
     for (const release of releases) {
       if (release.tag_name.startsWith("chromium-v") && !release.draft) {
+        const version = release.tag_name.replace(/^chromium-v/, "");
+        // Defense in depth: the version flows into cache paths, download URLs,
+        // and the Windows zip-extraction command. Reject anything that isn't a
+        // plain dotted-numeric version so a malformed/hostile release tag can't
+        // inject path, URL, or command components.
+        if (!isSafeVersionTag(version)) continue;
         const assetNames = new Set(
           (release.assets ?? []).map((a) => a.name)
         );
         if (assetNames.has(platformTarball)) {
-          return release.tag_name.replace(/^chromium-v/, "");
+          return version;
         }
       }
     }
