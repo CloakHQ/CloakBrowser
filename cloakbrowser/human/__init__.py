@@ -53,6 +53,20 @@ __all__ = [
 logger = logging.getLogger("cloakbrowser.human")
 
 
+def _try_ensure_stable(page: Any, selector: str, timeout: float) -> None:
+    try:
+        ensure_stable(page, selector, timeout=timeout)
+    except ElementNotStableError:
+        logger.debug("Continuing after post-scroll stability check for %r", selector)
+
+
+async def _async_try_ensure_stable(page: Any, selector: str, timeout: float) -> None:
+    try:
+        await async_ensure_stable(page, selector, timeout=timeout)
+    except ElementNotStableError:
+        logger.debug("Continuing after post-scroll stability check for %r", selector)
+
+
 # ============================================================================
 # CDP Isolated World — stealth DOM evaluation
 # ============================================================================
@@ -915,7 +929,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         cursor.y = cy
         is_input = _is_input_element(page, selector)
         if not force and did_scroll:
-            ensure_stable(page, selector, timeout=_remaining_ms())
+            _try_ensure_stable(page, selector, timeout=_remaining_ms())
             box = page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
         target = click_target(box, is_input, call_cfg)
         if not force:
@@ -946,7 +960,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         cursor.y = cy
         is_input = _is_input_element(page, selector)
         if not force and did_scroll:
-            ensure_stable(page, selector, timeout=_remaining_ms())
+            _try_ensure_stable(page, selector, timeout=_remaining_ms())
             box = page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
         target = click_target(box, is_input, call_cfg)
         if not force:
@@ -979,7 +993,7 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         cursor.x = cx
         cursor.y = cy
         if not force and did_scroll:
-            ensure_stable(page, selector, timeout=_remaining_ms())
+            _try_ensure_stable(page, selector, timeout=_remaining_ms())
             box = page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
         target = click_target(box, False, call_cfg)
         if not force:
@@ -1840,7 +1854,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         cursor.y = cy
         is_input = await _async_is_input_element(page, selector)
         if not force and did_scroll:
-            await async_ensure_stable(page, selector, timeout=_remaining_ms())
+            await _async_try_ensure_stable(page, selector, timeout=_remaining_ms())
             box = await page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
         target = click_target(box, is_input, call_cfg)
         if not force:
@@ -1871,7 +1885,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         cursor.y = cy
         is_input = await _async_is_input_element(page, selector)
         if not force and did_scroll:
-            await async_ensure_stable(page, selector, timeout=_remaining_ms())
+            await _async_try_ensure_stable(page, selector, timeout=_remaining_ms())
             box = await page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
         target = click_target(box, is_input, call_cfg)
         if not force:
@@ -1904,7 +1918,7 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         cursor.x = cx
         cursor.y = cy
         if not force and did_scroll:
-            await async_ensure_stable(page, selector, timeout=_remaining_ms())
+            await _async_try_ensure_stable(page, selector, timeout=_remaining_ms())
             box = await page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
         target = click_target(box, False, call_cfg)
         if not force:
