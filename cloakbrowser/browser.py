@@ -1022,8 +1022,17 @@ def build_args(
     if extension_paths:
         abs_paths = [os.path.abspath(p) for p in extension_paths]
         ext_val = ",".join(abs_paths)
-    
+
         seen["--load-extension"] = f"--load-extension={ext_val}"
+        seen["--disable-extensions-except"] = (
+            f"--disable-extensions-except={ext_val}"
+        )
+    elif "--load-extension" in seen and "--disable-extensions-except" not in seen:
+        # Auto-add companion flag when --load-extension was provided via
+        # extra_args but the companion --disable-extensions-except was not.
+        # Without this, Playwright's default --disable-extensions blocks all
+        # extensions. See CloakHQ/CloakBrowser-Manager#30 and #37.
+        ext_val = seen["--load-extension"].split("=", 1)[1]
         seen["--disable-extensions-except"] = (
             f"--disable-extensions-except={ext_val}"
         )
