@@ -129,6 +129,59 @@ describe("composable Playwright launch helpers", () => {
   });
 });
 
+describe("launch geoip warnings (unit)", () => {
+  let mockChromium: any;
+  const origBinaryPath = process.env.CLOAKBROWSER_BINARY_PATH;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../src/geoip.js");
+    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
+    mockChromium = {
+      launch: vi.fn().mockResolvedValue({ close: vi.fn() }),
+    };
+    vi.doMock("playwright-core", () => ({ chromium: mockChromium }));
+  });
+
+  afterEach(() => {
+    vi.doUnmock("../src/geoip.js");
+    vi.doUnmock("playwright-core");
+    vi.restoreAllMocks();
+    vi.resetModules();
+    if (origBinaryPath) {
+      process.env.CLOAKBROWSER_BINARY_PATH = origBinaryPath;
+    } else {
+      delete process.env.CLOAKBROWSER_BINARY_PATH;
+    }
+  });
+
+  it("warns when geoip is true and no proxy is set", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { launch } = await import("../src/playwright.js");
+
+    await launch({ geoip: true });
+
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy.mock.calls[0][0]).toMatch(/timezone\/locale will default/);
+  });
+
+  it("does not warn when proxy is set", async () => {
+    vi.doMock("../src/geoip.js", () => ({
+      maybeResolveGeoip: vi.fn(async (options: any) => ({
+        timezone: options.timezone,
+        locale: options.locale,
+      })),
+      resolveWebrtcArgs: vi.fn(async (options: any) => options.args),
+    }));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { launch } = await import("../src/playwright.js");
+
+    await launch({ geoip: true, proxy: "http://example.com:8080" });
+
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
 // Integration tests require the binary — run with:
 //   CLOAKBROWSER_BINARY_PATH=/path/to/chrome npm test
 describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)(

@@ -110,6 +110,12 @@ def launch(
 
     binary_path = ensure_binary()
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    if geoip and not proxy:
+        logger.warning(
+            "geoip=True without proxy= at launch - timezone/locale will default to "
+            "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass "
+            "proxy= to launch() or set explicit timezone=/locale=."
+        )
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy)
     args = _resolve_webrtc_args(args, proxy)
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
@@ -203,6 +209,12 @@ async def launch_async(  # noqa: C901
 
     binary_path = ensure_binary()
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    if geoip and not proxy:
+        logger.warning(
+            "geoip=True without proxy= at launch - timezone/locale will default to "
+            "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass "
+            "proxy= to launch() or set explicit timezone=/locale=."
+        )
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy)
     args = _resolve_webrtc_args(args, proxy)
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
@@ -309,6 +321,12 @@ def launch_persistent_context(
 
     binary_path = ensure_binary()
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    if geoip and not proxy:
+        logger.warning(
+            "geoip=True without proxy= at launch - timezone/locale will default to "
+            "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass "
+            "proxy= to launch() or set explicit timezone=/locale=."
+        )
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy)
     args = _resolve_webrtc_args(args, proxy)
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
@@ -439,6 +457,12 @@ async def launch_persistent_context_async(
 
     binary_path = ensure_binary()
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    if geoip and not proxy:
+        logger.warning(
+            "geoip=True without proxy= at launch - timezone/locale will default to "
+            "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass "
+            "proxy= to launch() or set explicit timezone=/locale=."
+        )
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy)
     args = _resolve_webrtc_args(args, proxy)
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
@@ -552,6 +576,12 @@ def launch_context(
     # Resolve geoip BEFORE launch() to avoid double-resolution and ensure
     # resolved values flow to binary flags
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    if geoip and not proxy:
+        logger.warning(
+            "geoip=True without proxy= at launch - timezone/locale will default to "
+            "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass "
+            "proxy= to launch() or set explicit timezone=/locale=."
+        )
     # Inject geoip exit IP for WebRTC spoofing (free — no extra HTTP call)
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
@@ -673,6 +703,12 @@ async def launch_context_async(
     # Resolve geoip BEFORE launch_async() to avoid double-resolution and ensure
     # resolved values flow to binary flags
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    if geoip and not proxy:
+        logger.warning(
+            "geoip=True without proxy= at launch - timezone/locale will default to "
+            "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass "
+            "proxy= to launch() or set explicit timezone=/locale=."
+        )
     if exit_ip and not (args and any(a.startswith("--fingerprint-webrtc-ip") for a in args)):
         args = list(args or [])
         args.append(f"--fingerprint-webrtc-ip={exit_ip}")
