@@ -87,7 +87,7 @@
     "puppeteer-core": "^25.0.4",
     "socks-proxy-agent": "^10.0.0",
     "typescript": "^6.0.3",
-    "vitest": "^1.0.0"
+    "vitest": "^3.2.6"
   },
   "scripts": {
     "build": "tsc",
