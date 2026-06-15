@@ -5,9 +5,20 @@ from __future__ import annotations
 import os
 import platform
 import random
+import re
 from pathlib import Path
 
 from ._version import __version__
+
+# A Chromium version tag is a plain dotted-numeric string (e.g. "146.0.7680.177.5").
+# Validate any externally sourced version (GitHub release tags, cache markers)
+# before it flows into cache paths or download URLs.
+_SAFE_VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+){0,9}$")
+
+
+def is_safe_version_tag(version: str) -> bool:
+    """Return True if *version* is a safe dotted-numeric version string."""
+    return isinstance(version, str) and bool(_SAFE_VERSION_RE.match(version))
 
 # ---------------------------------------------------------------------------
 # Chromium version shipped with this release.
@@ -170,7 +181,7 @@ def get_effective_version() -> str:
         if marker.exists():
             try:
                 version = marker.read_text().strip()
-                if version and _version_newer(version, base):
+                if version and is_safe_version_tag(version) and _version_newer(version, base):
                     binary = get_binary_path(version)
                     if binary.exists():
                         return version

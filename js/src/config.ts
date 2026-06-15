@@ -154,7 +154,7 @@ export function getEffectiveVersion(): string {
     try {
       if (fs.existsSync(marker)) {
         const version = fs.readFileSync(marker, "utf-8").trim();
-        if (version && versionNewer(version, base)) {
+        if (version && isSafeVersionTag(version) && versionNewer(version, base)) {
           const binary = getBinaryPath(version);
           if (fs.existsSync(binary)) {
             return version;
@@ -166,6 +166,15 @@ export function getEffectiveVersion(): string {
     }
   }
   return base;
+}
+
+// A Chromium version tag is a plain dotted-numeric string (e.g. "146.0.7680.177.5").
+// Validate any externally sourced version (GitHub release tags, cache markers)
+// before it flows into cache paths, download URLs, or shell/extraction commands.
+const SAFE_VERSION_RE = /^[0-9]+(\.[0-9]+){0,9}$/;
+
+export function isSafeVersionTag(version: string): boolean {
+  return typeof version === "string" && SAFE_VERSION_RE.test(version);
 }
 
 export function parseVersion(v: string): number[] {

@@ -29,6 +29,7 @@ from .config import (
     GITHUB_DOWNLOAD_BASE_URL,
     _version_newer,
     check_platform_available,
+    is_safe_version_tag,
     get_archive_ext,
     get_archive_name,
     get_binary_dir,
@@ -174,18 +175,35 @@ def _download_and_extract(version: str | None = None) -> None:
 
 
 def _verify_download_checksum(file_path: Path, version: str | None = None) -> None:
-    """Fetch SHA256SUMS and verify the downloaded file. Warn if unavailable, fail on mismatch."""
+    """Fetch SHA256SUMS and verify the downloaded file.
+
+    Fails closed: if checksums cannot be fetched, or contain no entry for this
+    platform's archive, the binary is treated as unverified and the download is
+    rejected. Set ``CLOAKBROWSER_SKIP_CHECKSUM=true`` to bypass at your own risk
+    (e.g. a custom mirror that does not publish SHA256SUMS). The official
+    releases publish SHA256SUMS for every version, so this only triggers when a
+    mirror is misconfigured or the file was suppressed/tampered with in transit.
+    """
     checksums = _fetch_checksums(version)
     tarball_name = get_archive_name()
 
     if checksums is None:
-        logger.warning("SHA256SUMS not available for this release — skipping checksum verification")
-        return
+        raise RuntimeError(
+            f"Could not fetch SHA256SUMS for this release, so the downloaded binary "
+            f"({tarball_name}) cannot be integrity-verified. Refusing to use an "
+            f"unverified binary. If you are using a custom CLOAKBROWSER_DOWNLOAD_URL, "
+            f"publish a SHA256SUMS file alongside the archive, or set "
+            f"CLOAKBROWSER_SKIP_CHECKSUM=true to bypass this check at your own risk."
+        )
 
     expected = checksums.get(tarball_name)
     if expected is None:
-        logger.warning("SHA256SUMS found but no entry for %s — skipping verification", tarball_name)
-        return
+        raise RuntimeError(
+            f"SHA256SUMS was fetched but contains no entry for {tarball_name}, so the "
+            f"downloaded binary cannot be integrity-verified. Refusing to use an "
+            f"unverified binary. Set CLOAKBROWSER_SKIP_CHECKSUM=true to bypass at your "
+            f"own risk."
+        )
 
     _verify_checksum(file_path, expected)
 
@@ -204,14 +222,36 @@ def _fetch_checksums(version: str | None = None) -> dict[str, str] | None:
         try:
             resp = httpx.get(url, follow_redirects=True, timeout=10.0)
             resp.raise_for_status()
-            return _parse_checksums(resp.text)
+            parsed = _parse_checksums(resp.text)
+            # A redirect to an HTML error/login page (or any non-SHA256SUMS body)
+            # parses to an empty mapping. Treat that as "not found here" and try
+            # the next mirror, so a misbehaving primary can't shadow a good
+            # fallback (and can't satisfy the fail-closed check with junk).
+            if parsed:
+                return parsed
         except Exception:
             continue
     return None
 
 
+def _is_sha256_hex(value: str) -> bool:
+    """True if *value* is exactly a 64-character hex SHA-256 digest."""
+    if len(value) != 64:
+        return False
+    try:
+        int(value, 16)
+        return True
+    except ValueError:
+        return False
+
+
 def _parse_checksums(text: str) -> dict[str, str]:
-    """Parse SHA256SUMS format: 'hash  filename' per line."""
+    """Parse SHA256SUMS format: 'hash  filename' per line.
+
+    Only accepts lines whose first token is a valid 64-char hex SHA-256 digest,
+    so an HTML error page or other non-checksum body parses to an empty mapping
+    instead of producing bogus entries.
+    """
     result = {}
     for line in text.strip().splitlines():
         line = line.strip()
@@ -220,6 +260,8 @@ def _parse_checksums(text: str) -> dict[str, str]:
         parts = line.split(None, 1)
         if len(parts) == 2:
             hash_val, filename = parts
+            if not _is_sha256_hex(hash_val):
+                continue
             filename = filename.lstrip("*")
             result[filename] = hash_val.lower()
     return result
@@ -478,9 +520,17 @@ def _get_latest_chromium_version() -> str | None:
         for release in resp.json():
             tag = release.get("tag_name", "")
             if tag.startswith("chromium-v") and not release.get("draft"):
+                version = tag.removeprefix("chromium-v")
+                # Defense in depth: the version flows into cache paths and
+                # download URLs. Reject anything that isn't a plain dotted-numeric
+                # version so a malformed/hostile release tag can't inject path or
+                # URL components.
+                if not is_safe_version_tag(version):
+                    logger.debug("Skipping release with unsafe version tag: %r", tag)
+                    continue
                 asset_names = {a["name"] for a in release.get("assets", [])}
                 if platform_tarball in asset_names:
-                    return tag.removeprefix("chromium-v")
+                    return version
         return None
     except Exception:
         logger.debug("Auto-update check failed", exc_info=True)
