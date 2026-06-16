@@ -166,8 +166,8 @@ class PxEngine:
     def detect(self, page: Any) -> tuple[SiteHandler | None, DetectResult]:
         """Detect PX challenge and identify the best handler.
 
-        First verifies that PX UI is actually visible (not just scripts loaded),
-        then tries site-specific handlers, then falls back to generic detection.
+        First checks the page URL to find matching site handlers,
+        then verifies PX UI is actually visible.
 
         Args:
             page: Playwright Page object.
@@ -175,24 +175,24 @@ class PxEngine:
         Returns:
             (handler, result) — handler may be None if no specific site matches.
         """
-        # Gating: must have visible PX UI or meaningful page content
-        if not self._px_ui_visible(page):
-            return None, DetectResult()
-
-        # Try site-specific handlers first
+        # Try site-specific handlers that match the current URL
         for handler in self._site_handlers:
+            if not handler.match_url(page):
+                logger.debug("Site handler '%s' skipped (URL mismatch)", handler.name)
+                continue
             result = handler.detect(page)
             if result.detected and result.confidence >= 0.3:
                 logger.debug("Site handler '%s' matched (confidence=%.2f)",
                              handler.name, result.confidence)
                 return handler, result
 
-        # Fallback: generic detection
-        generic_result = self.generic_detector.detect(page)
-        if generic_result.detected:
-            logger.debug("Generic detector matched (confidence=%.2f)",
-                         generic_result.confidence)
-            return None, generic_result
+        # Fallback: generic detection (only if PX UI is visible)
+        if self._px_ui_visible(page):
+            generic_result = self.generic_detector.detect(page)
+            if generic_result.detected:
+                logger.debug("Generic detector matched (confidence=%.2f)",
+                             generic_result.confidence)
+                return None, generic_result
 
         return None, DetectResult()
 

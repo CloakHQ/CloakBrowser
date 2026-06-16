@@ -7,6 +7,7 @@ from ..detect.dom_element import DetectPxByDomElement
 from ..solve.base import BaseSolver
 from ..solve.composite import CompositeSolver
 from ..solve.press_hold_button import SolveByHoldButton
+from ..solve.press_hold_container import SolveByHoldContainer
 from .base import SiteHandler
 
 
@@ -15,6 +16,7 @@ class IfoodHandler(SiteHandler):
 
     name = "ifood"
     priority = 10
+    url_pattern = "ifood.com"  # Only runs on iFood pages
 
     def build_detector(self) -> BaseDetector:
         return CompositeDetector([
@@ -25,4 +27,6 @@ class IfoodHandler(SiteHandler):
     def build_solver(self) -> BaseSolver:
         return CompositeSolver([
             SolveByHoldButton(["Pressione e segure", "Press and hold"]),
+            # Fallback to container click if button not found
+            SolveByHoldContainer("#px-captcha"),
         ])

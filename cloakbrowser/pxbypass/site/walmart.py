@@ -17,6 +17,7 @@ class WalmartHandler(SiteHandler):
 
     name = "walmart"
     priority = 10
+    url_pattern = "walmart.com"  # Only runs on walmart pages
 
     def build_detector(self) -> BaseDetector:
         return CompositeDetector([
