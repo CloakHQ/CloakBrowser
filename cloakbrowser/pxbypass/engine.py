@@ -5,8 +5,8 @@ detectors, then selects the best solving strategy.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-import threading
 from typing import Any
 
 from .config import PxConfig
@@ -37,6 +37,64 @@ _PX_UI_WATCHER_JS = """() => {
       || t.includes('pressione e segure') || t.includes('robot or human');
 }"""
 
+# MutationObserver script injected into the page.
+# Watches for PX challenge elements to appear in the DOM.
+# When detected, calls window.__pxNotify() which triggers Python solver.
+_PX_MUTATION_OBSERVER_JS = """() => {
+  if (window.__pxObserverInstalled) return;
+  window.__pxObserverInstalled = true;
+
+  function pxCheckAndNotify() {
+    if (window.__pxSolving) return;  // solver is already running
+    var found = false;
+    if (document.getElementById('px-captcha')) found = true;
+    else if (document.getElementById('px-captcha-modal')) found = true;
+    else {
+      var el = document.querySelector('[data-px-captcha]');
+      if (el) { var r = el.getBoundingClientRect(); if (r.width > 10) found = true; }
+      if (!found) {
+        el = document.querySelector('.px-challenge');
+        if (el) { var r = el.getBoundingClientRect(); if (r.width > 10) found = true; }
+      }
+      if (!found) {
+        var body = (document.body ? document.body.innerText : '') || '';
+        var t = body.toLowerCase();
+        found = t.includes('activate and hold') || t.includes('press and hold')
+             || t.includes('pressione e segure') || t.includes('robot or human');
+      }
+    }
+    if (found && window.__pxNotify) {
+      window.__pxSolving = true;
+      window.__pxNotify();
+    }
+  }
+
+  // Observe DOM changes
+  var observer = new MutationObserver(function(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      for (var j = 0; j < (mutations[i].addedNodes || []).length; j++) {
+        var n = mutations[i].addedNodes[j];
+        if (n.nodeType === 1 && (n.id === 'px-captcha' || n.id === 'px-captcha-modal'
+            || n.matches && n.matches('[data-px-captcha], .px-challenge'))) {
+          pxCheckAndNotify();
+          return;
+        }
+      }
+    }
+  });
+  if (document.body) {
+    observer.observe(document.body, { childList: true, subtree: true });
+  } else {
+    document.addEventListener('DOMContentLoaded', function() {
+      observer.observe(document.body, { childList: true, subtree: true });
+      pxCheckAndNotify();
+    });
+  }
+
+  // Also check periodically as a fallback (every 3 seconds)
+  setInterval(pxCheckAndNotify, 3000);
+}"""
+
 
 class PxEngine:
     """Orchestrates detection and solving of PerimeterX challenges.
@@ -45,6 +103,9 @@ class PxEngine:
         1. Try site-specific handlers (Walmart, iFood, etc.) in priority order
         2. If no site matches, fall back to generic CompositeDetector/Solver
         3. detect() returns handler + result → solve() uses handler's solver
+
+    Detection uses MutationObserver injected into the page's JS context,
+    so it works across all navigations without cross-thread issues.
     """
 
     def __init__(self, cfg: PxConfig | None = None):
@@ -122,11 +183,53 @@ class PxEngine:
         logger.info("Using generic solver")
         return self.generic_solver.solve(page, self.cfg, detect_result)
 
+    def install_observer(self, page: Any) -> None:
+        """Inject MutationObserver into the page and expose Python callback.
+
+        Safe to call multiple times — only installs once per page.
+
+        Args:
+            page: Playwright Page object.
+        """
+        if getattr(page, '_px_observer_installed', False):
+            return
+        page._px_observer_installed = True
+
+        # Expose a Python callback that JS can call via window.__pxNotify()
+        page.expose_binding("__pxNotify", lambda: self._on_px_detected(page))
+
+        # When navigation happens, the observer may need to be re-injected
+        # because the execution context is destroyed.
+        page.on("load", lambda: self._reinject_observer(page))
+
+        # Inject the observer JS
+        self._reinject_observer(page)
+
+    def _reinject_observer(self, page: Any) -> None:
+        """Re-inject the MutationObserver after navigation."""
+        try:
+            page.evaluate(_PX_MUTATION_OBSERVER_JS)
+        except Exception:
+            pass
+
+    def _on_px_detected(self, page: Any) -> None:
+        """Called from JS when PX is detected via MutationObserver."""
+        try:
+            self.check_and_solve(page)
+        except Exception as exc:
+            logger.debug("PX solve failed (non-fatal): %s", exc)
+        finally:
+            # Reset the solving flag so observer can fire again next time
+            try:
+                page.evaluate("window.__pxSolving = false")
+            except Exception:
+                pass
+
     def check_and_solve(self, page: Any) -> bool:
         """Check if PX is present and solve it.
 
         One-shot: checks the current page state and solves if PX is there.
-        Does NOT wait. Used by the background monitor.
+        Does NOT wait.
 
         Args:
             page: Playwright Page object.
@@ -137,11 +240,9 @@ class PxEngine:
         if not self.cfg.enabled:
             return True
 
-        # Quick check: is PX UI visible right now?
         try:
             px_visible = bool(page.evaluate(_PX_UI_WATCHER_JS))
         except Exception:
-            # Page might be closed or navigating
             return True
         if not px_visible:
             return True
@@ -161,44 +262,40 @@ class PxEngine:
                            solve_result.method, solve_result.error)
         return solve_result.solved
 
-    def start_monitoring(self, page: Any) -> None:
-        """Start background monitoring for PX on this page (sync API).
-
-        The monitor runs in a daemon thread, polling the page every
-        ``monitor_interval`` seconds. It auto-stops when the page is closed.
-
-        Safe to call multiple times — only starts once per page.
-        """
-        if getattr(page, '_px_monitor_active', False):
+    async def install_observer_async(self, page: Any) -> None:
+        """Async version of install_observer."""
+        if getattr(page, '_px_observer_installed', False):
             return
-        page._px_monitor_active = True
+        page._px_observer_installed = True
 
-        interval = self.cfg.monitor_interval
+        await page.expose_binding("__pxNotify", lambda: self._on_px_detected_async(page))
 
-        def _loop() -> None:
-            logger.debug("PX monitor started for page (sync)")
-            try:
-                while getattr(page, '_px_monitor_active', False):
-                    # Check if page is still alive
-                    try:
-                        _ = page.url
-                    except Exception:
-                        break
+        page.on("load", lambda: asyncio.create_task(self._reinject_observer_async(page)))
 
-                    self.check_and_solve(page)
+        await self._reinject_observer_async(page)
 
-                    import time as _time
-                    _time.sleep(interval)
-            except Exception:
-                pass
-            finally:
-                logger.debug("PX monitor stopped for page (sync)")
+    async def _reinject_observer_async(self, page: Any) -> None:
+        try:
+            await page.evaluate(_PX_MUTATION_OBSERVER_JS)
+        except Exception:
+            pass
 
-        t = threading.Thread(target=_loop, daemon=True)
-        t.start()
+    def _on_px_detected_async(self, page: Any) -> None:
+        """Called from JS when PX is detected (async variant)."""
+        try:
+            asyncio.create_task(self._solve_async(page))
+        except Exception as exc:
+            logger.debug("PX solve failed (async, non-fatal): %s", exc)
+
+    async def _solve_async(self, page: Any) -> None:
+        await self.check_and_solve_async(page)
+        try:
+            await page.evaluate("window.__pxSolving = false")
+        except Exception:
+            pass
 
     async def check_and_solve_async(self, page: Any) -> bool:
-        """Async version of check_and_solve. Used by async monitor."""
+        """Async version of check_and_solve."""
         if not self.cfg.enabled:
             return True
 
@@ -223,40 +320,3 @@ class PxEngine:
             logger.warning("PX solve failed via %s (async): %s",
                            solve_result.method, solve_result.error)
         return solve_result.solved
-
-    async def start_monitoring_async(self, page: Any) -> None:
-        """Start background monitoring for PX on this page (async API).
-
-        Spawns an asyncio task that polls the page every ``monitor_interval``
-        seconds. The task auto-cancels when the page is closed.
-
-        Safe to call multiple times — only starts once per page.
-        """
-        if getattr(page, '_px_monitor_task', None) is not None:
-            return
-
-        interval = self.cfg.monitor_interval
-
-        async def _monitor_loop() -> None:
-            import asyncio
-            logger.debug("PX monitor started for page (async)")
-            try:
-                while True:
-                    # Check if page is still alive
-                    try:
-                        _ = page.url
-                    except Exception:
-                        break
-
-                    await self.check_and_solve_async(page)
-                    await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-            finally:
-                page._px_monitor_task = None
-                logger.debug("PX monitor stopped for page (async)")
-
-        import asyncio
-        page._px_monitor_task = asyncio.create_task(_monitor_loop())
