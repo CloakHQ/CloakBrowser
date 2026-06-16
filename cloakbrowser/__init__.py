@@ -17,7 +17,7 @@ from .download import binary_info, check_for_update, clear_cache, ensure_binary
 from .license import CloakBrowserLicenseError, LicenseInfo, validate_license
 from ._version import __version__
 
-# Human-like behavioral layer (optional)
+# Lazy-loaded optional modules (human + pxbypass)
 def __getattr__(name):
     if name == "HumanConfig":
         from .human.config import HumanConfig
@@ -27,6 +27,18 @@ def __getattr__(name):
         from .human.config import resolve_config
         globals()["resolve_human_config"] = resolve_config
         return resolve_config
+    if name == "PxConfig":
+        from .pxbypass.config import PxConfig
+        globals()["PxConfig"] = PxConfig
+        return PxConfig
+    if name == "detect_px":
+        from .pxbypass import detect_px
+        globals()["detect_px"] = detect_px
+        return detect_px
+    if name == "solve_px":
+        from .pxbypass import solve_px
+        globals()["solve_px"] = solve_px
+        return solve_px
     raise AttributeError(f"module 'cloakbrowser' has no attribute {name}")
 
 __all__ = [
@@ -50,6 +62,8 @@ __all__ = [
     "CloakBrowserLicenseError",
     "HumanConfig",
     "resolve_human_config",
+    "PxConfig",
+    "detect_px",
+    "solve_px",
     "__version__",
 ]
-
