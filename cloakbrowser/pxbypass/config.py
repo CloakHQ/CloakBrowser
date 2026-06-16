@@ -11,6 +11,7 @@ DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_HOLD_MIN = 3.8
 DEFAULT_HOLD_MAX = 6.5
 DEFAULT_POST_WAIT = 30.0
+DEFAULT_MONITOR_INTERVAL = 1.5
 PX_UI_WAIT_TIMEOUT = 45.0
 PX_BUTTON_WAIT_TIMEOUT = 20.0
 PX_POST_INJECT_WAIT = 25.0
@@ -29,6 +30,9 @@ class PxConfig:
         post_wait: Seconds to wait after mouse up for PX to clear.
         ui_wait_timeout: Max seconds to wait for PX UI to appear.
         button_wait_timeout: Max seconds to wait for hold button to render.
+        monitor_interval: Seconds between background PX checks (default 1.5).
+            The background monitor runs in a daemon thread and polls the page
+            at this interval. Lower = faster detection, higher = less CPU.
         reload_if_hidden: Whether to reload page if PX UI doesn't appear.
         debug_capture: Save DOM probe snapshots for debugging.
         checker: Optional callable to verify the page is usable after PX solve.
@@ -43,6 +47,7 @@ class PxConfig:
     post_wait: float = DEFAULT_POST_WAIT
     ui_wait_timeout: float = PX_UI_WAIT_TIMEOUT
     button_wait_timeout: float = PX_BUTTON_WAIT_TIMEOUT
+    monitor_interval: float = DEFAULT_MONITOR_INTERVAL
     post_inject_wait: float = PX_POST_INJECT_WAIT
     app_ready_timeout: float = PX_APP_READY_TIMEOUT
     reload_if_hidden: bool = True
@@ -56,6 +61,7 @@ class PXConfigDefaults:
     HOLD_MIN = DEFAULT_HOLD_MIN
     HOLD_MAX = DEFAULT_HOLD_MAX
     POST_WAIT = DEFAULT_POST_WAIT
+    MONITOR_INTERVAL = DEFAULT_MONITOR_INTERVAL
     UI_WAIT_TIMEOUT = PX_UI_WAIT_TIMEOUT
     BUTTON_WAIT_TIMEOUT = PX_BUTTON_WAIT_TIMEOUT
     POST_INJECT_WAIT = PX_POST_INJECT_WAIT

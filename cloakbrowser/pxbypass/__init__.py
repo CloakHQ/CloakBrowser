@@ -2,7 +2,10 @@
 
 Activated via bypass_px=True in launch() / launch_async().
 Automatically detects and solves PerimeterX "Press & Hold" challenges
-during page navigation, similar to how humanize patches browser interactions.
+on ALL pages in the browser, regardless of how navigation happens.
+
+Background monitoring starts as soon as a page is created and continuously
+polls the page for PX UI. When detected, it solves automatically.
 
 Architecture:
     - detect/     : Individual detection strategies (keyword, DOM, script, URL, globals)
@@ -15,6 +18,7 @@ Usage:
     browser = launch(bypass_px=True)
     page = browser.new_page()
     page.goto("https://target-site.com")  # PX solved automatically if encountered
+    # Background monitor keeps watching — any PX that appears later is also solved.
 
 Advanced:
     from cloakbrowser.pxbypass import PxEngine
@@ -111,6 +115,9 @@ def solve_px(page: Any, cfg: PxConfig | None = None) -> bool:
 def patch_browser(browser: Any, cfg: PxConfig | None = None) -> None:
     """Patch browser to auto-solve PX on new pages (sync).
 
+    Every page created from this browser (via new_page() or
+    context.new_page()) will have background PX monitoring enabled.
+
     Args:
         browser: Playwright Browser object.
         cfg: Optional PxConfig override.
@@ -146,6 +153,9 @@ def patch_browser(browser: Any, cfg: PxConfig | None = None) -> None:
 def patch_browser_async(browser: Any, cfg: PxConfig | None = None) -> None:
     """Patch browser to auto-solve PX on new pages (async).
 
+    Every page created from this browser (via new_page() or
+    context.new_page()) will have background PX monitoring enabled.
+
     Args:
         browser: Playwright Browser object (async API).
         cfg: Optional PxConfig override.
@@ -158,7 +168,7 @@ def patch_browser_async(browser: Any, cfg: PxConfig | None = None) -> None:
 
     async def _patched_new_page(**kwargs: Any) -> Any:
         page = await _original_new_page(**kwargs)
-        _patch_page_async(page, cfg)
+        await _patch_page_async(page, cfg)
         return page
 
     async def _patched_new_context(**kwargs: Any) -> Any:
@@ -167,7 +177,7 @@ def patch_browser_async(browser: Any, cfg: PxConfig | None = None) -> None:
 
         async def _patched_cx_new_page(**pk: Any) -> Any:
             page = await _original_cx_page(**pk)
-            _patch_page_async(page, cfg)
+            await _patch_page_async(page, cfg)
             return page
 
         context.new_page = _patched_cx_new_page
@@ -179,7 +189,7 @@ def patch_browser_async(browser: Any, cfg: PxConfig | None = None) -> None:
 
 
 def patch_page(page: Any, cfg: PxConfig) -> None:
-    """Patch page.goto() to auto-solve PX on navigation (sync).
+    """Patch a single page to auto-solve PX (sync).
 
     Args:
         page: Playwright Page object.
@@ -189,7 +199,7 @@ def patch_page(page: Any, cfg: PxConfig) -> None:
 
 
 def patch_page_async(page: Any, cfg: PxConfig) -> None:
-    """Patch page.goto() to auto-solve PX on navigation (async).
+    """Patch a single page to auto-solve PX (async).
 
     Args:
         page: Playwright Page object (async API).
@@ -204,40 +214,60 @@ def patch_page_async(page: Any, cfg: PxConfig) -> None:
 
 
 def _patch_page(page: Any, cfg: PxConfig) -> None:
-    """Internal: patch page for sync API."""
+    """Internal: patch page for sync API.
+
+    Starts background PX monitoring immediately and patches goto()
+    for an early detection attempt after navigation.
+    """
     engine = _get_engine(cfg)
+    page._px_cfg = cfg
+
+    # Start background monitoring thread — polls for PX continuously
+    engine.start_monitoring(page)
+
+    # Also patch goto() for a quick initial detection after navigation
     _original_goto = page.goto
 
     def _patched_goto(url: str, **kwargs: Any) -> Any:
         response = _original_goto(url, **kwargs)
         if cfg.enabled:
+            # Quick check right after navigation
             try:
-                engine.detect_and_solve(page)
+                engine.check_and_solve(page)
             except Exception as exc:
                 logger.debug("PX solve failed (non-fatal): %s", exc)
         return response
 
     page.goto = _patched_goto
-    page._px_cfg = cfg
     logger.debug("PX bypass patched on page (sync)")
 
 
-def _patch_page_async(page: Any, cfg: PxConfig) -> None:
-    """Internal: patch page for async API."""
+async def _patch_page_async(page: Any, cfg: PxConfig) -> None:
+    """Internal: patch page for async API.
+
+    Starts background PX monitoring immediately and patches goto()
+    for an early detection attempt after navigation.
+    """
     engine = _get_engine(cfg)
+    page._px_cfg = cfg
+
+    # Start background monitoring asyncio task — polls for PX continuously
+    await engine.start_monitoring_async(page)
+
+    # Also patch goto() for a quick initial detection after navigation
     _original_goto = page.goto
 
     async def _patched_goto(url: str, **kwargs: Any) -> Any:
         response = await _original_goto(url, **kwargs)
         if cfg.enabled:
+            # Quick check right after navigation
             try:
-                engine.detect_and_solve(page)
+                await engine.check_and_solve_async(page)
             except Exception as exc:
                 logger.debug("PX solve failed (non-fatal): %s", exc)
         return response
 
     page.goto = _patched_goto
-    page._px_cfg = cfg
     logger.debug("PX bypass patched on page (async)")
 
 

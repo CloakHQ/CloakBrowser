@@ -6,7 +6,7 @@ detectors, then selects the best solving strategy.
 from __future__ import annotations
 
 import logging
-import time
+import threading
 from typing import Any
 
 from .config import PxConfig
@@ -22,6 +22,20 @@ from .solve.press_hold_container import SolveByHoldContainer
 from .site.base import SiteHandler
 
 logger = logging.getLogger("cloakbrowser.pxbypass.engine")
+
+# JS expression that checks whether PX UI is present on the page.
+_PX_UI_WATCHER_JS = """() => {
+  if (document.getElementById('px-captcha')) return true;
+  if (document.getElementById('px-captcha-modal')) return true;
+  var el = document.querySelector('[data-px-captcha]');
+  if (el) { var r = el.getBoundingClientRect(); if (r.width > 10) return true; }
+  el = document.querySelector('.px-challenge');
+  if (el) { var r = el.getBoundingClientRect(); if (r.width > 10) return true; }
+  var body = (document.body ? document.body.innerText : '') || '';
+  var t = body.toLowerCase();
+  return t.includes('activate and hold') || t.includes('press and hold')
+      || t.includes('pressione e segure') || t.includes('robot or human');
+}"""
 
 
 class PxEngine:
@@ -108,21 +122,32 @@ class PxEngine:
         logger.info("Using generic solver")
         return self.generic_solver.solve(page, self.cfg, detect_result)
 
-    def detect_and_solve(self, page: Any) -> bool:
-        """Convenience: detect and solve in one call.
+    def check_and_solve(self, page: Any) -> bool:
+        """Check if PX is present and solve it.
+
+        One-shot: checks the current page state and solves if PX is there.
+        Does NOT wait. Used by the background monitor.
 
         Args:
             page: Playwright Page object.
 
         Returns:
-            True if PX was solved or not present.
+            True if PX was not present or was solved.
         """
         if not self.cfg.enabled:
             return True
 
+        # Quick check: is PX UI visible right now?
+        try:
+            px_visible = bool(page.evaluate(_PX_UI_WATCHER_JS))
+        except Exception:
+            # Page might be closed or navigating
+            return True
+        if not px_visible:
+            return True
+
         handler, result = self.detect(page)
         if not result.detected:
-            logger.debug("No PX detected, skipping solve")
             return True
 
         logger.info("PX detected (confidence=%.2f), solving...", result.confidence)
@@ -134,5 +159,104 @@ class PxEngine:
         else:
             logger.warning("PX solve failed via %s: %s",
                            solve_result.method, solve_result.error)
-
         return solve_result.solved
+
+    def start_monitoring(self, page: Any) -> None:
+        """Start background monitoring for PX on this page (sync API).
+
+        The monitor runs in a daemon thread, polling the page every
+        ``monitor_interval`` seconds. It auto-stops when the page is closed.
+
+        Safe to call multiple times — only starts once per page.
+        """
+        if getattr(page, '_px_monitor_active', False):
+            return
+        page._px_monitor_active = True
+
+        interval = self.cfg.monitor_interval
+
+        def _loop() -> None:
+            logger.debug("PX monitor started for page (sync)")
+            try:
+                while getattr(page, '_px_monitor_active', False):
+                    # Check if page is still alive
+                    try:
+                        _ = page.url
+                    except Exception:
+                        break
+
+                    self.check_and_solve(page)
+
+                    import time as _time
+                    _time.sleep(interval)
+            except Exception:
+                pass
+            finally:
+                logger.debug("PX monitor stopped for page (sync)")
+
+        t = threading.Thread(target=_loop, daemon=True)
+        t.start()
+
+    async def check_and_solve_async(self, page: Any) -> bool:
+        """Async version of check_and_solve. Used by async monitor."""
+        if not self.cfg.enabled:
+            return True
+
+        try:
+            px_visible = bool(await page.evaluate(_PX_UI_WATCHER_JS))
+        except Exception:
+            return True
+        if not px_visible:
+            return True
+
+        handler, result = self.detect(page)
+        if not result.detected:
+            return True
+
+        logger.info("PX detected (async, confidence=%.2f), solving...", result.confidence)
+        solve_result = self.solve(page, handler, result)
+
+        if solve_result.solved:
+            logger.info("PX solved via %s (async) in %.1fs",
+                        solve_result.method, solve_result.duration)
+        else:
+            logger.warning("PX solve failed via %s (async): %s",
+                           solve_result.method, solve_result.error)
+        return solve_result.solved
+
+    async def start_monitoring_async(self, page: Any) -> None:
+        """Start background monitoring for PX on this page (async API).
+
+        Spawns an asyncio task that polls the page every ``monitor_interval``
+        seconds. The task auto-cancels when the page is closed.
+
+        Safe to call multiple times — only starts once per page.
+        """
+        if getattr(page, '_px_monitor_task', None) is not None:
+            return
+
+        interval = self.cfg.monitor_interval
+
+        async def _monitor_loop() -> None:
+            import asyncio
+            logger.debug("PX monitor started for page (async)")
+            try:
+                while True:
+                    # Check if page is still alive
+                    try:
+                        _ = page.url
+                    except Exception:
+                        break
+
+                    await self.check_and_solve_async(page)
+                    await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            finally:
+                page._px_monitor_task = None
+                logger.debug("PX monitor stopped for page (async)")
+
+        import asyncio
+        page._px_monitor_task = asyncio.create_task(_monitor_loop())
