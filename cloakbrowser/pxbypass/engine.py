@@ -23,10 +23,18 @@ from .site.base import SiteHandler
 
 logger = logging.getLogger("cloakbrowser.pxbypass.engine")
 
-# JS expression that checks whether PX challenge UI is actually visible on the page.
-# This checks for REAL DOM elements, not just script preloading.
+# Keywords that indicate PX/security challenge is active on the page.
+_PX_CHALLENGE_KEYWORDS = [
+    'activate and hold', 'press and hold', 'pressione e segure',
+    'robot or human', 'verificação de segurança', 'segurança',
+    'press & hold', 'perimeterx', 'px-captcha',
+    'antes de continuarmos', 'confirmar que você',
+    'não é um robô', 'não um robô',
+]
+
+# JS expression that checks whether PX challenge UI is visible on the page.
 _PX_UI_WATCHER_JS = """() => {
-  // Check known container/overlay elements that appear only when challenge is active
+  // Check known container/overlay elements
   var px = document.getElementById('px-captcha');
   if (px) { var r = px.getBoundingClientRect(); if (r.width > 10 && r.height > 10) return true; }
   px = document.getElementById('px-captcha-modal');
@@ -35,14 +43,14 @@ _PX_UI_WATCHER_JS = """() => {
   if (el) { var r = el.getBoundingClientRect(); if (r.width > 10 && r.height > 10) return true; }
   el = document.querySelector('.px-challenge');
   if (el) { var r = el.getBoundingClientRect(); if (r.width > 10 && r.height > 10) return true; }
-  // Check body text for active challenge markers (must be long enough to be real page)
+  // Check body text for challenge markers
   var body = (document.body ? document.body.innerText : '') || '';
-  if (body.length < 20) return false;  // empty/loading page
   var t = body.toLowerCase();
-  return t.includes('activate and hold')
-      || t.includes('press and hold')
-      || t.includes('pressione e segure')
-      || t.includes('robot or human');
+  return t.includes('activate and hold') || t.includes('press and hold')
+      || t.includes('pressione e segure') || t.includes('robot or human')
+      || t.includes('verifica') || (t.includes('segurança') && body.length < 500)
+      || t.includes('px-captcha') || t.includes('perimeterx')
+      || t.includes('antes de continuarmos');
 }"""
 
 # MutationObserver script injected into the page.
@@ -63,13 +71,13 @@ _PX_MUTATION_OBSERVER_JS = """() => {
       var el = document.querySelector('[data-px-captcha], .px-challenge');
       if (el) { var r = el.getBoundingClientRect(); if (r.width > 10 && r.height > 10) found = true; }
     }
-    if (!found) {
+    if (!found && document.body) {
       var body = (document.body ? document.body.innerText : '') || '';
-      if (body.length >= 20) {
-        var t = body.toLowerCase();
-        found = t.includes('activate and hold') || t.includes('press and hold')
-             || t.includes('pressione e segure') || t.includes('robot or human');
-      }
+      var t = body.toLowerCase();
+      found = t.includes('activate and hold') || t.includes('press and hold')
+           || t.includes('pressione e segure') || t.includes('robot or human')
+           || (t.includes('verifica') && body.length < 800)
+           || t.includes('px-captcha') || t.includes('antes de continuarmos');
     }
     if (found && window.__pxNotify) {
       window.__pxSolving = true;
@@ -77,27 +85,20 @@ _PX_MUTATION_OBSERVER_JS = """() => {
     }
   }
 
+  // Observe DOM AND text changes
   var observer = new MutationObserver(function(mutations) {
-    for (var i = 0; i < mutations.length; i++) {
-      for (var j = 0; j < (mutations[i].addedNodes || []).length; j++) {
-        var n = mutations[i].addedNodes[j];
-        if (n.nodeType === 1 && (n.id === 'px-captcha' || n.id === 'px-captcha-modal'
-            || n.matches && n.matches('[data-px-captcha], .px-challenge'))) {
-          pxCheckAndNotify();
-          return;
-        }
-      }
-    }
+    pxCheckAndNotify();
   });
   if (document.body) {
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
   } else {
     document.addEventListener('DOMContentLoaded', function() {
-      observer.observe(document.body, { childList: true, subtree: true });
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
       pxCheckAndNotify();
     });
   }
-  setInterval(pxCheckAndNotify, 3000);
+  // Also poll every 2 seconds as fallback
+  setInterval(pxCheckAndNotify, 2000);
 }"""
 
 
