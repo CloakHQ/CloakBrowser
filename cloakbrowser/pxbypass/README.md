@@ -49,7 +49,19 @@ browser = launch(bypass_px=True)
 page = browser.new_page()
 page.goto("https://target-with-px.com")
 # 遇到 PX 挑战会自动检测并求解
+# 后台持续监控，不管 PX 在 1 分钟后还是 10 分钟后触发，都能自动过掉
 ```
+
+## 工作原理
+
+`bypass_px=True` 会在浏览器层面打补丁，拦截所有新页面的创建。每个页面创建时：
+
+1. **立即启动后台监控** — daemon 线程（sync API）或 asyncio task（async API）
+2. 每 `monitor_interval` 秒（默认 1.5s）用 JS 快速探测页面 DOM
+3. 一旦发现 PX 挑战 UI，立即自动检测挑战类型并执行按住求解
+4. 页面关闭后监控自动停止
+
+监控覆盖所有页面，无论导航方式：`goto()`、点击链接、SPA 路由跳转、`window.location` 等均不受影响。
 
 ## PxEngine 高级用法
 
@@ -78,8 +90,8 @@ if detect_result.detected:
 else:
     print("No PX detected")
 
-# 或者一步到位
-if engine.detect_and_solve(page):
+# 手动检查并求解（不等待）
+if engine.check_and_solve(page):
     print("PX solved!")
 ```
 
@@ -198,6 +210,8 @@ engine.register_handler(MySiteHandler())
 | `hold_min` | `3.8` | 最短按住时间(秒) |
 | `hold_max` | `6.5` | 最长按住时间(秒) |
 | `post_wait` | `30.0` | 松开后等待 UI 消失(秒) |
+| `ui_wait_timeout` | `45.0` | 首次检测时等待 PX UI 出现的超时(秒) |
 | `button_wait_timeout` | `20.0` | 等待按钮出现超时(秒) |
+| `monitor_interval` | `1.5` | 后台监控轮询间隔(秒)，越小检测越快但 CPU 略高 |
 | `reload_if_hidden` | `True` | PX 未显示时是否刷新页面 |
 | `checker` | `None` | 可选验证回调 `(page) → bool` |
