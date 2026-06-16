@@ -66,6 +66,8 @@ def launch(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    bypass_px: bool = False,
+    px_config: Any = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth Chromium browser. Returns a Playwright Browser object.
@@ -148,6 +150,14 @@ def launch(
         cfg = resolve_config(human_preset, human_config)
         patch_browser(browser, cfg)
 
+    # PX captcha auto-solving
+    if bypass_px:
+        from .pxbypass import patch_browser as patch_browser_px
+        from .pxbypass.config import PxConfig
+        px_cfg = px_config if isinstance(px_config, PxConfig) else PxConfig(**(px_config or {}))
+        patch_browser_px(browser, px_cfg)
+        logger.info("PerimeterX bypass enabled")
+
     return browser
 
 
@@ -164,6 +174,8 @@ async def launch_async(  # noqa: C901
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    bypass_px: bool = False,
+    px_config: Any = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch(). Returns a Playwright Browser object.
@@ -239,6 +251,14 @@ async def launch_async(  # noqa: C901
         from .human.config import resolve_config
         cfg = resolve_config(human_preset, human_config)
         patch_browser_async(browser, cfg)
+
+    # PX captcha auto-solving (async)
+    if bypass_px:
+        from .pxbypass import patch_browser_async as patch_browser_px_async
+        from .pxbypass.config import PxConfig
+        px_cfg = px_config if isinstance(px_config, PxConfig) else PxConfig(**(px_config or {}))
+        patch_browser_px_async(browser, px_cfg)
+        logger.info("PerimeterX bypass enabled (async)")
 
     return browser
 
