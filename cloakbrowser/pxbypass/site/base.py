@@ -9,12 +9,28 @@ from ..solve.composite import CompositeSolver
 class SiteHandler:
     """Base class for site-specific PX configurations.
 
-    Each subclass defines which detectors and solvers to use,
-    including site-specific keywords, selectors, and parameters.
+    Each subclass defines:
+    - A URL pattern to restrict handler to a specific domain
+    - Which detectors and solvers to use for that site
     """
 
     name: str = "generic"
     priority: int = 0  # Higher = tried first
+    url_pattern: str | None = None  # e.g. "ifood.com.br"
+
+    def match_url(self, page: object) -> bool:
+        """Check if this handler should run on the current page.
+
+        Returns True if the page URL matches this handler's domain.
+        If url_pattern is None, matches any page.
+        """
+        if self.url_pattern is None:
+            return True
+        try:
+            url = page.url
+            return self.url_pattern in url
+        except Exception:
+            return False
 
     def build_detector(self) -> BaseDetector:
         """Build the detection strategy for this site."""
