@@ -23,15 +23,6 @@ from .site.base import SiteHandler
 
 logger = logging.getLogger("cloakbrowser.pxbypass.engine")
 
-# Keywords that indicate PX/security challenge is active on the page.
-_PX_CHALLENGE_KEYWORDS = [
-    'activate and hold', 'press and hold', 'pressione e segure',
-    'robot or human', 'verificação de segurança', 'segurança',
-    'press & hold', 'perimeterx', 'px-captcha',
-    'antes de continuarmos', 'confirmar que você',
-    'não é um robô', 'não um robô',
-]
-
 # JS expression that checks whether PX challenge UI is visible on the page.
 _PX_UI_WATCHER_JS = """() => {
   // Check known container/overlay elements
@@ -45,12 +36,12 @@ _PX_UI_WATCHER_JS = """() => {
   if (el) { var r = el.getBoundingClientRect(); if (r.width > 10 && r.height > 10) return true; }
   // Check body text for challenge markers
   var body = (document.body ? document.body.innerText : '') || '';
+  if (!body) return false;
   var t = body.toLowerCase();
   return t.includes('activate and hold') || t.includes('press and hold')
       || t.includes('pressione e segure') || t.includes('robot or human')
-      || t.includes('verifica') || (t.includes('segurança') && body.length < 500)
-      || t.includes('px-captcha') || t.includes('perimeterx')
-      || t.includes('antes de continuarmos');
+      || t.includes('verifica') || t.includes('px-captcha')
+      || t.includes('perimeterx') || t.includes('antes de continuarmos');
 }"""
 
 # MutationObserver script injected into the page.
@@ -61,6 +52,7 @@ _PX_MUTATION_OBSERVER_JS = """() => {
   function pxCheckAndNotify() {
     if (window.__pxSolving) return;
     var found = false;
+    // Check DOM elements
     var px = document.getElementById('px-captcha');
     if (px) { var r = px.getBoundingClientRect(); if (r.width > 10 && r.height > 10) found = true; }
     if (!found) {
@@ -71,13 +63,16 @@ _PX_MUTATION_OBSERVER_JS = """() => {
       var el = document.querySelector('[data-px-captcha], .px-challenge');
       if (el) { var r = el.getBoundingClientRect(); if (r.width > 10 && r.height > 10) found = true; }
     }
+    // Check body text
     if (!found && document.body) {
       var body = (document.body ? document.body.innerText : '') || '';
-      var t = body.toLowerCase();
-      found = t.includes('activate and hold') || t.includes('press and hold')
-           || t.includes('pressione e segure') || t.includes('robot or human')
-           || (t.includes('verifica') && body.length < 800)
-           || t.includes('px-captcha') || t.includes('antes de continuarmos');
+      if (body) {
+        var t = body.toLowerCase();
+        found = t.includes('activate and hold') || t.includes('press and hold')
+             || t.includes('pressione e segure') || t.includes('robot or human')
+             || t.includes('verifica') || t.includes('px-captcha')
+             || t.includes('antes de continuarmos');
+      }
     }
     if (found && window.__pxNotify) {
       window.__pxSolving = true;
@@ -136,39 +131,11 @@ class PxEngine:
             SolveByHoldContainer(),
         ])
 
-    def _px_ui_visible(self, page: Any) -> bool:
-        """Check if PX challenge UI is actually visible on the page.
-        
-        Returns False if page is empty, loading, or has no PX challenge.
-        This is the gating check to prevent false positives from script detection.
-        """
-        try:
-            body = page.evaluate("""() => {
-                var body = (document.body ? document.body.innerText : '') || '';
-                if (body.length < 20) return 'empty';
-                // Check for real PX elements
-                var px = document.getElementById('px-captcha');
-                if (px) { var r = px.getBoundingClientRect(); if (r.width > 10 && r.height > 10) return 'element'; }
-                px = document.getElementById('px-captcha-modal');
-                if (px) { var r = px.getBoundingClientRect(); if (r.width > 10 && r.height > 10) return 'element'; }
-                var el = document.querySelector('[data-px-captcha], .px-challenge');
-                if (el) { var r = el.getBoundingClientRect(); if (r.width > 10 && r.height > 10) return 'element'; }
-                var t = body.toLowerCase();
-                if (t.includes('activate and hold') || t.includes('press and hold')
-                    || t.includes('pressione e segure') || t.includes('robot or human')) {
-                    return 'text';
-                }
-                return 'none';
-            }""")
-            return body in ('element', 'text')
-        except Exception:
-            return False
-
     def detect(self, page: Any) -> tuple[SiteHandler | None, DetectResult]:
         """Detect PX challenge and identify the best handler.
 
-        First checks the page URL to find matching site handlers,
-        then verifies PX UI is actually visible.
+        Tries site-specific handlers that match the current page URL,
+        then falls back to generic detection.
 
         Args:
             page: Playwright Page object.
@@ -179,7 +146,6 @@ class PxEngine:
         # Try site-specific handlers that match the current URL
         for handler in self._site_handlers:
             if not handler.match_url(page):
-                logger.debug("Site handler '%s' skipped (URL mismatch)", handler.name)
                 continue
             result = handler.detect(page)
             if result.detected and result.confidence >= 0.3:
@@ -187,13 +153,12 @@ class PxEngine:
                              handler.name, result.confidence)
                 return handler, result
 
-        # Fallback: generic detection (only if PX UI is visible)
-        if self._px_ui_visible(page):
-            generic_result = self.generic_detector.detect(page)
-            if generic_result.detected:
-                logger.debug("Generic detector matched (confidence=%.2f)",
-                             generic_result.confidence)
-                return None, generic_result
+        # Fallback: generic detection
+        generic_result = self.generic_detector.detect(page)
+        if generic_result.detected:
+            logger.debug("Generic detector matched (confidence=%.2f)",
+                         generic_result.confidence)
+            return None, generic_result
 
         return None, DetectResult()
 
