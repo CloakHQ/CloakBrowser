@@ -216,14 +216,18 @@ def patch_page_async(page: Any, cfg: PxConfig) -> None:
 def _patch_page(page: Any, cfg: PxConfig) -> None:
     """Internal: patch page for sync API.
 
-    Starts background PX monitoring immediately and patches goto()
-    for an early detection attempt after navigation.
+    Injects a MutationObserver into the page that watches for
+    PX challenge elements. When detected, fires a Python callback
+    that runs detection and solving — all on the main thread.
+
+    Also patches goto() for a quick initial detection after navigation.
     """
     engine = _get_engine(cfg)
     page._px_cfg = cfg
 
-    # Start background monitoring thread — polls for PX continuously
-    engine.start_monitoring(page)
+    # Inject JS MutationObserver — watches DOM for PX elements,
+    # calls back to Python via page.expose_binding
+    engine.install_observer(page)
 
     # Also patch goto() for a quick initial detection after navigation
     _original_goto = page.goto
@@ -245,14 +249,17 @@ def _patch_page(page: Any, cfg: PxConfig) -> None:
 async def _patch_page_async(page: Any, cfg: PxConfig) -> None:
     """Internal: patch page for async API.
 
-    Starts background PX monitoring immediately and patches goto()
-    for an early detection attempt after navigation.
+    Injects MutationObserver + patches goto().
+
+    Args:
+        page: Playwright Page object (async API).
+        cfg: PxConfig instance.
     """
     engine = _get_engine(cfg)
     page._px_cfg = cfg
 
-    # Start background monitoring asyncio task — polls for PX continuously
-    await engine.start_monitoring_async(page)
+    # Inject JS MutationObserver — async variant
+    await engine.install_observer_async(page)
 
     # Also patch goto() for a quick initial detection after navigation
     _original_goto = page.goto
@@ -260,7 +267,6 @@ async def _patch_page_async(page: Any, cfg: PxConfig) -> None:
     async def _patched_goto(url: str, **kwargs: Any) -> Any:
         response = await _original_goto(url, **kwargs)
         if cfg.enabled:
-            # Quick check right after navigation
             try:
                 await engine.check_and_solve_async(page)
             except Exception as exc:
