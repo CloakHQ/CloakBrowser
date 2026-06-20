@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import random
+import re
 import shutil
 import socket
 import subprocess
@@ -311,6 +312,24 @@ class ChromePool:
 # Params that need special handling (not simple --fingerprint-{name}= mapping)
 SPECIAL_PARAMS = {"fingerprint", "proxy", "geoip", "locale", "timezone"}
 
+# Safe seed pattern: alphanumeric, hyphens, underscores only.
+# Rejects path separators, dots, spaces — prevents path traversal (CVE-2026-45727).
+_SAFE_SEED_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _validate_seed(seed: str | None) -> str | None:
+    """Validate that a fingerprint seed is safe to use as a filesystem path component.
+
+    Prevents path traversal via crafted fingerprint values (CVE-2026-45727).
+    """
+    if seed is None:
+        return None
+    if not _SAFE_SEED_RE.match(seed):
+        raise ValueError(
+            f"Invalid fingerprint seed: must be 1-128 chars of [A-Za-z0-9_-], got {seed!r}"
+        )
+    return seed
+
 
 def parse_connection_params(query_string: str) -> dict:
     """Parse query params into connection config."""
@@ -328,7 +347,7 @@ def parse_connection_params(query_string: str) -> dict:
     for key, values in qs.items():
         val = values[0]
         if key == "fingerprint":
-            result["seed"] = val
+            result["seed"] = _validate_seed(val)
         elif key == "timezone":
             result["timezone"] = val
         elif key == "locale":
@@ -379,7 +398,10 @@ async def handle_root(request: web.Request) -> web.Response:
 async def handle_json_version(request: web.Request) -> web.Response:
     """Proxy /json/version with optional per-seed routing."""
     pool: ChromePool = request.app["pool"]
-    params = parse_connection_params(request.query_string)
+    try:
+        params = parse_connection_params(request.query_string)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
 
     cp = await pool.get_or_launch(
         seed=params["seed"],
@@ -421,7 +443,10 @@ async def handle_json_version(request: web.Request) -> web.Response:
 async def handle_json_list(request: web.Request) -> web.Response:
     """Proxy /json/list with per-seed routing. Rewrites all entries."""
     pool: ChromePool = request.app["pool"]
-    params = parse_connection_params(request.query_string)
+    try:
+        params = parse_connection_params(request.query_string)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
 
     cp = await pool.get_or_launch(
         seed=params["seed"],
@@ -533,7 +558,11 @@ async def handle_ws_default(request: web.Request) -> web.WebSocketResponse:
 async def handle_ws_seed(request: web.Request) -> web.WebSocketResponse:
     """WebSocket proxy for seed-specific Chrome: /fingerprint/{seed}/devtools/{type}/{guid}"""
     pool: ChromePool = request.app["pool"]
-    seed = request.match_info["seed"]
+    raw_seed = request.match_info["seed"]
+    try:
+        seed = _validate_seed(raw_seed)
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=json.dumps({"error": str(exc)}), content_type="application/json")
     path = request.match_info.get("path", "")
 
     cp = await pool.get_or_launch(seed=seed)
@@ -606,7 +635,7 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
         elif arg.startswith("--fingerprint-timezone="):
             config["default_timezone"] = arg.split("=", 1)[1]
         elif arg.startswith("--fingerprint="):
-            config["default_seed"] = arg.split("=", 1)[1]
+            config["default_seed"] = _validate_seed(arg.split("=", 1)[1])
         else:
             passthrough.append(arg)
 

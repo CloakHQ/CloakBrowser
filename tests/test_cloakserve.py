@@ -58,6 +58,46 @@ class TestParseConnectionParams:
             result = parse_connection_params(f"geoip={val}")
             assert result["geoip"] is False, f"geoip={val} should be False"
 
+    # --- CVE-2026-45727: path traversal via fingerprint seed ---
+
+    def test_fingerprint_rejects_path_traversal(self):
+        with pytest.raises(ValueError):
+            parse_connection_params("fingerprint=../../etc/passwd")
+
+    def test_fingerprint_rejects_dot(self):
+        with pytest.raises(ValueError):
+            parse_connection_params("fingerprint=.")
+
+    def test_fingerprint_rejects_dotdot(self):
+        with pytest.raises(ValueError):
+            parse_connection_params("fingerprint=..")
+
+    def test_fingerprint_rejects_slash(self):
+        with pytest.raises(ValueError):
+            parse_connection_params("fingerprint=foo/bar")
+
+    def test_fingerprint_rejects_backslash(self):
+        with pytest.raises(ValueError):
+            parse_connection_params("fingerprint=foo\\bar")
+
+    def test_fingerprint_rejects_space(self):
+        with pytest.raises(ValueError):
+            parse_connection_params("fingerprint=foo bar")
+
+    def test_fingerprint_accepts_alphanumeric(self):
+        result = parse_connection_params("fingerprint=abc123")
+        assert result["seed"] == "abc123"
+
+    def test_fingerprint_accepts_hyphen_underscore(self):
+        result = parse_connection_params("fingerprint=my-seed_42")
+        assert result["seed"] == "my-seed_42"
+
+    def test_fingerprint_empty_uses_default(self):
+        # parse_qs with keep_blank_values=False drops empty values,
+        # so fingerprint= is equivalent to no fingerprint (uses default)
+        result = parse_connection_params("fingerprint=")
+        assert result["seed"] is None
+
     def test_generic_fingerprint_params(self):
         qs = "fingerprint=1&platform=windows&hardware-concurrency=8&gpu-vendor=NVIDIA"
         result = parse_connection_params(qs)
