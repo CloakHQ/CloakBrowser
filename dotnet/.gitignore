@@ -1,0 +1,8 @@
+# .NET build artifacts
+bin/
+obj/
+*.user
+.vs/
+
+*.png
+cloak-persist-test/

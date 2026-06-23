@@ -1,0 +1,59 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{57F29479-09EB-40B8-8811-3EDAEC7E7294}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CloakBrowser", "src\CloakBrowser\CloakBrowser.csproj", "{2451570B-6417-4615-9070-5C45A24B0A05}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CloakBrowser.Cli", "src\CloakBrowser.Cli\CloakBrowser.Cli.csproj", "{E1A470E8-044F-4AB4-BABC-33B5179061B2}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{8A508583-113A-430D-90C9-73C706332269}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CloakBrowser.Tests", "tests\CloakBrowser.Tests\CloakBrowser.Tests.csproj", "{06500720-AF0C-434D-B4C6-FACE892A2F10}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "examples", "examples", "{A19AACE1-BC14-4D60-8EBD-082E971B184B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CloakBrowser.Examples", "examples\CloakBrowser.Examples\CloakBrowser.Examples.csproj", "{24A34FBF-6B3C-4EF7-8B4C-A881677565FA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CloakBrowser.Generators", "src\CloakBrowser.Generators\CloakBrowser.Generators.csproj", "{598B07D4-0D2E-47F3-BC70-A81D3F7EFD45}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2451570B-6417-4615-9070-5C45A24B0A05}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2451570B-6417-4615-9070-5C45A24B0A05}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2451570B-6417-4615-9070-5C45A24B0A05}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2451570B-6417-4615-9070-5C45A24B0A05}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E1A470E8-044F-4AB4-BABC-33B5179061B2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E1A470E8-044F-4AB4-BABC-33B5179061B2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E1A470E8-044F-4AB4-BABC-33B5179061B2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E1A470E8-044F-4AB4-BABC-33B5179061B2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{06500720-AF0C-434D-B4C6-FACE892A2F10}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{06500720-AF0C-434D-B4C6-FACE892A2F10}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{06500720-AF0C-434D-B4C6-FACE892A2F10}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{06500720-AF0C-434D-B4C6-FACE892A2F10}.Release|Any CPU.Build.0 = Release|Any CPU
+		{24A34FBF-6B3C-4EF7-8B4C-A881677565FA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{24A34FBF-6B3C-4EF7-8B4C-A881677565FA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{24A34FBF-6B3C-4EF7-8B4C-A881677565FA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{24A34FBF-6B3C-4EF7-8B4C-A881677565FA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{598B07D4-0D2E-47F3-BC70-A81D3F7EFD45}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{598B07D4-0D2E-47F3-BC70-A81D3F7EFD45}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{598B07D4-0D2E-47F3-BC70-A81D3F7EFD45}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{598B07D4-0D2E-47F3-BC70-A81D3F7EFD45}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{2451570B-6417-4615-9070-5C45A24B0A05} = {57F29479-09EB-40B8-8811-3EDAEC7E7294}
+		{E1A470E8-044F-4AB4-BABC-33B5179061B2} = {57F29479-09EB-40B8-8811-3EDAEC7E7294}
+		{06500720-AF0C-434D-B4C6-FACE892A2F10} = {8A508583-113A-430D-90C9-73C706332269}
+		{24A34FBF-6B3C-4EF7-8B4C-A881677565FA} = {A19AACE1-BC14-4D60-8EBD-082E971B184B}
+		{598B07D4-0D2E-47F3-BC70-A81D3F7EFD45} = {57F29479-09EB-40B8-8811-3EDAEC7E7294}
+	EndGlobalSection
+EndGlobal

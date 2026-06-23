@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>CloakBrowser</AssemblyName>
+    <RootNamespace>CloakBrowser</RootNamespace>
+
+    <!-- NuGet packaging metadata -->
+    <PackageId>CloakBrowser</PackageId>
+    <Version>0.4.2</Version>
+    <Authors>CloakHQ</Authors>
+    <Description>Stealth Chromium that passes every bot detection test. Drop-in Playwright (.NET) replacement with source-level fingerprint patches.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/CloakHQ/CloakBrowser</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/CloakHQ/CloakBrowser</RepositoryUrl>
+    <PackageTags>stealth;browser;chromium;playwright;scraping;web-scraping;anti-detect;antidetect;undetected;bot-detection;fingerprint;recaptcha;cloudflare;turnstile;datadome;captcha;headless;automation</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Playwright" Version="1.49.0" />
+    <PackageReference Include="MaxMind.GeoIP2" Version="5.2.0" />
+    <!-- Ed25519 signature verification for downloaded binaries (.NET 8 has no
+         built-in Ed25519). Mirrors Python's `cryptography` / JS's node:crypto. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Roslyn source generator that emits the delegating wrapper members. -->
+    <ProjectReference Include="..\CloakBrowser.Generators\CloakBrowser.Generators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CloakBrowser.Tests" />
+  </ItemGroup>
+
+</Project>
