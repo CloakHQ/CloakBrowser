@@ -6,8 +6,9 @@ import platform
 import stat
 import tarfile
 import zipfile
+from pathlib import Path
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 
 from cloakbrowser.download import (
     _extract_tar,
@@ -54,6 +55,20 @@ class TestExtractTar:
         dest.mkdir()
         with pytest.raises(RuntimeError, match="path traversal"):
             _extract_tar(archive, dest)
+
+    def test_path_prefix_sibling_escape_blocked(self, tmp_path):
+        """Sibling paths that merely share a string prefix are still outside."""
+        archive = tmp_path / "evil-prefix.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            info = tarfile.TarInfo(name="../out-evil/pwned")
+            info.size = 4
+            tar.addfile(info, io.BytesIO(b"evil"))
+
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(RuntimeError, match="path traversal"):
+            _extract_tar(archive, dest)
+        assert not (tmp_path / "out-evil").exists()
 
     def test_suspicious_symlink_skipped(self, tmp_path):
         """Symlinks with absolute targets are skipped (logged as warning)."""
@@ -110,6 +125,18 @@ class TestExtractZip:
         dest.mkdir()
         with pytest.raises(RuntimeError, match="path traversal"):
             _extract_zip(archive, dest)
+
+    def test_path_prefix_sibling_escape_blocked(self, tmp_path):
+        """Sibling paths that merely share a string prefix are still outside."""
+        archive = tmp_path / "evil-prefix.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("../out-evil/pwned", "evil")
+
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(RuntimeError, match="path traversal"):
+            _extract_zip(archive, dest)
+        assert not (tmp_path / "out-evil").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +207,7 @@ class TestPermissions:
         assert _is_executable(binary)
 
     def test_is_executable_true(self, tmp_path):
-        binary = tmp_path / "chrome"
+        binary = tmp_path / ("chrome.exe" if platform.system() == "Windows" else "chrome")
         binary.write_bytes(b"binary")
         binary.chmod(0o755)
         assert _is_executable(binary)

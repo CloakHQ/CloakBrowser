@@ -672,6 +672,7 @@ def _extract_archive(
 
 def _extract_tar(archive_path: Path, dest_dir: Path) -> None:
     """Extract tar.gz archive with path traversal protection."""
+    dest_resolved = dest_dir.resolve()
     with tarfile.open(archive_path, "r:gz") as tar:
         safe_members = []
         for member in tar.getmembers():
@@ -683,7 +684,7 @@ def _extract_tar(archive_path: Path, dest_dir: Path) -> None:
                     continue
             else:
                 member_path = (dest_dir / member.name).resolve()
-                if not str(member_path).startswith(str(dest_dir.resolve())):
+                if not _path_is_relative_to(member_path, dest_resolved):
                     raise RuntimeError(f"Archive contains path traversal: {member.name}")
             safe_members.append(member)
 
@@ -694,12 +695,22 @@ def _extract_zip(archive_path: Path, dest_dir: Path) -> None:
     """Extract zip archive with path traversal protection."""
     import zipfile
 
+    dest_resolved = dest_dir.resolve()
     with zipfile.ZipFile(archive_path, "r") as zf:
         for info in zf.infolist():
             member_path = (dest_dir / info.filename).resolve()
-            if not str(member_path).startswith(str(dest_dir.resolve())):
+            if not _path_is_relative_to(member_path, dest_resolved):
                 raise RuntimeError(f"Archive contains path traversal: {info.filename}")
         zf.extractall(dest_dir)
+
+
+def _path_is_relative_to(path: Path, parent: Path) -> bool:
+    """Return True only when path is inside parent."""
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 def _flatten_single_subdir(dest_dir: Path) -> None:
@@ -725,6 +736,12 @@ def _flatten_single_subdir(dest_dir: Path) -> None:
 
 def _is_executable(path: Path) -> bool:
     """Check if a file is executable."""
+    if not path.is_file():
+        return False
+    if platform.system() == "Windows":
+        pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        executable_exts = {ext.lower() for ext in pathext.split(";") if ext}
+        return path.suffix.lower() in executable_exts
     return os.access(path, os.X_OK)
 
 
