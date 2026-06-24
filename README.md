@@ -333,6 +333,14 @@ browser = launch(humanize=True, human_preset="careful")
 browser = launch(stealth_args=False, args=["--fingerprint=12345"])
 ```
 
+#### geoip warnings
+
+When you call `cloakbrowser.launch(geoip=True)` without `proxy=`, the library
+logs a warning. Geoip timezone and locale resolution only runs at launch with
+the launch-time proxy. Per-context proxies set later with
+`browser.new_context(proxy=...)` will not trigger geoip resolution. Pass
+`proxy=` to `launch()` or set explicit `timezone=` / `locale=` to silence it.
+
 Returns a standard Playwright `Browser` object. All Playwright methods work: `new_page()`, `new_context()`, `close()`, etc.
 
 ### `launch_async()`
