@@ -3,6 +3,7 @@
 All tests mock playwright to avoid needing a binary.
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -130,6 +131,28 @@ def test_persistent_context_color_scheme(_mock_geoip, _mock_bin):
 
     call_kwargs = pw.chromium.launch_persistent_context.call_args[1]
     assert call_kwargs["color_scheme"] == "dark"
+
+
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
+def test_persistent_context_search_engine_writes_chromium_prefs(_mock_geoip, _mock_bin, tmp_path):
+    """search_engine writes Chromium Default/Preferences before launch."""
+    pw_cm, pw, context = _make_mock_pw_and_context()
+    profile_dir = tmp_path / "profile"
+
+    with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):
+        from cloakbrowser.browser import launch_persistent_context
+        launch_persistent_context(profile_dir, search_engine="bing")
+
+    prefs_path = profile_dir / "Default" / "Preferences"
+    prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+    data = prefs["default_search_provider_data"]["template_url_data"]
+    assert data["short_name"] == "Bing"
+    assert data["keyword"] == "bing.com"
+    assert data["prepopulate_id"] == 3
+    assert data["url"] == "http://www.bing.com/search?setmkt=en-US&q={searchTerms}"
+    assert data["suggestions_url"] == "http://api.bing.com/osjson.aspx?query={searchTerms}&language={language}"
+    assert "suggest_url" not in data
 
 
 @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=("Europe/Berlin", "de-DE", "5.6.7.8"))

@@ -14,8 +14,10 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Literal, TypedDict
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
@@ -29,6 +31,66 @@ logger = logging.getLogger("cloakbrowser")
 
 # Sentinel to distinguish "viewport not provided" from "viewport=None" (disable emulation)
 _VIEWPORT_UNSET = object()
+
+_SEARCH_ENGINE_PREFS: dict[str, dict] = {
+    "google": {
+        "short_name": "Google",
+        "keyword": "google.com",
+        "url": "https://www.google.com/search?q={searchTerms}",
+        "new_tab_url": "https://www.google.com/_/chrome/newtab",
+        "suggestions_url": "https://www.google.com/complete/search?client=chrome&q={searchTerms}",
+        "favicon_url": "https://www.google.com/favicon.ico",
+        "input_encodings": ["UTF-8"],
+        "safe_for_autoreplace": True,
+    },
+    "bing": {
+        "short_name": "Bing",
+        "keyword": "bing.com",
+        "url": "http://www.bing.com/search?setmkt=en-US&q={searchTerms}",
+        "new_tab_url": "https://www.bing.com/chrome/newtab",
+        "suggestions_url": "http://api.bing.com/osjson.aspx?query={searchTerms}&language={language}",
+        "favicon_url": "http://www.bing.com/s/wlflag.ico",
+        "input_encodings": ["UTF-8"],
+        "prepopulate_id": 3,
+        "safe_for_autoreplace": True,
+    },
+    "duckduckgo": {
+        "short_name": "DuckDuckGo",
+        "keyword": "duckduckgo.com",
+        "url": "https://duckduckgo.com/?q={searchTerms}&ia=web",
+        "new_tab_url": "",
+        "suggestions_url": "https://duckduckgo.com/ac/?q={searchTerms}&type=list",
+        "favicon_url": "https://duckduckgo.com/favicon.ico",
+        "input_encodings": ["UTF-8"],
+        "safe_for_autoreplace": True,
+    },
+}
+
+
+def _apply_search_engine_prefs(
+    user_data_dir: str | os.PathLike,
+    search_engine: str,
+) -> None:
+    """Write default_search_provider_data into Chromium's Default/Preferences file."""
+    prefs_data = _SEARCH_ENGINE_PREFS.get(search_engine)
+    if not prefs_data:
+        logger.warning("Unknown search_engine %r - must be 'google', 'bing', or 'duckduckgo'.", search_engine)
+        return
+
+    profile_dir = Path(os.fspath(user_data_dir)) / "Default"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    prefs_file = profile_dir / "Preferences"
+
+    existing: dict = {}
+    if prefs_file.exists():
+        try:
+            existing = json.loads(prefs_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+    existing.setdefault("default_search_provider_data", {})["template_url_data"] = prefs_data
+    prefs_file.write_text(json.dumps(existing), encoding="utf-8")
+    logger.debug("Applied search_engine=%r to %s", search_engine, prefs_file)
 
 
 def _default_no_viewport(browser: Any) -> None:
@@ -345,6 +407,7 @@ def launch_persistent_context(
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
+    search_engine: Literal["google", "bing", "duckduckgo"] | None = None,
     geoip: bool = False,
     humanize: bool = False,
     human_preset: HumanPreset = "default",
@@ -375,6 +438,7 @@ def launch_persistent_context(
         timezone: IANA timezone (e.g. 'America/New_York').
         color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
             Default: None (uses Chromium default, which is 'light').
+        search_engine: Default search engine — 'google', 'bing', or 'duckduckgo'.
         geoip: Auto-detect timezone/locale from proxy IP (default False).
             Requires ``pip install cloakbrowser[geoip]``.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
@@ -422,6 +486,8 @@ def launch_persistent_context(
     context_kwargs.update(_resolve_context_viewport(viewport, headless))
     if color_scheme:
         context_kwargs["color_scheme"] = color_scheme
+    if search_engine:
+        _apply_search_engine_prefs(user_data_dir, search_engine)
     context_kwargs.update(kwargs)
     _drop_conflicting_viewport(context_kwargs, kwargs)
 
@@ -470,6 +536,7 @@ async def launch_persistent_context_async(
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
+    search_engine: Literal["google", "bing", "duckduckgo"] | None = None,
     geoip: bool = False,
     humanize: bool = False,
     human_preset: HumanPreset = "default",
@@ -498,6 +565,7 @@ async def launch_persistent_context_async(
         locale: Browser locale, e.g. "en-US".
         timezone: IANA timezone (e.g. 'America/New_York').
         color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
+        search_engine: Default search engine — 'google', 'bing', or 'duckduckgo'.
         geoip: Auto-detect timezone/locale from proxy IP (default False).
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
@@ -549,6 +617,8 @@ async def launch_persistent_context_async(
     context_kwargs.update(_resolve_context_viewport(viewport, headless))
     if color_scheme:
         context_kwargs["color_scheme"] = color_scheme
+    if search_engine:
+        _apply_search_engine_prefs(user_data_dir, search_engine)
     context_kwargs.update(kwargs)
     _drop_conflicting_viewport(context_kwargs, kwargs)
 
