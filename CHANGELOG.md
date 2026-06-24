@@ -43,6 +43,8 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 - **[meta]** Fix `recaptcha_score.py` example — wait for the reCAPTCHA score to render before screenshot (thanks [@igo](https://github.com/igo) for the report, #374)
 - **[meta]** Bump GitHub Actions in the actions group (#358)
 
+- **[wrapper]** Humanize: extend the shared timeout budget to `select_option` on page, frame, ElementHandle, and Locator (sync + async) — the native select now uses the time remaining after actionability/hover instead of restarting the full clock, so `select_option(timeout=N)` no longer waits up to ~2x N (follow-up to #307)
+
 ## [0.3.31] — 2026-05-26
 
 - **[wrapper]** Route HTTP proxy credentials through `--proxy-server` flag, removing the need for Playwright's proxy auth handler on HTTP proxies
