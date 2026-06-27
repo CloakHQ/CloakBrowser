@@ -10,7 +10,7 @@ import {
   getFallbackDownloadUrl,
   normalizeRequestedVersion,
 } from "../src/config.js";
-import { _buildArgsForTest, resolveTimezone } from "../src/playwright.js";
+import { _buildArgsForTest, resolveTimezone, buildLaunchOptions } from "../src/playwright.js";
 
 describe("config", () => {
   it("CHROMIUM_VERSION matches expected format", () => {
@@ -252,5 +252,37 @@ describe("resolveTimezone alias", () => {
     const opts = {};
     const result = resolveTimezone(opts);
     expect(result).toBe(opts);
+  });
+});
+
+describe("buildLaunchOptions timezoneId resolution", () => {
+  // Standalone callers (not going through launch*/launchContext) may pass
+  // Playwright's `timezoneId`. buildArgs only reads `timezone`, so without
+  // resolveTimezone inside buildLaunchOptions the --fingerprint-timezone flag
+  // is silently dropped. Regression guard for that gap.
+  it("resolves timezoneId to --fingerprint-timezone for standalone callers", async () => {
+    const prev = process.env.CLOAKBROWSER_BINARY_PATH;
+    process.env.CLOAKBROWSER_BINARY_PATH = "/tmp/fake-cloak-binary";
+    try {
+      const opts = await buildLaunchOptions({
+        timezoneId: "Europe/Paris",
+      } as unknown as Parameters<typeof buildLaunchOptions>[0]);
+      expect(opts.args).toContain("--fingerprint-timezone=Europe/Paris");
+    } finally {
+      if (prev === undefined) delete process.env.CLOAKBROWSER_BINARY_PATH;
+      else process.env.CLOAKBROWSER_BINARY_PATH = prev;
+    }
+  });
+
+  it("still emits the flag when an explicit timezone is passed", async () => {
+    const prev = process.env.CLOAKBROWSER_BINARY_PATH;
+    process.env.CLOAKBROWSER_BINARY_PATH = "/tmp/fake-cloak-binary";
+    try {
+      const opts = await buildLaunchOptions({ timezone: "UTC" });
+      expect(opts.args).toContain("--fingerprint-timezone=UTC");
+    } finally {
+      if (prev === undefined) delete process.env.CLOAKBROWSER_BINARY_PATH;
+      else process.env.CLOAKBROWSER_BINARY_PATH = prev;
+    }
   });
 });
