@@ -199,3 +199,57 @@ def test_resolve_webrtc_args_no_flag():
 
     result = _resolve_webrtc_args(["--no-sandbox"], "http://proxy:8080")
     assert result == ["--no-sandbox"]
+
+
+# --- Auto companion flag for --load-extension via extra_args ---
+
+
+def test_load_extension_auto_adds_companion():
+    """--load-extension in extra_args should auto-add --disable-extensions-except."""
+    args = build_args(
+        stealth_args=True,
+        extra_args=["--load-extension=/path/to/ext"],
+    )
+    assert "--load-extension=/path/to/ext" in args
+    assert "--disable-extensions-except=/path/to/ext" in args
+
+
+def test_load_extension_multi_path_auto_adds_companion():
+    """Comma-separated paths in --load-extension should be mirrored exactly."""
+    args = build_args(
+        stealth_args=True,
+        extra_args=["--load-extension=/path/a,/path/b"],
+    )
+    assert "--load-extension=/path/a,/path/b" in args
+    assert "--disable-extensions-except=/path/a,/path/b" in args
+
+
+def test_load_extension_no_duplicate_companion():
+    """If both flags are already in extra_args, no duplicate is added."""
+    args = build_args(
+        stealth_args=True,
+        extra_args=[
+            "--load-extension=/path/to/ext",
+            "--disable-extensions-except=/path/to/ext",
+        ],
+    )
+    ext_flags = [a for a in args if a.startswith("--disable-extensions-except=")]
+    assert len(ext_flags) == 1
+    assert ext_flags[0] == "--disable-extensions-except=/path/to/ext"
+
+
+def test_no_companion_without_load_extension():
+    """No --disable-extensions-except when --load-extension is absent."""
+    args = build_args(stealth_args=True, extra_args=["--disable-gpu"])
+    assert not any(a.startswith("--disable-extensions-except") for a in args)
+
+
+def test_extension_paths_still_works():
+    """extension_paths parameter should still inject both flags as before."""
+    args = build_args(
+        stealth_args=True,
+        extra_args=None,
+        extension_paths=["/path/to/ext"],
+    )
+    assert "--load-extension=/path/to/ext" in args
+    assert "--disable-extensions-except=/path/to/ext" in args
