@@ -210,6 +210,47 @@ describe("composable Playwright launch helpers", () => {
     expect(options.env!.CLOAKBROWSER_LICENSE_KEY).toBe("cb_key");
   });
 
+  it("buildLaunchPersistentContextOptions returns Playwright options without launching a browser", async () => {
+    const freshConfig = await import("../src/config.js");
+    vi.spyOn(freshConfig, "getPlatformTag").mockReturnValue("darwin-arm64");
+    try {
+      const { buildLaunchPersistentContextOptions } = await import("../src/index.js");
+
+      const options = await buildLaunchPersistentContextOptions({
+        userDataDir: "/fake/data-dir",
+        headless: false,
+        proxy: "http://user:pass@proxy.example:8080",
+        args: ["--custom-flag"],
+        viewport: { width: 1900, height: 1080 },
+        colorScheme: "dark",
+        launchOptions: { slowMo: 1234 },
+        contextOptions: {
+          acceptDownloads: true,
+          locale: "fr-FR",
+        },
+      });
+
+      expect(options).toMatchObject({
+        executablePath: "/fake/chrome",
+        headless: false,
+        proxy: {
+          server: "http://proxy.example:8080",
+          username: "user",
+          password: "pass",
+        },
+        viewport: { width: 1900, height: 1080 },
+        colorScheme: "dark",
+        slowMo: 1234,
+        acceptDownloads: true,
+      });
+      expect(options.args).toContain("--custom-flag");
+      expect(options.ignoreDefaultArgs).toContain("--enable-automation");
+      expect(options.locale).toBeUndefined();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it("humanizeBrowser patches an existing browser only when requested", async () => {
     const { humanizeBrowser } = await import("../src/index.js");
     const browser = {
@@ -224,6 +265,22 @@ describe("composable Playwright launch helpers", () => {
 
     await humanizeBrowser(browser as any, { humanize: true });
     expect(browser.newContext).not.toBe(originalNewContext);
+  });
+
+  it("humanizeContext patches an existing context only when requested", async () => {
+    const { humanizeContext } = await import("../src/index.js");
+    const context = {
+      pages: () => [],
+      on: vi.fn(() => undefined),
+      newPage: vi.fn(async () => ({})),
+    };
+    const originalNewPage = context.newPage;
+
+    await humanizeContext(context as any, { humanize: false });
+    expect(context.newPage).toBe(originalNewPage);
+
+    await humanizeContext(context as any, { humanize: true });
+    expect(context.newPage).not.toBe(originalNewPage);
   });
 });
 
