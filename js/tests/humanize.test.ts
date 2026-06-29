@@ -338,6 +338,63 @@ describe("patchPage check/uncheck idle", () => {
 });
 
 // =========================================================================
+// Post-scroll stability on dynamic pages
+// =========================================================================
+describe("post-scroll stability", () => {
+  it("click continues when the target keeps moving after scroll", async () => {
+    const scrollMod = await import("../src/human/scroll.js");
+    const { patchPage } = await import("../src/human/index.js");
+
+    const movingBoxes = [
+      { x: 100, y: 100, width: 50, height: 30 },
+      { x: 125, y: 100, width: 50, height: 30 },
+      { x: 150, y: 100, width: 50, height: 30 },
+    ];
+    const loc: any = {
+      waitFor: vi.fn(async () => { }),
+      isVisible: vi.fn(async () => true),
+      isEnabled: vi.fn(async () => true),
+      isEditable: vi.fn(async () => true),
+      boundingBox: vi.fn(async () => movingBoxes.shift() ?? { x: 150, y: 100, width: 50, height: 30 }),
+      evaluate: vi.fn(async () => ({ hit: true })),
+    };
+    loc.first = vi.fn(() => loc);
+
+    const page = buildMockPage();
+    page.locator = vi.fn(() => loc);
+    page.evaluate = vi.fn(async () => false);
+
+    const scrollSpy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
+      async (_page, _raw, _sel, cx, cy) => ({
+        box: { x: 100, y: 100, width: 50, height: 30 },
+        cursorX: cx,
+        cursorY: cy,
+        didScroll: true,
+      }),
+    );
+
+    const cfg = resolveConfig("default", {
+      click_aim_delay_button: [0, 0],
+      click_hold_button: [0, 0],
+      idle_between_actions: false,
+      mouse_burst_pause: [0, 0],
+      mouse_max_steps: 1,
+      mouse_min_steps: 1,
+      mouse_overshoot_chance: 0,
+    });
+    const cursor = { x: 100, y: 100, initialized: true };
+    patchPage(page as any, cfg, cursor as any);
+
+    try {
+      await expect((page as any).click("#moving", { timeout: 80 })).resolves.toBeUndefined();
+      expect(page.mouse.down).toHaveBeenCalled();
+    } finally {
+      scrollSpy.mockRestore();
+    }
+  });
+});
+
+// =========================================================================
 // patchPage behavioral: press focus check
 // =========================================================================
 describe("patchPage press focus", () => {

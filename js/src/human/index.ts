@@ -29,7 +29,7 @@ import { humanType } from './keyboard.js';
 import { scrollToElement, humanScrollIntoView } from './scroll.js';
 import { patchPageElementHandles, patchFrameElementHandles, patchSingleElementHandle } from './elementhandle.js';
 import {
-  ensureActionable, ensureStable, checkPointerEvents,
+  ensureActionable, ensureStable, checkPointerEvents, ElementNotStableError,
   CHECKS_CLICK, CHECKS_HOVER, CHECKS_INPUT, CHECKS_FOCUS, CHECKS_CHECK,
   type CheckName,
 } from './actionability.js';
@@ -150,6 +150,14 @@ class CursorState {
   x = 0;
   y = 0;
   initialized = false;
+}
+
+async function tryEnsureStable(pageOrFrame: Page | Frame, selector: string, timeout: number): Promise<void> {
+  try {
+    await ensureStable(pageOrFrame, selector, timeout);
+  } catch (error) {
+    if (!(error instanceof ElementNotStableError)) throw error;
+  }
 }
 
 
@@ -333,7 +341,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const isInput = await isInputElement(stealth, page, selector);
     let finalBox = box;
     if (!force && didScroll) {
-      await ensureStable(page, selector, remainingMs());
+      await tryEnsureStable(page, selector, remainingMs());
       finalBox = await page.locator(selector).first().boundingBox({ timeout: Math.max(1, remainingMs()) }) ?? box;
     }
     const target = clickTarget(finalBox, isInput, callCfg);
@@ -365,7 +373,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const isInput = await isInputElement(stealth, page, selector);
     let finalBox = box;
     if (!force && didScroll) {
-      await ensureStable(page, selector, remainingMs());
+      await tryEnsureStable(page, selector, remainingMs());
       finalBox = await page.locator(selector).first().boundingBox({ timeout: Math.max(1, remainingMs()) }) ?? box;
     }
     const target = clickTarget(finalBox, isInput, callCfg);
@@ -399,7 +407,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     cursor.y = cursorY;
     let finalBox = box;
     if (!force && didScroll) {
-      await ensureStable(page, selector, remainingMs());
+      await tryEnsureStable(page, selector, remainingMs());
       finalBox = await page.locator(selector).first().boundingBox({ timeout: Math.max(1, remainingMs()) }) ?? box;
     }
     const target = clickTarget(finalBox, false, callCfg);

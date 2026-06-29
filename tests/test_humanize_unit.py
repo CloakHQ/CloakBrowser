@@ -1474,6 +1474,72 @@ class TestPerCallTimeoutForwarding:
         assert 4900 <= captured.get("timeout", 0) <= 5000, f"expected ~5000, got {captured}"
 
 
+class TestPostScrollStability:
+    """Moving elements should not fail a click solely because the extra
+    post-scroll stability check times out."""
+
+    def test_page_click_continues_after_post_scroll_stability_timeout(self):
+        import cloakbrowser.human as h
+        from cloakbrowser.human import _CursorState
+        from cloakbrowser.human.actionability import ElementNotStableError
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock, patch
+
+        cfg = resolve_config("default", {
+            "click_aim_delay_button": (0, 0),
+            "click_hold_button": (0, 0),
+            "idle_between_actions": False,
+            "mouse_burst_pause": (0, 0),
+            "mouse_max_steps": 1,
+            "mouse_min_steps": 1,
+            "mouse_overshoot_chance": 0,
+        })
+        cursor = _CursorState()
+        cursor.initialized = True
+        cursor.x = 100
+        cursor.y = 100
+
+        page = MagicMock()
+        page.click = MagicMock()
+        page.dblclick = MagicMock()
+        page.hover = MagicMock()
+        page.type = MagicMock()
+        page.fill = MagicMock()
+        page.goto = MagicMock()
+        page.is_checked = MagicMock(return_value=False)
+        page.viewport_size = {"width": 1280, "height": 720}
+        page.evaluate = MagicMock(return_value=False)
+        page.context.new_cdp_session = MagicMock(side_effect=Exception("no cdp"))
+        page.mouse = MagicMock()
+        page.keyboard = MagicMock()
+        page.query_selector = MagicMock(return_value=None)
+        page.query_selector_all = MagicMock(return_value=[])
+        page.wait_for_selector = MagicMock(return_value=None)
+        page.main_frame = MagicMock()
+        page.main_frame.child_frames = []
+
+        loc = MagicMock()
+        loc.bounding_box = MagicMock(return_value={"x": 150, "y": 100, "width": 50, "height": 30})
+        page.locator = MagicMock(return_value=MagicMock(first=loc))
+
+        with patch.object(
+            h,
+            "scroll_to_element",
+            return_value=({"x": 100, "y": 100, "width": 50, "height": 30}, 100, 100, True),
+        ), patch.object(h, "ensure_actionable"), patch.object(
+            h,
+            "ensure_stable",
+            side_effect=ElementNotStableError("#moving"),
+        ), patch.object(h, "check_pointer_events") as pointer_check:
+            h.patch_page(page, cfg, cursor)
+            page.click("#moving", timeout=500)
+
+        page.mouse.down.assert_called_once()
+        page.mouse.up.assert_called_once()
+        pointer_check.assert_called_once()
+        loc.bounding_box.assert_called_once()
+
+
 # =========================================================================
 # 16. Per-call human_config override (typing speed customization)
 # =========================================================================
