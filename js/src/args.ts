@@ -65,6 +65,13 @@ export function buildArgs(options: LaunchOptions): string[] {
       "--disable-extensions-except",
       `--disable-extensions-except=${joined}`
     );
+  } else if (seen.has("--load-extension") && !seen.has("--disable-extensions-except")) {
+    // Auto-add companion flag when --load-extension was provided via
+    // args but the companion --disable-extensions-except was not.
+    // Without this, Playwright's default --disable-extensions blocks all
+    // extensions. See CloakHQ/CloakBrowser-Manager#30 and #37.
+    const extVal = seen.get("--load-extension")!.split("=").slice(1).join("=");
+    seen.set("--disable-extensions-except", `--disable-extensions-except=${extVal}`);
   }
   return [...seen.values()];
 }
