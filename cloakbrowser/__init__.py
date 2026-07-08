@@ -11,7 +11,7 @@ Usage:
     browser.close()
 """
 
-from .browser import launch, launch_async, launch_context, launch_context_async, launch_persistent_context, launch_persistent_context_async, ProxySettings, build_args, maybe_resolve_geoip
+from .browser import launch, launch_async, launch_context, launch_context_async, launch_persistent_context, launch_persistent_context_async, ProxySettings, build_args, build_launch_options, humanize_browser, humanize_browser_async, maybe_resolve_geoip
 from .config import CHROMIUM_VERSION, get_default_stealth_args
 from .download import binary_info, check_for_update, clear_cache, ensure_binary
 from .license import LicenseInfo, validate_license
@@ -43,6 +43,9 @@ __all__ = [
     "CHROMIUM_VERSION",
     "get_default_stealth_args",
     "build_args",
+    "build_launch_options",
+    "humanize_browser",
+    "humanize_browser_async",
     "maybe_resolve_geoip",
     "ProxySettings",
     "validate_license",
@@ -51,4 +54,3 @@ __all__ = [
     "resolve_human_config",
     "__version__",
 ]
-
