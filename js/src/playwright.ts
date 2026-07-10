@@ -3,7 +3,13 @@
  * Mirrors Python cloakbrowser/browser.py.
  */
 
-import type { Browser, BrowserContext, BrowserContextOptions, LaunchOptions as PlaywrightLaunchOptions } from "playwright-core";
+import type {
+  Browser,
+  BrowserContext,
+  BrowserContextOptions,
+  BrowserType,
+  LaunchOptions as PlaywrightLaunchOptions
+} from "playwright-core";
 import type { LaunchOptions, LaunchContextOptions, LaunchPersistentContextOptions } from "./types.js";
 import {
   DEFAULT_VIEWPORT,
@@ -140,6 +146,27 @@ export async function buildLaunchOptions(
 }
 
 /**
+ * Build Playwright launchPersistentContextOptions options for CloakBrowser
+ * without starting Chromium.
+ *
+ * Useful when integrating CloakBrowser with a custom Playwright build or another
+ * wrapper that needs to call `chromium.launchPersistentContext()` itself.
+ */
+export async function buildLaunchPersistentContextOptions(
+    options: LaunchPersistentContextOptions
+): Promise<Parameters<BrowserType["launchPersistentContext"]>[1]> {
+  const launchOptions = await buildLaunchOptions(options);
+  const contextOptions = buildContextOptions(options);
+
+  seedWidevineHint(options.userDataDir, launchOptions.executablePath as string);
+
+  return {
+    ...launchOptions,
+    ...contextOptions,
+  }
+}
+
+/**
  * Apply CloakBrowser's human-like behavioral layer to an existing Playwright browser.
  */
 export async function humanizeBrowser(
@@ -155,6 +182,24 @@ export async function humanizeBrowser(
     options.humanConfig,
   );
   patchBrowser(browser, cfg);
+}
+
+/**
+ * Apply CloakBrowser's human-like behavioral layer to an existing Playwright context.
+ */
+export async function humanizeContext(
+    context: BrowserContext,
+    options: LaunchContextOptions = {}
+): Promise<void> {
+  if (!options.humanize) return;
+
+  const { patchContext } = await import('./human/index.js');
+  const { resolveConfig } = await import('./human/config.js');
+  const cfg = resolveConfig(
+    options.humanPreset ?? 'default',
+    options.humanConfig,
+  );
+  patchContext(context, cfg);
 }
 
 /**
@@ -223,18 +268,7 @@ function applyDefaultNoViewport(browser: Browser): void {
 export async function launchContext(
   options: LaunchContextOptions = {}
 ): Promise<BrowserContext> {
-  options = resolveTimezone(options);
-  // Resolve geoip BEFORE launch() to avoid double-resolution
-  const { exitIp, ...resolved } = await maybeResolveGeoip(options);
-  let launchArgs = await resolveWebrtcArgs(options);
-  // Inject geoip exit IP for WebRTC spoofing (free — no extra HTTP call)
-  launchArgs = appendWebrtcExitIp(launchArgs, exitIp);
-  // --fingerprint-timezone is process-wide (reads CommandLine in renderer),
-  // so it applies to ALL contexts, not just the default one.
-  // locale and timezone are set via binary flags only — no CDP emulation.
-  // humanize:false on the inner launch — patchContext below applies humanize
-  // exactly once (else launch()'s humanizeBrowser would patch it a second time).
-  const browser = await launch({ ...options, ...resolved, args: launchArgs, geoip: false, humanize: false });
+  const browser = await launch(options);
 
   let context: BrowserContext;
   try {
@@ -251,17 +285,7 @@ export async function launchContext(
     await browser.close();
   };
 
-  // Human-like behavioral patching
-  if (options.humanize) {
-    const { patchContext } = await import('./human/index.js');
-    const { resolveConfig } = await import('./human/config.js');
-    const cfg = resolveConfig(
-      options.humanPreset ?? 'default',
-      options.humanConfig,
-    );
-    patchContext(context, cfg);
-  }
-
+  await humanizeContext(context, options);
   return context;
 }
 
@@ -291,51 +315,11 @@ export async function launchPersistentContext(
 ): Promise<BrowserContext> {
   options = resolveTimezone(options);
   const { chromium } = await import("playwright-core");
-
-  const binaryPath =
-    process.env.CLOAKBROWSER_BINARY_PATH ||
-    (await ensureBinary(options.licenseKey, options.browserVersion));
-  const { exitIp, ...resolved } = await maybeResolveGeoip(options);
-  const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy, options.browserVersion);
-  let resolvedArgs = await resolveWebrtcArgs(options);
-  resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
-  const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
-  maybeWarnWindowsFonts(args);
-
-  seedWidevineHint(options.userDataDir, binaryPath);
-
-  // Resolve env for the browser process (license key injection, if needed).
-  const { env: userEnv, ...restLaunchOptions } = options.launchOptions ?? {};
-  const launchEnv = buildLaunchEnv(
-    options.licenseKey,
-    userEnv as Record<string, string | undefined> | undefined,
+  const context = await chromium.launchPersistentContext(
+    options.userDataDir,
+    await buildLaunchPersistentContextOptions(options),
   );
-  const envResult = launchEnv !== undefined ? { env: launchEnv } : {};
-
-  // locale and timezone are set via binary flags (--lang, --fingerprint-timezone)
-  // — NOT via Playwright context kwargs which use detectable CDP emulation.
-  const context = await chromium.launchPersistentContext(options.userDataDir, {
-    executablePath: binaryPath,
-    headless: options.headless ?? true,
-    args,
-    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
-    ...(proxyOption ? { proxy: proxyOption } : {}),
-    ...buildContextOptions(options),
-    ...restLaunchOptions,
-    ...envResult,
-  });
-
-  // Human-like behavioral patching
-  if (options.humanize) {
-    const { patchContext } = await import('./human/index.js');
-    const { resolveConfig } = await import('./human/config.js');
-    const cfg = resolveConfig(
-      options.humanPreset ?? 'default',
-      options.humanConfig,
-    );
-    patchContext(context, cfg);
-  }
-
+  await humanizeContext(context, options);
   return context;
 }
 
