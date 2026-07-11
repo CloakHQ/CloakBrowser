@@ -149,6 +149,88 @@ class ProxySettings(_ProxySettingsRequired, total=False):
     password: str
 
 
+def build_launch_options(
+    headless: bool = True,
+    proxy: str | ProxySettings | None = None,
+    args: list[str] | None = None,
+    stealth_args: bool = True,
+    timezone: str | None = None,
+    locale: str | None = None,
+    geoip: bool = False,
+    extension_paths: list[str] | None = None,
+    license_key: str | None = None,
+    browser_version: str | None = None,
+    _suppress_maximize: bool = False,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Build the kwargs dict that ``launch()`` passes to ``chromium.launch()``.
+
+    Use this when you already manage a Playwright instance and want to compose
+    CloakBrowser's binary, proxy, environment, and stealth arguments yourself:
+    ``pw.chromium.launch(**build_launch_options(...))``.
+    """
+    _check_removed_kwargs(kwargs)
+
+    binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key)
+    args = _resolve_webrtc_args(args, proxy)
+    args = _append_webrtc_exit_ip(args, exit_ip)
+
+    chrome_args = build_args(
+        stealth_args,
+        (args or []) + proxy_extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+        start_maximized=(
+            binary_supports_maximized_window(license_key, browser_version)
+            and not _suppress_maximize
+        ),
+    )
+    _maybe_warn_windows_fonts(chrome_args)
+
+    launch_env = build_launch_env(license_key, user_env=kwargs.pop("env", None))
+    env_kwargs = {} if launch_env is None else {"env": launch_env}
+
+    return {
+        "executable_path": binary_path,
+        "headless": headless,
+        "args": chrome_args,
+        "ignore_default_args": IGNORE_DEFAULT_ARGS,
+        **env_kwargs,
+        **proxy_kwargs,
+        **kwargs,
+    }
+
+
+def humanize_browser(
+    browser: Any,
+    human_preset: HumanPreset = "default",
+    human_config: HumanConfigOverrides | None = None,
+) -> None:
+    """Apply the sync humanize layer to an existing Playwright Browser."""
+    from .human import patch_browser
+    from .human.config import resolve_config
+
+    cfg = resolve_config(human_preset, human_config)
+    patch_browser(browser, cfg)
+
+
+def humanize_browser_async(
+    browser: Any,
+    human_preset: HumanPreset = "default",
+    human_config: HumanConfigOverrides | None = None,
+) -> None:
+    """Apply the async humanize layer to an existing Playwright Browser."""
+    from .human import patch_browser_async
+    from .human.config import resolve_config
+
+    cfg = resolve_config(human_preset, human_config)
+    patch_browser_async(browser, cfg)
+
+
 def launch(
     headless: bool = True,
     proxy: str | ProxySettings | None = None,
@@ -204,30 +286,25 @@ def launch(
 
     from playwright.sync_api import sync_playwright
 
-    binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key)
-    args = _resolve_webrtc_args(args, proxy)
-    args = _append_webrtc_exit_ip(args, exit_ip)
-
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version) and not _suppress_maximize)
-    _maybe_warn_windows_fonts(chrome_args)
-
-    logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
-
-    launch_env = build_launch_env(license_key, user_env=kwargs.pop("env", None))
-    env_kwargs = {} if launch_env is None else {"env": launch_env}
-
-    pw = sync_playwright().start()
-    browser = pw.chromium.launch(
-        executable_path=binary_path,
+    launch_options = build_launch_options(
         headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **env_kwargs,
-        **proxy_kwargs,
+        proxy=proxy,
+        args=args,
+        stealth_args=stealth_args,
+        timezone=timezone,
+        locale=locale,
+        geoip=geoip,
+        extension_paths=extension_paths,
+        license_key=license_key,
+        browser_version=browser_version,
+        _suppress_maximize=_suppress_maximize,
         **kwargs,
     )
+
+    logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(launch_options["args"]))
+
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(**launch_options)
 
     # Patch close() to also stop the Playwright instance
     _original_close = browser.close
@@ -249,10 +326,7 @@ def launch(
 
     # Human-like behavioral patching
     if humanize:
-        from .human import patch_browser
-        from .human.config import resolve_config
-        cfg = resolve_config(human_preset, human_config)
-        patch_browser(browser, cfg)
+        humanize_browser(browser, human_preset, human_config)
 
     return browser
 
@@ -310,29 +384,25 @@ async def launch_async(  # noqa: C901
 
     from playwright.async_api import async_playwright
 
-    binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key)
-    args = _resolve_webrtc_args(args, proxy)
-    args = _append_webrtc_exit_ip(args, exit_ip)
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version) and not _suppress_maximize)
-    _maybe_warn_windows_fonts(chrome_args)
-
-    logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(chrome_args))
-
-    launch_env = build_launch_env(license_key, user_env=kwargs.pop("env", None))
-    env_kwargs = {} if launch_env is None else {"env": launch_env}
-
-    pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        executable_path=binary_path,
+    launch_options = build_launch_options(
         headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **env_kwargs,
-        **proxy_kwargs,
+        proxy=proxy,
+        args=args,
+        stealth_args=stealth_args,
+        timezone=timezone,
+        locale=locale,
+        geoip=geoip,
+        extension_paths=extension_paths,
+        license_key=license_key,
+        browser_version=browser_version,
+        _suppress_maximize=_suppress_maximize,
         **kwargs,
     )
+
+    logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(launch_options["args"]))
+
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(**launch_options)
 
     # Patch close() to also stop the Playwright instance
     _original_close = browser.close
@@ -352,10 +422,7 @@ async def launch_async(  # noqa: C901
 
     # Human-like behavioral patching (async variant)
     if humanize:
-        from .human import patch_browser_async
-        from .human.config import resolve_config
-        cfg = resolve_config(human_preset, human_config)
-        patch_browser_async(browser, cfg)
+        humanize_browser_async(browser, human_preset, human_config)
 
     return browser
 
