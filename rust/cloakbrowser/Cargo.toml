@@ -1,0 +1,57 @@
+[package]
+name = "cloakbrowser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Stealth Chromium that passes every bot detection test. Drop-in Playwright (Rust) replacement with source-level fingerprint patches."
+readme = "../README.md"
+
+[features]
+default = ["geoip"]
+# MaxMind GeoLite2 timezone/locale resolution from proxy exit IP.
+geoip = ["dep:maxminddb"]
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+ed25519-dalek.workspace = true
+flate2.workspace = true
+hex.workspace = true
+maxminddb = { workspace = true, optional = true }
+playwright-rs.workspace = true
+rand.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+urlencoding.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[example]]
+name = "basic"
+path = "../examples/basic.rs"
+
+[[example]]
+name = "humanize"
+path = "../examples/humanize.rs"
+
+[[example]]
+name = "persistent_context"
+path = "../examples/persistent_context.rs"

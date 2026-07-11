@@ -1,0 +1,21 @@
+[package]
+name = "cloakbrowser-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "CLI for cloakbrowser — download and manage the stealth Chromium binary"
+publish = false
+
+[[bin]]
+name = "cloakbrowser"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+cloakbrowser = { workspace = true, features = ["geoip"] }
+serde_json.workspace = true
+tokio.workspace = true

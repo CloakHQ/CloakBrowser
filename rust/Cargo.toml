@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "cloakbrowser",
+    "cloakbrowser-cli",
+]
+default-members = ["cloakbrowser", "cloakbrowser-cli"]
+
+[workspace.package]
+version = "0.4.10"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/CloakHQ/CloakBrowser"
+homepage = "https://github.com/CloakHQ/CloakBrowser"
+authors = ["CloakHQ"]
+keywords = ["stealth", "browser", "chromium", "playwright", "scraping"]
+categories = ["web-programming", "development-tools"]
+
+[workspace.dependencies]
+cloakbrowser = { path = "cloakbrowser", version = "0.4.10" }
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
+flate2 = "1"
+hex = "0.4"
+maxminddb = "0.25"
+playwright-rs = "0.14"
+rand = "0.8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time"] }
+tracing = "0.1"
+url = "2"
+urlencoding = "2"
+zip = "2"

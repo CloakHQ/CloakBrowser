@@ -122,6 +122,20 @@ dotnet add package CloakBrowser
 
 > Community-maintained .NET client built on Microsoft.Playwright. See [`dotnet/README.md`](dotnet/README.md) for the full API.
 
+**Rust:**
+
+```toml
+# Cargo.toml
+cloakbrowser = { path = "rust/cloakbrowser" }  # monorepo path
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+```bash
+cd rust && cargo run -p cloakbrowser-cli -- install
+```
+
+> Community-maintained Rust client built on [`playwright-rs`](https://crates.io/crates/playwright-rs). See [`rust/README.md`](rust/README.md) for the full API.
+
 ---
 
 On first run, the stealth Chromium binary is automatically downloaded (~200MB, cached locally).
