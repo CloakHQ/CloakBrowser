@@ -163,6 +163,7 @@ fn unquote(s: &str) -> String {
         .unwrap_or_else(|_| s.to_string())
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors Python urlparse assemble pieces
 fn assemble_proxy_url(
     scheme: &str,
     host: &str,

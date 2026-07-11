@@ -124,21 +124,16 @@ impl LaunchOptions {
 }
 
 /// Viewport resolution for context launchers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewportOption {
     /// Use CloakBrowser defaults (fixed 1920×947 headless, no_viewport headed /
     /// modern headless).
+    #[default]
     Auto,
     /// Explicit emulated size.
     Size { width: u32, height: u32 },
     /// Disable viewport emulation (track the real OS window).
     NoViewport,
-}
-
-impl Default for ViewportOption {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// Options for context-producing launchers (`launch_persistent_context`, etc.).

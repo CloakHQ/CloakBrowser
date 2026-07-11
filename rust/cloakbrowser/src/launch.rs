@@ -668,9 +668,7 @@ async fn resolve_webrtc_args(
     args: Option<Vec<String>>,
     proxy: Option<&Proxy>,
 ) -> Option<Vec<String>> {
-    let Some(mut args) = args else {
-        return None;
-    };
+    let mut args = args?;
     let idx = args.iter().position(|a| a == "--fingerprint-webrtc-ip=auto");
     let Some(idx) = idx else {
         return Some(args);

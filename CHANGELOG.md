@@ -8,6 +8,7 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+- **[wrapper]** **Rust client** — community-style port under `rust/`, built on [`playwright-rs`](https://crates.io/crates/playwright-rs). Mirrors the Python/JS/.NET wrappers: binary download/cache with Ed25519 + SHA-256 verification, Pro license routing, stealth launch args, proxy (HTTP/SOCKS5), GeoIP, WebRTC spoofing, persistent contexts with Linux Widevine hint seeding, CLI (`install`/`info`/`update`/`clear-cache`), and humanize via an explicit `HumanPage` API (Bezier mouse, human typing, scroll). See [`rust/README.md`](rust/README.md).
 - **[wrapper]** Authenticated HTTP/HTTPS proxies now use the browser's native proxy authentication on every platform whose binary supports it — resolved per platform and binary version — and fall back to the standard proxy path on older binaries that don't. Fixes credentialed HTTP/HTTPS proxies on macOS and ARM, which previously could not use the native path. Python, JavaScript, Puppeteer, and .NET.
 
 ## [0.4.10] — 2026-07-09

@@ -9,8 +9,10 @@ Chromium binary. This port reproduces the wrapper functionality with identical
 behavior to the Python, JavaScript, and .NET clients — same launch flags, same
 proxy / GeoIP / WebRTC logic, same download verification (Ed25519 + SHA-256).
 
-> **Status:** Community-style client (like `dotnet/`). Core launch path is
-> complete; the transparent **humanize** layer is reserved for a follow-up.
+> **Status:** Community-style client (like `dotnet/`). Launch, download/Pro
+> routing, proxy/GeoIP/WebRTC, persistent contexts, CLI, and explicit
+> **HumanPage** humanize are implemented. Transparent Playwright monkey-patching
+> is not available in Rust (same sealed-API constraint as .NET).
 
 ---
 
@@ -117,7 +119,9 @@ rust/
 ├── cloakbrowser-cli/                # <- cloakbrowser/__main__.py
 │   └── src/main.rs
 └── examples/
-    └── basic.rs
+    ├── basic.rs
+    ├── humanize.rs
+    └── persistent_context.rs
 ```
 
 ---

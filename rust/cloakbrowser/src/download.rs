@@ -816,14 +816,13 @@ fn extract_archive(archive_path: &Path, dest_dir: &Path, binary_path: Option<&Pa
 /// guarding against path-traversal / zip-slip.
 pub fn resolve_safe_entry_path(destination_dir: &Path, entry_name: &str) -> Result<PathBuf> {
     let dest_full = std::fs::canonicalize(destination_dir).unwrap_or_else(|_| {
-        let abs = if destination_dir.is_absolute() {
+        if destination_dir.is_absolute() {
             destination_dir.to_path_buf()
         } else {
             std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(destination_dir)
-        };
-        abs
+        }
     });
     // Normalize without requiring the path to exist yet for members.
     let dest_full = path_clean(&dest_full);

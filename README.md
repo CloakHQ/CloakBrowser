@@ -168,6 +168,7 @@ page.goto("https://example.com")
 
 - **CloakBrowser Pro** — the latest binary (Chromium 148.0.7778.215.5, 66 source-level patches) is available to Pro subscribers on **Windows and Linux** (macOS is on 148.0.7778.215.3, next build follows). Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest build automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
 - **.NET 8 / C# client** — CloakBrowser now ships as a NuGet package (`CloakBrowser`), mirroring the Python and JS wrappers.
+- **Rust client** — community-style port under [`rust/`](rust/README.md) on `playwright-rs` (launch, Pro download, humanize via `HumanPage`, persistent contexts, CLI)
 - **66 fingerprint patches** — rendering consistency improvements across Linux and Windows, corrected GPU/display/graphics parameters to match stock Chrome profiles
 - **Windows native GPU passthrough** — real hardware values pass through directly instead of being spoofed, matching real browser behavior
 - **HTTP proxy inline credentials** — new network-layer support for proxies with inline authentication
@@ -1402,6 +1403,7 @@ Issues and PRs welcome. If something isn't working, [open an issue](https://gith
 ## Contributors
 
 - [@evelaa123](https://github.com/evelaa123) — humanize behavior, persistent contexts, Windows fix, .NET client
+- [@enrell](https://github.com/enrell) — Rust client
 - [@yahooguntu](https://github.com/yahooguntu) — persistent contexts
 - [@kitiho](https://github.com/kitiho) — null viewport fix
 - [@eofreternal](https://github.com/eofreternal) — humanConfig type fix, humanized method option types, iframe pointer-events fix
