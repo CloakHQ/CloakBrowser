@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Robot or human?</title>
+<style>
+  body { text-align: center; font-family: Roboto, sans-serif; }
+  header { background: #811F08; padding: 16px; color: white; }
+  #px-captcha { max-width: 600px; margin: 40px auto; padding: 30px; }
+  #hold-btn {
+    display: block;
+    margin: 24px auto;
+    width: 240px;
+    height: 44px;
+    border: 1px solid #0071ce;
+    background: #fff;
+    color: #0071ce;
+    font-size: 17px;
+    font-weight: 500;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  #hold-btn:hover { background: #f0f7fc; }
+  p { padding: 8px; }
+</style>
+</head>
+<body>
+  <header>Test Site</header>
+  <div id="px-captcha">
+    <p>Robot or human?</p>
+    <p>Activate and hold the button to confirm that you're human.</p>
+    <button id="hold-btn" type="button">Activate and hold</button>
+  </div>
+  <script>
+    // On hold completion, drop the captcha and replace the body with success.
+    // The bypass only sends mouse.down/up; we simulate the per-pixel hit by
+    // listening for mouseup and waiting 4s of down time before succeeding.
+    const btn = document.getElementById('hold-btn');
+    let downAt = 0;
+    btn.addEventListener('mousedown', () => { downAt = Date.now(); });
+    btn.addEventListener('mouseup', () => {
+      const held = (Date.now() - downAt) / 1000;
+      if (held >= 3.5) {
+        document.body.innerHTML = '<header>Test Site</header><p id="ok">Success — captcha cleared</p>';
+      } else {
+        const old = document.getElementById('px-captcha');
+        const div = document.createElement('p');
+        div.textContent = 'Hold longer please';
+        old.appendChild(div);
+      }
+    });
+  </script>
+</body>
+</html>
