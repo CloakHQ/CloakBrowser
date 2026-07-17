@@ -37,3 +37,7 @@ class BaseDetector:
             DetectResult with detection status and evidence.
         """
         raise NotImplementedError
+
+    async def detect_async(self, page: Any) -> DetectResult:
+        """Async Playwright variant of :meth:`detect`."""
+        raise NotImplementedError

@@ -35,3 +35,22 @@ class DetectPxByDomElement(BaseDetector):
             )
         except Exception as exc:
             return DetectResult(evidence={"error": str(exc)})
+
+    async def detect_async(self, page: Any) -> DetectResult:
+        try:
+            found = []
+            for sel in self.selectors:
+                count = await page.evaluate(
+                    "(sel) => document.querySelectorAll(sel).length", sel
+                )
+                if count and count > 0:
+                    found.append({"selector": sel, "count": count})
+            if not found:
+                return DetectResult()
+            return DetectResult(
+                detected=True,
+                confidence=0.85,
+                evidence={"elements_found": found},
+            )
+        except Exception as exc:
+            return DetectResult(evidence={"error": str(exc)})

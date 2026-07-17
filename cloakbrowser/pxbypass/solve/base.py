@@ -47,3 +47,7 @@ class BaseSolver:
             SolveResult indicating success/failure.
         """
         raise NotImplementedError
+
+    async def async_solve(self, page: Any, cfg: Any, detect_result: Any = None) -> SolveResult:
+        """Attempt to solve the challenge with async Playwright."""
+        raise NotImplementedError

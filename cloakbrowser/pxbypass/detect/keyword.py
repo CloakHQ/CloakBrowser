@@ -67,3 +67,26 @@ class DetectPxByKeyword(BaseDetector):
             )
         except Exception as exc:
             return DetectResult(evidence={"error": str(exc)})
+
+    async def detect_async(self, page: Any) -> DetectResult:
+        """Scan an async Playwright page for PX-related keywords."""
+        try:
+            body = await page.evaluate(
+                "() => (document.body ? document.body.innerText : '') || ''"
+            )
+            if not body:
+                return DetectResult()
+            body_lower = body.lower()
+            matches = [kw for kw in self.keywords if kw.lower() in body_lower]
+            if not matches:
+                return DetectResult()
+            hc_matches = [kw for kw in HIGH_CONFIDENCE_KEYWORDS if kw.lower() in body_lower]
+            confidence = 0.9 if hc_matches else min(0.5 + len(matches) * 0.15, 0.85)
+            return DetectResult(
+                detected=True,
+                confidence=confidence,
+                px_type="perimeterx",
+                evidence={"keywords_matched": matches, "high_confidence": hc_matches or None},
+            )
+        except Exception as exc:
+            return DetectResult(evidence={"error": str(exc)})

@@ -42,3 +42,30 @@ class DetectPxByScriptSrc(BaseDetector):
             )
         except Exception as exc:
             return DetectResult(evidence={"error": str(exc)})
+
+    async def detect_async(self, page: Any) -> DetectResult:
+        try:
+            scripts = await page.evaluate("""() => {
+                const urls = [];
+                document.querySelectorAll('script').forEach(s => {
+                    if (s.src) urls.push(s.src);
+                });
+                return urls;
+            }""")
+            if not scripts:
+                return DetectResult()
+            found = []
+            for script in scripts:
+                for pattern in self.patterns:
+                    if pattern in script:
+                        found.append({"script": script[:120], "pattern": pattern})
+                        break
+            if not found:
+                return DetectResult()
+            return DetectResult(
+                detected=True,
+                confidence=0.9 if any("main.min.js" in item["script"] for item in found) else 0.75,
+                evidence={"scripts_matched": found},
+            )
+        except Exception as exc:
+            return DetectResult(evidence={"error": str(exc)})
