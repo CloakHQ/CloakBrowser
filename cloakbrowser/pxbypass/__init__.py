@@ -35,10 +35,12 @@ Advanced:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any
 
-from .engine import PxEngine
+from .engine import PxEngine, _patch_methods_for_px_polling
 from .config import PxConfig
 from .detect.base import DetectResult
 from .solve.base import SolveResult
@@ -198,14 +200,14 @@ def patch_page(page: Any, cfg: PxConfig) -> None:
     _patch_page(page, cfg)
 
 
-def patch_page_async(page: Any, cfg: PxConfig) -> None:
+async def patch_page_async(page: Any, cfg: PxConfig) -> None:
     """Patch a single page to auto-solve PX (async).
 
     Args:
         page: Playwright Page object (async API).
         cfg: PxConfig instance.
     """
-    _patch_page_async(page, cfg)
+    await _patch_page_async(page, cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -221,13 +223,27 @@ def _patch_page(page: Any, cfg: PxConfig) -> None:
     that runs detection and solving — all on the main thread.
 
     Also patches goto() for a quick initial detection after navigation.
+
+    NOTE: Playwright's sync API uses greenlets and is NOT thread-safe.
+    We do NOT start a background thread for polling. Instead we rely on:
+    - MutationObserver JS (with JS-side setInterval polling every 1.5s)
+    - goto() patch for immediate post-navigation check
+    - load event handler with delayed checks (3s, 10s)
+    - frameattached handler for dynamically injected iframes
     """
+    if getattr(page, '_px_patched', False):
+        return
+    page._px_patched = True
+
     engine = _get_engine(cfg)
     page._px_cfg = cfg
 
-    # Inject JS MutationObserver — watches DOM for PX elements,
-    # calls back to Python via page.expose_binding
+    # Inject JS MutationObserver — watches DOM for PX elements
     engine.install_observer(page)
+    # Make the sync API poll on ordinary Playwright calls immediately. Waiting
+    # for a later load callback can miss challenges already present when goto()
+    # returns (and leaves wait_for_px_solved unavailable to the caller).
+    _patch_methods_for_px_polling(page, engine)
 
     # Also patch goto() for a quick initial detection after navigation
     _original_goto = page.goto
@@ -235,26 +251,30 @@ def _patch_page(page: Any, cfg: PxConfig) -> None:
     def _patched_goto(url: str, **kwargs: Any) -> Any:
         response = _original_goto(url, **kwargs)
         if cfg.enabled:
-            # Quick check right after navigation
             try:
-                engine.check_and_solve(page)
+                engine._on_page_load(page)
             except Exception as exc:
-                logger.debug("PX solve failed (non-fatal): %s", exc)
+                logger.debug("PX navigate check failed (non-fatal): %s", exc)
         return response
 
     page.goto = _patched_goto
+
     logger.debug("PX bypass patched on page (sync)")
 
 
 async def _patch_page_async(page: Any, cfg: PxConfig) -> None:
     """Internal: patch page for async API.
 
-    Injects MutationObserver + patches goto().
+    Injects MutationObserver + patches goto() + starts background monitor.
 
     Args:
         page: Playwright Page object (async API).
         cfg: PxConfig instance.
     """
+    if getattr(page, '_px_patched', False):
+        return
+    page._px_patched = True
+
     engine = _get_engine(cfg)
     page._px_cfg = cfg
 
@@ -268,13 +288,61 @@ async def _patch_page_async(page: Any, cfg: PxConfig) -> None:
         response = await _original_goto(url, **kwargs)
         if cfg.enabled:
             try:
-                await engine.check_and_solve_async(page)
+                await engine._on_page_load_async(page)
             except Exception as exc:
-                logger.debug("PX solve failed (non-fatal): %s", exc)
+                logger.debug("PX navigate check failed (non-fatal): %s", exc)
         return response
 
     page.goto = _patched_goto
-    logger.debug("PX bypass patched on page (async)")
+
+    # Start background monitoring asyncio task (same event loop — thread-safe)
+    _start_bg_monitor_async(page, engine, cfg)
+
+    logger.debug("PX bypass patched on page (async) with background monitor")
+
+
+# ---------------------------------------------------------------------------
+# Background monitoring (async only — sync API relies on JS-side setInterval)
+# ---------------------------------------------------------------------------
+
+
+def _start_bg_monitor_async(page: Any, engine: PxEngine, cfg: PxConfig) -> None:
+    """Start an asyncio background task that periodically polls for PX.
+
+    Only call this from async API — runs in the same event loop as Playwright,
+    so it is thread-safe.
+    """
+    if getattr(page, '_px_bg_monitor_started', False):
+        return
+    page._px_bg_monitor_started = True
+    page._px_bg_closed = False
+
+    async def _monitor_loop() -> None:
+        while not getattr(page, '_px_bg_closed', False):
+            try:
+                # Check if page is still alive
+                try:
+                    await page.evaluate("1+1")
+                except Exception:
+                    page._px_bg_closed = True
+                    break
+
+                if cfg.enabled:
+                    await engine.check_and_solve_async(page)
+            except Exception:
+                pass
+            await asyncio.sleep(cfg.monitor_interval)
+
+    asyncio.ensure_future(_monitor_loop())
+
+    # Patch page.close to stop the monitor
+    _orig_close = page.close
+
+    async def _patched_close(*args: Any, **kwargs: Any) -> Any:
+        page._px_bg_closed = True
+        return await _orig_close(*args, **kwargs)
+
+    page.close = _patched_close
 
 
 __all__ = [

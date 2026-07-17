@@ -44,3 +44,21 @@ class CompositeSolver(BaseSolver):
         if results:
             return results[-1]
         return SolveResult(method="CompositeSolver", error="no_solvers")
+
+    async def async_solve(self, page: Any, cfg: Any, detect_result: Any = None) -> SolveResult:
+        results = []
+        for solver in self.solvers:
+            logger.debug("Trying async solver: %s", solver.__class__.__name__)
+            result = await solver.async_solve(page, cfg, detect_result)
+            results.append(result)
+            if result.solved and self.stop_on_first:
+                logger.info("Async solver %s succeeded", solver.__class__.__name__)
+                return result
+            if not result.solved:
+                logger.debug("Async solver %s failed: %s", solver.__class__.__name__, result.error)
+        solved = [result for result in results if result.solved]
+        if solved:
+            return solved[0]
+        if results:
+            return results[-1]
+        return SolveResult(method="CompositeSolver", error="no_solvers")

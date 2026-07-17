@@ -44,6 +44,10 @@ class SiteHandler:
         """Run detection for this site."""
         return self.build_detector().detect(page)
 
+    async def detect_async(self, page: object) -> DetectResult:
+        """Run detection for an async Playwright page."""
+        return await self.build_detector().detect_async(page)
+
     def solve(self, page: object, cfg: object, detect_result: DetectResult | None = None) -> SolveResult:
         """Run solving for this site."""
         return self.build_solver().solve(page, cfg, detect_result)

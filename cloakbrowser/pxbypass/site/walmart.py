@@ -4,7 +4,6 @@ from ..detect.base import BaseDetector
 from ..detect.composite import CompositeDetector
 from ..detect.keyword import DetectPxByKeyword
 from ..detect.dom_element import DetectPxByDomElement
-from ..detect.script_src import DetectPxByScriptSrc
 from ..solve.base import BaseSolver
 from ..solve.composite import CompositeSolver
 from ..solve.press_hold_button import SolveByHoldButton
@@ -20,10 +19,11 @@ class WalmartHandler(SiteHandler):
     url_pattern = "walmart.com"  # Only runs on walmart pages
 
     def build_detector(self) -> BaseDetector:
+        # Loading the PX SDK is normal on Walmart; only visible challenge text
+        # or DOM is an active captcha.
         return CompositeDetector([
             DetectPxByKeyword(["activate and hold", "robot or human", "Activate and hold the button"]),
             DetectPxByDomElement(["#px-captcha", ".re-captcha"]),
-            DetectPxByScriptSrc(["px-cloud.net", "client.px-cloud.net"]),
         ])
 
     def build_solver(self) -> BaseSolver:

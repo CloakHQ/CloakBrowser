@@ -143,6 +143,15 @@ def _resolve_timezone(timezone: str | None, kwargs: dict[str, Any]) -> str | Non
     return timezone
 
 
+def _resolve_px_bypass(bypass_px: bool, kwargs: dict[str, Any]) -> bool:
+    """Accept the issue's ``pxBypass`` spelling without leaking it to Playwright."""
+    if "pxBypass" in kwargs:
+        alias = bool(kwargs.pop("pxBypass"))
+        if not bypass_px:
+            bypass_px = alias
+    return bypass_px
+
+
 def _check_removed_kwargs(kwargs: dict[str, Any]) -> None:
     """Raise a clear error for removed parameters that now fall into **kwargs."""
     if "backend" in kwargs:
@@ -217,6 +226,7 @@ def launch(
         >>> print(page.title())
         >>> browser.close()
     """
+    bypass_px = _resolve_px_bypass(bypass_px, kwargs)
     _check_removed_kwargs(kwargs)
 
     from playwright.sync_api import sync_playwright
@@ -288,6 +298,7 @@ def launch(
         px_cfg = px_config if isinstance(px_config, PxConfig) else PxConfig(**(px_config or {}))
         patch_browser_px(browser, px_cfg)
         logger.info("PerimeterX bypass enabled")
+        browser._px_bypass_active = True
 
     return browser
 
@@ -343,6 +354,7 @@ async def launch_async(  # noqa: C901
         >>>
         >>> asyncio.run(main())
     """
+    bypass_px = _resolve_px_bypass(bypass_px, kwargs)
     _check_removed_kwargs(kwargs)
 
     from playwright.async_api import async_playwright
@@ -411,6 +423,7 @@ async def launch_async(  # noqa: C901
         px_cfg = px_config if isinstance(px_config, PxConfig) else PxConfig(**(px_config or {}))
         patch_browser_px_async(browser, px_cfg)
         logger.info("PerimeterX bypass enabled (async)")
+        browser._px_bypass_active = True
 
     return browser
 
@@ -433,6 +446,8 @@ def launch_persistent_context(
     extension_paths: list[str] | None = None,
     license_key: str | None = None,
     browser_version: str | None = None,
+    bypass_px: bool = False,
+    px_config: Any = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser with a persistent profile and return a BrowserContext.
@@ -475,6 +490,7 @@ def launch_persistent_context(
         >>> page.goto("https://protected-site.com")
         >>> ctx.close()  # Profile is saved; re-use path next run to restore state.
     """
+    bypass_px = _resolve_px_bypass(bypass_px, kwargs)
     _check_removed_kwargs(kwargs)
 
     from playwright.sync_api import sync_playwright
@@ -557,6 +573,17 @@ def launch_persistent_context(
         cfg = resolve_config(human_preset, human_config)
         patch_context(context, cfg)
 
+    # PX captcha auto-solving
+    if bypass_px:
+        from .pxbypass import patch_page as patch_page_px
+        from .pxbypass.config import PxConfig
+        px_cfg = px_config if isinstance(px_config, PxConfig) else PxConfig(**(px_config or {}))
+        for page in context.pages:
+            patch_page_px(page, px_cfg)
+        context.on("page", lambda p: patch_page_px(p, px_cfg))
+        logger.info("PerimeterX bypass enabled (persistent context)")
+        setattr(context, "_px_bypass_active", True)
+
     return context
 
 
@@ -578,6 +605,8 @@ async def launch_persistent_context_async(
     extension_paths: list[str] | None = None,
     license_key: str | None = None,
     browser_version: str | None = None,
+    bypass_px: bool = False,
+    px_config: Any = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_persistent_context().
@@ -622,6 +651,7 @@ async def launch_persistent_context_async(
         >>>
         >>> asyncio.run(main())
     """
+    bypass_px = _resolve_px_bypass(bypass_px, kwargs)
     _check_removed_kwargs(kwargs)
 
     from playwright.async_api import async_playwright
@@ -704,6 +734,18 @@ async def launch_persistent_context_async(
         cfg = resolve_config(human_preset, human_config)
         patch_context_async(context, cfg)
 
+    # PX captcha auto-solving (async)
+    if bypass_px:
+        import asyncio
+        from .pxbypass import patch_page_async as patch_page_px_async
+        from .pxbypass.config import PxConfig
+        px_cfg = px_config if isinstance(px_config, PxConfig) else PxConfig(**(px_config or {}))
+        for page in context.pages:
+            await patch_page_px_async(page, px_cfg)
+        context.on("page", lambda p: asyncio.ensure_future(patch_page_px_async(p, px_cfg)))
+        logger.info("PerimeterX bypass enabled (persistent context async)")
+        setattr(context, "_px_bypass_active", True)
+
     return context
 
 
@@ -724,6 +766,8 @@ def launch_context(
     extension_paths: list[str] | None = None,
     license_key: str | None = None,
     browser_version: str | None = None,
+    bypass_px: bool = False,
+    px_config: Any = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser and return a BrowserContext with common options pre-set.
@@ -753,6 +797,7 @@ def launch_context(
     Returns:
         Playwright BrowserContext object.
     """
+    bypass_px = _resolve_px_bypass(bypass_px, kwargs)
     _check_removed_kwargs(kwargs)
 
     timezone = _resolve_timezone(timezone, kwargs)
@@ -768,6 +813,7 @@ def launch_context(
     browser = launch(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
                      timezone=timezone, locale=locale, extension_paths=extension_paths,
                      license_key=license_key, browser_version=browser_version,
+                     bypass_px=bypass_px, px_config=px_config,
                      # Caller chose a viewport geometry → don't also auto-maximize
                      # the window (mirrors the persistent-context path + JS).
                      _suppress_maximize=(viewport is not _VIEWPORT_UNSET or "no_viewport" in kwargs))
@@ -829,6 +875,8 @@ async def launch_context_async(
     extension_paths: list[str] | None = None,
     license_key: str | None = None,
     browser_version: str | None = None,
+    bypass_px: bool = False,
+    px_config: Any = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_context().
@@ -878,6 +926,7 @@ async def launch_context_async(
         >>>
         >>> asyncio.run(main())
     """
+    bypass_px = _resolve_px_bypass(bypass_px, kwargs)
     _check_removed_kwargs(kwargs)
 
     timezone = _resolve_timezone(timezone, kwargs)
@@ -892,6 +941,7 @@ async def launch_context_async(
     browser = await launch_async(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
                                  timezone=timezone, locale=locale, extension_paths=extension_paths,
                                  license_key=license_key, browser_version=browser_version,
+                                 bypass_px=bypass_px, px_config=px_config,
                                  # Caller chose a viewport geometry → don't also auto-maximize
                                  # the window (mirrors the persistent-context path + JS).
                                  _suppress_maximize=(viewport is not _VIEWPORT_UNSET or "no_viewport" in kwargs))
@@ -949,6 +999,7 @@ async def launch_context_async(
 
 def _ensure_proxy_scheme(proxy_url: str) -> str:
     """Prepend http:// to schemeless proxy URLs so parsers can extract hostname."""
+    proxy_url = proxy_url.strip()
     return proxy_url if "://" in proxy_url else f"http://{proxy_url}"
 
 
@@ -1424,6 +1475,7 @@ def _normalize_http_string_url(url: str) -> str:
     Same pattern as ``_normalize_socks_string_url`` — decode then re-encode to
     ensure Chromium's proxy URL parser handles special chars correctly.
     """
+    url = url.strip()
     normalized = url if "://" in url else f"http://{url}"
     try:
         parsed = urlparse(normalized)

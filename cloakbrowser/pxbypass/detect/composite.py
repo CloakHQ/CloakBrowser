@@ -40,6 +40,13 @@ class CompositeDetector(BaseDetector):
 
     def detect(self, page: Any) -> DetectResult:
         results = [d.detect(page) for d in self.detectors]
+        return self._combine(results)
+
+    async def detect_async(self, page: Any) -> DetectResult:
+        results = [await detector.detect_async(page) for detector in self.detectors]
+        return self._combine(results)
+
+    def _combine(self, results: list[DetectResult]) -> DetectResult:
         hits = [r for r in results if r.detected and r.confidence >= self.min_confidence]
 
         if self.mode == DetectMode.ALL:
