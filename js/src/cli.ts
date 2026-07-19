@@ -25,7 +25,7 @@ import { countFontsPresent, WINDOWS_FONT_TELLS, OFFICE_FONT_TELLS } from "./font
 import { resolveLicenseKey, validateLicense, getProLatestVersion, getActiveSessionCount, type LicenseInfo } from "./license.js";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -427,10 +427,26 @@ async function main(): Promise<void> {
 }
 
 // Only run when invoked as the CLI entry point — not when imported by tests.
-// import.meta.url is resolved through symlinks by Node's ESM loader, but
-// process.argv[1] is left exactly as invoked — so realpath both sides before
-// comparing, otherwise every symlinked bin (npm/pnpm/npx) fails the check silently.
-const invokedPath = process.argv[1];
-if (invokedPath && import.meta.url === pathToFileURL(fs.realpathSync(invokedPath)).href) {
+// import.meta.url and process.argv[1] may each be a symlink (npm/pnpm/npx bin
+// shims resolve through node_modules/.bin), and the two need not start equal,
+// so realpath BOTH sides before comparing. This is what lets `npx cloakbrowser
+// info` (and every other subcommand) actually run instead of exiting 0 with no
+// output (#427).
+export function isCliEntry(invokedPath: string | undefined, metaUrl: string): boolean {
+  if (!invokedPath) {
+    return false;
+  }
+  try {
+    const invokedReal = fs.realpathSync(invokedPath);
+    const thisReal = fs.realpathSync(fileURLToPath(metaUrl));
+    return invokedReal === thisReal;
+  } catch {
+    // If either path can't be resolved (e.g. a shim that doesn't exist yet),
+    // don't auto-run main() — safer to do nothing than to run with a bad path.
+    return false;
+  }
+}
+
+if (isCliEntry(process.argv[1], import.meta.url)) {
   main();
 }
