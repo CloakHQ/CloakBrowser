@@ -15,6 +15,7 @@ import { getCacheDir, getPlatformTag } from "./config.js";
 
 const VALIDATE_URL = "https://cloakbrowser.dev/api/license/validate";
 const PRO_VERSION_URL = "https://cloakbrowser.dev/api/download/version";
+const SESSION_COUNT_URL = "https://cloakbrowser.dev/api/license/session/count";
 
 const LICENSE_CACHE_TTL_MS = 86_400_000; // 24 hours
 const PRO_VERSION_CHECK_INTERVAL_MS = 3_600_000; // 1 hour
@@ -23,6 +24,64 @@ export interface LicenseInfo {
   valid: boolean;
   plan: string;
   expires: string | null;
+}
+
+/**
+ * The Pro binary refused to run for a license reason. Thrown when a launch
+ * fails and the browser process exited with one of the Pro binary's license
+ * exit codes, carrying a human-readable reason instead of the opaque
+ * "target/browser closed" error the caller would otherwise see.
+ */
+export class CloakBrowserLicenseError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "CloakBrowserLicenseError";
+  }
+}
+
+// Exit codes the Pro binary uses for honest-user license denials. The binary
+// emits only the number (no diagnostic strings, by design); the message text
+// lives here in the wrapper. Mirrors Python _LICENSE_EXIT_MESSAGES.
+const LICENSE_EXIT_MESSAGES: Record<number, string> = {
+  76: "CloakBrowser Pro: session limit reached for your plan. Close another running session or upgrade your plan.",
+  77: "CloakBrowser Pro: license key is invalid, expired, or missing. Check CLOAKBROWSER_LICENSE_KEY.",
+  78: "CloakBrowser Pro: couldn't verify your license (license server unreachable or a connection problem).",
+  79: "CloakBrowser Pro: local configuration problem, ~/.cloakbrowser is not writable.",
+};
+
+// Playwright embeds the child-process exit as "<process did exit: exitCode=N, ...>".
+// Puppeteer surfaces it as "Browser process exited with code N" / "with exit code N".
+// Anchored so an unrelated "exitCode=" elsewhere in the error can't false-match.
+const EXIT_CODE_PATTERNS = [
+  /process did exit:\s*exitCode=(\d+)/,
+  /exited with (?:exit )?code (\d+)/i,
+];
+
+/**
+ * Map a launch-failure message to a license reason, or null. Returns the human
+ * message when the browser process exited with a known license exit code, else
+ * null so a genuine crash propagates unchanged.
+ */
+export function licenseErrorMessage(errorText: string): string | null {
+  const text = errorText || "";
+  for (const re of EXIT_CODE_PATTERNS) {
+    const match = text.match(re);
+    if (match) {
+      const msg = LICENSE_EXIT_MESSAGES[Number(match[1])];
+      if (msg) return msg;
+    }
+  }
+  return null;
+}
+
+/**
+ * Return a CloakBrowserLicenseError if a launch failure was a license deny,
+ * else null so the original error propagates unchanged.
+ */
+export function licenseErrorFrom(err: unknown): CloakBrowserLicenseError | null {
+  const text = err instanceof Error ? err.message : String(err);
+  const msg = licenseErrorMessage(text);
+  return msg !== null ? new CloakBrowserLicenseError(msg, { cause: err }) : null;
 }
 
 /**
@@ -254,6 +313,34 @@ export async function getProLatestVersion(): Promise<string | null> {
     }
 
     return version;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How many concurrent sessions (seats) this license is holding right now.
+ *
+ * Deliberately NOT cached: a cached seat count is a wrong seat count. Returns
+ * null when the number is unknown — the server couldn't be reached, or it
+ * reported the count as unavailable (it does that instead of a false 0 while
+ * running in leaseless mode). Callers render null as "unavailable".
+ */
+export async function getActiveSessionCount(licenseKey: string): Promise<number | null> {
+  try {
+    const resp = await fetch(SESSION_COUNT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ license_key: licenseKey }),
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+    }
+
+    const data = (await resp.json()) as Record<string, unknown>;
+    return typeof data.active === "number" ? data.active : null;
   } catch {
     return null;
   }

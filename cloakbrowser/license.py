@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,7 @@ logger = logging.getLogger("cloakbrowser")
 
 VALIDATE_URL = "https://cloakbrowser.dev/api/license/validate"
 PRO_VERSION_URL = "https://cloakbrowser.dev/api/download/version"
+SESSION_COUNT_URL = "https://cloakbrowser.dev/api/license/session/count"
 
 LICENSE_CACHE_TTL = 86400  # 24 hours
 PRO_VERSION_CHECK_INTERVAL = 3600  # 1 hour
@@ -32,6 +34,56 @@ class LicenseInfo:
     valid: bool
     plan: str
     expires: str | None
+
+
+class CloakBrowserLicenseError(RuntimeError):
+    """The Pro binary refused to run for a license reason.
+
+    Raised when a launch fails and the browser process exited with one of the
+    Pro binary's license exit codes (see ``_LICENSE_EXIT_MESSAGES``). Carries a
+    human-readable reason instead of the opaque "target/browser closed" error
+    the caller would otherwise see.
+    """
+
+
+# Exit codes the Pro binary uses for honest-user license denials. The binary
+# emits only the number (no diagnostic strings, by design); the message text
+# lives here in the wrapper.
+_LICENSE_EXIT_MESSAGES = {
+    76: (
+        "CloakBrowser Pro: session limit reached for your plan. Close another "
+        "running session or upgrade your plan."
+    ),
+    77: (
+        "CloakBrowser Pro: license key is invalid, expired, or missing. Check "
+        "CLOAKBROWSER_LICENSE_KEY."
+    ),
+    78: (
+        "CloakBrowser Pro: couldn't verify your license (license server "
+        "unreachable or a connection problem)."
+    ),
+    79: (
+        "CloakBrowser Pro: local configuration problem, ~/.cloakbrowser "
+        "is not writable."
+    ),
+}
+
+# Playwright reports a child-process exit in the launch-failure text as
+# "<process did exit: exitCode=N, signal=null>". Anchor to that record so an
+# unrelated "exitCode=" elsewhere in the error can't false-match.
+_EXIT_CODE_RE = re.compile(r"process did exit:\s*exitCode=(\d+)")
+
+
+def license_error_message(error_text: str) -> str | None:
+    """Map a launch-failure message to a license reason, or None.
+
+    Returns the human message when the browser process exited with a known
+    license exit code, else None so a genuine crash propagates unchanged.
+    """
+    match = _EXIT_CODE_RE.search(error_text or "")
+    if not match:
+        return None
+    return _LICENSE_EXIT_MESSAGES.get(int(match.group(1)))
 
 
 _LICENSE_KEY_SOURCE_PARAM = "param"
@@ -230,6 +282,27 @@ def get_pro_latest_version() -> str | None:
 
     except Exception as e:
         logger.debug("Pro version check failed: %s", e)
+        return None
+
+
+def get_active_session_count(license_key: str) -> int | None:
+    """How many concurrent sessions (seats) this license is holding right now.
+
+    Deliberately NOT cached: a cached seat count is a wrong seat count. Returns
+    None when the number is unknown — the server couldn't be reached, or it
+    reported the count as unavailable (it does that instead of a false 0 while
+    running in leaseless mode). Callers render None as "unavailable".
+    """
+    try:
+        resp = httpx.post(
+            SESSION_COUNT_URL,
+            json={"license_key": license_key},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        return resp.json().get("active")
+    except Exception as e:
+        logger.debug("Session count lookup failed: %s", e)
         return None
 
 

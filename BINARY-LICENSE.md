@@ -1,6 +1,6 @@
 # CloakBrowser Binary License
 
-**Version 1.2 — July 2026**
+**Version 1.3 — July 2026**
 
 Copyright (c) 2026 CloakHQ. All rights reserved.
 
@@ -56,6 +56,12 @@ Any license key, account access, or subscription entitlement provided by CloakHQ
 
 You may not share, sell, lease, transfer, publish, or otherwise make available any license key, account access, or subscription entitlement to any third party, or use it to circumvent license validation, session limits, or subscription requirements, and CloakHQ may immediately suspend or revoke access for any violation.
 
+CloakHQ reserves the right, at its sole discretion, to refuse to issue a license key, deny or suspend access, revoke or deactivate any license key or subscription entitlement, or decline to provide the Binary to any person or entity, at any time and without prior notice.
+
+All license keys, subscription entitlements, and usage allowances are subject to fair and reasonable use consistent with their intended purpose. CloakHQ reserves the right to review, limit, throttle, or restrict usage patterns that are abusive, disproportionate, or inconsistent with normal use of the applicable subscription tier, even where such usage remains within stated session limits.
+
+You may not register or use multiple accounts to obtain more than one free trial. This restriction applies only to trial abuse — purchasing multiple paid subscriptions and combining their session limits is permitted.
+
 ## Restrictions
 
 You may NOT:
@@ -106,7 +112,7 @@ Attribution is appreciated but not required. If you'd like to credit CloakBrowse
 
 ## Acceptable Use
 
-You are solely responsible for how you use the Binary. You agree NOT to use the Binary for any activity that violates applicable laws or regulations in your jurisdiction. CloakHQ does not endorse, encourage, or support any illegal use.
+You are solely responsible for how you use the Binary, including any harm, loss, or damage caused to any third party arising from your use of the Binary. You agree NOT to use the Binary for any activity that violates applicable laws or regulations in your jurisdiction. CloakHQ does not endorse, encourage, or support any illegal use.
 
 Without limiting the above, the following uses are expressly prohibited:
 
@@ -117,7 +123,7 @@ Without limiting the above, the following uses are expressly prohibited:
 
 ## Indemnification
 
-You agree to indemnify and hold harmless CloakHQ, its contributors, officers, employees, and affiliates from any claims, damages, losses, liabilities, and expenses, including reasonable legal fees, arising from your use of the Binary, your violation of this License, or your violation of any applicable law or third-party rights.
+You agree to indemnify and hold harmless CloakHQ, its contributors, officers, employees, affiliates, licensors, authors, and copyright holders from any claims, damages, losses, liabilities, and expenses, including reasonable legal fees, arising from your use of the Binary, your violation of this License, or your violation of any applicable law or third-party rights.
 
 ## Disclaimer
 
@@ -143,6 +149,8 @@ CloakHQ may provide updates, patches, new versions, or support for the Binary at
 
 This License terminates automatically if you violate any of its terms. Upon termination, you must stop using the Binary and destroy all copies of the Binary in your possession or control. The Intellectual Property, Restrictions, Trademark Notice, Acceptable Use, Indemnification, Disclaimer, Limitation of Liability, Governing Law, Reservation of Rights, Entire Agreement, No Waiver, Assignment, and Severability sections survive termination.
 
+CloakHQ may also suspend your access to the Binary, pending investigation and without prior notice, where it suspects unusual or unlawful use, suspicious account or license activity, or activity that may damage, disrupt, or compromise its servers or infrastructure.
+
 ## Governing Law
 
 This License is governed by the laws of the jurisdiction in which CloakHQ, or its applicable legal entity or successor, is established. Any disputes arising under or relating to this License shall be subject to the exclusive jurisdiction of the courts in that jurisdiction.
@@ -166,6 +174,10 @@ You may not assign or transfer this License or any rights under it without prior
 ## Severability
 
 If any provision of this License is held to be unenforceable or invalid, that provision shall be modified to the minimum extent necessary to make it enforceable, and all remaining provisions shall continue in full force and effect.
+
+## Modifications to This License
+
+CloakHQ may update or modify this License from time to time. Material changes will be communicated through the channels described in the Modifications to Pricing and Terms section above, where applicable, or via a notice on official CloakHQ distribution channels. Continued use of the Binary after the effective date of any change constitutes acceptance of the updated License.
 
 ## Contact
 

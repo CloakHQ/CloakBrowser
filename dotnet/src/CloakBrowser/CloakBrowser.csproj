@@ -10,7 +10,7 @@
 
     <!-- NuGet packaging metadata -->
     <PackageId>CloakBrowser</PackageId>
-    <Version>0.4.10</Version>
+    <Version>0.4.12</Version>
     <Authors>CloakHQ</Authors>
     <Description>Stealth Chromium that passes every bot detection test. Drop-in Playwright (.NET) replacement with source-level fingerprint patches.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

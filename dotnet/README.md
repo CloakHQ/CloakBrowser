@@ -6,7 +6,7 @@ Chromium that passes bot-detection tests, built on top of
 [`Microsoft.Playwright`](https://playwright.dev/dotnet/).
 
 CloakBrowser is a thin wrapper around a closed-source, source-level patched
-Chromium binary (58 C++ fingerprint patches). This port reproduces **all** of the
+Chromium binary (71 C++ fingerprint patches). This port reproduces **all** of the
 wrapper functionality with identical behavior - same launch flags, same proxy /
 GeoIP / WebRTC logic, and a humanize layer whose curves, timings, and stealth
 paths match the Python and JavaScript clients exactly.
@@ -361,7 +361,7 @@ var page = await ctx.NewPageAsync();
 CloakBrowser ships in two tiers:
 
 - **Free (v146)** — free forever on [GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases). Unlimited sessions. Works today, goes stale as detection evolves.
-- **Pro (latest, v148)** — the newest patches and Chromium upgrades first, so detection stays green as anti-bot systems change. Linux, Windows, and macOS (Apple Silicon + Intel).
+- **Pro (latest, v150)** — the newest patches and Chromium upgrades first, so detection stays green as anti-bot systems change. Linux, Windows, and macOS (Apple Silicon + Intel).
 
 Pro plans → **[cloakbrowser.dev](https://cloakbrowser.dev)**
 

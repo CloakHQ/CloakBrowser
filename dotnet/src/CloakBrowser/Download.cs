@@ -82,7 +82,7 @@ public static class Download
     // Pro Chromium major shown in the free-tier welcome banner. Bump at each Pro
     // major release (there is no local constant to derive it from - the live Pro
     // version comes from the network, which we don't call just to print a banner).
-    private const string ProMajor = "148";
+    private const string ProMajor = "150";
 
     /// <summary>
     /// Show the first-launch welcome banner once (gated by a marker file). The

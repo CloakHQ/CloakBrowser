@@ -17,8 +17,10 @@ import { maybeWarnWindowsFonts } from "./fonts.js";
 import { ensureBinary } from "./download.js";
 import { isSocksProxy, normalizeHttpStringUrl, parseProxyUrl, reconstructHttpUrl, resolveProxyConfig } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
-import { buildLaunchEnv } from "./license.js";
+import { buildLaunchEnv, licenseErrorFrom } from "./license.js";
 import { seedWidevineHint } from "./widevine.js";
+
+export { CloakBrowserLicenseError } from "./license.js";
 
 /**
  * Resolve Puppeteer's defaultViewport. Headed -> null (track the real window so
@@ -161,15 +163,22 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   );
   const envResult = launchEnv !== undefined ? { env: launchEnv } : {};
 
-  const browser = await puppeteer.default.launch({
-    ...restLaunchOptions,
-    executablePath: binaryPath,
-    headless: options.headless ?? true,
-    args,
-    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
-    defaultViewport: resolveDefaultViewport(options),
-    ...envResult,
-  });
+  let browser;
+  try {
+    browser = await puppeteer.default.launch({
+      ...restLaunchOptions,
+      executablePath: binaryPath,
+      headless: options.headless ?? true,
+      args,
+      ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
+      defaultViewport: resolveDefaultViewport(options),
+      ...envResult,
+    });
+  } catch (err) {
+    const lic = licenseErrorFrom(err);
+    if (lic) throw lic;
+    throw err;
+  }
 
   await applyPostLaunch(browser, options, proxyAuth);
   return browser;
@@ -210,16 +219,23 @@ export async function launchPersistentContext(
   );
   const envResult = launchEnv !== undefined ? { env: launchEnv } : {};
 
-  const browser = await puppeteer.default.launch({
-    ...restLaunchOptions,
-    executablePath: binaryPath,
-    headless: options.headless ?? true,
-    args,
-    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
-    userDataDir: options.userDataDir,
-    defaultViewport: resolveDefaultViewport(options),
-    ...envResult,
-  });
+  let browser;
+  try {
+    browser = await puppeteer.default.launch({
+      ...restLaunchOptions,
+      executablePath: binaryPath,
+      headless: options.headless ?? true,
+      args,
+      ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
+      userDataDir: options.userDataDir,
+      defaultViewport: resolveDefaultViewport(options),
+      ...envResult,
+    });
+  } catch (err) {
+    const lic = licenseErrorFrom(err);
+    if (lic) throw lic;
+    throw err;
+  }
 
   await applyPostLaunch(browser, options, proxyAuth);
   return browser;

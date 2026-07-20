@@ -18,7 +18,7 @@ import platform
 import subprocess
 import sys
 
-UPGRADE_HINT = "→ Try the latest Pro binary (Chromium 148) free for 7 days: https://cloakbrowser.dev"
+UPGRADE_HINT = "→ Try the latest Pro binary (Chromium 150) free for 7 days: https://cloakbrowser.dev"
 
 
 def _setup_logging() -> None:
@@ -191,6 +191,16 @@ def _collect_diagnostics(quick: bool) -> dict:
     # before the binary section, displayed after it.
     license_info, entitled_pro = _resolve_license()
 
+    # Live seat count — a Pro-only extra lookup, so gated exactly like the server
+    # latest-version check below: --quick keeps `info` network-free, and a free
+    # tier holds no seats. Never cached (a cached count is a wrong count).
+    if entitled_pro and not quick:
+        from .license import get_active_session_count, resolve_license_key
+
+        key = resolve_license_key(None)
+        if key:
+            license_info["sessions"] = {"active": get_active_session_count(key)}
+
     from .config import get_platform_tag
 
     try:
@@ -339,6 +349,13 @@ def _print_diagnostics(diag: dict) -> None:
         print(f"License:   {tier} ({lic['error']})")
     else:
         print(f"License:   {tier}")
+
+    if "sessions" in lic:
+        active = lic["sessions"]["active"]
+        if active is None:
+            print("Sessions:  unavailable")
+        else:
+            print(f"Sessions:  {active} seat{'' if active == 1 else 's'} in use")
 
     geoip = diag["geoip"]
     print(f"GeoIP DB:  {'present' if geoip['db_present'] else 'not downloaded (optional)'}")

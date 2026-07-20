@@ -11,7 +11,7 @@
 
 Drop-in Playwright/Puppeteer replacement. Same API, same code — just swap the import. **3 lines of code, 30 seconds to unblock.**
 
-- **66 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, WebRTC, network timing, automation signals
+- **71 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, WebRTC, network timing, automation signals
 - **0.9 reCAPTCHA v3 score** — human-level, server-verified
 - **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — tested against 30+ detection sites
 - **`npm install cloakbrowser`** — binary auto-downloads, auto-updates, zero config
@@ -233,13 +233,13 @@ const page = await browser.newPage();
 
 ## Platforms
 
-| Platform | Chromium | Patches | Status |
+| Platform | Free | Pro | Status |
 |---|---|---|---|
-| Linux x86_64 | 146 | 58 | ✅ Latest |
-| Linux arm64 (RPi, Graviton) | 146 | 58 | ✅ |
-| macOS arm64 (Apple Silicon) | 145 | 26 | ✅ |
-| macOS x86_64 (Intel) | 145 | 26 | ✅ |
-| Windows x86_64 | 146 | 58 | ✅ Latest |
+| Linux x86_64 | Chromium 146 (58 patches) | Chromium 150 (71 patches) | ✅ |
+| Linux arm64 (RPi, Graviton) | Chromium 146 (58 patches) | Chromium 150 (71 patches) | ✅ |
+| macOS arm64 (Apple Silicon) | Chromium 145 (26 patches) | Chromium 150 (71 patches) | ✅ |
+| macOS x86_64 (Intel) | Chromium 145 (26 patches) | Chromium 150 (71 patches) | ✅ |
+| Windows x86_64 | Chromium 146 (58 patches) | Chromium 150 (71 patches) | ✅ |
 
 ## CloakBrowser Pro
 
@@ -247,12 +247,12 @@ The wrapper (Python + JS) is MIT, free forever. The binary uses a delayed
 free-release model:
 
 - **Free (v146)** — free forever on [GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases). Unlimited sessions. Works today, goes stale as detection evolves.
-- **Pro (latest, v148)** — the newest patches and Chromium upgrades first, so the [test results](#test-results) stay green as anti-bot systems change. Linux, Windows, and macOS (Apple Silicon + Intel).
+- **Pro (latest, v150)** — the newest patches and Chromium upgrades first, so the [test results](#test-results) stay green as anti-bot systems change. Linux, Windows, and macOS (Apple Silicon + Intel).
 
 Anti-bot detection updates constantly — an older binary degrades within weeks.
 Pro keeps you on the build that's actively maintained against it.
 
-**New: try the latest Pro binary (Chromium 148) free for 7 days** — see how it
+**New: try the latest Pro binary (Chromium 150) free for 7 days** — see how it
 performs against your targets. Cancel anytime.
 
 Activate with your license key (env var, `licenseKey` option, or `~/.cloakbrowser/license.key`):

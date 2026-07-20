@@ -40,9 +40,11 @@ public static class CloakLauncher
         CloakLog.Debug($"Launching stealth Chromium (headless={options.Headless}, args={chromeArgs.Count})");
 
         var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        // Only the launch is wrapped for license-error mapping (mirrors Python/JS).
+        IBrowser browser;
         try
         {
-            var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+            browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
                 ExecutablePath = binaryPath,
                 Headless = options.Headless,
@@ -51,7 +53,19 @@ public static class CloakLauncher
                 Proxy = proxyResolution.PlaywrightProxy,
                 Env = License.BuildLaunchEnv(options.LicenseKey),
             }).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            playwright.Dispose();
+            var lic = License.LicenseErrorFrom(ex);
+            if (lic is not null) throw lic;
+            throw;
+        }
 
+        // Post-launch handle construction: a failure here is not a license issue,
+        // but the browser + Playwright still need tearing down.
+        try
+        {
             var humanCfg = options.Humanize
                 ? HumanConfigFactory.Resolve(options.HumanPreset, options.HumanConfig)
                 : null;
@@ -65,6 +79,8 @@ public static class CloakLauncher
         }
         catch
         {
+            try { await browser.CloseAsync().ConfigureAwait(false); }
+            catch (Exception closeEx) { CloakLog.Warning($"browser cleanup after post-launch failure failed: {closeEx.Message}"); }
             playwright.Dispose();
             throw;
         }
@@ -153,6 +169,8 @@ public static class CloakLauncher
         Widevine.SeedWidevineHint(userDataDir, binaryPath);
 
         var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        // Only the launch is wrapped for license-error mapping (mirrors Python/JS).
+        IBrowserContext context;
         try
         {
             var ctxLaunchOptions = new BrowserTypeLaunchPersistentContextOptions
@@ -166,9 +184,21 @@ public static class CloakLauncher
             };
             ApplyContextEmulation(ctxLaunchOptions, options);
 
-            var context = await playwright.Chromium.LaunchPersistentContextAsync(
+            context = await playwright.Chromium.LaunchPersistentContextAsync(
                 userDataDir, ctxLaunchOptions).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            playwright.Dispose();
+            var lic = License.LicenseErrorFrom(ex);
+            if (lic is not null) throw lic;
+            throw;
+        }
 
+        // Post-launch handle construction: a failure here is not a license issue,
+        // but the context + Playwright still need tearing down.
+        try
+        {
             var humanCfg = options.Humanize
                 ? HumanConfigFactory.Resolve(options.HumanPreset, options.HumanConfig)
                 : null;
@@ -176,6 +206,8 @@ public static class CloakLauncher
         }
         catch
         {
+            try { await context.CloseAsync().ConfigureAwait(false); }
+            catch (Exception closeEx) { CloakLog.Warning($"context cleanup after post-launch failure failed: {closeEx.Message}"); }
             playwright.Dispose();
             throw;
         }

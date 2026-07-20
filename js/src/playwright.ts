@@ -15,7 +15,7 @@ import { maybeWarnWindowsFonts } from "./fonts.js";
 import { ensureBinary } from "./download.js";
 import { resolveProxyConfig } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
-import { buildLaunchEnv } from "./license.js";
+import { buildLaunchEnv, licenseErrorFrom } from "./license.js";
 import { seedWidevineHint } from "./widevine.js";
 
 /** @internal Accept both timezone and timezoneId — either works, no warning. Exported for testing. */
@@ -172,7 +172,14 @@ export async function humanizeBrowser(
  */
 export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright-core");
-  const browser = await chromium.launch(await buildLaunchOptions(options));
+  let browser: Browser;
+  try {
+    browser = await chromium.launch(await buildLaunchOptions(options));
+  } catch (err) {
+    const lic = licenseErrorFrom(err);
+    if (lic) throw lic;
+    throw err;
+  }
   // Headed: a bare browser.newPage() would inherit Playwright's emulated 1280x720
   // viewport -> outerWidth < innerWidth (impossible window = bot tell). Default
   // newPage()/newContext() to viewport:null so the page tracks the real window.
@@ -314,16 +321,23 @@ export async function launchPersistentContext(
 
   // locale and timezone are set via binary flags (--lang, --fingerprint-timezone)
   // — NOT via Playwright context kwargs which use detectable CDP emulation.
-  const context = await chromium.launchPersistentContext(options.userDataDir, {
-    executablePath: binaryPath,
-    headless: options.headless ?? true,
-    args,
-    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
-    ...(proxyOption ? { proxy: proxyOption } : {}),
-    ...buildContextOptions(options),
-    ...restLaunchOptions,
-    ...envResult,
-  });
+  let context: BrowserContext;
+  try {
+    context = await chromium.launchPersistentContext(options.userDataDir, {
+      executablePath: binaryPath,
+      headless: options.headless ?? true,
+      args,
+      ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
+      ...(proxyOption ? { proxy: proxyOption } : {}),
+      ...buildContextOptions(options),
+      ...restLaunchOptions,
+      ...envResult,
+    });
+  } catch (err) {
+    const lic = licenseErrorFrom(err);
+    if (lic) throw lic;
+    throw err;
+  }
 
   // Human-like behavioral patching
   if (options.humanize) {

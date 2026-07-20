@@ -13,6 +13,7 @@ from cloakbrowser.download import BinaryVerificationError, ensure_binary
 from cloakbrowser.license import (
     LicenseInfo,
     build_launch_env,
+    get_active_session_count,
     get_pro_latest_version,
     resolve_license_key,
     validate_license,
@@ -307,6 +308,68 @@ class TestGetProLatestVersion:
                 version = get_pro_latest_version()
 
         assert version is None
+
+
+# ── get_active_session_count ──────────────────────────
+
+
+class TestGetActiveSessionCount:
+    def _resp(self, payload):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = payload
+        mock_resp.raise_for_status = MagicMock()
+        return mock_resp
+
+    def test_returns_count(self):
+        with patch(
+            "cloakbrowser.license.httpx.post", return_value=self._resp({"valid": True, "active": 3})
+        ):
+            assert get_active_session_count("cb_key") == 3
+
+    def test_posts_the_key_in_the_body(self):
+        """POST, not GET: the key is a live credential and a query string would
+        land in the server's access log."""
+        with patch(
+            "cloakbrowser.license.httpx.post", return_value=self._resp({"valid": True, "active": 0})
+        ) as mock_post:
+            get_active_session_count("cb_key")
+
+        args, kwargs = mock_post.call_args
+        assert args[0] == "https://cloakbrowser.dev/api/license/session/count"
+        assert kwargs["json"] == {"license_key": "cb_key"}
+
+    def test_zero_seats_is_not_confused_with_unknown(self):
+        """0 is a real answer ("nothing running"), None means "couldn't tell" —
+        they print differently, so the falsy-vs-None distinction must survive."""
+        with patch(
+            "cloakbrowser.license.httpx.post", return_value=self._resp({"valid": True, "active": 0})
+        ):
+            assert get_active_session_count("cb_key") == 0
+
+    def test_server_reported_unavailable_returns_none(self):
+        """Leaseless mode on the server → {"active": null}, never a false 0."""
+        with patch(
+            "cloakbrowser.license.httpx.post",
+            return_value=self._resp({"valid": True, "active": None}),
+        ):
+            assert get_active_session_count("cb_key") is None
+
+    def test_network_error_returns_none(self):
+        """info is a diagnostic — a network failure degrades to "unavailable",
+        it never raises out of the command."""
+        with patch("cloakbrowser.license.httpx.post", side_effect=Exception("network")):
+            assert get_active_session_count("cb_key") is None
+
+    def test_is_never_cached(self):
+        """validate_license caches 24h; a cached seat count would be a wrong seat
+        count, so every call must hit the network."""
+        with patch(
+            "cloakbrowser.license.httpx.post", return_value=self._resp({"valid": True, "active": 2})
+        ) as mock_post:
+            get_active_session_count("cb_key")
+            get_active_session_count("cb_key")
+
+        assert mock_post.call_count == 2
 
 
 # ── Config pro parameter ──────────────────────────────

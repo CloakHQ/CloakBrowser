@@ -72,7 +72,7 @@ WELCOME_FREE_INTERVAL = 3 * 24 * 3600
 # Pro Chromium major shown in the free-tier welcome banner. Bump at each Pro
 # major release (there is no local constant to derive it from — the live Pro
 # version comes from the network, which we don't call just to print a banner).
-PRO_MAJOR = "148"
+PRO_MAJOR = "150"
 
 
 def _welcome_due(marker: Path, pro: bool) -> bool:

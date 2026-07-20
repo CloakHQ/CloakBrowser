@@ -26,6 +26,21 @@ internal static class Diagnostics
         // launches (EnsureBinary only uses the Pro binary when a key validates).
         var (license, entitledPro) = ResolveLicense();
 
+        // Live seat count — a Pro-only extra lookup, so gated exactly like the
+        // server latest-version check: --quick keeps `info` network-free, and a
+        // free tier holds no seats. Never cached (a cached count is a wrong count).
+        if (entitledPro && !quick)
+        {
+            string? sessionKey = License.ResolveLicenseKey();
+            if (!string.IsNullOrEmpty(sessionKey))
+            {
+                license["sessions"] = new Dictionary<string, object?>
+                {
+                    ["active"] = License.GetActiveSessionCount(sessionKey!),
+                };
+            }
+        }
+
         try { env["platform_tag"] = Config.GetPlatformTag(); }
         catch (Exception ex) { env["platform_tag"] = $"unavailable ({ex.Message})"; }
 

@@ -585,3 +585,46 @@ describe("launchPersistentContext (unit)", () => {
     expect(args.env!.MY_VAR).toBe("keep");
   });
 });
+
+// ---------------------------------------------------------------------------
+// License exit-code surfacing at launch() (mock playwright-core to reject)
+// ---------------------------------------------------------------------------
+
+describe("launch license error surfacing (unit)", () => {
+  const origEnv = process.env.CLOAKBROWSER_BINARY_PATH;
+
+  beforeEach(() => {
+    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    if (origEnv) {
+      process.env.CLOAKBROWSER_BINARY_PATH = origEnv;
+    } else {
+      delete process.env.CLOAKBROWSER_BINARY_PATH;
+    }
+  });
+
+  it("maps a license exit code to CloakBrowserLicenseError", async () => {
+    const licenseErr = new Error(
+      "browserType.launch: Target closed\nBrowser logs:\n- [pid=1] <process did exit: exitCode=77, signal=null>"
+    );
+    vi.doMock("playwright-core", () => ({
+      chromium: { launch: vi.fn().mockRejectedValue(licenseErr) },
+    }));
+    const { launch } = await import("../src/playwright.js");
+    const { CloakBrowserLicenseError } = await import("../src/license.js");
+    await expect(launch()).rejects.toBeInstanceOf(CloakBrowserLicenseError);
+  });
+
+  it("re-throws a non-license launch error unchanged (exact object)", async () => {
+    const other = new Error("some unrelated launch failure");
+    vi.doMock("playwright-core", () => ({
+      chromium: { launch: vi.fn().mockRejectedValue(other) },
+    }));
+    const { launch } = await import("../src/playwright.js");
+    await expect(launch()).rejects.toBe(other);
+  });
+});

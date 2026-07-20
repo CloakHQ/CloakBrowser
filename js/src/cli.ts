@@ -22,7 +22,7 @@ import {
   CHROMIUM_VERSION,
 } from "./config.js";
 import { countFontsPresent, WINDOWS_FONT_TELLS, OFFICE_FONT_TELLS } from "./fonts.js";
-import { resolveLicenseKey, validateLicense, getProLatestVersion, type LicenseInfo } from "./license.js";
+import { resolveLicenseKey, validateLicense, getProLatestVersion, getActiveSessionCount, type LicenseInfo } from "./license.js";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -31,7 +31,7 @@ import os from "node:os";
 import path from "node:path";
 
 const UPGRADE_HINT =
-  "→ Try the latest Pro binary (Chromium 148) free for 7 days: https://cloakbrowser.dev";
+  "→ Try the latest Pro binary (Chromium 150) free for 7 days: https://cloakbrowser.dev";
 
 const USAGE = `Usage: cloakbrowser <command>
 
@@ -180,6 +180,16 @@ export async function collectDiagnostics(quick: boolean): Promise<Record<string,
   // (ensureBinary only uses the Pro binary when a key validates).
   const { license, entitledPro } = await resolveLicense();
 
+  // Live seat count — a Pro-only extra lookup, so gated exactly like the server
+  // latest-version check: --quick keeps `info` network-free, and a free tier
+  // holds no seats. Never cached (a cached count is a wrong count).
+  if (entitledPro && !quick) {
+    const key = resolveLicenseKey();
+    if (key) {
+      license.sessions = { active: await getActiveSessionCount(key) };
+    }
+  }
+
   try {
     diag.environment.platform_tag = getPlatformTag();
   } catch (err) {
@@ -320,6 +330,15 @@ function printDiagnostics(diag: Record<string, any>): void {
     console.log(`License:   ${lic.tier} (${lic.error})`);
   } else {
     console.log(`License:   ${lic.tier}`);
+  }
+
+  if (lic.sessions) {
+    const active = (lic.sessions as { active: number | null }).active;
+    console.log(
+      active === null
+        ? "Sessions:  unavailable"
+        : `Sessions:  ${active} seat${active === 1 ? "" : "s"} in use`
+    );
   }
 
   console.log(`GeoIP DB:  ${diag.geoip.db_present ? "present" : "not downloaded (optional)"}`);

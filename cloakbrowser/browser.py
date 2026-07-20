@@ -29,11 +29,26 @@ from .config import (
     get_default_stealth_args,
 )
 from .download import ensure_binary
-from .license import build_launch_env
+from .license import (
+    CloakBrowserLicenseError,
+    build_launch_env,
+    license_error_message,
+)
 from .human.config import HumanConfigOverrides, HumanPreset
 from .widevine import seed_widevine_hint
 
 logger = logging.getLogger("cloakbrowser")
+
+
+def _license_error(exc: BaseException) -> CloakBrowserLicenseError | None:
+    """Return a CloakBrowserLicenseError if a launch failure was a license deny.
+
+    The Pro binary exits with a distinct code (76-79) on a license problem;
+    Playwright embeds that code in the launch-failure text. Returns None for any
+    other failure so a genuine crash propagates unchanged.
+    """
+    msg = license_error_message(str(exc))
+    return CloakBrowserLicenseError(msg) if msg is not None else None
 
 
 # Sentinel to distinguish "viewport not provided" from "viewport=None" (disable emulation)
@@ -219,15 +234,25 @@ def launch(
     env_kwargs = {} if launch_env is None else {"env": launch_env}
 
     pw = sync_playwright().start()
-    browser = pw.chromium.launch(
-        executable_path=binary_path,
-        headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **env_kwargs,
-        **proxy_kwargs,
-        **kwargs,
-    )
+    try:
+        browser = pw.chromium.launch(
+            executable_path=binary_path,
+            headless=headless,
+            args=chrome_args,
+            ignore_default_args=IGNORE_DEFAULT_ARGS,
+            **env_kwargs,
+            **proxy_kwargs,
+            **kwargs,
+        )
+    except Exception as exc:
+        lic = _license_error(exc)
+        try:
+            pw.stop()
+        except Exception as stop_exc:
+            logger.warning("Playwright cleanup after launch failure failed: %s", stop_exc)
+        if lic is None:
+            raise
+        raise lic from exc
 
     # Patch close() to also stop the Playwright instance
     _original_close = browser.close
@@ -324,15 +349,25 @@ async def launch_async(  # noqa: C901
     env_kwargs = {} if launch_env is None else {"env": launch_env}
 
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        executable_path=binary_path,
-        headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **env_kwargs,
-        **proxy_kwargs,
-        **kwargs,
-    )
+    try:
+        browser = await pw.chromium.launch(
+            executable_path=binary_path,
+            headless=headless,
+            args=chrome_args,
+            ignore_default_args=IGNORE_DEFAULT_ARGS,
+            **env_kwargs,
+            **proxy_kwargs,
+            **kwargs,
+        )
+    except Exception as exc:
+        lic = _license_error(exc)
+        try:
+            await pw.stop()
+        except Exception as stop_exc:
+            logger.warning("Playwright cleanup after launch failure failed: %s", stop_exc)
+        if lic is None:
+            raise
+        raise lic from exc
 
     # Patch close() to also stop the Playwright instance
     _original_close = browser.close
@@ -464,15 +499,25 @@ def launch_persistent_context(
     seed_widevine_hint(user_data_dir, binary_path)
 
     pw = sync_playwright().start()
-    context = pw.chromium.launch_persistent_context(
-        user_data_dir=os.fspath(user_data_dir),
-        executable_path=binary_path,
-        headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **proxy_kwargs,
-        **context_kwargs,
-    )
+    try:
+        context = pw.chromium.launch_persistent_context(
+            user_data_dir=os.fspath(user_data_dir),
+            executable_path=binary_path,
+            headless=headless,
+            args=chrome_args,
+            ignore_default_args=IGNORE_DEFAULT_ARGS,
+            **proxy_kwargs,
+            **context_kwargs,
+        )
+    except Exception as exc:
+        lic = _license_error(exc)
+        try:
+            pw.stop()
+        except Exception as stop_exc:
+            logger.warning("Playwright cleanup after launch failure failed: %s", stop_exc)
+        if lic is None:
+            raise
+        raise lic from exc
 
     # Patch close() to also stop the Playwright instance
     _original_close = context.close
@@ -601,15 +646,25 @@ async def launch_persistent_context_async(
     seed_widevine_hint(user_data_dir, binary_path)
 
     pw = await async_playwright().start()
-    context = await pw.chromium.launch_persistent_context(
-        user_data_dir=os.fspath(user_data_dir),
-        executable_path=binary_path,
-        headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **proxy_kwargs,
-        **context_kwargs,
-    )
+    try:
+        context = await pw.chromium.launch_persistent_context(
+            user_data_dir=os.fspath(user_data_dir),
+            executable_path=binary_path,
+            headless=headless,
+            args=chrome_args,
+            ignore_default_args=IGNORE_DEFAULT_ARGS,
+            **proxy_kwargs,
+            **context_kwargs,
+        )
+    except Exception as exc:
+        lic = _license_error(exc)
+        try:
+            await pw.stop()
+        except Exception as stop_exc:
+            logger.warning("Playwright cleanup after launch failure failed: %s", stop_exc)
+        if lic is None:
+            raise
+        raise lic from exc
 
     # Patch close() to also stop the Playwright instance
     _original_close = context.close

@@ -52,19 +52,14 @@ AGENTS.md
 .beads
 result
 
-# Private docs (launch posts, strategy)
+#Infra
 docs/
-
-# Internal test infrastructure (Docker, VPS-specific)
 test-infra/
-
-# Website (deployed separately)
 site/
-
-# Browser profile manager (deployed separately)
 manager/
 
-# Release scripts
+managed-serve/
+
 publish.sh
 deploy.sh
 .env

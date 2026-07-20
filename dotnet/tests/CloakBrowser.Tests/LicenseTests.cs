@@ -49,6 +49,7 @@ public class LicenseTests : IDisposable
         Environment.SetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL", _prevDownloadUrl);
         License.ValidateLicenseOverride = null;
         License.ProLatestVersionOverride = null;
+        License.ActiveSessionCountOverride = null;
         try { if (Directory.Exists(_tmp)) Directory.Delete(_tmp, recursive: true); } catch (IOException) { }
     }
 
@@ -265,6 +266,122 @@ public class LicenseTests : IDisposable
     }
 
     // =======================================================================
+    // GetActiveSessionCount — live seat count
+    // =======================================================================
+
+    /// <summary>Captures the request URI + body and returns a canned response.</summary>
+    private sealed class SessionCountHandler : HttpMessageHandler
+    {
+        private readonly string _body;
+        private readonly HttpStatusCode _status;
+        public string? LastUri { get; private set; }
+        public string? LastMethod { get; private set; }
+        public string? LastBody { get; private set; }
+        public int Calls { get; private set; }
+
+        public SessionCountHandler(string body, HttpStatusCode status = HttpStatusCode.OK)
+        {
+            _body = body;
+            _status = status;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            LastUri = request.RequestUri?.ToString();
+            LastMethod = request.Method.Method;
+            LastBody = request.Content?.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult();
+            return Task.FromResult(new HttpResponseMessage(_status)
+            {
+                Content = new StringContent(_body),
+            });
+        }
+    }
+
+    private void WithSessionCountHttp(SessionCountHandler handler, Action body)
+    {
+        var original = License.Http;
+        License.Http = new HttpClient(handler);
+        try { body(); }
+        finally
+        {
+            License.Http.Dispose();
+            License.Http = original;
+        }
+    }
+
+    [Fact]
+    public void ActiveSessionCount_override_used()
+    {
+        License.ActiveSessionCountOverride = _ => 7;
+        Assert.Equal(7, License.GetActiveSessionCount("cb_key"));
+    }
+
+    [Fact]
+    public void ActiveSessionCount_returns_live_count()
+    {
+        var handler = new SessionCountHandler("{\"valid\":true,\"active\":3}");
+        WithSessionCountHttp(handler, () =>
+            Assert.Equal(3, License.GetActiveSessionCount("cb_key")));
+    }
+
+    [Fact]
+    public void ActiveSessionCount_posts_the_key_in_the_body()
+    {
+        // POST, not GET: the key is a live credential and a query string would
+        // land in the server's access log.
+        var handler = new SessionCountHandler("{\"valid\":true,\"active\":0}");
+        WithSessionCountHttp(handler, () => License.GetActiveSessionCount("cb_key"));
+
+        Assert.Equal(License.SessionCountUrl, handler.LastUri);
+        Assert.Equal("POST", handler.LastMethod);
+        Assert.Contains("cb_key", handler.LastBody!);
+    }
+
+    [Fact]
+    public void ActiveSessionCount_zero_is_not_confused_with_unknown()
+    {
+        // 0 is a real answer ("nothing running"); null means "couldn't tell".
+        // They print differently, so 0 must not collapse to null.
+        var handler = new SessionCountHandler("{\"valid\":true,\"active\":0}");
+        WithSessionCountHttp(handler, () =>
+            Assert.Equal(0, License.GetActiveSessionCount("cb_key")));
+    }
+
+    [Fact]
+    public void ActiveSessionCount_null_when_server_reports_unavailable()
+    {
+        // Leaseless mode on the server → {"active": null}, never a false 0.
+        var handler = new SessionCountHandler("{\"valid\":true,\"active\":null}");
+        WithSessionCountHttp(handler, () =>
+            Assert.Null(License.GetActiveSessionCount("cb_key")));
+    }
+
+    [Fact]
+    public void ActiveSessionCount_null_on_denial()
+    {
+        var handler = new SessionCountHandler(
+            "{\"valid\":false,\"error\":\"invalid_key\"}", HttpStatusCode.Forbidden);
+        WithSessionCountHttp(handler, () =>
+            Assert.Null(License.GetActiveSessionCount("cb_bad")));
+    }
+
+    [Fact]
+    public void ActiveSessionCount_is_never_cached()
+    {
+        // ValidateLicense caches 24h; a cached seat count would be a wrong seat
+        // count, so every call must hit the network.
+        var handler = new SessionCountHandler("{\"valid\":true,\"active\":2}");
+        WithSessionCountHttp(handler, () =>
+        {
+            License.GetActiveSessionCount("cb_key");
+            License.GetActiveSessionCount("cb_key");
+        });
+        Assert.Equal(2, handler.Calls);
+    }
+
+    // =======================================================================
     // Config Pro paths
     // =======================================================================
 
@@ -433,5 +550,58 @@ public class LicenseTests : IDisposable
         Assert.Equal("/custom/bin", result["PATH"]);
         // Only the user env + injected key — NOT the full parent environment.
         Assert.Equal(2, result.Count);
+    }
+
+    // ── license exit-code surfacing ───────────────────────
+
+    private static string LaunchText(int code) =>
+        "BrowserType.LaunchAsync: Target page, context or browser has been closed\n" +
+        $"Browser logs:\n- [pid=123] <process did exit: exitCode={code}, signal=null>";
+
+    [Theory]
+    [InlineData(76, "session limit")]
+    [InlineData(77, "invalid, expired, or missing")]
+    [InlineData(78, "couldn't verify")]
+    [InlineData(79, "not writable")]
+    public void LicenseErrorMessage_MapsKnownCodes(int code, string fragment)
+    {
+        var msg = License.LicenseErrorMessage(LaunchText(code));
+        Assert.NotNull(msg);
+        Assert.StartsWith("CloakBrowser Pro:", msg);
+        Assert.Contains(fragment, msg);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(139)]
+    public void LicenseErrorMessage_NonLicenseCode_ReturnsNull(int code)
+    {
+        Assert.Null(License.LicenseErrorMessage(LaunchText(code)));
+    }
+
+    [Fact]
+    public void LicenseErrorMessage_LargeSehCode_DoesNotThrowOrMatch()
+    {
+        // Windows access violation 0xC0000005 = 3221225477, > int.MaxValue.
+        // Must not overflow int.Parse (which would mask the original launch error).
+        Assert.Null(License.LicenseErrorMessage("<process did exit: exitCode=3221225477, signal=null>"));
+    }
+
+    [Fact]
+    public void LicenseErrorMessage_NoCode_ReturnsNull()
+    {
+        Assert.Null(License.LicenseErrorMessage("Target page, context or browser has been closed"));
+        Assert.Null(License.LicenseErrorMessage(""));
+        Assert.Null(License.LicenseErrorMessage(null));
+    }
+
+    [Fact]
+    public void LicenseErrorFrom_ReturnsTypedErrorOrNull()
+    {
+        var lic = License.LicenseErrorFrom(new Exception(LaunchText(77)));
+        Assert.NotNull(lic);
+        Assert.IsType<CloakBrowserLicenseError>(lic);
+        Assert.Contains("invalid", lic!.Message);
+        Assert.Null(License.LicenseErrorFrom(new Exception("some unrelated crash")));
     }
 }

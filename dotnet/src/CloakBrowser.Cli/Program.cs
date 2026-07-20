@@ -12,7 +12,7 @@ using CloakBrowser;
 //   cloakbrowser clear-cache  # Remove cached binaries
 
 const string UpgradeHint =
-    "→ Try the latest Pro binary (Chromium 148) free for 7 days: https://cloakbrowser.dev";
+    "→ Try the latest Pro binary (Chromium 150) free for 7 days: https://cloakbrowser.dev";
 
 // Route CloakBrowser logs to stderr at Info level (clean output).
 CloakLog.MinLevel = CloakLogLevel.Info;
@@ -182,6 +182,14 @@ static void PrintDiagnostics(Dictionary<string, object?> diag)
     else
     {
         Console.WriteLine($"License:   {tier}");
+    }
+
+    if (lic.TryGetValue("sessions", out var sessionsObj) && sessionsObj is Dictionary<string, object?> sessions)
+    {
+        var active = sessions["active"] as int?;
+        Console.WriteLine(active is null
+            ? "Sessions:  unavailable"
+            : $"Sessions:  {active} seat{(active == 1 ? "" : "s")} in use");
     }
 
     var geoip = (Dictionary<string, object?>)diag["geoip"]!;
