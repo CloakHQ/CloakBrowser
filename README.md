@@ -129,7 +129,7 @@ On first run, the stealth Chromium binary is automatically downloaded (~200MB, c
 **Optional:** Auto-detect timezone/locale from proxy IP:
 
 ```bash
-pip install cloakbrowser[geoip]
+pip install 'cloakbrowser[geoip]'
 ```
 
 **Migrating from Playwright?** One-line change:
