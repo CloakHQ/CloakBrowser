@@ -51,6 +51,45 @@ public class GeoIpTests
         Assert.Equal("de-DE", loc);
         Assert.Null(ip);
     }
+
+    [Fact]
+    public async Task MaybeResolveGeoIp_RawFlags_PromotedAndNotClobbered()
+    {
+        // Raw --fingerprint-timezone/--fingerprint-locale in args count as explicit,
+        // so geoip leaves them alone (and, with no proxy, makes no echo call).
+        var (tz, loc, ip) = await CloakLauncher.MaybeResolveGeoIpAsync(
+            geoip: true, proxy: null, timezone: null, locale: null,
+            args: new List<string>
+            {
+                "--fingerprint-timezone=Asia/Tokyo",
+                "--fingerprint-locale=ja-JP",
+            });
+        Assert.Equal("Asia/Tokyo", tz);
+        Assert.Equal("ja-JP", loc);
+        Assert.Null(ip);
+    }
+
+    [Fact]
+    public async Task MaybeResolveGeoIp_RawLangFlag_PromotesToLocale()
+    {
+        // A lone --lang promotes to locale. Pair with an explicit timezone so the
+        // both-explicit path stays hermetic (no proxy → no network).
+        var (tz, loc, _) = await CloakLauncher.MaybeResolveGeoIpAsync(
+            geoip: true, proxy: null, timezone: "Europe/Berlin", locale: null,
+            args: new List<string> { "--lang=fr-FR" });
+        Assert.Equal("Europe/Berlin", tz);
+        Assert.Equal("fr-FR", loc);
+    }
+
+    [Fact]
+    public async Task MaybeResolveGeoIp_ExplicitParam_BeatsRawFlag()
+    {
+        var (tz, loc, _) = await CloakLauncher.MaybeResolveGeoIpAsync(
+            geoip: true, proxy: null, timezone: "America/New_York", locale: "en-US",
+            args: new List<string> { "--fingerprint-timezone=Asia/Tokyo" });
+        Assert.Equal("America/New_York", tz);
+        Assert.Equal("en-US", loc);
+    }
 }
 
 public class HumanRandomTests

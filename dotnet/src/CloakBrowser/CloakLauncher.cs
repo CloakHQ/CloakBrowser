@@ -25,7 +25,7 @@ public static class CloakLauncher
 
         string binaryPath = await Download.EnsureBinaryAsync(options.LicenseKey, options.BrowserVersion).ConfigureAwait(false);
         var (timezone, locale, exitIp) = await MaybeResolveGeoIpAsync(
-            options.GeoIp, options.Proxy, options.Timezone, options.Locale).ConfigureAwait(false);
+            options.GeoIp, options.Proxy, options.Timezone, options.Locale, options.Args).ConfigureAwait(false);
         var proxyResolution = ProxyResolver.Resolve(options.Proxy, options.BrowserVersion, options.LicenseKey);
         var args = await ResolveWebRtcArgsAsync(options.Args, options.Proxy).ConfigureAwait(false);
         args = MaybeAppendWebRtcExitIp(args, exitIp);
@@ -97,7 +97,7 @@ public static class CloakLauncher
 
         // Resolve geoip before launch so resolved values flow to binary flags.
         var (timezone, locale, exitIp) = await MaybeResolveGeoIpAsync(
-            options.GeoIp, options.Proxy, options.Timezone, options.Locale).ConfigureAwait(false);
+            options.GeoIp, options.Proxy, options.Timezone, options.Locale, options.Args).ConfigureAwait(false);
         var args = options.Args;
         args = MaybeAppendWebRtcExitIp(args, exitIp);
 
@@ -151,7 +151,7 @@ public static class CloakLauncher
 
         string binaryPath = await Download.EnsureBinaryAsync(options.LicenseKey, options.BrowserVersion).ConfigureAwait(false);
         var (timezone, locale, exitIp) = await MaybeResolveGeoIpAsync(
-            options.GeoIp, options.Proxy, options.Timezone, options.Locale).ConfigureAwait(false);
+            options.GeoIp, options.Proxy, options.Timezone, options.Locale, options.Args).ConfigureAwait(false);
         var proxyResolution = ProxyResolver.Resolve(options.Proxy, options.BrowserVersion, options.LicenseKey);
         var args = await ResolveWebRtcArgsAsync(options.Args, options.Proxy).ConfigureAwait(false);
         args = MaybeAppendWebRtcExitIp(args, exitIp);
@@ -217,17 +217,35 @@ public static class CloakLauncher
     // GeoIP resolution
     // -----------------------------------------------------------------------
 
+    /// <summary>Return the value of the first <c>--key=value</c> flag found in args, else null.</summary>
+    private static string? GetFlagValue(List<string>? args, params string[] keys)
+    {
+        if (args == null)
+            return null;
+        foreach (var a in args)
+            foreach (var k in keys)
+                if (a.StartsWith(k + "=", StringComparison.Ordinal))
+                    return a.Substring(k.Length + 1);
+        return null;
+    }
+
     /// <summary>
     /// Auto-fill timezone/locale from the egress IP when geoip is enabled. Returns
     /// (timezone, locale, exitIp). The exit IP is a free bonus used for WebRTC spoofing.
     /// With a proxy the egress IP is the proxy's exit IP; with no proxy it is the
     /// machine's own public IP, so geoip works proxy-free too.
+    /// A timezone/locale set as a raw flag in args (--fingerprint-timezone, --lang,
+    /// --fingerprint-locale) counts as explicit and is promoted so geoip leaves it alone.
     /// </summary>
     public static async Task<(string? Timezone, string? Locale, string? ExitIp)> MaybeResolveGeoIpAsync(
-        bool geoip, object? proxy, string? timezone, string? locale)
+        bool geoip, object? proxy, string? timezone, string? locale, List<string>? args = null)
     {
         if (!geoip)
             return (timezone, locale, null);
+
+        // Promote raw flags to explicit values so geoip doesn't clobber them.
+        timezone ??= GetFlagValue(args, "--fingerprint-timezone");
+        locale ??= GetFlagValue(args, "--lang", "--fingerprint-locale");
 
         // null when no proxy -> echo services resolve the machine's own public IP.
         string? proxyUrl = proxy != null ? ProxyResolver.ExtractProxyUrl(proxy) : null;

@@ -8,6 +8,8 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+- **[wrapper]** Fix `geoip=True` overriding a timezone or locale that was passed explicitly as a raw flag via `args=` (`--fingerprint-timezone`, `--lang`, `--fingerprint-locale`). A raw flag now counts as explicit and is preserved, matching the behavior of the `timezone=`/`locale=` parameters; GeoIP only fills the values you did not set. Python, JavaScript, and .NET.
+
 ## [0.4.13] — 2026-07-22
 
 - **[wrapper]** Fix the GeoIP database never refreshing and re-downloading on every launch (#458). The atomic replace used a rename that cannot overwrite an existing file on Windows, so a stale database was never updated and each launch re-fetched the ~70 MB database in a loop; with no lock, concurrent launches each started their own download. The refresh now replaces the file atomically and guards against duplicate concurrent downloads. Python, JavaScript, and .NET.

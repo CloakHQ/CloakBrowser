@@ -129,6 +129,52 @@ describe("maybeResolveGeoip", () => {
     fetchSpy.mockRestore();
   });
 
+  it("promotes raw tz/locale flags in args: no proxy + both raw-flagged skips fetch", async () => {
+    // A raw --fingerprint-timezone/--fingerprint-locale in args counts as explicit,
+    // so geoip must not clobber them (and, with no proxy, skips the echo fetch).
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      text: async () => "5.6.7.8",
+    } as Response);
+
+    const result = await maybeResolveGeoip({
+      geoip: true,
+      args: ["--fingerprint-timezone=Asia/Tokyo", "--fingerprint-locale=ja-JP"],
+    });
+
+    expect(result).toEqual({ timezone: "Asia/Tokyo", locale: "ja-JP" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("promoted raw flags survive a GeoIP timeout (with proxy)", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-rawflag-"));
+    tempDirs.push(cacheDir);
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+    process.env.CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS = "0.025";
+
+    const result = await maybeResolveGeoip({
+      geoip: true,
+      proxy: "http://203.0.113.10:8080",
+      args: ["--fingerprint-timezone=Asia/Tokyo", "--lang=ja-JP"],
+    });
+
+    // --lang promotes to locale; both explicit → exit-IP-only path (times out → undefined).
+    expect(result.timezone).toBe("Asia/Tokyo");
+    expect(result.locale).toBe("ja-JP");
+  });
+
+  it("explicit timezone option beats a differing raw flag", async () => {
+    const result = await maybeResolveGeoip({
+      geoip: true,
+      timezone: "America/New_York",
+      locale: "en-US",
+      args: ["--fingerprint-timezone=Asia/Tokyo"],
+    });
+    expect(result.timezone).toBe("America/New_York");
+    expect(result.locale).toBe("en-US");
+  });
+
   it("returns quickly when GeoIP resolution times out", async () => {
     const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-timeout-"));
     tempDirs.push(cacheDir);

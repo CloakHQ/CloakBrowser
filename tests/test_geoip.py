@@ -202,6 +202,63 @@ def test_maybe_resolve_fills_both():
         assert ip == "5.6.7.8"
 
 
+def test_maybe_resolve_raw_timezone_flag_wins_over_geoip():
+    """A raw --fingerprint-timezone in args counts as explicit; geoip must not clobber it."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = maybe_resolve_geoip(
+            True, "http://proxy:8080", None, None,
+            ["--fingerprint-timezone=Asia/Tokyo"],
+        )
+    assert tz == "Asia/Tokyo"  # user's raw flag survives
+    assert loc == "de-DE"  # not raw-flagged → geoip fills it
+    assert ip == "5.6.7.8"
+
+
+def test_maybe_resolve_raw_lang_flag_wins_over_geoip():
+    """A raw --lang in args counts as explicit locale; geoip must not clobber it."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = maybe_resolve_geoip(
+            True, "http://proxy:8080", None, None, ["--lang=fr-FR"],
+        )
+    assert tz == "Europe/Berlin"  # not raw-flagged → geoip fills it
+    assert loc == "fr-FR"  # user's raw flag survives
+
+
+def test_maybe_resolve_raw_flags_both_skip_geo_lookup():
+    """Both tz+locale raw-flagged → treated as fully explicit, only exit IP resolved."""
+    with patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip") as geo, patch(
+        "cloakbrowser.geoip._resolve_exit_ip", return_value="1.2.3.4"
+    ):
+        tz, loc, ip = maybe_resolve_geoip(
+            True, "http://proxy:8080", None, None,
+            ["--fingerprint-timezone=Asia/Tokyo", "--fingerprint-locale=ja-JP"],
+        )
+    geo.assert_not_called()
+    assert tz == "Asia/Tokyo"
+    assert loc == "ja-JP"
+    assert ip == "1.2.3.4"
+
+
+def test_maybe_resolve_param_beats_raw_flag():
+    """An explicit timezone= param takes precedence over a differing raw flag."""
+    with patch("cloakbrowser.geoip._resolve_exit_ip", return_value="1.2.3.4"), patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = maybe_resolve_geoip(
+            True, "http://proxy:8080", "America/New_York", None,
+            ["--fingerprint-timezone=Asia/Tokyo"],
+        )
+    assert tz == "America/New_York"  # param wins over raw flag
+    assert loc == "de-DE"
+
+
 def test_maybe_resolve_geoip_timeout_returns_existing_values(monkeypatch):
     """A stalled proxy lookup should not block launch indefinitely."""
     mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()

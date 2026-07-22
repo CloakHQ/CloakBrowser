@@ -418,17 +418,35 @@ function extractProxyUrl(proxy: string | ProxyDict | undefined): string | null {
   return ensureProxyScheme(p.server);
 }
 
+/** Return the value of the first `--key=value` flag found in args, else undefined. */
+function getFlagValue(args: string[] | undefined, ...keys: string[]): string | undefined {
+  for (const a of args ?? []) {
+    for (const k of keys) {
+      if (a.startsWith(k + "=")) return a.slice(k.length + 1);
+    }
+  }
+  return undefined;
+}
+
 /**
  * Auto-fill timezone/locale from the egress IP when geoip is enabled.
  * Also returns exitIp as a free bonus (reused for WebRTC spoofing).
  *
  * With a proxy the egress IP is the proxy's exit IP; with no proxy it is
  * the machine's own public IP, so geoip works proxy-free too.
+ *
+ * A timezone/locale set as a raw flag in `args` (--fingerprint-timezone, --lang,
+ * --fingerprint-locale) counts as explicit: it is promoted to the option so geoip
+ * leaves it alone, mirroring the `timezone`/`locale` option override path.
  */
 export async function maybeResolveGeoip(
   options: LaunchOptions
 ): Promise<{ timezone?: string; locale?: string; exitIp?: string }> {
   if (!options.geoip) return { timezone: options.timezone, locale: options.locale };
+
+  // Promote raw flags to explicit values so geoip doesn't clobber them.
+  const timezone = options.timezone ?? getFlagValue(options.args, "--fingerprint-timezone");
+  const locale = options.locale ?? getFlagValue(options.args, "--lang", "--fingerprint-locale");
 
   // null when no proxy → echo services resolve the machine's own public IP
   const proxyUrl = options.proxy ? extractProxyUrl(options.proxy) : null;
@@ -436,18 +454,18 @@ export async function maybeResolveGeoip(
   // When both tz/locale are explicit, resolve the exit IP for WebRTC — but only
   // with a proxy. With no proxy the WebRTC IP would just be the real connection
   // IP the site already sees (a no-op), so skip the third-party echo call.
-  if (options.timezone && options.locale) {
-    if (!proxyUrl) return { timezone: options.timezone, locale: options.locale };
+  if (timezone && locale) {
+    if (!proxyUrl) return { timezone, locale };
     const timeoutMs = getGeoipTimeoutMs();
     const exitIp = await resolveExitIp(proxyUrl, timeoutMs) ?? undefined;
-    return { timezone: options.timezone, locale: options.locale, exitIp };
+    return { timezone, locale, exitIp };
   }
 
   const { timezone: geoTz, locale: geoLocale, exitIp: geoExitIp } = await resolveProxyGeo(proxyUrl);
   const exitIp = geoExitIp ?? undefined;
   return {
-    timezone: options.timezone ?? geoTz ?? undefined,
-    locale: options.locale ?? geoLocale ?? undefined,
+    timezone: timezone ?? geoTz ?? undefined,
+    locale: locale ?? geoLocale ?? undefined,
     exitIp,
   };
 }

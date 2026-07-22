@@ -220,7 +220,7 @@ def launch(
     from playwright.sync_api import sync_playwright
 
     binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
@@ -336,7 +336,7 @@ async def launch_async(  # noqa: C901
     from playwright.async_api import async_playwright
 
     binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
@@ -462,7 +462,7 @@ def launch_persistent_context(
     timezone = _resolve_timezone(timezone, kwargs)
 
     binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
@@ -609,7 +609,7 @@ async def launch_persistent_context_async(
     timezone = _resolve_timezone(timezone, kwargs)
 
     binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
@@ -739,7 +739,7 @@ def launch_context(
 
     # Resolve geoip BEFORE launch() to avoid double-resolution and ensure
     # resolved values flow to binary flags
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     # Inject geoip exit IP for WebRTC spoofing (free — no extra HTTP call)
     args = _append_webrtc_exit_ip(args, exit_ip)
     # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
@@ -864,7 +864,7 @@ async def launch_context_async(
 
     # Resolve geoip BEFORE launch_async() to avoid double-resolution and ensure
     # resolved values flow to binary flags
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     args = _append_webrtc_exit_ip(args, exit_ip)
     # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
     # so it applies to ALL contexts, not just the default one.
@@ -1048,11 +1048,21 @@ def _extract_proxy_url(proxy: str | ProxySettings | None) -> str | None:
     return _ensure_proxy_scheme(proxy)
 
 
+def _get_flag_value(args: list[str] | None, *keys: str) -> str | None:
+    """Return the value of the first ``--key=value`` flag found in *args*, else None."""
+    for a in args or []:
+        for k in keys:
+            if a.startswith(k + "="):
+                return a.split("=", 1)[1]
+    return None
+
+
 def maybe_resolve_geoip(
     geoip: bool,
     proxy: str | ProxySettings | None,
     timezone: str | None,
     locale: str | None,
+    args: list[str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Auto-fill timezone/locale from the egress IP when geoip is enabled.
 
@@ -1061,9 +1071,20 @@ def maybe_resolve_geoip(
 
     With a proxy the egress IP is the proxy's exit IP; with no proxy it is
     the machine's own public IP, so geoip works proxy-free too.
+
+    A timezone/locale set as a raw flag in *args* (``--fingerprint-timezone``,
+    ``--lang``, ``--fingerprint-locale``) counts as explicit: it is promoted to
+    the param so geoip leaves it alone, mirroring the ``timezone=``/``locale=``
+    override path.
     """
     if not geoip:
         return timezone, locale, None
+
+    # Promote raw flags to explicit params so geoip doesn't clobber them.
+    if timezone is None:
+        timezone = _get_flag_value(args, "--fingerprint-timezone")
+    if locale is None:
+        locale = _get_flag_value(args, "--lang", "--fingerprint-locale")
 
     from .geoip import resolve_proxy_exit_ip, resolve_proxy_geo_with_ip
 
