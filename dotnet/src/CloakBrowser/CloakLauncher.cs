@@ -87,6 +87,60 @@ public static class CloakLauncher
     }
 
     // -----------------------------------------------------------------------
+    // connect - attach to an already-running instance over CDP
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Connect to an already-running CloakBrowser instance over CDP (e.g. one started
+    /// via cloakserve in Docker) and apply the same conveniences <see cref="LaunchAsync"/>
+    /// provides — the no-viewport default and, optionally, the humanize behavioral layer.
+    /// The C++ fingerprint patches live in the running binary and persist across the
+    /// connection, so select a fingerprint/timezone/locale via the endpoint URL's query
+    /// string (e.g. <c>http://host:9222?fingerprint=12345</c>), which is forwarded verbatim.
+    /// <see cref="CloakBrowserHandle.CloseAsync"/> detaches from the remote instance; it
+    /// does not terminate it.
+    /// </summary>
+    public static async Task<CloakBrowserHandle> ConnectAsync(string endpointUrl, ConnectOptions? options = null)
+    {
+        options ??= new ConnectOptions();
+
+        CloakLog.Debug($"Connecting to CloakBrowser over CDP ({endpointUrl})");
+
+        var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        IBrowser browser;
+        try
+        {
+            browser = await playwright.Chromium.ConnectOverCDPAsync(endpointUrl).ConfigureAwait(false);
+        }
+        catch
+        {
+            playwright.Dispose();
+            throw;
+        }
+
+        try
+        {
+            var humanCfg = options.Humanize
+                ? HumanConfigFactory.Resolve(options.HumanPreset, options.HumanConfig)
+                : null;
+            // Map DefaultNoViewport onto the handle's headed/headlessNoViewport gate:
+            // ApplyHeadedNoViewport applies NoViewport unless (headless && !headlessNoViewport),
+            // so headless=false forces the no-viewport default; headless=true keeps the
+            // emulated viewport. (We can't know the remote's real headless state.)
+            return new CloakBrowserHandle(
+                playwright, browser, options.Humanize, humanCfg,
+                headless: !options.DefaultNoViewport, headlessNoViewport: false);
+        }
+        catch
+        {
+            try { await browser.CloseAsync().ConfigureAwait(false); }
+            catch (Exception closeEx) { CloakLog.Warning($"browser cleanup after connect failure failed: {closeEx.Message}"); }
+            playwright.Dispose();
+            throw;
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // launch_context - returns a Context handle (browser owned)
     // -----------------------------------------------------------------------
 

@@ -41,6 +41,22 @@ export interface LaunchOptions {
   humanConfig?: Partial<HumanConfig>;
 }
 
+export interface ConnectOptions {
+  /** Enable human-like mouse, keyboard, and scroll behavior. */
+  humanize?: boolean;
+  /** Human behavior preset: 'default' or 'careful'. */
+  humanPreset?: HumanPreset;
+  /** Override individual human behavior parameters. */
+  humanConfig?: Partial<HumanConfig>;
+  /**
+   * Default newPage()/newContext() to viewport:null (default: true). Set false
+   * to keep Playwright's emulated viewport.
+   */
+  defaultNoViewport?: boolean;
+  /** Raw options forwarded to connectOverCDP() — e.g. headers, timeout, slowMo. */
+  connectOptions?: Record<string, unknown>;
+}
+
 export interface LaunchContextOptions extends LaunchOptions {
   /** Custom user agent string. */
   userAgent?: string;

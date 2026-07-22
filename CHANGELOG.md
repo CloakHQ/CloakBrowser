@@ -8,6 +8,7 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+- **[wrapper]** Add `connect()` / `connect_async()` — attach to an already-running CloakBrowser instance over CDP (e.g. one started via `cloakserve` in Docker) and keep the wrapper conveniences that stock `connect_over_cdp()` drops: `humanize=True` and the no-viewport default. Select a fingerprint/timezone/locale via the endpoint URL's query string (forwarded verbatim); closing the returned browser detaches from the remote instance without terminating it (#435). Python (sync + async), JavaScript (Playwright + Puppeteer), and .NET (`CloakLauncher.ConnectAsync`).
 - **[wrapper]** Fix `geoip=True` overriding a timezone or locale that was passed explicitly as a raw flag via `args=` (`--fingerprint-timezone`, `--lang`, `--fingerprint-locale`). A raw flag now counts as explicit and is preserved, matching the behavior of the `timezone=`/`locale=` parameters; GeoIP only fills the values you did not set. Python, JavaScript, and .NET.
 
 ## [0.4.13] — 2026-07-22

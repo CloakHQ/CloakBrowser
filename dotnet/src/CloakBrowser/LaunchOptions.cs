@@ -65,6 +65,28 @@ public class LaunchOptions
     internal bool SuppressMaximize { get; set; }
 }
 
+/// <summary>
+/// Options for <see cref="CloakLauncher.ConnectAsync(string, ConnectOptions)"/>.
+/// Mirrors the keyword arguments of the Python <c>connect()</c>.
+/// </summary>
+public class ConnectOptions
+{
+    /// <summary>Enable the human-like behavior layer when creating pages via <see cref="CloakBrowserHandle"/>.</summary>
+    public bool Humanize { get; set; }
+
+    /// <summary>Humanize preset (default <see cref="HumanPreset.Default"/>).</summary>
+    public HumanPreset HumanPreset { get; set; } = HumanPreset.Default;
+
+    /// <summary>Custom humanize config overrides (snake_case or PascalCase keys).</summary>
+    public IReadOnlyDictionary<string, object>? HumanConfig { get; set; }
+
+    /// <summary>
+    /// Default <c>NewPageAsync</c>/<c>NewContextAsync</c> to <c>NoViewport</c> (default true).
+    /// Set false to keep Playwright's emulated viewport.
+    /// </summary>
+    public bool DefaultNoViewport { get; set; } = true;
+}
+
 /// <summary>Options for context-producing launchers (adds context-level emulation settings).</summary>
 public class LaunchContextOptions : LaunchOptions
 {

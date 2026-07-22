@@ -4,7 +4,7 @@
  */
 
 import type { Browser, BrowserContext, BrowserContextOptions, LaunchOptions as PlaywrightLaunchOptions } from "playwright-core";
-import type { LaunchOptions, LaunchContextOptions, LaunchPersistentContextOptions } from "./types.js";
+import type { LaunchOptions, LaunchContextOptions, LaunchPersistentContextOptions, ConnectOptions } from "./types.js";
 import {
   DEFAULT_VIEWPORT,
   IGNORE_DEFAULT_ARGS,
@@ -189,6 +189,38 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     !effectiveHeadless(options) ||
     binarySupportsHeadlessNoViewport(options.licenseKey, options.browserVersion)
   ) {
+    applyDefaultNoViewport(browser);
+  }
+  await humanizeBrowser(browser, options);
+  return browser;
+}
+
+/**
+ * Connect to an already-running CloakBrowser instance over CDP (e.g. one started
+ * via cloakserve in Docker) and apply the same conveniences launch() provides —
+ * the no-viewport default and, optionally, the humanize behavioral layer.
+ *
+ * The C++ fingerprint patches live in the running binary and persist across the
+ * connection, so select a fingerprint/timezone/locale via the endpoint URL's query
+ * string (e.g. "http://host:9222?fingerprint=12345"), which is forwarded verbatim.
+ * `browser.close()` detaches from the remote instance; it does not terminate it.
+ *
+ * @example
+ * ```ts
+ * import { connect } from 'cloakbrowser';
+ * const browser = await connect('http://localhost:9222', { humanize: true });
+ * const page = await browser.newPage();
+ * await page.goto('https://bot.incolumitas.com');
+ * await browser.close();
+ * ```
+ */
+export async function connect(
+  endpoint: string,
+  options: ConnectOptions = {}
+): Promise<Browser> {
+  const { chromium } = await import("playwright-core");
+  const browser = await chromium.connectOverCDP(endpoint, options.connectOptions);
+  if (options.defaultNoViewport !== false) {
     applyDefaultNoViewport(browser);
   }
   await humanizeBrowser(browser, options);
