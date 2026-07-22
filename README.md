@@ -818,7 +818,14 @@ browser = await launch_async(args=["--remote-debugging-port=9242"])
 # Note: humanize requires the wrapper (see below)
 ```
 
-> **Humanize over CDP**: Stealth fingerprint patches work automatically over CDP, but `humanize=True` is a wrapper-level feature. If you connect to CloakBrowser via CDP from a separate script, import the patching functions to add humanization:
+> **Humanize over CDP**: Stealth fingerprint patches work automatically over CDP, but `humanize=True` is a wrapper-level feature. The simplest way to keep it when attaching to a running instance is `connect()` (see [CDP server mode](#cdp-server-mode)):
+>
+> ```python
+> from cloakbrowser import connect
+> browser = connect("http://127.0.0.1:9242", humanize=True)
+> ```
+>
+> If you already hold a Playwright/Puppeteer browser from your own code, apply the layer directly instead:
 >
 > ```js
 > import { patchBrowser, resolveConfig } from 'cloakbrowser/human';
@@ -904,18 +911,30 @@ Start a persistent stealth browser and connect to it remotely via Chrome DevTool
 docker run -d --name cloak -p 127.0.0.1:9222:9222 cloakhq/cloakbrowser cloakserve
 ```
 
-Then connect from your host machine:
+Then connect from your host machine with `connect()` — same API as `launch()`, but it attaches to the running instance and keeps `humanize` and the no-viewport default working:
 
 ```python
-from playwright.sync_api import sync_playwright
+from cloakbrowser import connect
 
-pw = sync_playwright().start()
-browser = pw.chromium.connect_over_cdp("http://localhost:9222")
+browser = connect("http://localhost:9222", humanize=True)
 page = browser.new_page()
 page.goto("https://example.com")
 print(page.title())
-browser.close()
+browser.close()  # detaches; the remote instance keeps running
 ```
+
+```javascript
+import { connect } from 'cloakbrowser';               // or 'cloakbrowser/puppeteer'
+
+const browser = await connect('http://localhost:9222', { humanize: true });
+const page = await browser.newPage();
+await page.goto('https://example.com');
+await browser.close();
+```
+
+Select a fingerprint/timezone/locale via the endpoint URL's query string — it's forwarded verbatim: `connect("http://localhost:9222?fingerprint=11111&timezone=America/New_York")`. Async: `connect_async(...)` (Python); .NET: `await CloakLauncher.ConnectAsync("http://localhost:9222")`.
+
+Prefer plain Playwright? `pw.chromium.connect_over_cdp("http://localhost:9222")` still works — you just don't get `humanize` or the no-viewport default.
 
 If your framework needs a direct WebSocket endpoint, fetch Chrome's discovery document and use the rewritten `webSocketDebuggerUrl`. The URL points back through `cloakserve` so the CDP proxy can keep per-seed routing intact:
 

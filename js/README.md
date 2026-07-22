@@ -131,6 +131,22 @@ await page.goto('https://example.com');
 await ctx.close();  // profile saved — reuse same path to restore state
 ```
 
+### Connect to a running instance
+
+Attach to an already-running CloakBrowser (e.g. one started via `cloakserve` in Docker) over CDP, keeping `humanize` and the no-viewport default — unlike stock `connectOverCDP`:
+
+```javascript
+import { connect } from 'cloakbrowser';               // Playwright
+// import { connect } from 'cloakbrowser/puppeteer';  // Puppeteer
+
+const browser = await connect('http://localhost:9222', { humanize: true });
+const page = await browser.newPage();
+await page.goto('https://example.com');
+await browser.close();  // detaches; the remote instance keeps running
+```
+
+Select a fingerprint via the endpoint URL's query string — it's forwarded verbatim: `connect('http://localhost:9222?fingerprint=11111')`. Pass a `ws(s)://` URL directly, or an `http(s)://` one (the ws endpoint is resolved for you).
+
 ### Auto Timezone/Locale from Proxy IP
 
 When using a proxy, antibot systems check that your browser's timezone and locale match the proxy's location. Install `mmdb-lib` to enable auto-detection from an offline GeoIP database (~70 MB, downloaded on first use):

@@ -5,7 +5,7 @@
  */
 
 import type { Browser } from "puppeteer-core";
-import type { LaunchOptions } from "./types.js";
+import type { LaunchOptions, ConnectOptions } from "./types.js";
 import {
   DEFAULT_VIEWPORT,
   IGNORE_DEFAULT_ARGS,
@@ -181,6 +181,55 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   }
 
   await applyPostLaunch(browser, options, proxyAuth);
+  return browser;
+}
+
+/**
+ * Connect to an already-running CloakBrowser instance over CDP via Puppeteer
+ * (e.g. one started via cloakserve in Docker) and apply the humanize behavioral
+ * layer. Accepts an http(s):// endpoint (Puppeteer resolves the ws URL from
+ * /json/version) or a ws(s):// endpoint directly.
+ *
+ * The C++ fingerprint patches live in the running binary and persist across the
+ * connection; select a fingerprint via the endpoint URL's query string
+ * (e.g. "http://host:9222?fingerprint=12345"). `browser.disconnect()` detaches
+ * from the remote instance; it does not terminate it.
+ *
+ * @example
+ * ```ts
+ * import { connect } from 'cloakbrowser/puppeteer';
+ * const browser = await connect('http://localhost:9222', { humanize: true });
+ * const page = await browser.newPage();
+ * await page.goto('https://example.com');
+ * await browser.disconnect();
+ * ```
+ */
+export async function connect(
+  endpoint: string,
+  options: ConnectOptions = {}
+): Promise<Browser> {
+  const puppeteer = await import("puppeteer-core");
+  const target = /^wss?:\/\//i.test(endpoint)
+    ? { browserWSEndpoint: endpoint }
+    : { browserURL: endpoint };
+  const browser = await puppeteer.default.connect({
+    ...target,
+    // null disables Puppeteer's 800x600 emulated viewport (bot tell); undefined
+    // keeps its default. defaultNoViewport defaults to true.
+    defaultViewport: options.defaultNoViewport === false ? undefined : null,
+    ...(options.connectOptions ?? {}),
+  });
+
+  if (options.humanize) {
+    const { patchBrowser } = await import('./human-puppeteer/index.js');
+    const { resolveConfig } = await import('./human/config.js');
+    const cfg = resolveConfig(
+      options.humanPreset ?? 'default',
+      options.humanConfig,
+    );
+    patchBrowser(browser, cfg);
+  }
+
   return browser;
 }
 

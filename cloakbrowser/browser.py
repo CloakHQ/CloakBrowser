@@ -395,6 +395,161 @@ async def launch_async(  # noqa: C901
     return browser
 
 
+def _finalize_connected(
+    browser: Any,
+    pw: Any,
+    humanize: bool,
+    human_preset: HumanPreset,
+    human_config: HumanConfigOverrides | None,
+    default_no_viewport: bool,
+) -> Any:
+    """Shared tail for connect(): wrap close() for driver cleanup, default the
+    viewport, and apply humanize. Mirrors the tail of launch(). ``browser.close()``
+    detaches from the remote instance (it does not terminate it — connect_over_cdp
+    semantics) and stops our local Playwright driver.
+    """
+    _original_close = browser.close
+
+    def _close_with_cleanup() -> None:
+        try:
+            _original_close()
+        finally:
+            pw.stop()
+
+    browser.close = _close_with_cleanup
+
+    if default_no_viewport:
+        _default_no_viewport(browser)
+
+    if humanize:
+        from .human import patch_browser
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_browser(browser, cfg)
+
+    return browser
+
+
+async def _finalize_connected_async(
+    browser: Any,
+    pw: Any,
+    humanize: bool,
+    human_preset: HumanPreset,
+    human_config: HumanConfigOverrides | None,
+    default_no_viewport: bool,
+) -> Any:
+    """Async variant of :func:`_finalize_connected`."""
+    _original_close = browser.close
+
+    async def _close_with_cleanup() -> None:
+        try:
+            await _original_close()
+        finally:
+            await pw.stop()
+
+    browser.close = _close_with_cleanup
+
+    if default_no_viewport:
+        _default_no_viewport_async(browser)
+
+    if humanize:
+        from .human import patch_browser_async
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_browser_async(browser, cfg)
+
+    return browser
+
+
+def connect(
+    endpoint_url: str,
+    *,
+    humanize: bool = False,
+    human_preset: HumanPreset = "default",
+    human_config: HumanConfigOverrides | None = None,
+    default_no_viewport: bool = True,
+    **kwargs: Any,
+) -> Any:
+    """Connect to an already-running CloakBrowser instance over CDP.
+
+    Unlike ``launch()``, this does not start a browser — it attaches to one that is
+    already running (e.g. started via ``cloakserve`` in Docker) and layers on the
+    same conveniences ``launch()`` provides: the no-viewport default and, optionally,
+    the humanize behavioral layer. The C++ fingerprint patches live in the running
+    binary and persist across the connection, so nothing fingerprint-related happens
+    here — select a fingerprint/timezone/locale via the endpoint URL's query string
+    (e.g. ``http://host:9222?fingerprint=12345&timezone=America/New_York``), which is
+    forwarded verbatim.
+
+    Args:
+        endpoint_url: CDP endpoint of the running instance, e.g.
+            ``"http://localhost:9222"`` (optionally with a ``?fingerprint=...`` query).
+        humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
+        human_preset: Humanize preset — 'default' or 'careful' (default 'default').
+        human_config: Custom humanize config mapping to override preset values.
+        default_no_viewport: Default ``new_page()``/``new_context()`` to
+            ``no_viewport=True`` (default True). Set False to keep Playwright's
+            emulated viewport.
+        **kwargs: Passed directly to ``playwright.chromium.connect_over_cdp()``
+            (e.g. ``headers``, ``timeout``, ``slow_mo``).
+
+    Returns:
+        Playwright Browser object. ``browser.close()`` detaches from the remote
+        instance (it does not terminate it) and stops the local driver.
+
+    Example:
+        >>> from cloakbrowser import connect
+        >>> browser = connect("http://localhost:9222", humanize=True)
+        >>> page = browser.new_page()
+        >>> page.goto("https://bot.incolumitas.com")
+        >>> browser.close()
+    """
+    from playwright.sync_api import sync_playwright
+
+    pw = sync_playwright().start()
+    try:
+        browser = pw.chromium.connect_over_cdp(endpoint_url, **kwargs)
+    except Exception:
+        try:
+            pw.stop()
+        except Exception as stop_exc:
+            logger.warning("Playwright cleanup after connect failure failed: %s", stop_exc)
+        raise
+
+    logger.debug("Connected to CloakBrowser over CDP (%s)", endpoint_url)
+    return _finalize_connected(
+        browser, pw, humanize, human_preset, human_config, default_no_viewport
+    )
+
+
+async def connect_async(
+    endpoint_url: str,
+    *,
+    humanize: bool = False,
+    human_preset: HumanPreset = "default",
+    human_config: HumanConfigOverrides | None = None,
+    default_no_viewport: bool = True,
+    **kwargs: Any,
+) -> Any:
+    """Async variant of :func:`connect`."""
+    from playwright.async_api import async_playwright
+
+    pw = await async_playwright().start()
+    try:
+        browser = await pw.chromium.connect_over_cdp(endpoint_url, **kwargs)
+    except Exception:
+        try:
+            await pw.stop()
+        except Exception as stop_exc:
+            logger.warning("Playwright cleanup after connect failure failed: %s", stop_exc)
+        raise
+
+    logger.debug("Connected to CloakBrowser over CDP async (%s)", endpoint_url)
+    return await _finalize_connected_async(
+        browser, pw, humanize, human_preset, human_config, default_no_viewport
+    )
+
+
 def launch_persistent_context(
     user_data_dir: str | os.PathLike,
     headless: bool = True,
