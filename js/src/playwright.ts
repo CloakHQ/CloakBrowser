@@ -114,6 +114,13 @@ export async function buildLaunchOptions(
     process.env.CLOAKBROWSER_BINARY_PATH ||
     (await ensureBinary(options.licenseKey, options.browserVersion));
   const { exitIp, ...resolved } = await maybeResolveGeoip(options);
+  if (options.geoip && !options.proxy) {
+    console.warn(
+      "geoip=True without proxy= at launch — timezone/locale will default to " +
+      "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass " +
+      "proxy= to launch() or set explicit timezone=/locale=."
+    );
+  }
   const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy, options.browserVersion, options.licenseKey);
   let resolvedArgs = await resolveWebrtcArgs(options);
   resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
