@@ -663,6 +663,7 @@ Access the original un-patched Playwright page at `page._original` if you need r
 | `CLOAKBROWSER_WIDEVINE` | `1` | Set to `0` to disable automatic Widevine hint-file seeding for persistent contexts |
 | `CLOAKBROWSER_FETCH_WIDEVINE` | `0` | Docker only: set to `1` to auto-fetch the Widevine CDM on container start (Linux x86-64 only). See [Widevine / DRM](#widevine--drm) |
 | `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `148.0.7778.215.2`). Works with Free and Pro binaries |
+| `CLOAKBROWSER_GPU_ACCEL` | — | Set to `1` to opt in to Docker GPU acceleration flags |
 
 ## Fingerprint Management
 
@@ -974,6 +975,12 @@ services:
       retries: 3
       start_period: 10s
 ```
+
+### GPU acceleration in Docker
+
+GPU acceleration is opt-in. Set `CLOAKBROWSER_GPU_ACCEL=1` to add Chromium's EGL, GPU rasterization, GPU blocklist bypass, and Linux Vaapi video decode flags. If you use NVIDIA GPUs, install the NVIDIA Container Toolkit on the Docker host and add a GPU device reservation to your Compose service.
+
+See [`examples/docker-compose.gpu.yml`](examples/docker-compose.gpu.yml) for a complete Compose example. If you run CloakBrowser inside your own multi-container stack, mirror the environment variable and GPU reservation in that service.
 
 **Per-connection fingerprint seeds** — run multiple browser identities from a single container. Each unique seed spawns a separate Chrome process with its own fingerprint:
 

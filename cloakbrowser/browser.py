@@ -176,6 +176,7 @@ def launch(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     _suppress_maximize: bool = False,
@@ -202,6 +203,8 @@ def launch(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        gpu_accel: Enable Docker GPU acceleration flags (default False).
+            Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -225,7 +228,19 @@ def launch(
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
 
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version) and not _suppress_maximize)
+    chrome_args = build_args(
+        stealth_args,
+        (args or []) + proxy_extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+        gpu_accel=gpu_accel,
+        start_maximized=(
+            binary_supports_maximized_window(license_key, browser_version)
+            and not _suppress_maximize
+        ),
+    )
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
@@ -294,6 +309,7 @@ async def launch_async(  # noqa: C901
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     _suppress_maximize: bool = False,
@@ -313,6 +329,8 @@ async def launch_async(  # noqa: C901
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        gpu_accel: Enable Docker GPU acceleration flags (default False).
+            Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1.
         **kwargs: Passed directly to playwright.chromium.launch().
 
     Returns:
@@ -340,7 +358,19 @@ async def launch_async(  # noqa: C901
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version) and not _suppress_maximize)
+    chrome_args = build_args(
+        stealth_args,
+        (args or []) + proxy_extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+        gpu_accel=gpu_accel,
+        start_maximized=(
+            binary_supports_maximized_window(license_key, browser_version)
+            and not _suppress_maximize
+        ),
+    )
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(chrome_args))
@@ -411,6 +441,7 @@ def launch_persistent_context(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     **kwargs: Any,
@@ -442,6 +473,8 @@ def launch_persistent_context(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        gpu_accel: Enable Docker GPU acceleration flags (default False).
+            Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -466,7 +499,21 @@ def launch_persistent_context(
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
+    chrome_args = build_args(
+        stealth_args,
+        (args or []) + proxy_extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+        gpu_accel=gpu_accel,
+        start_maximized=(
+            binary_supports_maximized_window(license_key, browser_version)
+            and viewport is _VIEWPORT_UNSET
+            and "viewport" not in kwargs
+            and "no_viewport" not in kwargs
+        ),
+    )
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug(
@@ -556,6 +603,7 @@ async def launch_persistent_context_async(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     **kwargs: Any,
@@ -584,6 +632,8 @@ async def launch_persistent_context_async(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        gpu_accel: Enable Docker GPU acceleration flags (default False).
+            Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1.
         **kwargs: Passed directly to playwright.chromium.launch_persistent_context().
 
     Returns:
@@ -613,7 +663,21 @@ async def launch_persistent_context_async(
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
+    chrome_args = build_args(
+        stealth_args,
+        (args or []) + proxy_extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+        gpu_accel=gpu_accel,
+        start_maximized=(
+            binary_supports_maximized_window(license_key, browser_version)
+            and viewport is _VIEWPORT_UNSET
+            and "viewport" not in kwargs
+            and "no_viewport" not in kwargs
+        ),
+    )
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug(
@@ -702,6 +766,7 @@ def launch_context(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     **kwargs: Any,
@@ -728,6 +793,8 @@ def launch_context(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        gpu_accel: Enable Docker GPU acceleration flags (default False).
+            Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1.
         **kwargs: Passed to browser.new_context().
 
     Returns:
@@ -745,12 +812,21 @@ def launch_context(
     # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
     # so it applies to ALL contexts, not just the default one.
     # locale and timezone are set via binary flags only — no CDP emulation.
-    browser = launch(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
-                     timezone=timezone, locale=locale, extension_paths=extension_paths,
-                     license_key=license_key, browser_version=browser_version,
-                     # Caller chose a viewport geometry → don't also auto-maximize
-                     # the window (mirrors the persistent-context path + JS).
-                     _suppress_maximize=(viewport is not _VIEWPORT_UNSET or "no_viewport" in kwargs))
+    browser = launch(
+        headless=headless,
+        proxy=proxy,
+        args=args,
+        stealth_args=stealth_args,
+        timezone=timezone,
+        locale=locale,
+        extension_paths=extension_paths,
+        gpu_accel=gpu_accel,
+        license_key=license_key,
+        browser_version=browser_version,
+        # Caller chose a viewport geometry → don't also auto-maximize
+        # the window (mirrors the persistent-context path + JS).
+        _suppress_maximize=(viewport is not _VIEWPORT_UNSET or "no_viewport" in kwargs),
+    )
 
     context_kwargs: dict[str, Any] = {}
     if user_agent:
@@ -807,6 +883,7 @@ async def launch_context_async(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     **kwargs: Any,
@@ -834,6 +911,8 @@ async def launch_context_async(
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
+        gpu_accel: Enable Docker GPU acceleration flags (default False).
+            Can also be enabled with CLOAKBROWSER_GPU_ACCEL=1.
         **kwargs: Passed to browser.new_context() — e.g. storage_state, permissions.
 
     Returns:
@@ -869,12 +948,21 @@ async def launch_context_async(
     # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
     # so it applies to ALL contexts, not just the default one.
     # locale and timezone are set via binary flags only — no CDP emulation.
-    browser = await launch_async(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
-                                 timezone=timezone, locale=locale, extension_paths=extension_paths,
-                                 license_key=license_key, browser_version=browser_version,
-                                 # Caller chose a viewport geometry → don't also auto-maximize
-                                 # the window (mirrors the persistent-context path + JS).
-                                 _suppress_maximize=(viewport is not _VIEWPORT_UNSET or "no_viewport" in kwargs))
+    browser = await launch_async(
+        headless=headless,
+        proxy=proxy,
+        args=args,
+        stealth_args=stealth_args,
+        timezone=timezone,
+        locale=locale,
+        extension_paths=extension_paths,
+        gpu_accel=gpu_accel,
+        license_key=license_key,
+        browser_version=browser_version,
+        # Caller chose a viewport geometry → don't also auto-maximize
+        # the window (mirrors the persistent-context path + JS).
+        _suppress_maximize=(viewport is not _VIEWPORT_UNSET or "no_viewport" in kwargs),
+    )
 
     context_kwargs: dict[str, Any] = {}
     if user_agent:
@@ -1169,6 +1257,7 @@ def build_args(
     locale: str | None = None,
     headless: bool = True,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     start_maximized: bool = False,
 ) -> list[str]:
     """Combine stealth args with user-provided args and locale flags.
@@ -1191,6 +1280,13 @@ def build_args(
     import platform as _platform
     if not headless or _platform.system() == "Windows":
         seen["--ignore-gpu-blocklist"] = "--ignore-gpu-blocklist"
+
+    if gpu_accel or os.environ.get("CLOAKBROWSER_GPU_ACCEL"):
+        seen["--use-gl"] = "--use-gl=egl"
+        seen["--enable-gpu-rasterization"] = "--enable-gpu-rasterization"
+        seen["--ignore-gpu-blocklist"] = "--ignore-gpu-blocklist"
+        if sys.platform.startswith("linux"):
+            seen["--enable-features"] = "--enable-features=VaapiVideoDecoder"
 
     if extra_args:
         for arg in extra_args:

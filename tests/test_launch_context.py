@@ -444,3 +444,61 @@ async def test_async_cancellation_closes_browser(mock_launch_async, _mock_bin):
         await launch_context_async()
 
     browser.close.assert_called_once()
+
+
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch")
+def test_gpu_accel_forwarded_to_launch(mock_launch, _mock_bin):
+    """launch_context(gpu_accel=True) propagates gpu_accel to launch()."""
+    browser, _ = _make_mock_browser()
+    mock_launch.return_value = browser
+
+    from cloakbrowser.browser import launch_context
+    launch_context(gpu_accel=True)
+
+    assert mock_launch.call_args.kwargs.get("gpu_accel") is True
+    assert "gpu_accel" not in browser.new_context.call_args.kwargs
+
+
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch")
+def test_gpu_accel_default_false(mock_launch, _mock_bin):
+    """launch_context() without gpu_accel passes gpu_accel=False."""
+    browser, _ = _make_mock_browser()
+    mock_launch.return_value = browser
+
+    from cloakbrowser.browser import launch_context
+    launch_context()
+
+    assert mock_launch.call_args.kwargs.get("gpu_accel") is False
+    assert "gpu_accel" not in browser.new_context.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch_async")
+async def test_async_gpu_accel_forwarded_to_launch_async(mock_launch_async, _mock_bin):
+    """launch_context_async(gpu_accel=True) propagates gpu_accel to launch_async()."""
+    browser, _ = _make_mock_async_browser()
+    mock_launch_async.return_value = browser
+
+    from cloakbrowser.browser import launch_context_async
+    await launch_context_async(gpu_accel=True)
+
+    assert mock_launch_async.call_args.kwargs.get("gpu_accel") is True
+    assert "gpu_accel" not in browser.new_context.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch_async")
+async def test_async_gpu_accel_default_false(mock_launch_async, _mock_bin):
+    """launch_context_async() without gpu_accel passes gpu_accel=False."""
+    browser, _ = _make_mock_async_browser()
+    mock_launch_async.return_value = browser
+
+    from cloakbrowser.browser import launch_context_async
+    await launch_context_async()
+
+    assert mock_launch_async.call_args.kwargs.get("gpu_accel") is False
+    assert "gpu_accel" not in browser.new_context.call_args.kwargs

@@ -1,5 +1,7 @@
 """Unit tests for build_args timezone/locale injection and timezone alias."""
 
+import sys
+
 from cloakbrowser.browser import build_args, _resolve_timezone
 
 
@@ -149,6 +151,50 @@ def test_non_value_flags_preserved():
     assert "--disable-gpu" in args
     assert "--no-zygote" in args
     assert "--no-sandbox" in args
+
+
+# --- GPU acceleration ---
+
+
+def test_gpu_accel_default_off(monkeypatch):
+    """GPU acceleration flags should stay off unless explicitly enabled."""
+    monkeypatch.delenv("CLOAKBROWSER_GPU_ACCEL", raising=False)
+    args = build_args(stealth_args=True, extra_args=None)
+    assert "--use-gl=egl" not in args
+    assert "--enable-gpu-rasterization" not in args
+    assert "--enable-features=VaapiVideoDecoder" not in args
+
+
+def test_gpu_accel_env_adds_linux_flags(monkeypatch):
+    """CLOAKBROWSER_GPU_ACCEL enables GPU flags, including Vaapi on Linux."""
+    monkeypatch.setenv("CLOAKBROWSER_GPU_ACCEL", "1")
+    monkeypatch.setattr(sys, "platform", "linux")
+    args = build_args(stealth_args=True, extra_args=None)
+    assert "--use-gl=egl" in args
+    assert "--enable-gpu-rasterization" in args
+    assert "--ignore-gpu-blocklist" in args
+    assert "--enable-features=VaapiVideoDecoder" in args
+
+
+def test_gpu_accel_skips_vaapi_off_linux(monkeypatch):
+    """VaapiVideoDecoder is Linux-only."""
+    monkeypatch.setenv("CLOAKBROWSER_GPU_ACCEL", "1")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    args = build_args(stealth_args=True, extra_args=None)
+    assert "--use-gl=egl" in args
+    assert "--enable-gpu-rasterization" in args
+    assert "--enable-features=VaapiVideoDecoder" not in args
+
+
+def test_gpu_accel_kwarg_adds_flags(monkeypatch):
+    """gpu_accel=True enables GPU flags without the environment variable."""
+    monkeypatch.delenv("CLOAKBROWSER_GPU_ACCEL", raising=False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    args = build_args(stealth_args=True, extra_args=None, gpu_accel=True)
+    assert "--use-gl=egl" in args
+    assert "--enable-gpu-rasterization" in args
+    assert "--ignore-gpu-blocklist" in args
+    assert "--enable-features=VaapiVideoDecoder" in args
 
 
 def test_override_logs_debug(caplog):

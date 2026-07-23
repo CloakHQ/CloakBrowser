@@ -1,0 +1,22 @@
+services:
+  cloakbrowser:
+    image: cloakhq/cloakbrowser
+    command: cloakserve
+    restart: unless-stopped
+    environment:
+      CLOAKBROWSER_GPU_ACCEL: "1"
+    ports:
+      - "127.0.0.1:9222:9222"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9222/json/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
