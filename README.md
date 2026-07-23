@@ -122,6 +122,20 @@ dotnet add package CloakBrowser
 
 > Community-maintained .NET client built on Microsoft.Playwright. See [`dotnet/README.md`](dotnet/README.md) for the full API.
 
+**Rust:**
+
+```toml
+# Cargo.toml
+cloakbrowser = { path = "rust/cloakbrowser" }  # monorepo path
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+```bash
+cd rust && cargo run -p cloakbrowser-cli -- install
+```
+
+> Community-maintained Rust client built on [`playwright-rs`](https://crates.io/crates/playwright-rs). See [`rust/README.md`](rust/README.md) for the full API.
+
 ---
 
 On first run, the stealth Chromium binary is automatically downloaded (~200MB, cached locally).
@@ -1380,6 +1394,7 @@ Issues and PRs welcome. If something isn't working, [open an issue](https://gith
 ## Contributors
 
 - [@evelaa123](https://github.com/evelaa123) — humanize behavior, persistent contexts, Windows fix, .NET client
+- [@enrell](https://github.com/enrell) — Rust client
 - [@yahooguntu](https://github.com/yahooguntu) — persistent contexts
 - [@kitiho](https://github.com/kitiho) — null viewport fix
 - [@eofreternal](https://github.com/eofreternal) — humanConfig type fix, humanized method option types, iframe pointer-events fix

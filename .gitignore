@@ -41,6 +41,10 @@ CLAUDE.md
 js/node_modules/
 js/dist/
 
+# Rust
+rust/target/
+**/Cargo.lock.bak
+
 # Distribution
 *.tar.gz
 *.whl
