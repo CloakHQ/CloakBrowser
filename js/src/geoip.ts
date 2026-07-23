@@ -261,20 +261,24 @@ async function resolveExitIp(proxyUrl: string | null | undefined, timeoutMs?: nu
       try {
         const ip = await new Promise<string | null>((resolve, reject) => {
           const targetUrl = new URL(echoUrl);
+          // Host must name the tunnel target, not the proxy (RFC 9110 §7.2).
+          // Node derives Host from `host` (the proxy) unless set explicitly;
+          // strict proxies (e.g. Oxylabs backconnect) reject the mismatch.
+          const authority = `${targetUrl.hostname}:443`;
+          const headers: Record<string, string> = { Host: authority };
+          if (proxyUrlObj.username) {
+            headers["Proxy-Authorization"] =
+              "Basic " +
+              Buffer.from(
+                `${decodeURIComponent(proxyUrlObj.username)}:${decodeURIComponent(proxyUrlObj.password || "")}`
+              ).toString("base64");
+          }
           const connectReq = http.request({
             host: proxyUrlObj.hostname,
             port: parseInt(proxyUrlObj.port || "80", 10),
             method: "CONNECT",
-            path: `${targetUrl.hostname}:443`,
-            headers: proxyUrlObj.username
-              ? {
-                  "Proxy-Authorization":
-                    "Basic " +
-                    Buffer.from(
-                      `${decodeURIComponent(proxyUrlObj.username)}:${decodeURIComponent(proxyUrlObj.password || "")}`
-                    ).toString("base64"),
-                }
-              : {},
+            path: authority,
+            headers,
             timeout: Math.min(10_000, remaining ?? 10_000),
           });
 
