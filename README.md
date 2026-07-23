@@ -784,6 +784,7 @@ browser = launch(args=[
 
 - [`basic.py`](examples/basic.py) — Launch and load a page
 - [`persistent_context.py`](examples/persistent_context.py) — Persistent profile with cookie/localStorage persistence
+- [`macos_profile_launcher.py`](examples/macos_profile_launcher.py) — Per-profile macOS desktop launcher pattern (one .app shortcut per profile, fixed fingerprint seed)
 - [`recaptcha_score.py`](examples/recaptcha_score.py) — Check your reCAPTCHA v3 score
 - [`stealth_test.py`](examples/stealth_test.py) — Run against 6 detection sites
 - [`fingerprint_scan_test.py`](examples/fingerprint_scan_test.py) — Test against fingerprint-scan.com and CreepJS
