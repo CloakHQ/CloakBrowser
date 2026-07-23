@@ -110,6 +110,12 @@ export function buildContextOptions(
 export async function buildLaunchOptions(
   options: LaunchOptions = {}
 ): Promise<PlaywrightLaunchOptions> {
+  // Standalone callers may pass `timezoneId` (Playwright's field name) instead
+  // of `timezone`. The launch* wrappers resolve this before delegating, but
+  // buildLaunchOptions is exported and used directly, and buildArgs only reads
+  // `options.timezone` to emit --fingerprint-timezone — so without this, a
+  // standalone `buildLaunchOptions({ timezoneId })` silently drops the flag.
+  options = resolveTimezone(options);
   const binaryPath =
     process.env.CLOAKBROWSER_BINARY_PATH ||
     (await ensureBinary(options.licenseKey, options.browserVersion));

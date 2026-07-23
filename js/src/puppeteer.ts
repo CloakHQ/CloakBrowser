@@ -14,6 +14,7 @@ import {
 } from "./config.js";
 import { buildArgs } from "./args.js";
 import { maybeWarnWindowsFonts } from "./fonts.js";
+import { resolveTimezone } from "./playwright.js";
 import { ensureBinary } from "./download.js";
 import { isSocksProxy, normalizeHttpStringUrl, parseProxyUrl, reconstructHttpUrl, resolveProxyConfig } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
@@ -48,6 +49,11 @@ function resolveDefaultViewport(options: LaunchOptions): { width: number; height
 
 /** Resolve binary path, geoip, webrtc, and build final Chrome args. */
 async function resolveArgs(options: LaunchOptions): Promise<{ binaryPath: string; args: string[] }> {
+  // Map Playwright's `timezoneId` onto `timezone` before buildArgs, which only
+  // reads `timezone` to emit --fingerprint-timezone. Every puppeteer entry
+  // point (launch/launchContext/launchPersistentContext) funnels through here,
+  // so resolving once covers all of them.
+  options = resolveTimezone(options);
   const binaryPath =
     process.env.CLOAKBROWSER_BINARY_PATH ||
     (await ensureBinary(options.licenseKey, options.browserVersion));
