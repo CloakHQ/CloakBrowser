@@ -246,7 +246,15 @@ public sealed class HumanPage
         if (!force && scroll.DidScroll)
         {
             await Actionability.EnsureStableAsync(_page, selector, RemainingMs(deadline)).ConfigureAwait(false);
-            box = await GetBoxAsync(selector, RemainingMs(deadline)).ConfigureAwait(false) ?? box;
+            // Waiting for the reflow to settle can push the element back out of
+            // view, and scrolling once before the wait is not enough: the click
+            // coords would land outside the viewport and hit nothing (#329).
+            var rescroll = await HumanScroll.HumanScrollIntoViewAsync(
+                _scrollPage, _rawMouse, () => GetBoxAsync(selector, RemainingMs(deadline)),
+                _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
+            _cursor.X = rescroll.CursorX;
+            _cursor.Y = rescroll.CursorY;
+            box = rescroll.Box;
         }
         var target = HumanMouse.ClickTarget(box, isInput, callCfg);
         if (!force)
@@ -286,7 +294,15 @@ public sealed class HumanPage
         if (!force && scroll.DidScroll)
         {
             await Actionability.EnsureStableAsync(_page, selector, RemainingMs(deadline)).ConfigureAwait(false);
-            box = await GetBoxAsync(selector, RemainingMs(deadline)).ConfigureAwait(false) ?? box;
+            // Waiting for the reflow to settle can push the element back out of
+            // view, and scrolling once before the wait is not enough: the click
+            // coords would land outside the viewport and hit nothing (#329).
+            var rescroll = await HumanScroll.HumanScrollIntoViewAsync(
+                _scrollPage, _rawMouse, () => GetBoxAsync(selector, RemainingMs(deadline)),
+                _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
+            _cursor.X = rescroll.CursorX;
+            _cursor.Y = rescroll.CursorY;
+            box = rescroll.Box;
         }
         var target = HumanMouse.ClickTarget(box, isInput, callCfg);
         if (!force)
@@ -331,7 +347,15 @@ public sealed class HumanPage
         if (!force && scroll.DidScroll)
         {
             await Actionability.EnsureStableAsync(_page, selector, RemainingMs(deadline)).ConfigureAwait(false);
-            box = await GetBoxAsync(selector, RemainingMs(deadline)).ConfigureAwait(false) ?? box;
+            // Waiting for the reflow to settle can push the element back out of
+            // view, and scrolling once before the wait is not enough: the click
+            // coords would land outside the viewport and hit nothing (#329).
+            var rescroll = await HumanScroll.HumanScrollIntoViewAsync(
+                _scrollPage, _rawMouse, () => GetBoxAsync(selector, RemainingMs(deadline)),
+                _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
+            _cursor.X = rescroll.CursorX;
+            _cursor.Y = rescroll.CursorY;
+            box = rescroll.Box;
         }
         var target = HumanMouse.ClickTarget(box, false, callCfg);
         if (!force)
@@ -552,7 +576,15 @@ public sealed class HumanPage
         if (!force && scroll.DidScroll)
         {
             await Actionability.EnsureStableAsync(_page, selector, RemainingMs(deadline)).ConfigureAwait(false);
-            box = await GetBoxAsync(selector, RemainingMs(deadline)).ConfigureAwait(false) ?? box;
+            // Waiting for the reflow to settle can push the element back out of
+            // view, and scrolling once before the wait is not enough: the click
+            // coords would land outside the viewport and hit nothing (#329).
+            var rescroll = await HumanScroll.HumanScrollIntoViewAsync(
+                _scrollPage, _rawMouse, () => GetBoxAsync(selector, RemainingMs(deadline)),
+                _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
+            _cursor.X = rescroll.CursorX;
+            _cursor.Y = rescroll.CursorY;
+            box = rescroll.Box;
         }
         var target = HumanMouse.ClickTarget(box, false, callCfg);
         await HumanMouse.HumanMoveAsync(_rawMouse, _cursor.X, _cursor.Y, target.X, target.Y, callCfg).ConfigureAwait(false);

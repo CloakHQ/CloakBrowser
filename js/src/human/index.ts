@@ -334,7 +334,13 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     let finalBox = box;
     if (!force && didScroll) {
       await ensureStable(page, selector, remainingMs());
-      finalBox = await page.locator(selector).first().boundingBox({ timeout: Math.max(1, remainingMs()) }) ?? box;
+      // Waiting for the reflow to settle can push the element back out of view,
+      // and scrolling once before the wait is not enough: the click coords would
+      // land outside the viewport and hit nothing (#329).
+      const rescrolled = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
+      finalBox = rescrolled.box;
+      cursor.x = rescrolled.cursorX;
+      cursor.y = rescrolled.cursorY;
     }
     const target = clickTarget(finalBox, isInput, callCfg);
     if (!force) {
@@ -366,7 +372,13 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     let finalBox = box;
     if (!force && didScroll) {
       await ensureStable(page, selector, remainingMs());
-      finalBox = await page.locator(selector).first().boundingBox({ timeout: Math.max(1, remainingMs()) }) ?? box;
+      // Waiting for the reflow to settle can push the element back out of view,
+      // and scrolling once before the wait is not enough: the click coords would
+      // land outside the viewport and hit nothing (#329).
+      const rescrolled = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
+      finalBox = rescrolled.box;
+      cursor.x = rescrolled.cursorX;
+      cursor.y = rescrolled.cursorY;
     }
     const target = clickTarget(finalBox, isInput, callCfg);
     if (!force) {
@@ -400,7 +412,13 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     let finalBox = box;
     if (!force && didScroll) {
       await ensureStable(page, selector, remainingMs());
-      finalBox = await page.locator(selector).first().boundingBox({ timeout: Math.max(1, remainingMs()) }) ?? box;
+      // Waiting for the reflow to settle can push the element back out of view,
+      // and scrolling once before the wait is not enough: the click coords would
+      // land outside the viewport and hit nothing (#329).
+      const rescrolled = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
+      finalBox = rescrolled.box;
+      cursor.x = rescrolled.cursorX;
+      cursor.y = rescrolled.cursorY;
     }
     const target = clickTarget(finalBox, false, callCfg);
     if (!force) {

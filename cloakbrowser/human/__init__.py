@@ -1068,7 +1068,14 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         is_input = _is_input_element(page, selector)
         if not force and did_scroll:
             ensure_stable(page, selector, timeout=_remaining_ms())
-            box = page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
+            # Waiting for the reflow to settle can push the element back out of
+            # view, and scrolling once before the wait is not enough: the click
+            # coords would land outside the viewport and hit nothing (#329).
+            box, cx, cy, _ = scroll_to_element(
+                page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=_remaining_ms(),
+            )
+            cursor.x = cx
+            cursor.y = cy
         target = click_target(box, is_input, call_cfg)
         if not force:
             check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
@@ -1099,7 +1106,14 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         is_input = _is_input_element(page, selector)
         if not force and did_scroll:
             ensure_stable(page, selector, timeout=_remaining_ms())
-            box = page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
+            # Waiting for the reflow to settle can push the element back out of
+            # view, and scrolling once before the wait is not enough: the click
+            # coords would land outside the viewport and hit nothing (#329).
+            box, cx, cy, _ = scroll_to_element(
+                page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=_remaining_ms(),
+            )
+            cursor.x = cx
+            cursor.y = cy
         target = click_target(box, is_input, call_cfg)
         if not force:
             check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
@@ -1132,7 +1146,14 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         cursor.y = cy
         if not force and did_scroll:
             ensure_stable(page, selector, timeout=_remaining_ms())
-            box = page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
+            # Waiting for the reflow to settle can push the element back out of
+            # view, and scrolling once before the wait is not enough: the click
+            # coords would land outside the viewport and hit nothing (#329).
+            box, cx, cy, _ = scroll_to_element(
+                page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=_remaining_ms(),
+            )
+            cursor.x = cx
+            cursor.y = cy
         target = click_target(box, False, call_cfg)
         if not force:
             check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
@@ -2109,7 +2130,13 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         is_input = await _async_is_input_element(page, selector)
         if not force and did_scroll:
             await async_ensure_stable(page, selector, timeout=_remaining_ms())
-            box = await page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
+            # See the sync path: settling can move the element off-screen again,
+            # so re-scroll before computing click coords (#329).
+            box, cx, cy, _ = await async_scroll_to_element(
+                page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=_remaining_ms(),
+            )
+            cursor.x = cx
+            cursor.y = cy
         target = click_target(box, is_input, call_cfg)
         if not force:
             await async_check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
@@ -2140,7 +2167,13 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         is_input = await _async_is_input_element(page, selector)
         if not force and did_scroll:
             await async_ensure_stable(page, selector, timeout=_remaining_ms())
-            box = await page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
+            # See the sync path: settling can move the element off-screen again,
+            # so re-scroll before computing click coords (#329).
+            box, cx, cy, _ = await async_scroll_to_element(
+                page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=_remaining_ms(),
+            )
+            cursor.x = cx
+            cursor.y = cy
         target = click_target(box, is_input, call_cfg)
         if not force:
             await async_check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
@@ -2173,7 +2206,13 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         cursor.y = cy
         if not force and did_scroll:
             await async_ensure_stable(page, selector, timeout=_remaining_ms())
-            box = await page.locator(selector).first.bounding_box(timeout=max(1, _remaining_ms())) or box
+            # See the sync path: settling can move the element off-screen again,
+            # so re-scroll before computing click coords (#329).
+            box, cx, cy, _ = await async_scroll_to_element(
+                page, raw_mouse, selector, cursor.x, cursor.y, call_cfg, timeout=_remaining_ms(),
+            )
+            cursor.x = cx
+            cursor.y = cy
         target = click_target(box, False, call_cfg)
         if not force:
             await async_check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())

@@ -231,6 +231,7 @@ export async function checkPointerEvents(
 ): Promise<void> {
   const deadline = Date.now() + timeout;
   let attempt = 0;
+  let lastMiss: string | null = null;
 
   while (true) {
     let result: any = null;
@@ -242,8 +243,21 @@ export async function checkPointerEvents(
       result = null;
     }
 
-    if (!result || result.hit) return;
+    // An indeterminate result fails open — failing closed would block legitimate
+    // clicks. But once a miss has been *determined*, a later indeterminate
+    // attempt must not launder it into a pass: near the deadline the boundingBox
+    // timeout is clamped to ~1ms and always throws, which used to turn a proven
+    // miss into "unknown" and let the click through silently (#329).
+    if (!result) {
+      if (lastMiss !== null && Date.now() >= deadline) {
+        throw new ElementNotReceivingEventsError(selector, lastMiss);
+      }
+      return;
+    }
+    if (result.hit) return;
+
     const covering = (result as any)?.covering ?? 'unknown';
+    lastMiss = covering;
     if (Date.now() >= deadline) throw new ElementNotReceivingEventsError(selector, covering);
 
     await backoffSleep(attempt);

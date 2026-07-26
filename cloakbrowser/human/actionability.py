@@ -239,6 +239,7 @@ def check_pointer_events(
     """
     deadline = time.monotonic() + timeout / 1000.0
     attempt = 0
+    last_miss: Optional[str] = None
 
     while True:
         try:
@@ -250,11 +251,20 @@ def check_pointer_events(
             result = None
 
         # Proceed if the check confirms a hit, or if it could not be determined
-        # (None) — failing closed would block legitimate clicks.
-        if result is None or result.get("hit", False):
+        # (None) — failing closed would block legitimate clicks. But once a miss
+        # has actually been *determined*, a later indeterminate attempt must not
+        # launder it into a pass: near the deadline the bounding_box timeout is
+        # clamped to ~1ms and always throws, which used to turn a proven miss
+        # into "unknown" and let the click through silently (#329).
+        if result is None:
+            if last_miss is not None and time.monotonic() >= deadline:
+                raise ElementNotReceivingEventsError(selector, last_miss)
+            return
+        if result.get("hit", False):
             return
 
-        covering = (result or {}).get("covering", "unknown")
+        covering = result.get("covering", "unknown")
+        last_miss = covering
 
         if time.monotonic() >= deadline:
             raise ElementNotReceivingEventsError(selector, covering)

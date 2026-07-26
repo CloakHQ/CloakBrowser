@@ -285,6 +285,7 @@ public static class Actionability
     {
         double deadline = NowMs() + timeoutMs;
         int attempt = 0;
+        string? lastMiss = null;
 
         while (true)
         {
@@ -312,10 +313,23 @@ public static class Actionability
 
             // Proceed if the check confirms a hit, or if it could not be determined
             // (null) - failing closed would block legitimate clicks.
-            if (result == null || result.Hit)
+            // An indeterminate result (null) fails open - failing closed would
+            // block legitimate clicks. But once a miss has been *determined*, a
+            // later indeterminate attempt must not launder it into a pass: near
+            // the deadline the BoundingBox timeout is clamped to ~1ms and always
+            // throws, which used to turn a proven miss into "unknown" and let the
+            // click through silently (#329).
+            if (result == null)
+            {
+                if (lastMiss != null && NowMs() >= deadline)
+                    throw new ElementNotReceivingEventsError(selector, lastMiss);
+                return;
+            }
+            if (result.Hit)
                 return;
 
             string covering = result.Covering ?? "unknown";
+            lastMiss = covering;
 
             if (NowMs() >= deadline)
                 throw new ElementNotReceivingEventsError(selector, covering);
@@ -414,6 +428,7 @@ public static class Actionability
     {
         double deadline = NowMs() + timeoutMs;
         int attempt = 0;
+        string? lastMiss = null;
 
         while (true)
         {
@@ -434,10 +449,20 @@ public static class Actionability
                 result = null;
             }
 
-            if (result == null || result.Hit)
+            // See the locator variant: an indeterminate result fails open, but a
+            // miss that was already determined must not be laundered into a pass
+            // by a late attempt that merely errored (#329).
+            if (result == null)
+            {
+                if (lastMiss != null && NowMs() >= deadline)
+                    throw new ElementNotReceivingEventsError("<ElementHandle>", lastMiss);
+                return;
+            }
+            if (result.Hit)
                 return;
 
             string covering = result.Covering ?? "unknown";
+            lastMiss = covering;
 
             if (NowMs() >= deadline)
                 throw new ElementNotReceivingEventsError("<ElementHandle>", covering);
