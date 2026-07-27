@@ -178,11 +178,16 @@ class TestMaybeResolveGeoip:
         mock_geo.assert_called_once_with("socks5://proxy:1080")
 
     @patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip", return_value=("Europe/London", "en-GB", "1.1.1.1"))
-    def test_geoip_http_dict_does_not_inline_creds(self, mock_geo):
-        # HTTP dict: credentials stay separate, only server URL passed
-        proxy_dict = {"server": "http://proxy:8080", "username": "user", "password": "pass"}
+    def test_geoip_http_dict_without_credentials_uses_server(self, mock_geo):
+        proxy_dict = {"server": "http://proxy:8080"}
         tz, locale, ip = maybe_resolve_geoip(True, proxy_dict, None, None)
         mock_geo.assert_called_once_with("http://proxy:8080")
+
+    @patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip", return_value=("Europe/London", "en-GB", "1.1.1.1"))
+    def test_geoip_http_dict_reconstructs_credentials(self, mock_geo):
+        proxy_dict = {"server": "http://proxy:8080", "username": "user", "password": "pass"}
+        tz, locale, ip = maybe_resolve_geoip(True, proxy_dict, None, None)
+        mock_geo.assert_called_once_with("http://user:pass@proxy:8080")
 
 
 class TestBareProxyFormat:

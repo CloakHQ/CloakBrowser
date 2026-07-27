@@ -103,6 +103,16 @@ public class ProxyResolverTests
     }
 
     [Fact]
+    public void ExtractProxyUrl_Http_Dict_Reconstructs_With_Creds()
+    {
+        var url = ProxyResolver.ExtractProxyUrl(new ProxySettings
+        {
+            Server = "host:8080", Username = "user@tenant", Password = "p:ss",
+        });
+        Assert.Equal("http://user%40tenant:p%3Ass@host:8080", url);
+    }
+
+    [Fact]
     public void IsSocksProxy_Detects_Variants()
     {
         Assert.True(ProxyResolver.IsSocksProxy("socks5://h:1"));

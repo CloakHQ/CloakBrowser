@@ -272,7 +272,9 @@ internal static class ProxyResolver
                 return null;
             case ProxySettings ps:
                 if (string.IsNullOrEmpty(ps.Server)) return null;
-                return IsSocksProxy(ps) ? ReconstructSocksUrl(ps) : EnsureProxyScheme(ps.Server);
+                return IsSocksProxy(ps)
+                    ? ReconstructSocksUrl(ps)
+                    : EnsureProxyScheme(ReconstructHttpUrl(ps));
             case string s:
                 return EnsureProxyScheme(s);
             default:

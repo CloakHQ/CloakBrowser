@@ -1,8 +1,10 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { COUNTRY_LOCALE_MAP, maybeResolveGeoip, resolveProxyGeo, resolveProxyIp } from "../src/geoip.js";
+import Stream from "node:stream";
 
 const tempDirs: string[] = [];
 
@@ -51,6 +53,46 @@ describe("resolveProxyIp", () => {
 });
 
 describe("maybeResolveGeoip", () => {
+  it("forwards separate HTTP proxy credentials to CONNECT requests", async () => {
+    const authorizationHeaders: Array<string | undefined> = [];
+    const sockets = new Set<Stream.Duplex>();
+    const proxy = http.createServer();
+    proxy.on("connect", (request, socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      authorizationHeaders.push(request.headers["proxy-authorization"]);
+      socket.end("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n");
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const address = proxy.address();
+      if (address === null || typeof address === "string") throw new Error("Missing proxy address");
+      process.env.CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS = "0.2";
+
+      await maybeResolveGeoip({
+        geoip: true,
+        timezone: "America/New_York",
+        locale: "en-US",
+        proxy: {
+          server: `http://127.0.0.1:${address.port}`,
+          username: "user",
+          password: "pass",
+        },
+      });
+
+      expect(authorizationHeaders).not.toHaveLength(0);
+      expect(authorizationHeaders).toEqual(
+        authorizationHeaders.map(() => "Basic dXNlcjpwYXNz"),
+      );
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) =>
+        proxy.close((error) => (error === undefined ? resolve() : reject(error))),
+      );
+    }
+  });
+
   it("does not apply the GeoIP resolution timeout to first-use database download", async () => {
     const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-download-"));
     tempDirs.push(cacheDir);

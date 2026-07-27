@@ -1053,8 +1053,8 @@ def _normalize_socks_string_url(url: str) -> str:
 def _extract_proxy_url(proxy: str | ProxySettings | None) -> str | None:
     """Extract and normalize proxy URL string from proxy param.
 
-    For SOCKS5 dicts with separate username/password fields, reconstructs
-    the full URL with inline credentials so SOCKS5 auth works.
+    For proxy dicts with separate username/password fields, reconstructs
+    the full URL with inline credentials so proxy auth works.
     """
     if proxy is None:
         return None
@@ -1062,8 +1062,11 @@ def _extract_proxy_url(proxy: str | ProxySettings | None) -> str | None:
         server = proxy.get("server", "")
         if not server:
             return None
-        if _is_socks_proxy(proxy):
-            return _reconstruct_socks_url(proxy)
+        if proxy.get("username"):
+            return (
+                _reconstruct_socks_url(proxy) if _is_socks_proxy(proxy)
+                else _reconstruct_http_url(proxy)
+            )
         return _ensure_proxy_scheme(server)
     return _ensure_proxy_scheme(proxy)
 

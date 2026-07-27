@@ -15,7 +15,7 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import { getCacheDir } from "./config.js";
 import type { LaunchOptions } from "./types.js";
-import { ensureProxyScheme, isSocksProxy, reconstructSocksUrl, type ProxyDict } from "./proxy.js";
+import { ensureProxyScheme, isSocksProxy, reconstructHttpUrl, reconstructSocksUrl, type ProxyDict } from "./proxy.js";
 
 // P3TERX mirror of MaxMind GeoLite2-City — no license key needed
 const GEOIP_DB_URL =
@@ -408,16 +408,16 @@ function maybeTriggerUpdate(dbPath: string): void {
 
 /**
  * Extract a usable proxy URL from LaunchOptions.proxy.
- * For SOCKS5 dicts with separate credentials, reconstructs the full URL
- * with inline credentials so SOCKS5 auth works.
+ * For proxy dicts with separate credentials, reconstructs the full URL
+ * with inline credentials so proxy auth works.
  */
 function extractProxyUrl(proxy: string | ProxyDict | undefined): string | null {
   if (!proxy) return null;
   if (typeof proxy === "string") return ensureProxyScheme(proxy);
   const p = proxy as ProxyDict;
   if (!p.server) return null;
-  if (p.username && isSocksProxy(p)) {
-    return reconstructSocksUrl(p);
+  if (p.username) {
+    return isSocksProxy(p) ? reconstructSocksUrl(p) : reconstructHttpUrl(p);
   }
   return ensureProxyScheme(p.server);
 }
