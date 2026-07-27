@@ -51,6 +51,45 @@ public class BuildArgsTests
     }
 
     [Fact]
+    public void WindowsFontsDir_Adds_WindowsFontMetrics_OnLinux()
+    {
+        var args = CloakLauncher.BuildArgs(
+            stealthArgs: true,
+            extraArgs: new List<string> { "--fingerprint-fonts-dir=/usr/share/fonts/windows" });
+        if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                System.Runtime.InteropServices.OSPlatform.Linux))
+            Assert.Contains("--fingerprint-windows-font-metrics", args);
+        else
+            Assert.DoesNotContain("--fingerprint-windows-font-metrics", args);
+    }
+
+    [Fact]
+    public void WindowsFontMetrics_NotAdded_ForNonWindowsPersona()
+    {
+        var args = CloakLauncher.BuildArgs(
+            stealthArgs: true,
+            extraArgs: new List<string>
+            {
+                "--fingerprint-platform=linux",
+                "--fingerprint-fonts-dir=/usr/share/fonts/windows",
+            });
+        Assert.DoesNotContain("--fingerprint-windows-font-metrics", args);
+    }
+
+    [Fact]
+    public void WindowsFontMetrics_NotDoubled_WhenUserSuppliesIt()
+    {
+        var args = CloakLauncher.BuildArgs(
+            stealthArgs: true,
+            extraArgs: new List<string>
+            {
+                "--fingerprint-fonts-dir=/usr/share/fonts/windows",
+                "--fingerprint-windows-font-metrics",
+            });
+        Assert.Single(args, a => a == "--fingerprint-windows-font-metrics");
+    }
+
+    [Fact]
     public void ExtensionPaths_Produce_LoadExtension_And_DisableExcept()
     {
         var tmp = Directory.CreateTempSubdirectory().FullName;

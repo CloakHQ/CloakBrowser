@@ -56,6 +56,22 @@ export function buildArgs(options: LaunchOptions): string[] {
     }
   }
 
+  // A caller-provided Windows fonts directory is an explicit request to make a
+  // Linux host look like a Windows desktop. Pair it with the Chromium 148+
+  // metrics alignment flag automatically; older binaries ignore it. This keeps
+  // DataDome-style font probes from seeing Windows font names with Linux text
+  // metrics (#471), while preserving non-Windows personas and explicit user
+  // choices.
+  const effectivePlatform = seen.get("--fingerprint-platform");
+  if (
+    process.platform === "linux" &&
+    effectivePlatform?.split("=")[1]?.trim().toLowerCase() === "windows" &&
+    seen.has("--fingerprint-fonts-dir") &&
+    !seen.has("--fingerprint-windows-font-metrics")
+  ) {
+    seen.set("--fingerprint-windows-font-metrics", "--fingerprint-windows-font-metrics");
+  }
+
   if (options.extensionPaths?.length) {
     const absPaths = options.extensionPaths.map(p => path.resolve(p));
     const joined = absPaths.join(",");

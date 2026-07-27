@@ -216,6 +216,37 @@ describe("buildArgs deduplication", () => {
     expect(platArgs[0]).toBe("--fingerprint-platform=linux");
   });
 
+  it("adds Windows font metrics for Windows fonts dir on Linux", () => {
+    const args = _buildArgsForTest({
+      args: ["--fingerprint-fonts-dir=/usr/share/fonts/windows"],
+    });
+    if (process.platform === "linux") {
+      expect(args).toContain("--fingerprint-windows-font-metrics");
+    } else {
+      expect(args).not.toContain("--fingerprint-windows-font-metrics");
+    }
+  });
+
+  it("does not add Windows font metrics for a non-Windows persona", () => {
+    const args = _buildArgsForTest({
+      args: [
+        "--fingerprint-platform=linux",
+        "--fingerprint-fonts-dir=/usr/share/fonts/windows",
+      ],
+    });
+    expect(args).not.toContain("--fingerprint-windows-font-metrics");
+  });
+
+  it("does not duplicate user-supplied Windows font metrics flag", () => {
+    const args = _buildArgsForTest({
+      args: [
+        "--fingerprint-fonts-dir=/usr/share/fonts/windows",
+        "--fingerprint-windows-font-metrics",
+      ],
+    });
+    expect(args.filter(a => a === "--fingerprint-windows-font-metrics")).toHaveLength(1);
+  });
+
   it("timezone param overrides user --fingerprint-timezone arg", () => {
     const args = _buildArgsForTest({
       args: ["--fingerprint-timezone=Europe/London"],

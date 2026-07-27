@@ -1,5 +1,7 @@
 """Unit tests for build_args timezone/locale injection and timezone alias."""
 
+import sys
+
 from cloakbrowser.browser import build_args, _resolve_timezone
 
 
@@ -102,6 +104,42 @@ def test_user_platform_overrides_default():
     platform_args = [a for a in args if a.startswith("--fingerprint-platform=")]
     assert len(platform_args) == 1
     assert platform_args[0] == "--fingerprint-platform=linux"
+
+
+def test_windows_fonts_dir_adds_windows_font_metrics_on_linux():
+    """Windows fonts dir on a Linux Windows persona should also align metrics."""
+    args = build_args(
+        stealth_args=True,
+        extra_args=["--fingerprint-fonts-dir=/usr/share/fonts/windows"],
+    )
+    if sys.platform.startswith("linux"):
+        assert "--fingerprint-windows-font-metrics" in args
+    else:
+        assert "--fingerprint-windows-font-metrics" not in args
+
+
+def test_windows_font_metrics_not_added_for_non_windows_persona():
+    """A Linux persona with a custom fonts dir should not get Windows metrics."""
+    args = build_args(
+        stealth_args=True,
+        extra_args=[
+            "--fingerprint-platform=linux",
+            "--fingerprint-fonts-dir=/usr/share/fonts/windows",
+        ],
+    )
+    assert "--fingerprint-windows-font-metrics" not in args
+
+
+def test_windows_font_metrics_not_duplicated_when_user_supplies_it():
+    """User-provided Windows metrics flag should not be duplicated."""
+    args = build_args(
+        stealth_args=True,
+        extra_args=[
+            "--fingerprint-fonts-dir=/usr/share/fonts/windows",
+            "--fingerprint-windows-font-metrics",
+        ],
+    )
+    assert args.count("--fingerprint-windows-font-metrics") == 1
 
 
 def test_timezone_param_overrides_user_arg():

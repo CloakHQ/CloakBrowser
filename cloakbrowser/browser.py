@@ -1233,6 +1233,22 @@ def build_args(
                 logger.debug("Arg override: %s -> %s", seen[key], flag)
             seen[key] = flag
 
+    # A caller-provided Windows fonts directory is an explicit request to make a
+    # Linux host look like a Windows desktop. Pair it with the Chromium 148+
+    # metrics alignment flag automatically; older binaries ignore it. This keeps
+    # DataDome-style font probes from seeing Windows font names with Linux text
+    # metrics (#471), while preserving non-Windows personas and explicit user
+    # choices.
+    effective_platform = seen.get("--fingerprint-platform")
+    if (
+        sys.platform.startswith("linux")
+        and effective_platform is not None
+        and effective_platform.split("=", 1)[-1].strip().lower() == "windows"
+        and "--fingerprint-fonts-dir" in seen
+        and "--fingerprint-windows-font-metrics" not in seen
+    ):
+        seen["--fingerprint-windows-font-metrics"] = "--fingerprint-windows-font-metrics"
+
     if extension_paths:
         abs_paths = [os.path.abspath(p) for p in extension_paths]
         ext_val = ",".join(abs_paths)

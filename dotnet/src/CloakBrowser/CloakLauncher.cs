@@ -385,6 +385,21 @@ public static class CloakLauncher
             Set("--fingerprint-locale", $"--fingerprint-locale={locale}");
         }
 
+        // A caller-provided Windows fonts directory is an explicit request to make a
+        // Linux host look like a Windows desktop. Pair it with the Chromium 148+
+        // metrics alignment flag automatically; older binaries ignore it. This keeps
+        // DataDome-style font probes from seeing Windows font names with Linux text
+        // metrics (#471), while preserving non-Windows personas and explicit user
+        // choices.
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
+            && seen.TryGetValue("--fingerprint-platform", out var effectivePlatform)
+            && effectivePlatform.Split('=', 2).Last().Trim().Equals("windows", StringComparison.OrdinalIgnoreCase)
+            && seen.ContainsKey("--fingerprint-fonts-dir")
+            && !seen.ContainsKey("--fingerprint-windows-font-metrics"))
+        {
+            Set("--fingerprint-windows-font-metrics", "--fingerprint-windows-font-metrics");
+        }
+
         if (extensionPaths != null && extensionPaths.Count > 0)
         {
             var absPaths = extensionPaths.Select(Path.GetFullPath);
