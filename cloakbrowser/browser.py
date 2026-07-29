@@ -23,6 +23,7 @@ from urllib.parse import quote, unquote, urlparse, urlunparse
 from .config import (
     DEFAULT_VIEWPORT,
     IGNORE_DEFAULT_ARGS,
+    binary_supports_dual_stack_webrtc,
     binary_supports_headless_no_viewport,
     binary_supports_http_proxy_inline_auth,
     binary_supports_maximized_window,
@@ -224,6 +225,7 @@ def launch(
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
+    exit_ip = _with_exit_ipv6(exit_ip, proxy, binary_supports_dual_stack_webrtc(license_key, browser_version, release_channel))
     args = _append_webrtc_exit_ip(args, exit_ip)
 
     chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and not _suppress_maximize)
@@ -344,6 +346,7 @@ async def launch_async(  # noqa: C901
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
+    exit_ip = _with_exit_ipv6(exit_ip, proxy, binary_supports_dual_stack_webrtc(license_key, browser_version, release_channel))
     args = _append_webrtc_exit_ip(args, exit_ip)
     chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and not _suppress_maximize)
     _maybe_warn_windows_fonts(chrome_args)
@@ -474,6 +477,7 @@ def launch_persistent_context(
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
+    exit_ip = _with_exit_ipv6(exit_ip, proxy, binary_supports_dual_stack_webrtc(license_key, browser_version, release_channel))
     args = _append_webrtc_exit_ip(args, exit_ip)
     chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
     _maybe_warn_windows_fonts(chrome_args)
@@ -625,6 +629,7 @@ async def launch_persistent_context_async(
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
+    exit_ip = _with_exit_ipv6(exit_ip, proxy, binary_supports_dual_stack_webrtc(license_key, browser_version, release_channel))
     args = _append_webrtc_exit_ip(args, exit_ip)
     chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
     _maybe_warn_windows_fonts(chrome_args)
@@ -758,6 +763,7 @@ def launch_context(
     # resolved values flow to binary flags
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     # Inject geoip exit IP for WebRTC spoofing (free — no extra HTTP call)
+    exit_ip = _with_exit_ipv6(exit_ip, proxy, binary_supports_dual_stack_webrtc(license_key, browser_version, release_channel))
     args = _append_webrtc_exit_ip(args, exit_ip)
     # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
     # so it applies to ALL contexts, not just the default one.
@@ -884,6 +890,7 @@ async def launch_context_async(
     # Resolve geoip BEFORE launch_async() to avoid double-resolution and ensure
     # resolved values flow to binary flags
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
+    exit_ip = _with_exit_ipv6(exit_ip, proxy, binary_supports_dual_stack_webrtc(license_key, browser_version, release_channel))
     args = _append_webrtc_exit_ip(args, exit_ip)
     # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
     # so it applies to ALL contexts, not just the default one.
@@ -1127,6 +1134,26 @@ def maybe_resolve_geoip(
     if locale is None:
         locale = geo_locale
     return timezone, locale, exit_ip
+
+
+def _with_exit_ipv6(
+    exit_ip: str | None,
+    proxy: str | ProxySettings | None,
+    dual_stack: bool,
+) -> str | None:
+    """Add the egress IPv6 to *exit_ip* when *dual_stack*.
+
+    *dual_stack* comes from ``binary_supports_dual_stack_webrtc`` at the call site;
+    older binaries accept a single address only. A v4-only egress fails the v6
+    probe and the value is unchanged — the common case, so the extra request
+    happens only on qualifying binaries.
+    """
+    if not exit_ip or not dual_stack:
+        return exit_ip
+    from .geoip import format_webrtc_exit_ips, resolve_exit_ipv6
+
+    proxy_url = _extract_proxy_url(proxy) if proxy else None
+    return format_webrtc_exit_ips(exit_ip, resolve_exit_ipv6(proxy_url)) or exit_ip
 
 
 def _resolve_webrtc_args(

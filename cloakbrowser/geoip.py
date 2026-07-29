@@ -194,11 +194,22 @@ def _is_private_ip(ip: str) -> bool:
         return False
 
 
-# IP echo services — fast, no auth, return just the IP
+# IP echo services — fast, no auth, return just the IP.
+# Every host here is A-only, so a lookup can only ever complete over IPv4 and the
+# answer is always the egress IPv4. That is deliberate: it keeps this list the
+# stable IPv4 probe. For IPv6 use _IP_ECHO_URLS_V6 below, never a dual-stack host
+# (a dual-stack host answers over IPv4 and reports the v4 address, telling us
+# nothing about v6 reachability).
 _IP_ECHO_URLS = [
     "https://api.ipify.org",
     "https://checkip.amazonaws.com",
     "https://ifconfig.me/ip",
+]
+
+# AAAA-only hosts: a request can only complete over IPv6, so success proves the
+# egress has IPv6 and returns that address, while a v4-only egress fails fast.
+_IP_ECHO_URLS_V6 = [
+    "https://api6.ipify.org",
 ]
 
 
@@ -283,6 +294,51 @@ def _resolve_exit_ip(proxy_url: str | None, timeout: float | None = None) -> str
             continue
     logger.warning("Failed to discover exit IP through proxy")
     return None
+
+
+def resolve_exit_ipv6(proxy_url: str | None, timeout: float | None = None) -> str | None:
+    """Discover the egress IPv6, or ``None`` when the egress has no IPv6.
+
+    Separate from :func:`_resolve_exit_ip` rather than folded into its fallback
+    chain: that chain returns the first success, and its hosts are A-only, so it
+    can never surface a v6. Failure here is the normal case (a v4-only egress)
+    and is not logged as a warning.
+    """
+    import httpx
+
+    deadline = _deadline_from_timeout(timeout or 0)
+
+    for url in _IP_ECHO_URLS_V6:
+        try:
+            remaining = _remaining_seconds(deadline)
+            if remaining is not None and remaining <= 0:
+                return None
+            request_timeout = min(10.0, remaining) if remaining is not None else 10.0
+            resp = httpx.get(url, proxy=proxy_url or None, timeout=request_timeout)
+            resp.raise_for_status()
+            ip = resp.text.strip()
+            if ipaddress.ip_address(ip).version != 6:
+                continue
+            logger.debug("Exit IPv6 via %s: %s", url, ip)
+            return ip
+        except httpx.UnsupportedProtocol:
+            return None
+        except Exception:
+            continue
+    logger.debug("No IPv6 egress (v4-only proxy or no IPv6 route)")
+    return None
+
+
+def format_webrtc_exit_ips(exit_ip: str | None, exit_ipv6: str | None) -> str | None:
+    """Build the ``--fingerprint-webrtc-ip`` value from the resolved exits.
+
+    Both addresses when both resolved, otherwise whichever single one exists.
+    Callers MUST gate the second address on
+    :func:`~cloakbrowser.config.binary_supports_dual_stack_webrtc`; older binaries
+    accept one address only.
+    """
+    parts = [p for p in (exit_ip, exit_ipv6) if p]
+    return ",".join(parts) if parts else None
 
 
 # ---------------------------------------------------------------------------

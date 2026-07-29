@@ -29,11 +29,31 @@ public class ViewportTests
     [Fact]
     public void Headless_unset_viewport_uses_default()
     {
-        var vp = CloakLauncher.ResolveContextViewport(new LaunchContextOptions { Headless = true });
+        // BrowserVersion is pinned below the headless-no-viewport floor. Without it
+        // the gate resolves from the ambient environment (license key + cached build),
+        // so the outcome flipped with the machine and with test ordering.
+        var vp = CloakLauncher.ResolveContextViewport(new LaunchContextOptions
+        {
+            Headless = true,
+            BrowserVersion = "148.0.7778.215.3",
+        });
         Assert.NotNull(vp);
         Assert.False(IsNoViewport(vp));
         Assert.Equal(Config.DefaultViewportWidth, vp!.Width);
         Assert.Equal(Config.DefaultViewportHeight, vp.Height);
+    }
+
+    [Fact]
+    public void Headless_unset_viewport_uses_no_viewport_on_newer_binary()
+    {
+        // The other side of the same gate: at/above the floor headless reports
+        // coherent dimensions natively, so no emulated viewport is applied.
+        var vp = CloakLauncher.ResolveContextViewport(new LaunchContextOptions
+        {
+            Headless = true,
+            BrowserVersion = "148.0.7778.215.4",
+        });
+        Assert.True(IsNoViewport(vp));
     }
 
     [Fact]

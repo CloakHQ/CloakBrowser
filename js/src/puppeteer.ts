@@ -9,6 +9,7 @@ import type { LaunchOptions } from "./types.js";
 import {
   DEFAULT_VIEWPORT,
   IGNORE_DEFAULT_ARGS,
+  binarySupportsDualStackWebrtc,
   binarySupportsHeadlessNoViewport,
   binarySupportsHttpProxyInlineAuth,
 } from "./config.js";
@@ -16,7 +17,7 @@ import { buildArgs } from "./args.js";
 import { maybeWarnWindowsFonts } from "./fonts.js";
 import { ensureBinary } from "./download.js";
 import { isSocksProxy, normalizeHttpStringUrl, parseProxyUrl, reconstructHttpUrl, resolveProxyConfig } from "./proxy.js";
-import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
+import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp, withExitIpv6 } from "./geoip.js";
 import { buildLaunchEnv, licenseErrorFrom } from "./license.js";
 import { seedWidevineHint } from "./widevine.js";
 
@@ -65,7 +66,9 @@ async function resolveArgs(options: LaunchOptions): Promise<{ binaryPath: string
   const { exitIp, ...resolved } = (await maybeResolveGeoip(options)) ?? {};
   let resolvedArgs = (await resolveWebrtcArgs(options)) ?? options.args;
 
-  resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
+  const dualIp = await withExitIpv6(exitIp, options.proxy, binarySupportsDualStackWebrtc(options.licenseKey, options.browserVersion, options.releaseChannel));
+
+  resolvedArgs = appendWebrtcExitIp(resolvedArgs, dualIp);
   const args = buildArgs({ ...options, ...resolved, args: resolvedArgs });
   maybeWarnWindowsFonts(args);
   return { binaryPath, args };

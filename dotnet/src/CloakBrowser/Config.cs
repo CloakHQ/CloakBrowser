@@ -458,6 +458,56 @@ public static class Config
         }
     }
 
+    // First build whose --fingerprint-webrtc-ip accepts a second address for the
+    // other address family. Below this floor the flag takes a single address only,
+    // so the wrapper MUST pass one, as it always has.
+    public static readonly string? WebrtcDualStackMinVersion = "150.0.7871.114.5";
+
+    /// <summary>
+    /// Whether the resolved binary understands a two-address WebRTC exit IP.
+    /// Same resolution rules as <see cref="BinarySupportsHeadlessNoViewport"/>: a
+    /// declared version wins, an unknown-version local override stays on the safe
+    /// (IPv4-only) path. Python, JS and .NET mirror this gate.
+    /// </summary>
+    public static bool BinarySupportsDualStackWebrtc(
+        string? licenseKey = null, string? browserVersion = null, string? releaseChannel = null)
+    {
+        if (WebrtcDualStackMinVersion == null)
+            return false;
+        string? declared;
+        try
+        {
+            declared = NormalizeRequestedVersion(browserVersion);
+        }
+        catch
+        {
+            declared = null;
+        }
+        string? version;
+        if (!string.IsNullOrEmpty(declared))
+        {
+            version = declared!;
+        }
+        else if (GetLocalBinaryOverride() != null)
+        {
+            return false;
+        }
+        else
+        {
+            bool pro = !string.IsNullOrEmpty(License.ResolveLicenseKey(licenseKey));
+            version = GetEffectiveVersion(pro, releaseChannel);
+        }
+        if (version == null) return false;
+        try
+        {
+            return !VersionNewer(WebrtcDualStackMinVersion, version);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Whether the wrapper may auto-add <c>--start-maximized</c>. Gated on the same
     /// threshold as the no_viewport shim: only binaries whose headless surface-fix +

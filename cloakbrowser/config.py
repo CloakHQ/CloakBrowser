@@ -367,6 +367,49 @@ def binary_supports_headless_no_viewport(
 
 
 # ---------------------------------------------------------------------------
+# Dual-stack WebRTC exit IP by binary version
+# ---------------------------------------------------------------------------
+# First build whose ``--fingerprint-webrtc-ip`` accepts a second address for the
+# other address family. Below this floor the flag takes a single address only, so
+# the wrapper MUST pass one, as it always has.
+WEBRTC_DUAL_STACK_MIN_VERSION: str | None = "150.0.7871.114.5"
+
+
+def binary_supports_dual_stack_webrtc(
+    license_key: str | None = None,
+    browser_version: str | None = None,
+    release_channel: str | None = None,
+) -> bool:
+    """Whether the resolved binary understands a "<v4>,<v6>" WebRTC exit IP.
+
+    Same resolution rules as :func:`binary_supports_headless_no_viewport`: a
+    declared version wins, an unknown-version local override stays on the safe
+    (IPv4-only) path.
+    """
+    if WEBRTC_DUAL_STACK_MIN_VERSION is None:
+        return False
+    try:
+        declared = normalize_requested_version(browser_version)
+    except ValueError:
+        declared = None
+    if declared:
+        version = declared
+    elif get_local_binary_override():
+        return False
+    else:
+        from .license import resolve_license_key
+
+        pro = bool(resolve_license_key(license_key))
+        version = get_effective_version(pro=pro, release_channel=release_channel)
+    if version is None:
+        return False
+    try:
+        return not _version_newer(WEBRTC_DUAL_STACK_MIN_VERSION, version)
+    except (ValueError, AttributeError):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Inline HTTP proxy authentication by binary version
 # ---------------------------------------------------------------------------
 # First Chromium build, per platform, whose binary can take inline HTTP proxy

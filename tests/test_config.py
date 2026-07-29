@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from cloakbrowser.config import (
+    binary_supports_dual_stack_webrtc,
     binary_supports_headless_no_viewport,
     binary_supports_maximized_window,
     get_archive_ext,
@@ -238,3 +239,60 @@ class TestMaximizedWindowGate:
     def test_local_override_without_declared_off(self):
         with patch.dict(os.environ, {"CLOAKBROWSER_BINARY_PATH": "/fake/chrome"}):
             assert binary_supports_maximized_window() is False
+
+
+# ---------------------------------------------------------------------------
+# Dual-stack WebRTC exit IP version gate
+# ---------------------------------------------------------------------------
+
+
+class TestDualStackWebrtcGate:
+    """binary_supports_dual_stack_webrtc() — parity-critical: JS and .NET mirror this.
+
+    Below the floor the flag takes one address only, so a wrong True here would put
+    a two-address value on a binary that reads it as a single opaque address.
+    """
+
+    def test_declared_below_threshold_off(self):
+        # Current live Linux stable — one build below the floor => single address.
+        assert binary_supports_dual_stack_webrtc(browser_version="150.0.7871.114.4") is False
+
+    def test_declared_well_below_threshold_off(self):
+        assert binary_supports_dual_stack_webrtc(browser_version="146.0.7680.177.5") is False
+
+    def test_declared_at_threshold_on(self):
+        assert binary_supports_dual_stack_webrtc(browser_version="150.0.7871.114.5") is True
+
+    def test_declared_above_threshold_on(self):
+        assert binary_supports_dual_stack_webrtc(browser_version="151.0.0.0") is True
+
+    def test_declared_wins_over_local_override(self):
+        with patch.dict(os.environ, {"CLOAKBROWSER_BINARY_PATH": "/fake/chrome"}):
+            assert binary_supports_dual_stack_webrtc(browser_version="150.0.7871.114.5") is True
+
+    def test_local_override_without_declared_off(self):
+        # Unknown-version override => safe single-address path.
+        with patch.dict(os.environ, {"CLOAKBROWSER_BINARY_PATH": "/fake/chrome"}):
+            assert binary_supports_dual_stack_webrtc() is False
+
+    def test_malformed_version_off(self):
+        assert binary_supports_dual_stack_webrtc(browser_version="not-a-version") is False
+
+
+class TestFormatWebrtcExitIps:
+    """format_webrtc_exit_ips() — what actually reaches --fingerprint-webrtc-ip."""
+
+    def test_both_families(self):
+        from cloakbrowser.geoip import format_webrtc_exit_ips
+
+        assert format_webrtc_exit_ips("1.2.3.4", "2001:db8::1") == "1.2.3.4,2001:db8::1"
+
+    def test_v4_only_unchanged(self):
+        from cloakbrowser.geoip import format_webrtc_exit_ips
+
+        assert format_webrtc_exit_ips("1.2.3.4", None) == "1.2.3.4"
+
+    def test_neither_is_none(self):
+        from cloakbrowser.geoip import format_webrtc_exit_ips
+
+        assert format_webrtc_exit_ips(None, None) is None

@@ -16,6 +16,7 @@ vi.mock("../src/geoip.js", () => ({
   maybeResolveGeoip: vi.fn().mockResolvedValue({}),
   resolveWebrtcArgs: vi.fn().mockImplementation((opts: any) => Promise.resolve(opts.args)),
   appendWebrtcExitIp: vi.fn((args: any) => args),
+  withExitIpv6: vi.fn(async (ip: any) => ip),
 }));
 vi.mock("playwright-core", () => ({ chromium: { launchPersistentContext: vi.fn() } }));
 vi.mock("puppeteer-core", () => ({ default: { launch: vi.fn() } }));

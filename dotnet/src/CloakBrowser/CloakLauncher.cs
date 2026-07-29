@@ -31,6 +31,9 @@ public static class CloakLauncher
         var proxyResolution = ProxyResolver.Resolve(
             options.Proxy, options.BrowserVersion, options.LicenseKey, options.ReleaseChannel);
         var args = await ResolveWebRtcArgsAsync(options.Args, options.Proxy).ConfigureAwait(false);
+        exitIp = await GeoIp.WithExitIpv6Async(exitIp, options.Proxy != null ? ProxyResolver.ExtractProxyUrl(options.Proxy) : null,
+            Config.BinarySupportsDualStackWebrtc(options.LicenseKey, options.BrowserVersion, options.ReleaseChannel))
+            .ConfigureAwait(false);
         args = MaybeAppendWebRtcExitIp(args, exitIp);
 
         var combined = new List<string>(args ?? new List<string>());
@@ -103,6 +106,9 @@ public static class CloakLauncher
         var (timezone, locale, exitIp) = await MaybeResolveGeoIpAsync(
             options.GeoIp, options.Proxy, options.Timezone, options.Locale, options.Args).ConfigureAwait(false);
         var args = options.Args;
+        exitIp = await GeoIp.WithExitIpv6Async(exitIp, options.Proxy != null ? ProxyResolver.ExtractProxyUrl(options.Proxy) : null,
+            Config.BinarySupportsDualStackWebrtc(options.LicenseKey, options.BrowserVersion, options.ReleaseChannel))
+            .ConfigureAwait(false);
         args = MaybeAppendWebRtcExitIp(args, exitIp);
 
         var browserHandle = await LaunchAsync(new LaunchOptions
@@ -162,6 +168,9 @@ public static class CloakLauncher
         var proxyResolution = ProxyResolver.Resolve(
             options.Proxy, options.BrowserVersion, options.LicenseKey, options.ReleaseChannel);
         var args = await ResolveWebRtcArgsAsync(options.Args, options.Proxy).ConfigureAwait(false);
+        exitIp = await GeoIp.WithExitIpv6Async(exitIp, options.Proxy != null ? ProxyResolver.ExtractProxyUrl(options.Proxy) : null,
+            Config.BinarySupportsDualStackWebrtc(options.LicenseKey, options.BrowserVersion, options.ReleaseChannel))
+            .ConfigureAwait(false);
         args = MaybeAppendWebRtcExitIp(args, exitIp);
 
         var combined = new List<string>(args ?? new List<string>());

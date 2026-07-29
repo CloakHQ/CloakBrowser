@@ -314,6 +314,47 @@ export function binarySupportsHeadlessNoViewport(
   }
 }
 
+// ---------------------------------------------------------------------------
+// First build whose `--fingerprint-webrtc-ip` accepts a second address for the
+// other address family. Below this floor the flag takes a single address only,
+// so the wrapper MUST pass one, as it always has.
+export const WEBRTC_DUAL_STACK_MIN_VERSION: string | null = "150.0.7871.114.5";
+
+/**
+ * Whether the resolved binary understands a two-address WebRTC exit IP.
+ * Same resolution rules as binarySupportsHeadlessNoViewport: a declared version
+ * wins, an unknown-version local override stays on the safe (IPv4-only) path.
+ */
+export function binarySupportsDualStackWebrtc(
+  licenseKey?: string,
+  browserVersion?: string,
+  releaseChannel?: string,
+): boolean {
+  if (WEBRTC_DUAL_STACK_MIN_VERSION === null) return false;
+  let declared: string | undefined;
+  try {
+    declared = normalizeRequestedVersion(browserVersion);
+  } catch {
+    declared = undefined;
+  }
+  let version: string | null;
+  if (declared) {
+    version = declared;
+  } else if (getLocalBinaryOverride()) {
+    return false;
+  } else {
+    const pro = Boolean(resolveLicenseKey(licenseKey));
+    version = getEffectiveVersion(pro, releaseChannel);
+  }
+  if (version === null) return false;
+  try {
+    if (parseVersion(version).some(Number.isNaN)) return false;
+    return !versionNewer(WEBRTC_DUAL_STACK_MIN_VERSION, version);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Whether the wrapper may auto-add `--start-maximized`. Gated on the same
  * threshold as the no_viewport shim: only binaries whose headless surface-fix +

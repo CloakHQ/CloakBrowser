@@ -10,6 +10,7 @@ import {
   getFallbackDownloadUrl,
   normalizeReleaseChannel,
   normalizeRequestedVersion,
+  binarySupportsDualStackWebrtc,
   binarySupportsHeadlessNoViewport,
   binarySupportsMaximizedWindow,
 } from "../src/config.js";
@@ -384,5 +385,64 @@ describe("buildArgs --start-maximized", () => {
       args: ["--start-maximized"],
     });
     expect(args.filter(a => a === "--start-maximized")).toHaveLength(1);
+  });
+});
+
+describe("binarySupportsDualStackWebrtc", () => {
+  // Parity-critical: Python and .NET mirror this gate. Below the floor the flag
+  // takes one address only, so a wrong `true` here would put a two-address value
+  // on a binary that reads it as a single opaque address.
+  it("is OFF one build below the floor (current live Linux stable)", () => {
+    expect(binarySupportsDualStackWebrtc(undefined, "150.0.7871.114.4")).toBe(false);
+  });
+
+  it("is OFF well below the floor", () => {
+    expect(binarySupportsDualStackWebrtc(undefined, "146.0.7680.177.5")).toBe(false);
+  });
+
+  it("is ON at the floor", () => {
+    expect(binarySupportsDualStackWebrtc(undefined, "150.0.7871.114.5")).toBe(true);
+  });
+
+  it("is ON above the floor", () => {
+    expect(binarySupportsDualStackWebrtc(undefined, "151.0.0.0")).toBe(true);
+  });
+
+  it("declared version wins over a local override", () => {
+    const prev = process.env.CLOAKBROWSER_BINARY_PATH;
+    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
+    try {
+      expect(binarySupportsDualStackWebrtc(undefined, "150.0.7871.114.5")).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.CLOAKBROWSER_BINARY_PATH;
+      else process.env.CLOAKBROWSER_BINARY_PATH = prev;
+    }
+  });
+
+  it("is OFF for an unknown-version local override", () => {
+    const prev = process.env.CLOAKBROWSER_BINARY_PATH;
+    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
+    try {
+      expect(binarySupportsDualStackWebrtc()).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.CLOAKBROWSER_BINARY_PATH;
+      else process.env.CLOAKBROWSER_BINARY_PATH = prev;
+    }
+  });
+
+  it("is OFF for a malformed version", () => {
+    expect(binarySupportsDualStackWebrtc(undefined, "not-a-version")).toBe(false);
+  });
+});
+
+describe("withExitIpv6", () => {
+  it("returns the v4 unchanged when the gate is off", async () => {
+    const { withExitIpv6 } = await import("../src/geoip.js");
+    expect(await withExitIpv6("1.2.3.4", undefined, false)).toBe("1.2.3.4");
+  });
+
+  it("is a no-op when there is no exit IP", async () => {
+    const { withExitIpv6 } = await import("../src/geoip.js");
+    expect(await withExitIpv6(undefined, undefined, true)).toBeUndefined();
   });
 });

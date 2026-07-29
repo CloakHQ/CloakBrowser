@@ -306,3 +306,87 @@ public class MaximizedWindowGateTests
         Assert.True(Config.BinarySupportsMaximizedWindow(browserVersion: "149.0.0.0"));
     }
 }
+
+/// <summary>
+/// Config.BinarySupportsDualStackWebrtc() — parity-critical: Python and JS mirror
+/// this gate. Below the floor the flag takes one address only, so a wrong true here
+/// would put a two-address value on a binary that reads it as one opaque address.
+/// In env-serial because the override tests mutate CLOAKBROWSER_BINARY_PATH.
+/// </summary>
+[Collection("env-serial")]
+public class DualStackWebrtcGateTests
+{
+    [Fact]
+    public void DeclaredBelowFloor_Off()
+    {
+        // Current live Linux stable — one build below the floor.
+        Assert.False(Config.BinarySupportsDualStackWebrtc(browserVersion: "150.0.7871.114.4"));
+    }
+
+    [Fact]
+    public void DeclaredWellBelowFloor_Off()
+    {
+        Assert.False(Config.BinarySupportsDualStackWebrtc(browserVersion: "146.0.7680.177.5"));
+    }
+
+    [Fact]
+    public void DeclaredAtFloor_On()
+    {
+        Assert.True(Config.BinarySupportsDualStackWebrtc(browserVersion: "150.0.7871.114.5"));
+    }
+
+    [Fact]
+    public void DeclaredAboveFloor_On()
+    {
+        Assert.True(Config.BinarySupportsDualStackWebrtc(browserVersion: "151.0.0.0"));
+    }
+
+    [Fact]
+    public void MalformedVersion_Off()
+    {
+        Assert.False(Config.BinarySupportsDualStackWebrtc(browserVersion: "not-a-version"));
+    }
+
+    [Fact]
+    public void DeclaredWinsOverLocalOverride()
+    {
+        var prev = Environment.GetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH", "/fake/chrome");
+            Assert.True(Config.BinarySupportsDualStackWebrtc(browserVersion: "150.0.7871.114.5"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH", prev);
+        }
+    }
+
+    [Fact]
+    public void LocalOverrideWithoutDeclared_Off()
+    {
+        var prev = Environment.GetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH", "/fake/chrome");
+            Assert.False(Config.BinarySupportsDualStackWebrtc());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH", prev);
+        }
+    }
+
+    [Fact]
+    public async Task WithExitIpv6_GateOff_ReturnsV4Unchanged()
+    {
+        Assert.Equal("1.2.3.4", await GeoIp.WithExitIpv6Async("1.2.3.4", null, dualStack: false));
+    }
+
+    [Fact]
+    public async Task WithExitIpv6_NoExitIp_IsNoOp()
+    {
+        Assert.Null(await GeoIp.WithExitIpv6Async(null, null, dualStack: true));
+    }
+}
+

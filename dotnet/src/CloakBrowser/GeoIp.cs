@@ -27,11 +27,23 @@ public static class GeoIp
     private const string GeoIpTimeoutEnv = "CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS";
 
     // IP echo services - fast, no auth, return just the IP.
+    // Every host here is A-only, so a lookup can only complete over IPv4 and the
+    // answer is always the egress IPv4. That is deliberate - it keeps this list the
+    // stable IPv4 probe. For IPv6 use IpEchoUrlsV6, never a dual-stack host: a
+    // dual-stack host answers over IPv4 and reports the v4 address, which says
+    // nothing about v6 reachability.
     private static readonly string[] IpEchoUrls =
     {
         "https://api.ipify.org",
         "https://checkip.amazonaws.com",
         "https://ifconfig.me/ip",
+    };
+
+    // AAAA-only hosts: a request can only complete over IPv6, so success proves the
+    // egress has IPv6 and returns that address, while a v4-only egress fails fast.
+    private static readonly string[] IpEchoUrlsV6 =
+    {
+        "https://api6.ipify.org",
     };
 
     /// <summary>Country ISO code -> BCP 47 locale (covers ~90% of proxy traffic).</summary>
@@ -232,7 +244,38 @@ public static class GeoIp
         return ip;
     }
 
-    private static async Task<string?> ResolveExitIpAsync(string? proxyUrl, double? timeout, CancellationToken ct)
+    /// <summary>
+    /// Discover the egress IPv6, or null when the egress has no IPv6.
+    /// Separate from the IPv4 probe rather than folded into its fallback chain:
+    /// that chain returns the first success and its hosts are A-only, so it can
+    /// never surface a v6. Failure here is the normal case (a v4-only egress).
+    /// </summary>
+    public static async Task<string?> ResolveExitIpv6Async(string? proxyUrl, CancellationToken ct = default)
+    {
+        var ip = await ResolveExitIpAsync(proxyUrl, GetGeoIpTimeoutSeconds(), ct, IpEchoUrlsV6)
+            .ConfigureAwait(false);
+        return ip != null && IPAddress.TryParse(ip, out var parsed)
+            && parsed.AddressFamily == AddressFamily.InterNetworkV6 ? ip : null;
+    }
+
+    /// <summary>
+    /// Add the egress IPv6 to <paramref name="exitIp"/> when <paramref name="dualStack"/>.
+    /// <paramref name="dualStack"/> comes from
+    /// <see cref="Config.BinarySupportsDualStackWebrtc"/> at the call site; older
+    /// binaries accept a single address only. A v4-only egress fails the v6 probe and
+    /// the value is unchanged - the common case, so the extra request happens only on
+    /// qualifying binaries.
+    /// </summary>
+    public static async Task<string?> WithExitIpv6Async(
+        string? exitIp, string? proxyUrl, bool dualStack, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(exitIp) || !dualStack)
+            return exitIp;
+        var v6 = await ResolveExitIpv6Async(proxyUrl, ct).ConfigureAwait(false);
+        return v6 == null ? exitIp : $"{exitIp},{v6}";
+    }
+
+    private static async Task<string?> ResolveExitIpAsync(string? proxyUrl, double? timeout, CancellationToken ct, string[]? urls = null)
     {
         var deadline = DeadlineFromTimeout(timeout ?? 0);
         var direct = string.IsNullOrEmpty(proxyUrl);
@@ -266,7 +309,7 @@ public static class GeoIp
 
         try
         {
-            foreach (var url in IpEchoUrls)
+            foreach (var url in urls ?? IpEchoUrls)
             {
                 try
                 {

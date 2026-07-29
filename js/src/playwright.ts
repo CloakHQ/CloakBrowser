@@ -8,13 +8,14 @@ import type { LaunchOptions, LaunchContextOptions, LaunchPersistentContextOption
 import {
   DEFAULT_VIEWPORT,
   IGNORE_DEFAULT_ARGS,
+  binarySupportsDualStackWebrtc,
   binarySupportsHeadlessNoViewport,
 } from "./config.js";
 import { buildArgs } from "./args.js";
 import { maybeWarnWindowsFonts } from "./fonts.js";
 import { ensureBinary } from "./download.js";
 import { resolveProxyConfig } from "./proxy.js";
-import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
+import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp, withExitIpv6 } from "./geoip.js";
 import { buildLaunchEnv, licenseErrorFrom } from "./license.js";
 import { seedWidevineHint } from "./widevine.js";
 
@@ -129,7 +130,8 @@ export async function buildLaunchOptions(
     options.releaseChannel,
   );
   let resolvedArgs = await resolveWebrtcArgs(options);
-  resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
+  const dualIp = await withExitIpv6(exitIp, options.proxy, binarySupportsDualStackWebrtc(options.licenseKey, options.browserVersion, options.releaseChannel));
+  resolvedArgs = appendWebrtcExitIp(resolvedArgs, dualIp);
   const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
   maybeWarnWindowsFonts(args);
 
@@ -252,7 +254,8 @@ export async function launchContext(
   const { exitIp, ...resolved } = await maybeResolveGeoip(options);
   let launchArgs = await resolveWebrtcArgs(options);
   // Inject geoip exit IP for WebRTC spoofing (free — no extra HTTP call)
-  launchArgs = appendWebrtcExitIp(launchArgs, exitIp);
+  const dualIp = await withExitIpv6(exitIp, options.proxy, binarySupportsDualStackWebrtc(options.licenseKey, options.browserVersion, options.releaseChannel));
+  launchArgs = appendWebrtcExitIp(launchArgs, dualIp);
   // --fingerprint-timezone is process-wide (reads CommandLine in renderer),
   // so it applies to ALL contexts, not just the default one.
   // locale and timezone are set via binary flags only — no CDP emulation.
@@ -331,7 +334,8 @@ export async function launchPersistentContext(
     options.releaseChannel,
   );
   let resolvedArgs = await resolveWebrtcArgs(options);
-  resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
+  const dualIp = await withExitIpv6(exitIp, options.proxy, binarySupportsDualStackWebrtc(options.licenseKey, options.browserVersion, options.releaseChannel));
+  resolvedArgs = appendWebrtcExitIp(resolvedArgs, dualIp);
   const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
   maybeWarnWindowsFonts(args);
 

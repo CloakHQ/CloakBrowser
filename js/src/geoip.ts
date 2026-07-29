@@ -178,18 +178,27 @@ export async function resolveProxyIp(
   }
 }
 
+// Every host here is A-only, so a lookup can only complete over IPv4 and the
+// answer is always the egress IPv4. That is deliberate — it keeps this list the
+// stable IPv4 probe. For IPv6 use IP_ECHO_URLS_V6, never a dual-stack host: a
+// dual-stack host answers over IPv4 and reports the v4 address, which says
+// nothing about v6 reachability.
 const IP_ECHO_URLS = [
   "https://api.ipify.org",
   "https://checkip.amazonaws.com",
   "https://ifconfig.me/ip",
 ];
 
-async function resolveExitIp(proxyUrl: string | null | undefined, timeoutMs?: number): Promise<string | null> {
+// AAAA-only hosts: a request can only complete over IPv6, so success proves the
+// egress has IPv6 and returns that address, while a v4-only egress fails fast.
+const IP_ECHO_URLS_V6 = ["https://api6.ipify.org"];
+
+async function resolveExitIp(proxyUrl: string | null | undefined, timeoutMs?: number, urls: string[] = IP_ECHO_URLS): Promise<string | null> {
   const deadline = timeoutMs && timeoutMs > 0 ? performance.now() + timeoutMs : null;
 
   // No proxy: query the echo services directly → the machine's own public IP.
   if (!proxyUrl) {
-    for (const echoUrl of IP_ECHO_URLS) {
+    for (const echoUrl of urls) {
       const remaining = remainingMs(deadline);
       if (remaining !== undefined && remaining <= 0) return null;
       try {
@@ -224,7 +233,7 @@ async function resolveExitIp(proxyUrl: string | null | undefined, timeoutMs?: nu
     const { default: https } = await import("node:https");
     const agent = new SocksProxyAgent(proxyUrl);
 
-    for (const echoUrl of IP_ECHO_URLS) {
+    for (const echoUrl of urls) {
       const remaining = remainingMs(deadline);
       if (remaining !== undefined && remaining <= 0) return null;
       try {
@@ -255,7 +264,7 @@ async function resolveExitIp(proxyUrl: string | null | undefined, timeoutMs?: nu
     const { default: https } = await import("node:https");
     const proxyUrlObj = new URL(proxyUrl);
 
-    for (const echoUrl of IP_ECHO_URLS) {
+    for (const echoUrl of urls) {
       const remaining = remainingMs(deadline);
       if (remaining !== undefined && remaining <= 0) return null;
       try {
@@ -477,6 +486,38 @@ export async function maybeResolveGeoip(
     locale: locale ?? geoLocale ?? undefined,
     exitIp,
   };
+}
+
+/**
+ * Discover the egress IPv6, or null when the egress has no IPv6.
+ * Separate from resolveExitIp rather than folded into its fallback chain: that
+ * chain returns the first success and its hosts are A-only, so it can never
+ * surface a v6. Failure here is the normal case (a v4-only egress).
+ */
+export async function resolveExitIpv6(
+  proxyUrl: string | null | undefined,
+  timeoutMs?: number,
+): Promise<string | null> {
+  const ip = await resolveExitIp(proxyUrl, timeoutMs, IP_ECHO_URLS_V6);
+  return ip && net.isIPv6(ip) ? ip : null;
+}
+
+/**
+ * Add the egress IPv6 to `exitIp` when `dualStack`.
+ * `dualStack` comes from binarySupportsDualStackWebrtc at the call site; older
+ * binaries accept a single address only. A v4-only egress fails the v6 probe and
+ * the value is unchanged — the common case, so the extra request happens only on
+ * qualifying binaries.
+ */
+export async function withExitIpv6(
+  exitIp: string | undefined,
+  proxy: string | ProxyDict | undefined,
+  dualStack: boolean,
+): Promise<string | undefined> {
+  if (!exitIp || !dualStack) return exitIp;
+  const proxyUrl = proxy ? extractProxyUrl(proxy) : null;
+  const v6 = await resolveExitIpv6(proxyUrl, getGeoipTimeoutMs());
+  return v6 ? `${exitIp},${v6}` : exitIp;
 }
 
 /**
