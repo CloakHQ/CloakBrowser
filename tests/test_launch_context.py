@@ -48,6 +48,33 @@ def test_release_channel_forwarded(mock_launch, _mock_bin):
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch")
+def test_gpu_accel_forwarded_to_launch(mock_launch, _mock_bin):
+    """launch_context(gpu_accel=True) forwards to launch(), not new_context()."""
+    browser, _ = _make_mock_browser()
+    mock_launch.return_value = browser
+
+    from cloakbrowser.browser import launch_context
+    launch_context(gpu_accel=True)
+
+    assert mock_launch.call_args.kwargs.get("gpu_accel") is True
+    assert "gpu_accel" not in browser.new_context.call_args.kwargs
+
+
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch")
+def test_gpu_accel_default_false(mock_launch, _mock_bin):
+    """launch_context() defaults gpu_accel=False into launch()."""
+    browser, _ = _make_mock_browser()
+    mock_launch.return_value = browser
+
+    from cloakbrowser.browser import launch_context
+    launch_context()
+
+    assert mock_launch.call_args.kwargs.get("gpu_accel") is False
+
+
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch")
 def test_headed_no_viewport(mock_launch, _mock_bin):
     """Headed (headless=False): no emulated viewport — no_viewport=True so the page
     tracks the real window (CDP viewport emulation would force outerWidth < innerWidth)."""
