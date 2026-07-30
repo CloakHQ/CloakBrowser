@@ -427,3 +427,55 @@ def test_cloakbrowser_geoip_env_truthy_leaves_geoip_on(monkeypatch, value):
     ):
         tz, loc, ip = maybe_resolve_geoip(True, "http://proxy:8080", None, None)
     assert (tz, loc, ip) == ("Europe/Berlin", "de-DE", "5.6.7.8")
+
+
+# ---------------------------------------------------------------------------
+# Download failure cooldown (geoip is on by default, so a dead mirror must not
+# cost every launch a connect timeout)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.real_geoip
+def test_failed_download_is_not_retried_during_cooldown(tmp_path):
+    """A second launch after a failure must not re-attempt the fetch."""
+    from cloakbrowser import geoip
+
+    with patch.object(geoip, "_get_geoip_dir", return_value=tmp_path), patch.object(
+        geoip, "_download_geoip_db", side_effect=OSError("network unreachable")
+    ) as dl:
+        assert geoip._ensure_geoip_db() is None
+        assert dl.call_count == 1
+        # Marker written -> the next call short-circuits without touching the net.
+        assert (tmp_path / geoip.GEOIP_FAILURE_MARKER).exists()
+        assert geoip._ensure_geoip_db() is None
+        assert dl.call_count == 1
+
+
+@pytest.mark.real_geoip
+def test_force_ignores_the_cooldown(tmp_path):
+    """`cloakbrowser info` must be able to retry — a stale marker would make it lie."""
+    from cloakbrowser import geoip
+
+    with patch.object(geoip, "_get_geoip_dir", return_value=tmp_path), patch.object(
+        geoip, "_download_geoip_db", side_effect=OSError("network unreachable")
+    ) as dl:
+        assert geoip._ensure_geoip_db() is None
+        assert geoip._ensure_geoip_db(force=True) is None
+    assert dl.call_count == 2
+
+
+@pytest.mark.real_geoip
+def test_successful_download_clears_a_stale_failure_marker(tmp_path):
+    """Recovery must not stay penalised by an old failure."""
+    from cloakbrowser import geoip
+
+    (tmp_path).mkdir(parents=True, exist_ok=True)
+    (tmp_path / geoip.GEOIP_FAILURE_MARKER).touch()
+    dest = tmp_path / geoip.GEOIP_DB_FILENAME
+
+    with patch.object(geoip, "_get_geoip_dir", return_value=tmp_path), patch.object(
+        geoip, "_download_geoip_db", side_effect=lambda p: p.write_bytes(b"db")
+    ):
+        # force=True because the marker we just wrote is inside the cooldown.
+        assert geoip._ensure_geoip_db(force=True) == dest
+    assert not (tmp_path / geoip.GEOIP_FAILURE_MARKER).exists()

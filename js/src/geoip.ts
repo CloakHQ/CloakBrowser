@@ -24,6 +24,15 @@ const GEOIP_DB_FILENAME = "GeoLite2-City.mmdb";
 const GEOIP_UPDATE_INTERVAL_MS = 30 * 86_400_000; // 30 days
 const DEFAULT_GEOIP_TIMEOUT_MS = 5_000;
 
+// Wall-clock budget for the ~70 MB download, deliberately separate from
+// DEFAULT_GEOIP_TIMEOUT_MS: a first-use fetch legitimately outlasts the
+// resolution deadline, but it must not be unbounded either.
+const GEOIP_DOWNLOAD_TIMEOUT_MS = 180_000;
+// After a failed download, don't try again for this long. Every launch retrying
+// a fetch that cannot succeed is what makes a firewalled environment unusable.
+const GEOIP_DOWNLOAD_RETRY_INTERVAL_MS = 30 * 60_000; // 30 minutes
+const GEOIP_FAILURE_MARKER = ".download-failed";
+
 /** Country ISO code → BCP 47 locale (covers ~90% of proxy traffic). */
 export const COUNTRY_LOCALE_MAP: Record<string, string> = {
   US: "en-US", GB: "en-GB", AU: "en-AU", CA: "en-CA", NZ: "en-NZ",
@@ -360,7 +369,52 @@ function runGuardedDownload(dbPath: string): Promise<void> {
   return geoipDownloadPromise;
 }
 
-async function ensureGeoipDb(): Promise<string | null> {
+/**
+ * True when a download failed within the cooldown window.
+ *
+ * Without this, an environment that cannot reach the mirror at all retries the
+ * full download on every launch and pays the connect timeout each time. Now that
+ * geoip is the default, that would be every launch of every process.
+ */
+function downloadRecentlyFailed(): boolean {
+  try {
+    const age = Date.now() - fs.statSync(failureMarkerPath()).mtimeMs;
+    return age < GEOIP_DOWNLOAD_RETRY_INTERVAL_MS;
+  } catch {
+    return false;
+  }
+}
+
+function failureMarkerPath(): string {
+  return path.join(getGeoipDir(), GEOIP_FAILURE_MARKER);
+}
+
+function recordDownloadFailure(): void {
+  try {
+    const marker = failureMarkerPath();
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, "");
+  } catch {
+    // Best effort — a missing marker only costs a retry.
+  }
+}
+
+function clearDownloadFailure(): void {
+  try {
+    fs.unlinkSync(failureMarkerPath());
+  } catch {
+    // Already absent.
+  }
+}
+
+/**
+ * Resolve the GeoLite2 database path, downloading on first use.
+ *
+ * `force` ignores the post-failure cooldown — used by `cloakbrowser info`, where
+ * the user explicitly asked to verify GeoIP and a stale marker would make the
+ * diagnostic lie.
+ */
+async function ensureGeoipDb(force = false): Promise<string | null> {
   const dir = getGeoipDir();
   const dbPath = path.join(dir, GEOIP_DB_FILENAME);
 
@@ -369,13 +423,25 @@ async function ensureGeoipDb(): Promise<string | null> {
     return dbPath;
   }
 
-  try {
-    await runGuardedDownload(dbPath);
-    // Another concurrent launch may have owned the download; reuse its result.
-    return fs.existsSync(dbPath) ? dbPath : null;
-  } catch {
+  if (!force && downloadRecentlyFailed()) {
+    console.warn(
+      `[cloakbrowser] GeoIP database unavailable and a download failed in the last ` +
+        `${GEOIP_DOWNLOAD_RETRY_INTERVAL_MS / 60_000} min; continuing without GeoIP ` +
+        `(set CLOAKBROWSER_GEOIP=0 to silence)`,
+    );
     return null;
   }
+
+  try {
+    await runGuardedDownload(dbPath);
+  } catch {
+    recordDownloadFailure();
+    return null;
+  }
+  // Another concurrent launch may have owned the download; reuse its result.
+  if (!fs.existsSync(dbPath)) return null;
+  clearDownloadFailure();
+  return dbPath;
 }
 
 async function downloadGeoipDb(dest: string): Promise<void> {
@@ -385,8 +451,12 @@ async function downloadGeoipDb(dest: string): Promise<void> {
 
   const tmpPath = `${dest}.tmp.${Date.now()}`;
   try {
+    // A wall-clock ceiling on the whole transfer. Without a signal this fetch
+    // had none at all, so a blackholed network stalled a launch for as long as
+    // the OS let the connection hang — and geoip is now on by default.
     const response = await fetch(GEOIP_DB_URL, {
       redirect: "follow",
+      signal: AbortSignal.timeout(GEOIP_DOWNLOAD_TIMEOUT_MS),
     });
     if (!response.ok || !response.body) {
       throw new Error(`HTTP ${response.status}`);

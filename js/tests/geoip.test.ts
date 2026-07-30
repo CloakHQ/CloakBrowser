@@ -123,7 +123,11 @@ describe("maybeResolveGeoip", () => {
 
     expect(result).toEqual({ timezone: null, locale: null, exitIp: null });
     expect(fetchSpy).toHaveBeenCalledOnce();
-    expect(fetchSpy.mock.calls[0][1]).toEqual({ redirect: "follow" });
+    // The download carries its own wall-clock signal, not the resolution deadline.
+    const init = fetchSpy.mock.calls[0][1]!;
+    expect(init.redirect).toBe("follow");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal!.aborted).toBe(false);
   });
 
   it("downloads the database once under concurrent first-use launches (#458)", async () => {

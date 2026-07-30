@@ -11,12 +11,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib.util
 import logging
 import os
 import platform
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 
 def _console_glyph(glyph: str, fallback: str) -> str:
@@ -184,7 +187,9 @@ def _effective_binary(entitled_pro: bool, quick: bool = False) -> dict:
     # For a Pro license, surface the server's latest separately from the version
     # that will actually launch, so `info` can never silently diverge from launch
     # (the divergence a customer hit: info showed latest, launch ran a stale cache).
-    # --quick keeps `info` fully network-free (skip the server latest lookup).
+    # --quick skips the optional lookups (server latest version, seat count,
+    # GeoIP resolution). It is not fully network-free: the license itself is
+    # still validated, behind a 24h cache.
     latest_version = None
     resolved_channel = None
     channel_fallback = False
@@ -238,7 +243,127 @@ def _effective_binary(entitled_pro: bool, quick: bool = False) -> dict:
     }
 
 
-def _collect_diagnostics(quick: bool) -> dict:
+def _system_timezone() -> str | None:
+    """Best-effort IANA name for the host/container timezone.
+
+    This is the zone the browser would report if GeoIP resolved nothing, so it is
+    the thing worth comparing against — a UTC container behind a foreign exit IP
+    is the failure this check exists to surface.
+    """
+    tz = os.environ.get("TZ", "").strip()
+    if tz and "/" in tz:
+        return tz
+    try:
+        etc_tz = Path("/etc/timezone")
+        if etc_tz.is_file():
+            name = etc_tz.read_text(encoding="utf-8", errors="replace").strip()
+            if name:
+                return name
+    except OSError:
+        pass
+    try:
+        localtime = Path("/etc/localtime")
+        if localtime.is_symlink():
+            target = os.readlink(str(localtime))
+            if "zoneinfo/" in target:
+                return target.split("zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    # No IANA name available (common on Windows) — the abbreviation still tells
+    # a reader "UTC", which is the case that matters most.
+    return time.tzname[0] if time.tzname else None
+
+
+def _utc_offset_hours(zone_name: str) -> float | None:
+    """Current UTC offset of *zone_name* in hours, or None if unresolvable."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        offset = datetime.datetime.now(ZoneInfo(zone_name)).utcoffset()
+    except Exception:
+        return None
+    return None if offset is None else offset.total_seconds() / 3600.0
+
+
+def _timezones_disagree(resolved: str, system: str | None) -> bool:
+    """Whether the browser's clock would contradict the exit IP.
+
+    Compared by current UTC offset rather than by name: IANA aliases
+    (Europe/Kiev vs Europe/Kyiv) and abbreviations would otherwise report a
+    mismatch that no detector would ever see.
+    """
+    if not system:
+        return False
+    if resolved == system:
+        return False
+    resolved_offset = _utc_offset_hours(resolved)
+    system_offset = _utc_offset_hours(system)
+    if system_offset is None:
+        # Only an abbreviation available. "UTC" vs a real zone is still the
+        # signal we care about; anything else we cannot judge, so stay quiet.
+        system_offset = 0.0 if system.upper() in {"UTC", "GMT"} else None
+    if resolved_offset is None or system_offset is None:
+        return False
+    return resolved_offset != system_offset
+
+
+def _check_geoip(proxy: str | None) -> dict:
+    """Resolve GeoIP for real and report what a launch would actually apply.
+
+    Presence of the database says nothing about whether resolution works: the
+    egress IP can be unreachable, the lookup can miss, and both paths leave the
+    browser on the container clock while the launch continues. So resolve.
+
+    Never raises — a diagnostic that dies on the condition it diagnoses is worse
+    than useless, and the dependency import is itself one of those conditions.
+    """
+    from .geoip import GEOIP_DB_FILENAME, _get_geoip_dir
+
+    db_path = _get_geoip_dir() / GEOIP_DB_FILENAME
+    result: dict = {
+        "db_present": db_path.exists(),
+        "path": str(db_path),
+        "checked": True,
+        "via_proxy": bool(proxy),
+        "system_timezone": _system_timezone(),
+        "exit_ip": None,
+        "timezone": None,
+        "locale": None,
+        "mismatch": False,
+        "error": None,
+    }
+
+    try:
+        from .geoip import _ensure_geoip_db, resolve_proxy_geo_with_ip
+    except ImportError as exc:
+        result["error"] = f"geoip2 not importable ({exc})"
+        return result
+
+    try:
+        # force=True: the user explicitly asked to verify, so a recent-failure
+        # cooldown marker must not make the report claim GeoIP is unavailable.
+        if _ensure_geoip_db(force=True) is None:
+            result["error"] = "GeoIP database unavailable (download failed)"
+        result["db_present"] = db_path.exists()
+        tz, locale, exit_ip = resolve_proxy_geo_with_ip(proxy or None)
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+    result["exit_ip"] = exit_ip
+    result["timezone"] = tz
+    result["locale"] = locale
+
+    if exit_ip is None:
+        result["error"] = result["error"] or "could not resolve the egress IP"
+    elif tz is None and result["error"] is None:
+        result["error"] = f"no timezone for {exit_ip} in the database"
+    if tz:
+        result["mismatch"] = _timezones_disagree(tz, result["system_timezone"])
+    return result
+
+
+def _collect_diagnostics(quick: bool, proxy: str | None = None) -> dict:
     """Gather environment + binary diagnostics without triggering a download."""
     diag: dict = {}
 
@@ -311,11 +436,21 @@ def _collect_diagnostics(quick: bool) -> dict:
 
     diag["license"] = license_info
 
-    # GeoIP DB — presence only, never downloads.
-    from .geoip import GEOIP_DB_FILENAME, _get_geoip_dir
+    # GeoIP — resolved for real, because presence of the database says nothing
+    # about whether resolution works. Under --quick, presence only (a ~70 MB
+    # first-use download is not something a "quick" flag should trigger).
+    if quick:
+        from .geoip import GEOIP_DB_FILENAME, _get_geoip_dir
 
-    db_path = _get_geoip_dir() / GEOIP_DB_FILENAME
-    diag["geoip"] = {"db_present": db_path.exists(), "path": str(db_path)}
+        db_path = _get_geoip_dir() / GEOIP_DB_FILENAME
+        diag["geoip"] = {
+            "db_present": db_path.exists(),
+            "path": str(db_path),
+            "checked": False,
+            "reason": "skipped (--quick)",
+        }
+    else:
+        diag["geoip"] = _check_geoip(proxy)
 
     # Optional Python modules.
     diag["modules"] = {
@@ -329,6 +464,36 @@ def _collect_diagnostics(quick: bool) -> dict:
     }
 
     return diag
+
+
+def _print_geoip(geoip: dict) -> None:
+    """Render the GeoIP section: what a launch would actually apply."""
+    if not geoip.get("checked"):
+        state = "present" if geoip["db_present"] else "not downloaded"
+        print(f"GeoIP DB:  {state} {DASH} {geoip.get('reason', 'not checked')}")
+        return
+
+    source = "proxy exit" if geoip.get("via_proxy") else "this machine"
+    if geoip.get("error"):
+        system = geoip.get("system_timezone") or "the system zone"
+        print(f"GeoIP:     {MARK_FAIL} {geoip['error']}")
+        # This is the ticket-1010 shape: the launch does not fail, it just keeps
+        # the local clock, which is what gets scored.
+        print(f"           {ARROW} launches will keep the system clock ({system})")
+        if not geoip.get("via_proxy"):
+            print(f"           {ARROW} pass --proxy URL to check the timezone your exit IP would give")
+        return
+
+    print(f"GeoIP:     {MARK_OK} {geoip['exit_ip']} ({source})")
+    print(f"           applies tz {geoip['timezone']}, locale {geoip['locale']}")
+    system = geoip.get("system_timezone") or "unknown"
+    if geoip.get("mismatch"):
+        # Expected and good with a proxy: this is GeoIP doing its job.
+        print(f"System tz: {system} {DASH} differs; GeoIP will correct it")
+    else:
+        print(f"System tz: {system} {DASH} already matches")
+    if not geoip.get("via_proxy"):
+        print(f"           {ARROW} pass --proxy URL to check a proxied launch too")
 
 
 def _print_diagnostics(diag: dict) -> None:
@@ -443,8 +608,7 @@ def _print_diagnostics(diag: dict) -> None:
         else:
             print(f"Sessions:  {active} seat{'' if active == 1 else 's'} in use")
 
-    geoip = diag["geoip"]
-    print(f"GeoIP DB:  {'present' if geoip['db_present'] else 'not downloaded (optional)'}")
+    _print_geoip(diag["geoip"])
 
     print("Modules:")
     for label, available in diag["modules"].items():
@@ -453,7 +617,7 @@ def _print_diagnostics(diag: dict) -> None:
 
 def cmd_info(args: argparse.Namespace) -> None:
     quick = getattr(args, "quick", False)
-    diag = _collect_diagnostics(quick=quick)
+    diag = _collect_diagnostics(quick=quick, proxy=getattr(args, "proxy", None))
     if getattr(args, "json", False):
         import json
 
@@ -609,7 +773,14 @@ def main() -> None:
             "--no-launch",
             action="store_true",
             dest="quick",
-            help="Skip the binary launch test (faster; the license is still validated)",
+            help="Skip the binary launch test and the GeoIP check "
+            "(faster; the license is still validated)",
+        )
+        p.add_argument(
+            "--proxy",
+            metavar="URL",
+            help="Check GeoIP through this proxy, so the report shows the timezone "
+            "your real exit IP would produce (e.g. http://user:pass@host:port)",
         )
         p.add_argument("--json", action="store_true", help="Emit diagnostics as JSON")
 

@@ -143,7 +143,9 @@ def test_zero_seats_reads_as_none_in_use_not_unavailable(capsys):
     _run(Namespace(quick=False, json=False), key="cb_test", license_info=_PRO, sessions=0)
     out = capsys.readouterr().out
     assert "Sessions:  0 seats in use" in out
-    assert "unavailable" not in out
+    # Scoped to the Sessions line: other sections legitimately say "unavailable"
+    # (e.g. the GeoIP check when the database could not be downloaded).
+    assert "Sessions:  unavailable" not in out
 
 
 def test_unknown_count_prints_unavailable(capsys):
@@ -304,3 +306,119 @@ def test_launch_section_runs_binary_without_downloading(tmp_path, capsys):
     assert "Chromium 9.9.9.9" in data["launch"]["version"]
     mock_dl_free.assert_not_called()
     mock_dl_pro.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# GeoIP readiness check — presence of the DB says nothing about whether
+# resolution works, which is the failure `info` exists to surface.
+# ---------------------------------------------------------------------------
+
+
+def test_geoip_quick_reports_presence_only(capsys):
+    """--quick must not trigger a ~70 MB first-use download."""
+    with patch("cloakbrowser.__main__._check_geoip") as check:
+        _run(Namespace(quick=True, json=True, proxy=None))
+    check.assert_not_called()
+    data = json.loads(capsys.readouterr().out)
+    assert data["geoip"]["checked"] is False
+    assert "quick" in data["geoip"]["reason"]
+
+
+def test_geoip_reports_what_a_launch_would_apply(capsys):
+    """A successful check names the exit IP and the tz/locale that get applied."""
+    with (
+        patch("cloakbrowser.geoip._ensure_geoip_db", return_value="/fake/db"),
+        patch(
+            "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+            return_value=("Europe/Ljubljana", "sl-SI", "89.212.161.158"),
+        ),
+        patch("cloakbrowser.__main__._system_timezone", return_value="Europe/Ljubljana"),
+    ):
+        _run(Namespace(quick=False, json=True, proxy=None))
+    geoip = json.loads(capsys.readouterr().out)["geoip"]
+    assert geoip["checked"] is True
+    assert geoip["exit_ip"] == "89.212.161.158"
+    assert geoip["timezone"] == "Europe/Ljubljana"
+    assert geoip["locale"] == "sl-SI"
+    assert geoip["error"] is None
+    assert geoip["mismatch"] is False
+
+
+def test_geoip_flags_timezone_mismatch_as_correctable(capsys):
+    """UTC container behind a foreign exit IP: the ticket-1010 shape.
+
+    A mismatch is expected and good when a proxy is in play, so it must read as
+    "GeoIP will correct it", not as a failure.
+    """
+    with (
+        patch("cloakbrowser.geoip._ensure_geoip_db", return_value="/fake/db"),
+        patch(
+            "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+            return_value=("Australia/Sydney", "en-AU", "203.0.113.9"),
+        ),
+        patch("cloakbrowser.__main__._system_timezone", return_value="UTC"),
+    ):
+        _run(Namespace(quick=False, json=False, proxy="http://proxy:8080"))
+    out = capsys.readouterr().out
+    assert "Australia/Sydney" in out
+    assert "GeoIP will correct it" in out
+
+
+def test_geoip_reports_unresolvable_egress(capsys):
+    """Resolution failing silently is the whole bug — it must be named."""
+    with (
+        patch("cloakbrowser.geoip._ensure_geoip_db", return_value="/fake/db"),
+        patch(
+            "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+            return_value=(None, None, None),
+        ),
+        patch("cloakbrowser.__main__._system_timezone", return_value="UTC"),
+    ):
+        _run(Namespace(quick=False, json=False, proxy=None))
+    out = capsys.readouterr().out
+    assert "could not resolve the egress IP" in out
+    # Says what actually happens: the launch continues on the local clock.
+    assert "keep the system clock (UTC)" in out
+
+
+def test_geoip_check_survives_a_missing_dependency(capsys):
+    """The probe must not die on the very condition it exists to diagnose."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+        side_effect=ImportError("geoip2 is required"),
+    ):
+        _run(Namespace(quick=False, json=True, proxy=None))
+    geoip = json.loads(capsys.readouterr().out)["geoip"]
+    assert geoip["error"]
+    assert "geoip2" in geoip["error"]
+
+
+def test_geoip_proxy_is_forwarded_to_the_resolver():
+    """--proxy must resolve the real exit, not this machine's egress."""
+    with (
+        patch("cloakbrowser.geoip._ensure_geoip_db", return_value="/fake/db"),
+        patch(
+            "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+            return_value=("America/Toronto", "en-CA", "82.29.122.41"),
+        ) as resolve,
+    ):
+        _run(Namespace(quick=False, json=True, proxy="http://user:pass@resi:10003"))
+    resolve.assert_called_once_with("http://user:pass@resi:10003")
+
+
+@pytest.mark.parametrize(
+    "resolved,system,expected",
+    [
+        ("Australia/Sydney", "UTC", True),
+        ("Europe/Ljubljana", "Europe/Ljubljana", False),
+        # IANA aliases share an offset — reporting these would be a false alarm
+        # no detector could ever see.
+        ("Europe/Kyiv", "Europe/Kiev", False),
+        ("UTC", "UTC", False),
+        ("Europe/Berlin", None, False),
+    ],
+)
+def test_timezones_disagree_compares_offsets_not_names(resolved, system, expected):
+    from cloakbrowser.__main__ import _timezones_disagree
+
+    assert _timezones_disagree(resolved, system) is expected

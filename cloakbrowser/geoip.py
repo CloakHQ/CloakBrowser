@@ -30,6 +30,16 @@ GEOIP_DB_URL = (
 GEOIP_DB_FILENAME = "GeoLite2-City.mmdb"
 GEOIP_UPDATE_INTERVAL = 30 * 86_400  # 30 days
 DEFAULT_GEOIP_TIMEOUT_SECONDS = 5.0
+
+# Wall-clock budget for the ~70 MB download, deliberately separate from
+# DEFAULT_GEOIP_TIMEOUT_SECONDS: a first-use fetch legitimately outlasts the
+# resolution deadline, but it must not be unbounded either, or a blackholed
+# network stalls a launch for as long as the OS lets the connection hang.
+GEOIP_DOWNLOAD_TIMEOUT_SECONDS = 180.0
+# After a failed download, don't try again for this long. Every launch retrying
+# a fetch that cannot succeed is what makes a firewalled environment unusable.
+GEOIP_DOWNLOAD_RETRY_INTERVAL = 30 * 60  # 30 minutes
+GEOIP_FAILURE_MARKER = ".download-failed"
 GEOIP_TIMEOUT_ENV = "CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS"
 
 # Dedicated off switch. GeoIP is on by default, so an environment that cannot
@@ -308,13 +318,57 @@ def _get_geoip_dir() -> Path:
     return get_cache_dir() / "geoip"
 
 
-def _ensure_geoip_db() -> Path | None:
-    """Return path to GeoLite2-City.mmdb, downloading on first use."""
+def _failure_marker_path() -> Path:
+    return _get_geoip_dir() / GEOIP_FAILURE_MARKER
+
+
+def _download_recently_failed() -> bool:
+    """True when a download failed within the cooldown window.
+
+    Without this, an environment that cannot reach the mirror at all retries the
+    full download on *every* launch and pays the connect timeout each time.  Now
+    that geoip is the default, that would be every launch of every process.
+    """
+    try:
+        age = time.time() - _failure_marker_path().stat().st_mtime
+    except OSError:
+        return False
+    return age < GEOIP_DOWNLOAD_RETRY_INTERVAL
+
+
+def _record_download_failure() -> None:
+    try:
+        marker = _failure_marker_path()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError:
+        logger.debug("Could not write GeoIP failure marker", exc_info=True)
+
+
+def _clear_download_failure() -> None:
+    _failure_marker_path().unlink(missing_ok=True)
+
+
+def _ensure_geoip_db(force: bool = False) -> Path | None:
+    """Return path to GeoLite2-City.mmdb, downloading on first use.
+
+    *force* ignores the post-failure cooldown — used by ``cloakbrowser info``,
+    where the user explicitly asked to verify GeoIP and a stale "we failed
+    recently" marker would make the diagnostic lie.
+    """
     db_path = _get_geoip_dir() / GEOIP_DB_FILENAME
 
     if db_path.exists():
         _maybe_trigger_update(db_path)
         return db_path
+
+    if not force and _download_recently_failed():
+        logger.warning(
+            "GeoIP database unavailable and a download failed in the last %d min; "
+            "continuing without GeoIP (set CLOAKBROWSER_GEOIP=0 to silence)",
+            GEOIP_DOWNLOAD_RETRY_INTERVAL // 60,
+        )
+        return None
 
     # Serialize concurrent first-use downloads: only one launch fetches the
     # shared file, the rest wait and reuse it.
@@ -323,10 +377,12 @@ def _ensure_geoip_db() -> Path | None:
             return db_path
         try:
             _download_geoip_db(db_path)
-            return db_path
         except Exception as exc:
             logger.warning("Failed to download GeoIP database: %s", exc)
+            _record_download_failure()
             return None
+        _clear_download_failure()
+        return db_path
 
 
 def _download_geoip_db(dest: Path) -> None:
@@ -338,9 +394,15 @@ def _download_geoip_db(dest: Path) -> None:
 
     tmp_fd, tmp_name = tempfile.mkstemp(dir=dest.parent, suffix=".tmp")
     tmp_path = Path(tmp_name)
+    # httpx's timeout is per-operation, so a trickling response can outlast any
+    # value set there. Enforce a wall-clock budget over the whole transfer too.
+    deadline = time.monotonic() + GEOIP_DOWNLOAD_TIMEOUT_SECONDS
     try:
         with httpx.stream(
-            "GET", GEOIP_DB_URL, follow_redirects=True, timeout=300.0
+            "GET",
+            GEOIP_DB_URL,
+            follow_redirects=True,
+            timeout=GEOIP_DOWNLOAD_TIMEOUT_SECONDS,
         ) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
@@ -348,6 +410,10 @@ def _download_geoip_db(dest: Path) -> None:
             last_pct = -1
             with open(tmp_fd, "wb") as f:
                 for chunk in resp.iter_bytes(chunk_size=65_536):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"GeoIP download exceeded {GEOIP_DOWNLOAD_TIMEOUT_SECONDS:.0f}s"
+                        )
                     f.write(chunk)
                     downloaded += len(chunk)
                     if total:

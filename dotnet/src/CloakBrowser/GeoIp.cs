@@ -32,6 +32,17 @@ public static class GeoIp
     // deadline", not "off", so reaching for that to disable GeoIP does the opposite.
     private const string GeoIpEnabledEnv = "CLOAKBROWSER_GEOIP";
 
+    // Wall-clock budget for the ~70 MB download, deliberately separate from
+    // DefaultGeoIpTimeoutSeconds: a first-use fetch legitimately outlasts the
+    // resolution deadline, but it must not be unbounded either.
+    private static readonly TimeSpan GeoIpDownloadTimeout = TimeSpan.FromSeconds(180);
+
+    // After a failed download, don't try again for this long. Every launch
+    // retrying a fetch that cannot succeed is what makes a firewalled
+    // environment unusable.
+    private static readonly TimeSpan GeoIpDownloadRetryInterval = TimeSpan.FromMinutes(30);
+    private const string GeoIpFailureMarker = ".download-failed";
+
     /// <summary>True when <c>CLOAKBROWSER_GEOIP</c> is set to a falsey value.</summary>
     public static bool DisabledByEnv()
     {
@@ -340,7 +351,55 @@ public static class GeoIp
 
     private static string GetGeoIpDir() => Path.Combine(Config.GetCacheDir(), "geoip");
 
-    private static async Task<string?> EnsureGeoIpDbAsync(CancellationToken ct)
+    private static string FailureMarkerPath() => Path.Combine(GetGeoIpDir(), GeoIpFailureMarker);
+
+    /// <summary>
+    /// True when a download failed within the cooldown window.
+    /// </summary>
+    /// <remarks>
+    /// Without this, an environment that cannot reach the mirror at all retries
+    /// the full download on every launch and pays the connect timeout each time.
+    /// Now that GeoIP is the default, that would be every launch of every process.
+    /// </remarks>
+    private static bool DownloadRecentlyFailed()
+    {
+        try
+        {
+            return DateTime.UtcNow - File.GetLastWriteTimeUtc(FailureMarkerPath()) < GeoIpDownloadRetryInterval;
+        }
+        catch (Exception exc) when (exc is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static void RecordDownloadFailure()
+    {
+        try
+        {
+            var marker = FailureMarkerPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
+            File.WriteAllText(marker, "");
+        }
+        catch (Exception exc) when (exc is IOException or UnauthorizedAccessException)
+        {
+            CloakLog.Debug("Could not write GeoIP failure marker: {0}", exc.Message);
+        }
+    }
+
+    private static void ClearDownloadFailure()
+    {
+        try
+        {
+            File.Delete(FailureMarkerPath());
+        }
+        catch (Exception exc) when (exc is IOException or UnauthorizedAccessException)
+        {
+            CloakLog.Debug("Could not clear GeoIP failure marker: {0}", exc.Message);
+        }
+    }
+
+    private static async Task<string?> EnsureGeoIpDbAsync(CancellationToken ct, bool force = false)
     {
         var dbPath = Path.Combine(GetGeoIpDir(), GeoIpDbFilename);
 
@@ -348,6 +407,15 @@ public static class GeoIp
         {
             MaybeTriggerUpdate(dbPath);
             return dbPath;
+        }
+
+        if (!force && DownloadRecentlyFailed())
+        {
+            CloakLog.Warning(
+                "GeoIP database unavailable and a download failed in the last {0} min; " +
+                "continuing without GeoIP (set CLOAKBROWSER_GEOIP=0 to silence)",
+                (int)GeoIpDownloadRetryInterval.TotalMinutes);
+            return null;
         }
 
         // Serialize concurrent first-use downloads: only one launch fetches
@@ -358,11 +426,13 @@ public static class GeoIp
             if (File.Exists(dbPath)) // another launch finished while we waited
                 return dbPath;
             await DownloadGeoIpDbAsync(dbPath, ct).ConfigureAwait(false);
+            ClearDownloadFailure();
             return dbPath;
         }
         catch (Exception exc)
         {
             CloakLog.Warning("Failed to download GeoIP database: {0}", exc.Message);
+            RecordDownloadFailure();
             return null;
         }
         finally
@@ -377,7 +447,13 @@ public static class GeoIp
         CloakLog.Info("Downloading GeoIP database (~70 MB) ...");
 
         var tmpPath = dest + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(300) };
+        using var client = new HttpClient { Timeout = GeoIpDownloadTimeout };
+        // HttpClient.Timeout does not cover body streaming under
+        // ResponseHeadersRead, so a trickling response can outlast it. This
+        // linked token puts a wall-clock ceiling on the whole transfer.
+        using var budget = new CancellationTokenSource(GeoIpDownloadTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.Token);
+        ct = linked.Token;
         try
         {
             using var resp = await client.GetAsync(GeoIpDbUrl, HttpCompletionOption.ResponseHeadersRead, ct)

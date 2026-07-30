@@ -165,7 +165,9 @@ internal static class Diagnostics
         // For a Pro license, surface the server's latest separately from the version
         // that will actually launch, so `info` can never silently diverge from launch
         // (the divergence a customer hit: info showed latest, launch ran a stale cache).
-        // --quick keeps `info` fully network-free (skip the server latest lookup).
+        // --quick skips the optional lookups (server latest version, seat count,
+        // GeoIP resolution). It is not fully network-free: the license itself is
+        // still validated, behind a 24h cache.
         ProReleaseInfo? latestRelease = (entitledPro && !quick)
             ? License.GetProLatestRelease(requestedChannel)
             : null;
