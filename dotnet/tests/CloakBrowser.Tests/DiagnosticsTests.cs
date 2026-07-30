@@ -17,7 +17,7 @@ namespace CloakBrowser.Tests;
 public class DiagnosticsTests
 {
     [Fact]
-    public void Quick_skips_launch_and_reports_free_license()
+    public async Task Quick_skips_launch_and_reports_free_license()
     {
         var tmp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         Directory.CreateDirectory(tmp);
@@ -28,7 +28,7 @@ public class DiagnosticsTests
             Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", tmp);
             Environment.SetEnvironmentVariable("CLOAKBROWSER_LICENSE_KEY", null);
 
-            var diag = Diagnostics.Collect(quick: true);
+            var diag = await Diagnostics.CollectAsync(quick: true);
 
             var env = Assert.IsType<Dictionary<string, object?>>(diag["environment"]);
             Assert.NotNull(env["dotnet"]);
@@ -57,24 +57,27 @@ public class DiagnosticsTests
     }
 
     [Fact]
-    public void Preview_reports_stable_fallback_and_next_launch_version()
+    public async Task Preview_reports_stable_fallback_and_next_launch_version()
     {
         var tmp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         Directory.CreateDirectory(tmp);
         string? prevCache = Environment.GetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR");
         string? prevKey = Environment.GetEnvironmentVariable("CLOAKBROWSER_LICENSE_KEY");
         string? prevChannel = Environment.GetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL");
+        string? prevGeoIp = Environment.GetEnvironmentVariable("CLOAKBROWSER_GEOIP");
         try
         {
             Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", tmp);
             Environment.SetEnvironmentVariable("CLOAKBROWSER_LICENSE_KEY", "cb_test");
             Environment.SetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL", "preview");
+            // quick:false resolves GeoIP for real; keep this test off the network.
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_GEOIP", "0");
             License.ValidateLicenseOverride = _ => new LicenseInfo(true, "business", null);
             License.ProLatestReleaseOverride = () =>
                 new ProReleaseInfo("150.0.7871.114.3", "preview", "stable", true);
             License.ActiveSessionCountOverride = _ => null;
 
-            var diag = Diagnostics.Collect(quick: false);
+            var diag = await Diagnostics.CollectAsync(quick: false);
             var binary = Assert.IsType<Dictionary<string, object?>>(diag["binary"]);
 
             Assert.Equal("preview", binary["requested_channel"]);
@@ -87,6 +90,7 @@ public class DiagnosticsTests
             Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", prevCache);
             Environment.SetEnvironmentVariable("CLOAKBROWSER_LICENSE_KEY", prevKey);
             Environment.SetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL", prevChannel);
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_GEOIP", prevGeoIp);
             License.ValidateLicenseOverride = null;
             License.ProLatestReleaseOverride = null;
             License.ActiveSessionCountOverride = null;

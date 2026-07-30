@@ -10,7 +10,134 @@ namespace CloakBrowser;
 /// </summary>
 internal static class Diagnostics
 {
-    internal static Dictionary<string, object?> Collect(bool quick)
+    /// <summary>
+    /// Best-effort IANA name for the host/container timezone.
+    /// </summary>
+    /// <remarks>
+    /// This is the zone the browser would report if GeoIP resolved nothing, so it
+    /// is the thing worth comparing against - a UTC container behind a foreign
+    /// exit IP is the failure this check exists to surface.
+    /// </remarks>
+    private static string? SystemTimezone()
+    {
+        try
+        {
+            // TimeZoneInfo.Local.Id is the IANA name on Unix and a Windows id on
+            // Windows; on .NET 6+ the Windows id converts to IANA.
+            var local = TimeZoneInfo.Local;
+            if (TimeZoneInfo.TryConvertWindowsIdToIanaId(local.Id, out string? iana))
+                return iana;
+            return local.Id;
+        }
+        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Current UTC offset of <paramref name="zone"/>, or null if unresolvable.</summary>
+    private static TimeSpan? UtcOffset(string zone)
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById(zone).GetUtcOffset(DateTimeOffset.UtcNow);
+        }
+        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether the browser's clock would contradict the exit IP.
+    /// </summary>
+    /// <remarks>
+    /// Compared by current UTC offset rather than by name: IANA aliases
+    /// (Europe/Kiev vs Europe/Kyiv) would otherwise report a mismatch that no
+    /// detector would ever see.
+    /// </remarks>
+    internal static bool TimezonesDisagree(string resolved, string? system)
+    {
+        if (string.IsNullOrEmpty(system) || resolved == system) return false;
+        var a = UtcOffset(resolved);
+        var b = UtcOffset(system!);
+        if (a is null || b is null) return false;
+        return a != b;
+    }
+
+    /// <summary>
+    /// Resolve GeoIP for real and report what a launch would actually apply.
+    /// </summary>
+    /// <remarks>
+    /// Presence of the database says nothing about whether resolution works: the
+    /// egress IP can be unreachable, the lookup can miss, and both paths leave the
+    /// browser on the container clock while the launch continues. So resolve.
+    /// Never throws - a diagnostic that dies on the condition it diagnoses is
+    /// worse than useless.
+    /// </remarks>
+    private static async Task<Dictionary<string, object?>> CheckGeoIpAsync(string? proxy)
+    {
+        string dbPath = Path.Combine(Config.GetCacheDir(), "geoip", "GeoLite2-City.mmdb");
+        var result = new Dictionary<string, object?>
+        {
+            ["db_present"] = File.Exists(dbPath),
+            ["path"] = dbPath,
+            ["checked"] = true,
+            ["via_proxy"] = !string.IsNullOrEmpty(proxy),
+            ["system_timezone"] = SystemTimezone(),
+            ["exit_ip"] = null,
+            ["timezone"] = null,
+            ["locale"] = null,
+            ["mismatch"] = false,
+            ["error"] = null,
+        };
+
+        // Report the switch rather than resolving past it: if the user turned
+        // GeoIP off, "it resolves fine" would be a true statement about something
+        // launches are not going to do.
+        if (GeoIp.DisabledByEnv())
+        {
+            result["checked"] = false;
+            result["reason"] = "disabled by CLOAKBROWSER_GEOIP";
+            return result;
+        }
+
+        try
+        {
+            // force: the user explicitly asked to verify, so a recent-failure
+            // cooldown marker must not make the report claim GeoIP is unavailable.
+            if (await GeoIp.EnsureGeoIpDbAsync(CancellationToken.None, force: true).ConfigureAwait(false) is null)
+                result["error"] = "GeoIP database unavailable (download failed)";
+            result["db_present"] = File.Exists(dbPath);
+
+            // A CLI-supplied proxy may omit the scheme ("host:port"), which the
+            // HTTP client rejects outright.
+            string? proxyUrl = string.IsNullOrEmpty(proxy)
+                ? null
+                : ProxyResolver.EnsureProxyScheme(proxy!);
+            var (tz, locale, exitIp) = await GeoIp
+                .ResolveProxyGeoWithIpAsync(proxyUrl)
+                .ConfigureAwait(false);
+            result["exit_ip"] = exitIp;
+            result["timezone"] = tz;
+            result["locale"] = locale;
+
+            if (exitIp is null)
+                result["error"] ??= "could not resolve the egress IP";
+            else if (tz is null && result["error"] is null)
+                result["error"] = $"no timezone for {exitIp} in the database";
+            if (tz is not null)
+                result["mismatch"] = TimezonesDisagree(tz, (string?)result["system_timezone"]);
+        }
+        catch (Exception ex)
+        {
+            result["error"] = $"{ex.GetType().Name}: {ex.Message}";
+        }
+
+        return result;
+    }
+
+    internal static async Task<Dictionary<string, object?>> CollectAsync(bool quick, string? proxy = null)
     {
         var diag = new Dictionary<string, object?>();
 
@@ -92,9 +219,24 @@ internal static class Diagnostics
 
         diag["license"] = license;
 
-        // GeoIP DB — presence only, never downloads.
-        string dbPath = Path.Combine(Config.GetCacheDir(), "geoip", "GeoLite2-City.mmdb");
-        diag["geoip"] = new Dictionary<string, object?> { ["db_present"] = File.Exists(dbPath), ["path"] = dbPath };
+        // GeoIP - resolved for real, because presence of the database says nothing
+        // about whether resolution works. Under --quick, presence only (a ~70 MB
+        // first-use download is not something a "quick" flag should trigger).
+        if (quick)
+        {
+            string dbPath = Path.Combine(Config.GetCacheDir(), "geoip", "GeoLite2-City.mmdb");
+            diag["geoip"] = new Dictionary<string, object?>
+            {
+                ["db_present"] = File.Exists(dbPath),
+                ["path"] = dbPath,
+                ["checked"] = false,
+                ["reason"] = "skipped (--quick)",
+            };
+        }
+        else
+        {
+            diag["geoip"] = await CheckGeoIpAsync(proxy).ConfigureAwait(false);
+        }
 
         // Dependency assemblies — mirrors the Python/JS modules section. These are
         // hard NuGet references, so "missing" here means a broken deployment.

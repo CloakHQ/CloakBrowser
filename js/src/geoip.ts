@@ -353,7 +353,7 @@ async function resolveExitIp(proxyUrl: string | null | undefined, timeoutMs?: nu
 // GeoIP database management
 // ---------------------------------------------------------------------------
 
-function getGeoipDir(): string {
+export function getGeoipDir(): string {
   return path.join(getCacheDir(), "geoip");
 }
 
@@ -414,7 +414,7 @@ function clearDownloadFailure(): void {
  * the user explicitly asked to verify GeoIP and a stale marker would make the
  * diagnostic lie.
  */
-async function ensureGeoipDb(force = false): Promise<string | null> {
+export async function ensureGeoipDb(force = false): Promise<string | null> {
   const dir = getGeoipDir();
   const dbPath = path.join(dir, GEOIP_DB_FILENAME);
 

@@ -25,6 +25,8 @@ import {
   WRAPPER_VERSION,
 } from "./config.js";
 import { countFontsPresent, WINDOWS_FONT_TELLS, OFFICE_FONT_TELLS } from "./fonts.js";
+import { ensureGeoipDb, geoipEnabled, getGeoipDir, resolveProxyGeo } from "./geoip.js";
+import { ensureProxyScheme } from "./proxy.js";
 import { resolveLicenseKey, validateLicense, getProLatestRelease, getActiveSessionCount, type LicenseInfo } from "./license.js";
 import { execFileSync, spawn } from "node:child_process";
 import { createRequire } from "node:module";
@@ -45,7 +47,7 @@ Commands:
   login        Save a license key (or get a free key via GitHub)
   logout       Remove the saved license key (revert to free binary)
   install      Download the Chromium binary
-  info         Environment + binary diagnostics (--quick, --json)
+  info         Environment + binary diagnostics (--quick, --proxy URL, --json)
   doctor       Alias for info
   update       Check for and download a newer binary
   clear-cache  Remove all cached binaries`;
@@ -211,7 +213,136 @@ async function effectiveBinary(
   };
 }
 
-export async function collectDiagnostics(quick: boolean): Promise<Record<string, unknown>> {
+/**
+ * Best-effort IANA name for the host/container timezone.
+ *
+ * This is the zone the browser would report if GeoIP resolved nothing, so it is
+ * the thing worth comparing against — a UTC container behind a foreign exit IP
+ * is the failure this check exists to surface.
+ */
+function systemTimezone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Current UTC offset of `zone` in minutes, or null if unresolvable. */
+function utcOffsetMinutes(zone: string): number | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      timeZoneName: "longOffset",
+    }).formatToParts(new Date());
+    const name = parts.find((p) => p.type === "timeZoneName")?.value ?? "";
+    if (name === "GMT" || name === "UTC") return 0;
+    const m = /^(?:GMT|UTC)([+-])(\d{1,2}):?(\d{2})?$/.exec(name);
+    if (!m) return null;
+    return (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3] ?? 0));
+  } catch {
+    // RangeError for an unknown zone.
+    return null;
+  }
+}
+
+/**
+ * Whether the browser's clock would contradict the exit IP.
+ *
+ * Compared by current UTC offset rather than by name: IANA aliases
+ * (Europe/Kiev vs Europe/Kyiv) would otherwise report a mismatch that no
+ * detector would ever see.
+ */
+export function timezonesDisagree(resolved: string, system: string | null): boolean {
+  if (!system || resolved === system) return false;
+  const a = utcOffsetMinutes(resolved);
+  const b = utcOffsetMinutes(system);
+  if (a === null || b === null) return false;
+  return a !== b;
+}
+
+export interface GeoipDiagnostic {
+  db_present: boolean;
+  path: string;
+  checked: boolean;
+  reason?: string;
+  via_proxy?: boolean;
+  system_timezone?: string | null;
+  exit_ip?: string | null;
+  timezone?: string | null;
+  locale?: string | null;
+  mismatch?: boolean;
+  error?: string | null;
+}
+
+/**
+ * Resolve GeoIP for real and report what a launch would actually apply.
+ *
+ * Presence of the database says nothing about whether resolution works: the
+ * egress IP can be unreachable, the lookup can miss, and both paths leave the
+ * browser on the container clock while the launch continues. So resolve.
+ *
+ * Never throws — a diagnostic that dies on the condition it diagnoses is worse
+ * than useless, and the missing-dependency error is one of those conditions.
+ */
+export async function checkGeoip(proxy: string | null): Promise<GeoipDiagnostic> {
+  const dbPath = path.join(getGeoipDir(), "GeoLite2-City.mmdb");
+  const result: GeoipDiagnostic = {
+    db_present: fs.existsSync(dbPath),
+    path: dbPath,
+    checked: true,
+    via_proxy: Boolean(proxy),
+    system_timezone: systemTimezone(),
+    exit_ip: null,
+    timezone: null,
+    locale: null,
+    mismatch: false,
+    error: null,
+  };
+
+  // Report the switch rather than resolving past it: if the user turned GeoIP
+  // off, "it resolves fine" would be a true statement about something launches
+  // are not going to do.
+  if (!geoipEnabled(undefined)) {
+    result.checked = false;
+    result.reason = "disabled by CLOAKBROWSER_GEOIP";
+    return result;
+  }
+
+  try {
+    // force: the user explicitly asked to verify, so a recent-failure cooldown
+    // marker must not make the report claim GeoIP is unavailable.
+    if ((await ensureGeoipDb(true)) === null) {
+      result.error = "GeoIP database unavailable (download failed)";
+    }
+    result.db_present = fs.existsSync(dbPath);
+    // A CLI-supplied proxy may omit the scheme ("host:port"), which the HTTP
+    // client rejects outright.
+    const proxyUrl = proxy ? ensureProxyScheme(proxy) : null;
+    const geo = await resolveProxyGeo(proxyUrl);
+    result.exit_ip = geo.exitIp;
+    result.timezone = geo.timezone;
+    result.locale = geo.locale;
+  } catch (err) {
+    result.error = (err as Error).message;
+    return result;
+  }
+
+  if (result.exit_ip === null) {
+    result.error = result.error ?? "could not resolve the egress IP";
+  } else if (result.timezone === null && result.error === null) {
+    result.error = `no timezone for ${result.exit_ip} in the database`;
+  }
+  if (result.timezone) {
+    result.mismatch = timezonesDisagree(result.timezone, result.system_timezone ?? null);
+  }
+  return result;
+}
+
+export async function collectDiagnostics(
+  quick: boolean,
+  proxy: string | null = null,
+): Promise<Record<string, unknown>> {
   const diag: Record<string, any> = {};
 
   diag.environment = {
@@ -275,9 +406,20 @@ export async function collectDiagnostics(quick: boolean): Promise<Record<string,
 
   diag.license = license;
 
-  // GeoIP DB — presence only, never downloads.
-  const dbPath = path.join(getCacheDir(), "geoip", "GeoLite2-City.mmdb");
-  diag.geoip = { db_present: fs.existsSync(dbPath), path: dbPath };
+  // GeoIP — resolved for real, because presence of the database says nothing
+  // about whether resolution works. Under --quick, presence only (a ~70 MB
+  // first-use download is not something a "quick" flag should trigger).
+  if (quick) {
+    const dbPath = path.join(getCacheDir(), "geoip", "GeoLite2-City.mmdb");
+    diag.geoip = {
+      db_present: fs.existsSync(dbPath),
+      path: dbPath,
+      checked: false,
+      reason: "skipped (--quick)",
+    };
+  } else {
+    diag.geoip = await checkGeoip(proxy);
+  }
 
   // Optional peer deps.
   diag.modules = {
@@ -287,6 +429,41 @@ export async function collectDiagnostics(quick: boolean): Promise<Record<string,
   };
 
   return diag;
+}
+
+/** Render the GeoIP section: what a launch would actually apply. */
+function printGeoip(geoip: GeoipDiagnostic): void {
+  if (!geoip.checked) {
+    const state = geoip.db_present ? "present" : "not downloaded";
+    console.log(`GeoIP DB:  ${state} — ${geoip.reason ?? "not checked"}`);
+    return;
+  }
+
+  const source = geoip.via_proxy ? "proxy exit" : "this machine";
+  if (geoip.error) {
+    const system = geoip.system_timezone ?? "the system zone";
+    console.log(`GeoIP:     ✗ ${geoip.error}`);
+    // This is the shape that goes unnoticed: the launch does not fail, it just
+    // keeps the local clock, which is what gets scored.
+    console.log(`           → launches will keep the system clock (${system})`);
+    if (!geoip.via_proxy) {
+      console.log("           → pass --proxy URL to check the timezone your exit IP would give");
+    }
+    return;
+  }
+
+  console.log(`GeoIP:     ✓ ${geoip.exit_ip} (${source})`);
+  console.log(`           applies tz ${geoip.timezone}, locale ${geoip.locale}`);
+  const system = geoip.system_timezone ?? "unknown";
+  console.log(
+    geoip.mismatch
+      // Expected and good with a proxy: this is GeoIP doing its job.
+      ? `System tz: ${system} — differs; GeoIP will correct it`
+      : `System tz: ${system} — already matches`,
+  );
+  if (!geoip.via_proxy) {
+    console.log("           → pass --proxy URL to check a proxied launch too");
+  }
 }
 
 function printDiagnostics(diag: Record<string, any>): void {
@@ -363,7 +540,7 @@ function printDiagnostics(diag: Record<string, any>): void {
   if (diag.fonts) {
     const win = diag.fonts.windows;
     if (win === null) {
-      console.log("Win fonts: unknown (fc-list unavailable)");
+      console.log("Win fonts: unknown (fc-match unavailable)");
     } else {
       const [n, total] = win;
       const verdict = n === total ? "ok" : n === 0 ? "missing" : "partial";
@@ -407,7 +584,7 @@ function printDiagnostics(diag: Record<string, any>): void {
     );
   }
 
-  console.log(`GeoIP DB:  ${diag.geoip.db_present ? "present" : "not downloaded (optional)"}`);
+  printGeoip(diag.geoip);
 
   console.log("Modules:");
   for (const [label, available] of Object.entries(diag.modules)) {
@@ -415,10 +592,18 @@ function printDiagnostics(diag: Record<string, any>): void {
   }
 }
 
+/** Read `--proxy URL` or `--proxy=URL` from argv. */
+function parseProxyArg(args: string[]): string | null {
+  const idx = args.indexOf("--proxy");
+  if (idx !== -1 && idx + 1 < args.length) return args[idx + 1];
+  const inline = args.find((a) => a.startsWith("--proxy="));
+  return inline ? inline.slice("--proxy=".length) : null;
+}
+
 async function cmdInfo(args: string[]): Promise<void> {
   const quick = args.includes("--quick") || args.includes("--no-launch");
   const asJson = args.includes("--json");
-  const diag = await collectDiagnostics(quick);
+  const diag = await collectDiagnostics(quick, parseProxyArg(args));
   if (asJson) {
     console.log(JSON.stringify(diag, null, 2));
   } else {

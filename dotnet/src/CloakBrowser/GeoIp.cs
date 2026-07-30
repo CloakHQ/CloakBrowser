@@ -399,7 +399,7 @@ public static class GeoIp
         }
     }
 
-    private static async Task<string?> EnsureGeoIpDbAsync(CancellationToken ct, bool force = false)
+    internal static async Task<string?> EnsureGeoIpDbAsync(CancellationToken ct, bool force = false)
     {
         var dbPath = Path.Combine(GetGeoIpDir(), GeoIpDbFilename);
 

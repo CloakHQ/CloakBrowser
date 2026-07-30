@@ -334,10 +334,29 @@ def _check_geoip(proxy: str | None) -> dict:
     }
 
     try:
-        from .geoip import _ensure_geoip_db, resolve_proxy_geo_with_ip
+        from .browser import _ensure_proxy_scheme
+        from .geoip import (
+            GEOIP_ENABLED_ENV,
+            _ensure_geoip_db,
+            geoip_disabled_by_env,
+            resolve_proxy_geo_with_ip,
+        )
     except ImportError as exc:
         result["error"] = f"geoip2 not importable ({exc})"
         return result
+
+    # Report the switch rather than resolving past it: if the user turned GeoIP
+    # off, "it resolves fine" would be a true statement about something launches
+    # are not going to do.
+    if geoip_disabled_by_env():
+        result["checked"] = False
+        result["reason"] = f"disabled by {GEOIP_ENABLED_ENV}"
+        return result
+
+    # A CLI-supplied proxy may omit the scheme ("host:port"), which the HTTP
+    # client rejects outright.
+    if proxy:
+        proxy = _ensure_proxy_scheme(proxy)
 
     try:
         # force=True: the user explicitly asked to verify, so a recent-failure
@@ -570,7 +589,7 @@ def _print_diagnostics(diag: dict) -> None:
     if "fonts" in diag:
         win = diag["fonts"]["windows"]
         if win is None:
-            print("Win fonts: unknown (fc-list unavailable)")
+            print("Win fonts: unknown (fc-match unavailable)")
         else:
             n, total = win
             verdict = "ok" if n == total else "missing" if n == 0 else "partial"

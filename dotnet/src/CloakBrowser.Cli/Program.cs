@@ -9,7 +9,7 @@ using CloakBrowser;
 //   cloakbrowser login        # Save a license key (or get a free key via GitHub)
 //   cloakbrowser logout       # Remove the saved license key (revert to free binary)
 //   cloakbrowser install      # Download binary (with progress)
-//   cloakbrowser info         # Environment + binary diagnostics (--quick, --json)
+//   cloakbrowser info         # Environment + binary diagnostics (--quick, --proxy URL, --json)
 //   cloakbrowser doctor       # Alias for info
 //   cloakbrowser update       # Check for and download newer binary
 //   cloakbrowser clear-cache  # Remove cached binaries
@@ -76,12 +76,21 @@ static async Task CmdInstall()
     Console.WriteLine(path);
 }
 
-static void CmdInfo(string[] flags)
+// Read `--proxy URL` or `--proxy=URL` from argv.
+static string? ParseProxyArg(string[] flags)
+{
+    int idx = Array.IndexOf(flags, "--proxy");
+    if (idx != -1 && idx + 1 < flags.Length) return flags[idx + 1];
+    string? inline = flags.FirstOrDefault(f => f.StartsWith("--proxy=", StringComparison.Ordinal));
+    return inline?.Substring("--proxy=".Length);
+}
+
+static async Task CmdInfo(string[] flags)
 {
     bool quick = flags.Contains("--quick") || flags.Contains("--no-launch");
     bool asJson = flags.Contains("--json");
 
-    var diag = Diagnostics.Collect(quick);
+    var diag = await Diagnostics.CollectAsync(quick, ParseProxyArg(flags)).ConfigureAwait(false);
 
     if (asJson)
     {
@@ -185,7 +194,7 @@ static void PrintDiagnostics(Dictionary<string, object?> diag)
         }
         else
         {
-            Console.WriteLine("Win fonts: unknown (fc-list unavailable)");
+            Console.WriteLine("Win fonts: unknown (fc-match unavailable)");
         }
         // Office is informational only — no Office pack is a normal Windows
         // persona (~53% of real machines have none), so no install nudge.
@@ -230,8 +239,7 @@ static void PrintDiagnostics(Dictionary<string, object?> diag)
             : $"Sessions:  {active} seat{(active == 1 ? "" : "s")} in use");
     }
 
-    var geoip = (Dictionary<string, object?>)diag["geoip"]!;
-    Console.WriteLine($"GeoIP DB:  {(geoip["db_present"] is true ? "present" : "not downloaded (optional)")}");
+    PrintGeoIp((Dictionary<string, object?>)diag["geoip"]!);
 
     if (diag.TryGetValue("modules", out var modulesObj) && modulesObj is Dictionary<string, object?> modules)
     {
@@ -239,6 +247,42 @@ static void PrintDiagnostics(Dictionary<string, object?> diag)
         foreach (var kv in modules)
             Console.WriteLine($"  {kv.Key}: {(kv.Value is true ? "ok" : "missing")}");
     }
+}
+
+// Render the GeoIP section: what a launch would actually apply.
+static void PrintGeoIp(Dictionary<string, object?> geoip)
+{
+    if (geoip["checked"] is not true)
+    {
+        string state = geoip["db_present"] is true ? "present" : "not downloaded";
+        string reason = geoip.TryGetValue("reason", out var r) ? (string?)r ?? "not checked" : "not checked";
+        Console.WriteLine($"GeoIP DB:  {state} - {reason}");
+        return;
+    }
+
+    bool viaProxy = geoip["via_proxy"] is true;
+    string source = viaProxy ? "proxy exit" : "this machine";
+    string? system = (string?)geoip["system_timezone"];
+
+    if (geoip["error"] is string error && error.Length > 0)
+    {
+        Console.WriteLine($"GeoIP:     x {error}");
+        // This is the shape that goes unnoticed: the launch does not fail, it
+        // just keeps the local clock, which is what gets scored.
+        Console.WriteLine($"           -> launches will keep the system clock ({system ?? "the system zone"})");
+        if (!viaProxy)
+            Console.WriteLine("           -> pass --proxy URL to check the timezone your exit IP would give");
+        return;
+    }
+
+    Console.WriteLine($"GeoIP:     OK {geoip["exit_ip"]} ({source})");
+    Console.WriteLine($"           applies tz {geoip["timezone"]}, locale {geoip["locale"]}");
+    Console.WriteLine(geoip["mismatch"] is true
+        // Expected and good with a proxy: this is GeoIP doing its job.
+        ? $"System tz: {system ?? "unknown"} - differs; GeoIP will correct it"
+        : $"System tz: {system ?? "unknown"} - already matches");
+    if (!viaProxy)
+        Console.WriteLine("           -> pass --proxy URL to check a proxied launch too");
 }
 
 static async Task CmdUpdate()
@@ -397,7 +441,7 @@ static void PrintHelp()
     Console.WriteLine("  login        Save a license key (or get a free key via GitHub)");
     Console.WriteLine("  logout       Remove the saved license key (revert to free binary)");
     Console.WriteLine("  install      Download the Chromium binary");
-    Console.WriteLine("  info         Environment + binary diagnostics (--quick, --json)");
+    Console.WriteLine("  info         Environment + binary diagnostics (--quick, --proxy URL, --json)");
     Console.WriteLine("  doctor       Alias for info");
     Console.WriteLine("  update       Check for and download a newer binary");
     Console.WriteLine("  clear-cache  Remove all cached binaries");
