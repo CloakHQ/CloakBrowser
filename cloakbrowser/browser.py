@@ -1338,24 +1338,73 @@ _OFFICE_FONT_TELLS = (
 _font_warning_checked = False
 
 
-def _count_fonts_present(tells: tuple[str, ...]) -> int | None:
-    """Count how many tell-tale fonts are installed, via fc-list.
+def _font_family_resolves(family: str, timeout: float = 5.0) -> bool | None:
+    """Whether *family* actually resolves, via ``fc-match``.
 
-    Returns the number present (0..len(tells)), or None if it can't be
-    determined (fc-list missing or errored). Callers must NOT treat None as
-    zero — None means "unknown", 0 means "genuinely none installed".
+    Returns None when it can't be determined (fc-match missing or errored).
+
+    Resolution, not presence in a listing.  ``fc-list`` output was the old
+    signal and it over-counts two ways: it prints file paths as well as family
+    names, so ``/usr/share/fonts/consolas.ttf`` looked like Consolas even when
+    the family failed to resolve; and a substring match makes any longer family
+    satisfy a shorter one, so ``Franklin Gothic`` matched the line for
+    ``Franklin Gothic Medium`` while ``fc-match "Franklin Gothic"`` fell through
+    to NimbusSans.  A family the renderer cannot resolve is a family no
+    font-fingerprinting script will ever detect, so it must not be counted.
     """
     import subprocess
+    if timeout <= 0:
+        return None
     try:
         result = subprocess.run(
-            ["fc-list"], capture_output=True, text=True, timeout=5
+            ["fc-match", "--format=%{family}", family],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
         return None
-    listing = result.stdout.lower()
-    return sum(1 for font in tells if font.lower() in listing)
+    # fc-match always answers with *something* (the default font when it cannot
+    # match), so the returned family has to be compared against what we asked
+    # for. It may carry comma-separated aliases, e.g. "Segoe UI,Segoe UI Light".
+    wanted = family.casefold()
+    returned = [name.strip().casefold() for name in result.stdout.split(",")]
+    # Exact match only: a request for "Segoe UI" must not be satisfied by
+    # "Segoe UI Emoji", which is a different family with different metrics and
+    # is commonly present on its own.
+    return wanted in returned
+
+
+# One fc-match per family, so the ceiling has to bound the WHOLE probe. A
+# per-call timeout would multiply by the number of families and a wedged
+# fontconfig could stall a launch for 8x that.
+_FONT_PROBE_TIMEOUT_SECONDS = 5.0
+
+
+def _count_fonts_present(tells: tuple[str, ...]) -> int | None:
+    """Count how many tell-tale font families actually resolve.
+
+    Returns the number present (0..len(tells)), or None if it can't be
+    determined (fc-match missing, errored, or the probe ran out of time).
+    Callers must NOT treat None as zero — None means "unknown", 0 means
+    "genuinely none installed".
+    """
+    import time
+
+    deadline = time.monotonic() + _FONT_PROBE_TIMEOUT_SECONDS
+    resolved: list[bool | None] = []
+    for family in tells:
+        resolved.append(
+            _font_family_resolves(family, timeout=max(deadline - time.monotonic(), 0.0))
+        )
+    if any(state is None for state in resolved):
+        # A partial answer cannot be reported as a count: an unresolved family is
+        # indistinguishable from a missing one, and under-reporting would nag
+        # about fonts that are actually installed.
+        return None
+    return sum(1 for state in resolved if state)
 
 
 def _windows_fonts_present() -> bool | None:

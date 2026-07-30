@@ -48,23 +48,61 @@ export const OFFICE_FONT_TELLS = [
 let fontWarningChecked = false;
 
 /**
- * Count how many tell-tale fonts are installed, via fc-list.
+ * Whether `family` actually resolves, via `fc-match`. Null when undeterminable.
  *
- * Returns the number present (0..tells.length), or null if it can't be
- * determined (fc-list missing or errored). Callers must NOT treat null as
- * zero — null means "unknown", 0 means "genuinely none installed".
+ * Resolution, not presence in a listing. `fc-list` output was the old signal and
+ * it over-counts two ways: it prints file paths as well as family names, so
+ * `/usr/share/fonts/consolas.ttf` looked like Consolas even when the family
+ * failed to resolve; and a substring match makes any longer family satisfy a
+ * shorter one, so "Franklin Gothic" matched the line for "Franklin Gothic
+ * Medium" while `fc-match "Franklin Gothic"` fell through to NimbusSans. A
+ * family the renderer cannot resolve is one no font-fingerprinting script will
+ * ever detect, so it must not be counted.
  */
-export function countFontsPresent(tells: string[]): number | null {
-  let listing: string;
+export function fontFamilyResolves(family: string, timeoutMs = 5000): boolean | null {
+  if (timeoutMs <= 0) return null;
+  let out: string;
   try {
-    // maxBuffer 16 MB: a host with a large font set can produce an fc-list
-    // listing well over Node's 1 MB default, which would otherwise throw and
-    // skip the warning (Python/.NET have no such cap).
-    listing = execFileSync("fc-list", { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024 }).toLowerCase();
+    out = execFileSync("fc-match", ["--format=%{family}", family], {
+      encoding: "utf8",
+      timeout: timeoutMs,
+    });
   } catch {
     return null;
   }
-  return tells.filter((f) => listing.includes(f.toLowerCase())).length;
+  // fc-match always answers with *something* (the default font when it cannot
+  // match), so the returned family has to be compared against what we asked for.
+  // It may carry comma-separated aliases, e.g. "Segoe UI,Segoe UI Light".
+  const wanted = family.toLowerCase();
+  // Exact match only: a request for "Segoe UI" must not be satisfied by "Segoe
+  // UI Emoji", a different family with different metrics that is commonly
+  // present on its own.
+  return out.split(",").some((name) => name.trim().toLowerCase() === wanted);
+}
+
+// One fc-match per family, so the ceiling has to bound the WHOLE probe. A
+// per-call timeout would multiply by the number of families and a wedged
+// fontconfig could stall a launch for 8x that.
+const FONT_PROBE_TIMEOUT_MS = 5000;
+
+/**
+ * Count how many tell-tale font families actually resolve.
+ *
+ * Returns the number present (0..tells.length), or null if it can't be
+ * determined (fc-match missing, errored, or the probe ran out of time).
+ * Callers must NOT treat null as zero — null means "unknown", 0 means
+ * "genuinely none installed".
+ */
+export function countFontsPresent(tells: string[]): number | null {
+  const deadline = Date.now() + FONT_PROBE_TIMEOUT_MS;
+  const resolved = tells.map((family) =>
+    fontFamilyResolves(family, Math.max(deadline - Date.now(), 0)),
+  );
+  // A partial answer cannot be reported as a count: an unresolved family is
+  // indistinguishable from a missing one, and under-reporting would nag about
+  // fonts that are actually installed.
+  if (resolved.some((state) => state === null)) return null;
+  return resolved.filter(Boolean).length;
 }
 
 /**

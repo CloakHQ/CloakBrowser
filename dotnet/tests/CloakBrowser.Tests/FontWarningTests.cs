@@ -59,7 +59,7 @@ public class WelcomeCadenceTests
 }
 
 /// <summary>
-/// Linux Windows-font mismatch warning. Platform detection and fc-list aren't
+/// Linux Windows-font mismatch warning. Platform detection and fc-match aren't
 /// mockable without a DI refactor, so these cover the deterministic paths: the
 /// non-windows short-circuit (returns before any probe on every OS) and the
 /// once-per-process guard. Serialized: mutates a static flag + CLOAKBROWSER_CACHE_DIR.
@@ -93,15 +93,17 @@ public class FontWarningTests
     }
 
     [Fact]
-    public void WindowsFontsPresent_returns_within_timeout_when_fc_list_hangs()
+    public void WindowsFontsPresent_returns_within_timeout_when_fc_match_hangs()
     {
-        // Issue 1 regression guard: a hanging fc-list must not stall the probe past
-        // the 5s ceiling. Shim a sleeping "fc-list" on PATH (POSIX hosts only).
+        // Issue 1 regression guard: a hanging fc-match must not stall the probe past
+        // the 5s ceiling. Shim a sleeping "fc-match" on PATH (POSIX hosts only).
+        // The ceiling covers the WHOLE probe, not each of the 8 families, so this
+        // also guards against the per-call timeout multiplying by the family count.
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
 
         var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         Directory.CreateDirectory(dir);
-        var shim = Path.Combine(dir, "fc-list");
+        var shim = Path.Combine(dir, "fc-match");
         File.WriteAllText(shim, "#!/bin/sh\nsleep 30\n");
         using (var chmod = Process.Start(new ProcessStartInfo("chmod", $"+x \"{shim}\"") { UseShellExecute = false }))
         {
@@ -117,7 +119,7 @@ public class FontWarningTests
             sw.Stop();
             Assert.Null(result); // timed out -> undeterminable, never "no fonts"
             Assert.True(sw.Elapsed.TotalSeconds < 8,
-                $"probe took {sw.Elapsed.TotalSeconds:F1}s; the 5s timeout did not bound it");
+                $"probe took {sw.Elapsed.TotalSeconds:F1}s; the 5s total budget did not bound it");
         }
         finally
         {

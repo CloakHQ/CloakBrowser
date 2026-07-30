@@ -461,13 +461,22 @@ public static class CloakLauncher
     internal static bool _fontWarningChecked;
 
     /// <summary>
-    /// Count how many tell-tale fonts are installed, via fc-list. Returns the
-    /// number present (0..tells.Length), or null if it can't be determined
-    /// (fc-list missing or errored). Callers must NOT treat null as zero — null
-    /// means "unknown", 0 means "genuinely none installed".
+    /// Whether <paramref name="family"/> actually resolves, via <c>fc-match</c>.
+    /// Null when it can't be determined (fc-match missing or errored).
     /// </summary>
-    internal static int? CountFontsPresent(string[] tells)
+    /// <remarks>
+    /// Resolution, not presence in a listing. <c>fc-list</c> output was the old
+    /// signal and it over-counts two ways: it prints file paths as well as family
+    /// names, so <c>/usr/share/fonts/consolas.ttf</c> looked like Consolas even
+    /// when the family failed to resolve; and a substring match makes any longer
+    /// family satisfy a shorter one, so "Franklin Gothic" matched the line for
+    /// "Franklin Gothic Medium" while <c>fc-match "Franklin Gothic"</c> fell
+    /// through to NimbusSans. A family the renderer cannot resolve is one no
+    /// font-fingerprinting script will ever detect, so it must not be counted.
+    /// </remarks>
+    internal static bool? FontFamilyResolves(string family, int timeoutMs = 5000)
     {
+        if (timeoutMs <= 0) return null;
         string output;
         try
         {
@@ -475,7 +484,8 @@ public static class CloakLauncher
             {
                 StartInfo = new ProcessStartInfo
                 {
-                    FileName = "fc-list",
+                    FileName = "fc-match",
+                    ArgumentList = { "--format=%{family}", family },
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
@@ -487,7 +497,7 @@ public static class CloakLauncher
             // (a synchronous ReadToEnd would run unbounded before WaitForExit).
             var stdoutTask = proc.StandardOutput.ReadToEndAsync();
             _ = proc.StandardError.ReadToEndAsync();
-            if (!proc.WaitForExit(5000))
+            if (!proc.WaitForExit(timeoutMs))
             {
                 try { proc.Kill(); } catch { /* best-effort */ }
                 return null;
@@ -502,8 +512,43 @@ public static class CloakLauncher
         {
             return null;
         }
-        var listing = output.ToLowerInvariant();
-        return tells.Count(f => listing.Contains(f.ToLowerInvariant()));
+        // fc-match always answers with *something* (the default font when it
+        // cannot match), so the returned family has to be compared against what we
+        // asked for. It may carry comma-separated aliases, e.g.
+        // "Segoe UI,Segoe UI Light". Exact match only: a request for "Segoe UI"
+        // must not be satisfied by "Segoe UI Emoji", a different family with
+        // different metrics that is commonly present on its own.
+        return output
+            .Split(',')
+            .Any(name => string.Equals(name.Trim(), family, StringComparison.OrdinalIgnoreCase));
+    }
+
+    // One fc-match per family, so the ceiling has to bound the WHOLE probe. A
+    // per-call timeout would multiply by the number of families and a wedged
+    // fontconfig could stall a launch for 8x that.
+    private const int FontProbeTimeoutMs = 5000;
+
+    /// <summary>
+    /// Count how many tell-tale font families actually resolve. Returns the
+    /// number present (0..tells.Length), or null if it can't be determined
+    /// (fc-match missing, errored, or the probe ran out of time). Callers must
+    /// NOT treat null as zero — null means "unknown", 0 means "genuinely none
+    /// installed".
+    /// </summary>
+    internal static int? CountFontsPresent(string[] tells)
+    {
+        var sw = Stopwatch.StartNew();
+        var resolved = new List<bool?>(tells.Length);
+        foreach (var family in tells)
+        {
+            int remaining = FontProbeTimeoutMs - (int)sw.ElapsedMilliseconds;
+            resolved.Add(FontFamilyResolves(family, Math.Max(remaining, 0)));
+        }
+        // A partial answer cannot be reported as a count: an unresolved family is
+        // indistinguishable from a missing one, and under-reporting would nag
+        // about fonts that are actually installed.
+        if (resolved.Any(state => state is null)) return null;
+        return resolved.Count(state => state is true);
     }
 
     /// <summary>
