@@ -14,3 +14,13 @@ import path from "node:path";
 const cacheDir = path.join(os.tmpdir(), "cloakbrowser-test-cache");
 fs.mkdirSync(cacheDir, { recursive: true });
 process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+
+/**
+ * Keep GeoIP off the network for the whole suite.
+ *
+ * geoip defaults to on, so any test that builds launch options without mocking
+ * the resolver would hit the IP echo services and, on a cold cache dir, block on
+ * the ~70 MB GeoLite2 download. tests/geoip.test.ts exercises resolution itself
+ * and opts back in by deleting this variable.
+ */
+process.env.CLOAKBROWSER_GEOIP = "0";

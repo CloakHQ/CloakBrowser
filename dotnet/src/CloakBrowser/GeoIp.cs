@@ -26,6 +26,19 @@ public static class GeoIp
     private const double DefaultGeoIpTimeoutSeconds = 5.0;
     private const string GeoIpTimeoutEnv = "CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS";
 
+    // Dedicated off switch. GeoIP is on by default, so an environment that cannot
+    // reach the echo services or the DB mirror needs a way out that does not involve
+    // editing call sites. It must be its own variable: GeoIpTimeoutEnv=0 means "no
+    // deadline", not "off", so reaching for that to disable GeoIP does the opposite.
+    private const string GeoIpEnabledEnv = "CLOAKBROWSER_GEOIP";
+
+    /// <summary>True when <c>CLOAKBROWSER_GEOIP</c> is set to a falsey value.</summary>
+    public static bool DisabledByEnv()
+    {
+        string raw = (Environment.GetEnvironmentVariable(GeoIpEnabledEnv) ?? "").Trim().ToLowerInvariant();
+        return raw is "0" or "false" or "no" or "off";
+    }
+
     // IP echo services - fast, no auth, return just the IP.
     private static readonly string[] IpEchoUrls =
     {

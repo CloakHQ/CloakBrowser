@@ -1,9 +1,9 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { COUNTRY_LOCALE_MAP, maybeResolveGeoip, resolveProxyGeo, resolveProxyIp } from "../src/geoip.js";
+import { COUNTRY_LOCALE_MAP, geoipEnabled, maybeResolveGeoip, resolveProxyGeo, resolveProxyIp } from "../src/geoip.js";
 import Stream from "node:stream";
 
 const tempDirs: string[] = [];
@@ -53,6 +53,16 @@ describe("resolveProxyIp", () => {
 });
 
 describe("maybeResolveGeoip", () => {
+  // tests/setup.ts sets CLOAKBROWSER_GEOIP=0 to keep the rest of the suite off
+  // the network now that geoip defaults on. These tests are the resolution
+  // tests, so they opt back in.
+  beforeEach(() => {
+    delete process.env.CLOAKBROWSER_GEOIP;
+  });
+  afterEach(() => {
+    process.env.CLOAKBROWSER_GEOIP = "0";
+  });
+
   it("forwards separate HTTP proxy credentials to CONNECT requests", async () => {
     const authorizationHeaders: Array<string | undefined> = [];
     const sockets = new Set<Stream.Duplex>();
@@ -253,4 +263,42 @@ describe("COUNTRY_LOCALE_MAP", () => {
       expect(parts[1]).toMatch(/^[A-Z]{2}$/);
     }
   });
+});
+
+describe("geoipEnabled — geoip is on by default", () => {
+  const saved = process.env.CLOAKBROWSER_GEOIP;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CLOAKBROWSER_GEOIP;
+    else process.env.CLOAKBROWSER_GEOIP = saved;
+  });
+
+  it("treats undefined as enabled", () => {
+    delete process.env.CLOAKBROWSER_GEOIP;
+    // `geoip?: boolean` means undefined is the value a caller passing nothing
+    // produces — it must read as ON, which is the whole default flip.
+    expect(geoipEnabled(undefined)).toBe(true);
+    expect(geoipEnabled(true)).toBe(true);
+  });
+
+  it("honors an explicit false over the default", () => {
+    delete process.env.CLOAKBROWSER_GEOIP;
+    expect(geoipEnabled(false)).toBe(false);
+  });
+
+  it.each(["0", "false", "FALSE", "no", "off", " off "])(
+    "CLOAKBROWSER_GEOIP=%s disables geoip",
+    (value) => {
+      process.env.CLOAKBROWSER_GEOIP = value;
+      expect(geoipEnabled(undefined)).toBe(false);
+      expect(geoipEnabled(true)).toBe(false);
+    },
+  );
+
+  it.each(["1", "true", "yes", "on", ""])(
+    "CLOAKBROWSER_GEOIP=%s leaves geoip on",
+    (value) => {
+      process.env.CLOAKBROWSER_GEOIP = value;
+      expect(geoipEnabled(undefined)).toBe(true);
+    },
+  );
 });

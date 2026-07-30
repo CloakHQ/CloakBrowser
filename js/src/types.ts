@@ -25,7 +25,11 @@ export interface LaunchOptions {
   timezone?: string;
   /** BCP 47 locale, e.g. "en-US". Sets --lang binary flag. */
   locale?: string;
-  /** Auto-detect timezone/locale from proxy IP (requires: npm install mmdb-lib). */
+  /**
+   * Auto-detect timezone/locale from the egress IP. On by default — set `false`
+   * to skip it, or set CLOAKBROWSER_GEOIP=0. Downloads the ~70 MB GeoLite2-City
+   * database on first use.
+   */
   geoip?: boolean;
   /** Pro license key. Also reads from CLOAKBROWSER_LICENSE_KEY env var. */
   licenseKey?: string;

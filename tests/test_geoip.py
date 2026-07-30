@@ -259,6 +259,7 @@ def test_maybe_resolve_param_beats_raw_flag():
     assert loc == "de-DE"
 
 
+@pytest.mark.real_geoip
 def test_maybe_resolve_geoip_timeout_returns_existing_values(monkeypatch):
     """A stalled proxy lookup should not block launch indefinitely."""
     mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()
@@ -329,6 +330,7 @@ def test_download_overwrites_existing_db(tmp_path):
     assert dest.read_bytes() == b"new"
 
 
+@pytest.mark.real_geoip
 def test_ensure_db_downloads_once_under_concurrency(tmp_path):
     """Concurrent first-use launches must trigger only one download."""
     from cloakbrowser import geoip
@@ -359,3 +361,69 @@ def test_ensure_db_downloads_once_under_concurrency(tmp_path):
 
     assert len(calls) == 1  # only one thread actually downloaded
     assert all(r == dest for r in results)
+
+
+# ---------------------------------------------------------------------------
+# geoip is on by default
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "func_name",
+    [
+        "launch",
+        "launch_async",
+        "launch_context",
+        "launch_context_async",
+        "launch_persistent_context",
+        "launch_persistent_context_async",
+    ],
+)
+def test_geoip_defaults_to_true_on_every_entry_point(func_name):
+    """Every launch entry point must default geoip on, not just launch().
+
+    Six separate signatures carry this default; a new one is easy to add and
+    easy to forget, which is exactly how a user ends up on a UTC clock behind
+    a foreign exit IP.
+    """
+    import inspect
+
+    from cloakbrowser import browser as browser_mod
+
+    sig = inspect.signature(getattr(browser_mod, func_name))
+    assert sig.parameters["geoip"].default is True, f"{func_name} does not default geoip on"
+
+
+def test_geoip_explicit_false_skips_resolution():
+    """geoip=False must win over the new default."""
+    with patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip") as m:
+        tz, loc, ip = maybe_resolve_geoip(False, "http://proxy:8080", None, None)
+    m.assert_not_called()
+    assert (tz, loc, ip) == (None, None, None)
+
+
+@pytest.mark.parametrize("value", ["0", "false", "FALSE", "no", "off", " off "])
+def test_cloakbrowser_geoip_env_disables_resolution(monkeypatch, value):
+    """CLOAKBROWSER_GEOIP=<falsey> is the escape hatch for offline environments.
+
+    It has to be its own variable: CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS=0 means
+    "no deadline", not "off", so users reaching for that to disable GeoIP get
+    the opposite of what they want.
+    """
+    monkeypatch.setenv("CLOAKBROWSER_GEOIP", value)
+    with patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip") as m:
+        tz, loc, ip = maybe_resolve_geoip(True, "http://proxy:8080", None, None)
+    m.assert_not_called()
+    assert (tz, loc, ip) == (None, None, None)
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", ""])
+def test_cloakbrowser_geoip_env_truthy_leaves_geoip_on(monkeypatch, value):
+    """Only falsey values disable; anything else must not silently switch it off."""
+    monkeypatch.setenv("CLOAKBROWSER_GEOIP", value)
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = maybe_resolve_geoip(True, "http://proxy:8080", None, None)
+    assert (tz, loc, ip) == ("Europe/Berlin", "de-DE", "5.6.7.8")

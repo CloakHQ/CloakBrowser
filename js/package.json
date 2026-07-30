@@ -58,7 +58,6 @@
     "node": ">=20.0.0"
   },
   "peerDependencies": {
-    "mmdb-lib": ">=2.0.0",
     "playwright-core": ">=1.53.0",
     "puppeteer-core": ">=21.0.0",
     "socks-proxy-agent": ">=10.0.0"
@@ -70,14 +69,12 @@
     "puppeteer-core": {
       "optional": true
     },
-    "mmdb-lib": {
-      "optional": true
-    },
     "socks-proxy-agent": {
       "optional": true
     }
   },
   "dependencies": {
+    "mmdb-lib": ">=2.0.0",
     "tar": "^7.0.0"
   },
   "devDependencies": {

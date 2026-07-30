@@ -219,3 +219,82 @@ public class MouseMathTests
         }
     }
 }
+
+/// <summary>
+/// GeoIP is on by default. Mutates CLOAKBROWSER_GEOIP, so it must be serialized.
+/// </summary>
+[Collection("env-serial")]
+public class GeoIpDefaultTests
+{
+    [Fact]
+    public void GeoIp_DefaultsToTrue_OnLaunchOptions()
+    {
+        // LaunchContextOptions/LaunchPersistentContextOptions derive from
+        // LaunchOptions, so the property initializer covers all of them.
+        Assert.True(new LaunchOptions().GeoIp);
+        Assert.True(new LaunchContextOptions().GeoIp);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("false")]
+    [InlineData("FALSE")]
+    [InlineData("no")]
+    [InlineData("off")]
+    [InlineData(" off ")]
+    public void DisabledByEnv_TreatsFalseyValuesAsOff(string value)
+    {
+        string? saved = Environment.GetEnvironmentVariable("CLOAKBROWSER_GEOIP");
+        try
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_GEOIP", value);
+            Assert.True(GeoIp.DisabledByEnv());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_GEOIP", saved);
+        }
+    }
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("true")]
+    [InlineData("yes")]
+    [InlineData("on")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void DisabledByEnv_LeavesGeoIpOnOtherwise(string? value)
+    {
+        string? saved = Environment.GetEnvironmentVariable("CLOAKBROWSER_GEOIP");
+        try
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_GEOIP", value);
+            Assert.False(GeoIp.DisabledByEnv());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_GEOIP", saved);
+        }
+    }
+
+    [Fact]
+    public async Task MaybeResolveGeoIp_EnvSwitch_SkipsResolutionEvenWhenEnabled()
+    {
+        // The escape hatch for offline environments: it has to be its own variable,
+        // because CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS=0 means "no deadline", not "off".
+        string? saved = Environment.GetEnvironmentVariable("CLOAKBROWSER_GEOIP");
+        try
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_GEOIP", "0");
+            var (tz, loc, ip) = await CloakLauncher.MaybeResolveGeoIpAsync(
+                geoip: true, proxy: "http://proxy:8080", timezone: null, locale: null);
+            Assert.Null(tz);
+            Assert.Null(loc);
+            Assert.Null(ip);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_GEOIP", saved);
+        }
+    }
+}

@@ -52,10 +52,15 @@ dependencies = [
     "playwright>=1.40",
     "httpx>=0.24",
     "cryptography>=41.0",  # verify Ed25519 signature on SHA256SUMS before trusting it
+    "geoip2>=4.0",  # geoip is on by default, so its reader ships with the wrapper
+    "socksio>=1.0",  # SOCKS5 transport for httpx (exit-IP lookup through a SOCKS proxy)
 ]
 
 [project.optional-dependencies]
-geoip = ["geoip2>=4.0", "socksio>=1.0"]  # socksio: SOCKS5 transport for httpx
+# Kept as a no-op alias: geoip2/socksio moved into the base dependencies when
+# geoip became the default, but `pip install 'cloakbrowser[geoip]'` is pinned in
+# user CI and older docs, so the extra must keep resolving.
+geoip = []
 serve = ["aiohttp>=3.9", "websockets>=12.0"]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.23"]
 
@@ -74,4 +79,7 @@ path = "cloakbrowser/_version.py"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-markers = ["slow: marks tests that hit live detection sites (deselect with '-m \"not slow\"')"]
+markers = [
+    "slow: marks tests that hit live detection sites (deselect with '-m \"not slow\"')",
+    "real_geoip: opts out of the conftest GeoIP egress stub (the test exercises those seams itself)",
+]

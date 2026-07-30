@@ -171,7 +171,7 @@ def launch(
     stealth_args: bool = True,
     timezone: str | None = None,
     locale: str | None = None,
-    geoip: bool = False,
+    geoip: bool = True,
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
@@ -196,10 +196,10 @@ def launch(
             Set to False if you want to pass your own --fingerprint flags.
         timezone: IANA timezone (e.g. 'America/New_York'). Sets --fingerprint-timezone binary flag.
         locale: BCP 47 locale (e.g. 'en-US'). Sets --lang binary flag.
-        geoip: Auto-detect timezone/locale from proxy IP (default False).
-            Requires ``pip install cloakbrowser[geoip]``. Downloads ~70 MB
-            GeoLite2-City database on first use.  Explicit timezone/locale
-            always override geoip results.
+        geoip: Auto-detect timezone/locale from the egress IP (default True).
+            Pass ``geoip=False`` to skip it, or set ``CLOAKBROWSER_GEOIP=0``.
+            Downloads the ~70 MB GeoLite2-City database on first use.  Explicit
+            timezone/locale always override geoip results.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
@@ -293,7 +293,7 @@ async def launch_async(  # noqa: C901
     stealth_args: bool = True,
     timezone: str | None = None,
     locale: str | None = None,
-    geoip: bool = False,
+    geoip: bool = True,
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
@@ -314,7 +314,8 @@ async def launch_async(  # noqa: C901
         stealth_args: Include default stealth fingerprint args (default True).
         timezone: IANA timezone (e.g. 'America/New_York'). Sets --fingerprint-timezone binary flag.
         locale: BCP 47 locale (e.g. 'en-US'). Sets --lang binary flag.
-        geoip: Auto-detect timezone/locale from proxy IP (default False).
+        geoip: Auto-detect timezone/locale from the egress IP (default True).
+            Pass ``geoip=False`` to skip it, or set ``CLOAKBROWSER_GEOIP=0``.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
@@ -414,7 +415,7 @@ def launch_persistent_context(
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
-    geoip: bool = False,
+    geoip: bool = True,
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
@@ -446,8 +447,8 @@ def launch_persistent_context(
         timezone: IANA timezone (e.g. 'America/New_York').
         color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
             Default: None (uses Chromium default, which is 'light').
-        geoip: Auto-detect timezone/locale from proxy IP (default False).
-            Requires ``pip install cloakbrowser[geoip]``.
+        geoip: Auto-detect timezone/locale from the egress IP (default True).
+            Pass ``geoip=False`` to skip it, or set ``CLOAKBROWSER_GEOIP=0``.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
@@ -563,7 +564,7 @@ async def launch_persistent_context_async(
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
-    geoip: bool = False,
+    geoip: bool = True,
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
@@ -593,7 +594,8 @@ async def launch_persistent_context_async(
         locale: Browser locale, e.g. "en-US".
         timezone: IANA timezone (e.g. 'America/New_York').
         color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
-        geoip: Auto-detect timezone/locale from proxy IP (default False).
+        geoip: Auto-detect timezone/locale from the egress IP (default True).
+            Pass ``geoip=False`` to skip it, or set ``CLOAKBROWSER_GEOIP=0``.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
@@ -713,7 +715,7 @@ def launch_context(
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
-    geoip: bool = False,
+    geoip: bool = True,
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
@@ -741,7 +743,8 @@ def launch_context(
         timezone: IANA timezone (e.g. 'America/New_York').
         color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
             Default: None (uses Chromium default, which is 'light').
-        geoip: Auto-detect timezone/locale from proxy IP (default False).
+        geoip: Auto-detect timezone/locale from the egress IP (default True).
+            Pass ``geoip=False`` to skip it, or set ``CLOAKBROWSER_GEOIP=0``.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
@@ -766,6 +769,9 @@ def launch_context(
                      timezone=timezone, locale=locale, extension_paths=extension_paths,
                      license_key=license_key, browser_version=browser_version,
                      release_channel=release_channel,
+                     # geoip already resolved above; geoip defaults to True, so
+                     # without this the inner launch would resolve a second time.
+                     geoip=False,
                      # Caller chose a viewport geometry → don't also auto-maximize
                      # the window (mirrors the persistent-context path + JS).
                      _suppress_maximize=(viewport is not _VIEWPORT_UNSET or "no_viewport" in kwargs))
@@ -820,7 +826,7 @@ async def launch_context_async(
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
-    geoip: bool = False,
+    geoip: bool = True,
     humanize: bool = False,
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
@@ -849,7 +855,8 @@ async def launch_context_async(
         locale: Browser locale, e.g. "en-US".
         timezone: IANA timezone (e.g. 'America/New_York').
         color_scheme: Color scheme preference — 'light', 'dark', or 'no-preference'.
-        geoip: Auto-detect timezone/locale from proxy IP (default False).
+        geoip: Auto-detect timezone/locale from the egress IP (default True).
+            Pass ``geoip=False`` to skip it, or set ``CLOAKBROWSER_GEOIP=0``.
         humanize: Enable human-like mouse, keyboard, scroll behavior (default False).
         human_preset: Humanize preset — 'default' or 'careful' (default 'default').
         human_config: Custom humanize config mapping to override preset values.
@@ -892,6 +899,9 @@ async def launch_context_async(
                                  timezone=timezone, locale=locale, extension_paths=extension_paths,
                                  license_key=license_key, browser_version=browser_version,
                                  release_channel=release_channel,
+                                 # geoip already resolved above; geoip defaults to True, so
+                                 # without this the inner launch would resolve a second time.
+                                 geoip=False,
                                  # Caller chose a viewport geometry → don't also auto-maximize
                                  # the window (mirrors the persistent-context path + JS).
                                  _suppress_maximize=(viewport is not _VIEWPORT_UNSET or "no_viewport" in kwargs))
@@ -1099,8 +1109,21 @@ def maybe_resolve_geoip(
     ``--lang``, ``--fingerprint-locale``) counts as explicit: it is promoted to
     the param so geoip leaves it alone, mirroring the ``timezone=``/``locale=``
     override path.
+
+    ``CLOAKBROWSER_GEOIP=0`` disables geoip wholesale.  Every launch path routes
+    through here, so this is the one place the switch has to be honored.
     """
     if not geoip:
+        return timezone, locale, None
+
+    from .geoip import (
+        geoip_disabled_by_env,
+        resolve_proxy_exit_ip,
+        resolve_proxy_geo_with_ip,
+    )
+
+    if geoip_disabled_by_env():
+        logger.debug("CLOAKBROWSER_GEOIP disables GeoIP; skipping resolution")
         return timezone, locale, None
 
     # Promote raw flags to explicit params so geoip doesn't clobber them.
@@ -1108,8 +1131,6 @@ def maybe_resolve_geoip(
         timezone = _get_flag_value(args, "--fingerprint-timezone")
     if locale is None:
         locale = _get_flag_value(args, "--lang", "--fingerprint-locale")
-
-    from .geoip import resolve_proxy_exit_ip, resolve_proxy_geo_with_ip
 
     # None when no proxy → echo services resolve the machine's own public IP
     proxy_url = _extract_proxy_url(proxy) if proxy else None

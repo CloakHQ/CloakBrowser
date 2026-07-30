@@ -249,7 +249,9 @@ public static class CloakLauncher
     public static async Task<(string? Timezone, string? Locale, string? ExitIp)> MaybeResolveGeoIpAsync(
         bool geoip, object? proxy, string? timezone, string? locale, List<string>? args = null)
     {
-        if (!geoip)
+        // CLOAKBROWSER_GEOIP=0 disables geoip wholesale. Every launch path routes
+        // through here, so this is the one place the switch has to be honored.
+        if (!geoip || GeoIp.DisabledByEnv())
             return (timezone, locale, null);
 
         // Promote raw flags to explicit values so geoip doesn't clobber them.

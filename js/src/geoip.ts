@@ -130,6 +130,21 @@ export async function resolveProxyGeo(
   }
 }
 
+/**
+ * Whether geoip should run for this launch.
+ *
+ * Defaults to on: `undefined` means enabled, only an explicit `false` opts out.
+ * `CLOAKBROWSER_GEOIP=0` disables it wholesale — it has to be its own variable,
+ * because CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS=0 means "no deadline", not "off",
+ * so reaching for that to disable geoip does the opposite.
+ */
+export function geoipEnabled(geoip: boolean | undefined): boolean {
+  if (geoip === false) return false;
+  const raw = (process.env.CLOAKBROWSER_GEOIP ?? "").trim().toLowerCase();
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "off") return false;
+  return true;
+}
+
 function getGeoipTimeoutMs(): number {
   const raw = process.env.CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS;
   if (!raw) return DEFAULT_GEOIP_TIMEOUT_MS;
@@ -451,7 +466,9 @@ function getFlagValue(args: string[] | undefined, ...keys: string[]): string | u
 export async function maybeResolveGeoip(
   options: LaunchOptions
 ): Promise<{ timezone?: string; locale?: string; exitIp?: string }> {
-  if (!options.geoip) return { timezone: options.timezone, locale: options.locale };
+  if (!geoipEnabled(options.geoip)) {
+    return { timezone: options.timezone, locale: options.locale };
+  }
 
   // Promote raw flags to explicit values so geoip doesn't clobber them.
   const timezone = options.timezone ?? getFlagValue(options.args, "--fingerprint-timezone");

@@ -26,8 +26,12 @@ public class LaunchOptions
     /// <summary>BCP 47 locale, e.g. <c>en-US</c> - sets <c>--lang</c> and <c>--fingerprint-locale</c>.</summary>
     public string? Locale { get; set; }
 
-    /// <summary>Auto-detect timezone/locale (and WebRTC exit IP) from the proxy IP (default false).</summary>
-    public bool GeoIp { get; set; }
+    /// <summary>
+    /// Auto-detect timezone/locale (and WebRTC exit IP) from the egress IP (default true).
+    /// Set <c>false</c> to skip it, or set <c>CLOAKBROWSER_GEOIP=0</c>. Downloads the
+    /// ~70 MB GeoLite2-City database on first use.
+    /// </summary>
+    public bool GeoIp { get; set; } = true;
 
     /// <summary>Enable the human-like behavior layer when creating pages via <see cref="CloakBrowserHandle"/>.</summary>
     public bool Humanize { get; set; }

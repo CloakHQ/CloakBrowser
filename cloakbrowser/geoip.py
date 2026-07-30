@@ -32,6 +32,18 @@ GEOIP_UPDATE_INTERVAL = 30 * 86_400  # 30 days
 DEFAULT_GEOIP_TIMEOUT_SECONDS = 5.0
 GEOIP_TIMEOUT_ENV = "CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS"
 
+# Dedicated off switch. GeoIP is on by default, so an environment that cannot
+# reach the echo services or the DB mirror needs a way out that does not involve
+# editing call sites. It must be its own variable: GEOIP_TIMEOUT_ENV=0 means "no
+# deadline", not "off", so reaching for that to disable GeoIP does the opposite.
+GEOIP_ENABLED_ENV = "CLOAKBROWSER_GEOIP"
+_GEOIP_OFF_VALUES = frozenset({"0", "false", "no", "off"})
+
+
+def geoip_disabled_by_env() -> bool:
+    """True when ``CLOAKBROWSER_GEOIP`` is set to a falsey value."""
+    return os.getenv(GEOIP_ENABLED_ENV, "").strip().lower() in _GEOIP_OFF_VALUES
+
 # Serializes GeoIP DB downloads within a process so N concurrent launches
 # don't each fetch the same ~70 MB file (issue #458). Per-process only.
 _GEOIP_DOWNLOAD_LOCK = threading.Lock()
