@@ -49,10 +49,10 @@ await browser.close();
 ```javascript
 const browser = await launch({
     proxy: 'http://user:pass@residential-proxy:port',
-    geoip: true,       // match timezone + locale to proxy IP
     headless: false,    // some sites detect headless even with C++ patches
     humanize: true,     // human-like mouse, keyboard, scroll
 });
+// Timezone and locale already match the proxy's exit IP — that's the default.
 ```
 
 See the [main README](https://github.com/CloakHQ/CloakBrowser#troubleshooting) for site-specific troubleshooting (FingerprintJS, Kasada, reCAPTCHA).
@@ -112,10 +112,10 @@ const browser = await launch({
   releaseChannel: 'preview',
 });
 
-// Auto-detect timezone/locale from proxy IP (requires: npm install mmdb-lib)
+// Timezone/locale come from the exit IP by default — nothing to pass.
+// Opt out with geoip: false (or CLOAKBROWSER_GEOIP=0).
 const browser = await launch({
   proxy: 'http://proxy:8080',
-  geoip: true,
 });
 
 // Browser + context in one call (timezone/locale set via binary flags)
@@ -137,23 +137,25 @@ await page.goto('https://example.com');
 await ctx.close();  // profile saved — reuse same path to restore state
 ```
 
-### Auto Timezone/Locale from Proxy IP
+### Auto Timezone/Locale from the Exit IP
 
-When using a proxy, antibot systems check that your browser's timezone and locale match the proxy's location. Install `mmdb-lib` to enable auto-detection from an offline GeoIP database (~70 MB, downloaded on first use):
-
-```bash
-npm install mmdb-lib
-```
+Antibot systems check that your browser's timezone and locale match your IP's location, so this is **on by default** — resolved from an offline GeoIP database (~70 MB, downloaded on first use). `mmdb-lib` ships as a dependency; there is nothing to install.
 
 ```javascript
-// Auto-detect — timezone and locale set from proxy's IP geolocation
-const browser = await launch({ proxy: 'http://proxy:8080', geoip: true });
-
-// Works with launchContext too
-const context = await launchContext({ proxy: 'http://proxy:8080', geoip: true });
+// Timezone and locale are set from the exit IP automatically
+const browser = await launch({ proxy: 'http://proxy:8080' });
 
 // Explicit values always win over auto-detection
-const browser = await launch({ proxy: 'http://proxy:8080', geoip: true, timezone: 'Europe/London' });
+const browser = await launch({ proxy: 'http://proxy:8080', timezone: 'Europe/London' });
+
+// Opt out (or set CLOAKBROWSER_GEOIP=0)
+const browser = await launch({ proxy: 'http://proxy:8080', geoip: false });
+```
+
+Check what a launch would actually apply — presence of the database does not mean resolution works:
+
+```bash
+npx cloakbrowser info --proxy http://proxy:8080
 ```
 
 > **Note:** For rotating residential proxies, the DNS-resolved IP may differ from the exit IP. Pass explicit `timezone`/`locale` in those cases.

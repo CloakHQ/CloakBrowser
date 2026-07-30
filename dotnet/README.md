@@ -346,7 +346,7 @@ var page = await ctx.NewPageAsync();
 | `HumanPreset` | `HumanPreset` | `Default` | `Default` or `Careful` (slower, more cautious) |
 | `HumanConfig` | `Dictionary<string,object>` | `null` | per-field overrides (snake_case **or** PascalCase keys) |
 | `Proxy` | `string` / `ProxySettings` | `null` | HTTP/HTTPS or SOCKS5 proxy |
-| `GeoIp` | `bool` | `false` | resolve timezone/locale from the proxy exit IP |
+| `GeoIp` | `bool` | `true` | resolve timezone/locale from the egress IP. Set `false`, or `CLOAKBROWSER_GEOIP=0`, to skip it |
 | `Args` | `List<string>` | `[]` | extra Chromium flags (e.g. `--fingerprint-webrtc-ip=auto`) |
 | `Locale` | `string` | `null` | BCP 47 locale -> `--lang`, `--fingerprint-locale` |
 | `Timezone` | `string` | `null` | IANA timezone -> `--fingerprint-timezone` |
@@ -578,7 +578,7 @@ field.
 await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 {
     Proxy = "http://user:pass@proxy.example.com:8080",   // or a ProxySettings
-    GeoIp = true,                                         // tz/locale from exit IP
+    // GeoIp defaults to true — tz/locale already come from the exit IP.
     Args  = new List<string> { "--fingerprint-webrtc-ip=auto" },
 });
 ```
@@ -587,8 +587,11 @@ await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
   `--proxy-server` with inline, URL-encoded credentials (matching the Python
   logic, including the `linux-x64` / `windows-x64` + binary-version gate for HTTP
   inline auth).
-- **GeoIP** looks up the proxy exit IP against MaxMind GeoLite2 and applies the
-  resolved timezone/locale via binary flags.
+- **GeoIP** looks up the egress IP against MaxMind GeoLite2 and applies the
+  resolved timezone/locale via binary flags. On by default, since a timezone that
+  contradicts the exit IP is the single strongest bot signal. Confirm it resolved
+  with `cloakbrowser info --proxy <url>`, which reports the values a launch would
+  actually apply rather than just whether the database is on disk.
 - **WebRTC** spoofing reuses that exit IP so `RTCPeerConnection` cannot leak the
   real address.
 
@@ -624,7 +627,8 @@ Same set as the Python wrapper:
 | `CLOAKBROWSER_SKIP_CHECKSUM` | Skip SHA-256 verification |
 | `CLOAKBROWSER_VERSION` | Pin to an exact Chromium version for rollback (e.g. `148.0.7778.215.2`). Works with Free and Pro binaries |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | Set to `preview` to opt into the Pro Preview binary channel (default: `stable`) |
-| `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | GeoIP HTTP timeout |
+| `CLOAKBROWSER_GEOIP` | Set to `0`/`false`/`no`/`off` to turn GeoIP off entirely. Use this to disable it — `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS=0` means *no deadline*, not off |
+| `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | GeoIP resolution timeout. Does not bound the first-use database download, which has its own budget |
 | `CLOAKBROWSER_WIDEVINE_CDM` / `CLOAKBROWSER_WIDEVINE` | Widevine seeding control |
 
 ---

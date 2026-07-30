@@ -74,7 +74,7 @@ Only `url` is required. Everything else is optional.
 | `proxy` | str / dict | none — `http://user:pass@host:port` or a Playwright proxy dict |
 | `humanize` | bool | `false` — enable human-like mouse / keyboard / scroll |
 | `human_preset` | str | `"default"` or `"careful"` |
-| `geoip` | bool | `false` — auto timezone+locale from proxy IP |
+| `geoip` | bool | `true` — auto timezone+locale from the exit IP (see the cold-start note below) |
 | `timezone` | str | none — IANA tz, e.g. `"America/New_York"` |
 | `locale` | str | none — BCP-47, e.g. `"en-US"` |
 | `viewport` | `{width,height}` | `1920x947` (cloakbrowser default) |
@@ -172,6 +172,21 @@ First invocation in a new container takes ~80–90 s (image extraction, Chromium
 For latency-sensitive use cases: provision concurrency, schedule a CloudWatch/EventBridge warmer ping, or accept the cold tail.
 
 If you see empty/missing dynamic content on cold-start invocations, raise `max_settle_ms` in the event payload (e.g. `25000`) — the default `15000` is tuned for warm runs.
+
+### GeoIP on a cold container
+
+GeoIP is on by default, and it wants a ~70 MB GeoLite2 database. A Lambda container has no warm cache and a hard execution timeout, so the first invocation after a cold start would fetch it inside your budget. Pick one:
+
+- **Bake the database into the image** (recommended). Copy it to the cache directory at build time so no invocation ever downloads it:
+  ```dockerfile
+  ADD https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb \
+      /root/.cloakbrowser/geoip/GeoLite2-City.mmdb
+  ```
+  Note `/tmp` is the only writable path in Lambda, so also set `CLOAKBROWSER_CACHE_DIR` to a baked, readable location, or copy the file into `/tmp` on init.
+- **Pass explicit `timezone` and `locale`** in the event. They win over auto-detection and skip the database entirely.
+- **Set `geoip: false`** (or `CLOAKBROWSER_GEOIP=0`) if you accept a UTC clock. Understand the cost: a timezone that contradicts your proxy's exit IP is the strongest bot signal there is.
+
+A failed download is remembered for 30 minutes, so a blocked container degrades to "no GeoIP" once rather than retrying on every invocation.
 
 ## Security
 

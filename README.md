@@ -79,16 +79,15 @@ Also works with Puppeteer: `import { launch } from 'cloakbrowser/puppeteer'` ([d
 ```python
 browser = launch(
     proxy="http://user:pass@residential-proxy:port",  # residential IP, not datacenter
-    geoip=True,       # match timezone + locale to proxy IP
     headless=False,    # some sites detect headless even with C++ patches
     humanize=True,     # human-like mouse, keyboard, scroll
 )
+# Timezone and locale already match the proxy's exit IP — that's the default.
 ```
 
 ```javascript
 const browser = await launch({
     proxy: 'http://user:pass@residential-proxy:port',
-    geoip: true,
     headless: false,
     humanize: true,
 });
@@ -126,11 +125,7 @@ dotnet add package CloakBrowser
 
 On first run, the stealth Chromium binary is automatically downloaded (~200MB, cached locally).
 
-**Optional:** Auto-detect timezone/locale from proxy IP:
-
-```bash
-pip install 'cloakbrowser[geoip]'
-```
+Timezone/locale auto-detection from the exit IP is included and on by default — no extra install step. (`pip install 'cloakbrowser[geoip]'` still resolves, so pinned installs keep working.)
 
 **Migrating from Playwright?** One-line change:
 
@@ -164,10 +159,10 @@ page.goto("https://example.com")
 - **Native SOCKS5 proxy** — `proxy="socks5://user:pass@host:port"` works directly in all launch functions, Python + JS. QUIC/HTTP3 tunnels through SOCKS5 via UDP ASSOCIATE
 - **Proxy signal removal** — DNS/connect/SSL timing zeroed, proxy cache headers stripped, Proxy-Connection header leak removed
 - **Chromium 146 upgrade** — rebased all patches from 145.0.7632.x to 146.0.7680.177
-- **WebRTC IP spoofing** — `--fingerprint-webrtc-ip=auto` resolves your proxy's exit IP and spoofs WebRTC ICE candidates. Auto-injected when using `geoip=True` (no extra network call)
+- **WebRTC IP spoofing** — `--fingerprint-webrtc-ip=auto` resolves your proxy's exit IP and spoofs WebRTC ICE candidates. Auto-injected by the default GeoIP lookup (no extra network call)
 - **`humanize=True`** — one flag makes all mouse, keyboard, and scroll interactions behave like a real user. Bézier curves, per-character typing, realistic scroll patterns
 - **Stealthy with zero flags** — binary auto-generates a random fingerprint seed at startup. No configuration required
-- **Timezone & locale from proxy IP** — `launch(proxy="...", geoip=True)` auto-detects timezone and locale
+- **Timezone & locale from the exit IP** — on by default: `launch(proxy="...")` already matches them to the proxy's exit. Opt out with `geoip=False`
 - **Persistent profiles** — `launch_persistent_context()` keeps cookies and localStorage across sessions, bypasses incognito detection
 
 See the full [CHANGELOG.md](CHANGELOG.md) for details.
@@ -304,16 +299,19 @@ browser = launch(args=["--disable-gpu"])
 # With timezone and locale (sets binary flags — no detectable CDP emulation)
 browser = launch(timezone="America/New_York", locale="en-US")
 
-# Auto-detect timezone/locale from proxy IP (requires: pip install cloakbrowser[geoip])
+# Timezone/locale are auto-detected from the exit IP by DEFAULT — nothing to pass.
 # Also auto-injects --fingerprint-webrtc-ip to prevent WebRTC IP leaks (no extra cost)
 # Note: makes HTTP calls through your proxy to resolve exit IP (ipify.org, checkip.amazonaws.com)
-browser = launch(proxy="http://proxy:8080", geoip=True)
+browser = launch(proxy="http://proxy:8080")
 
 # Explicit timezone/locale always win over auto-detection
-browser = launch(proxy="http://proxy:8080", geoip=True, timezone="Europe/London")
+browser = launch(proxy="http://proxy:8080", timezone="Europe/London")
 
-# WebRTC IP spoofing only (no geoip dep needed — resolves exit IP via HTTP call through proxy)
-browser = launch(proxy="http://proxy:8080", args=["--fingerprint-webrtc-ip=auto"])
+# Opt out entirely (or set CLOAKBROWSER_GEOIP=0)
+browser = launch(proxy="http://proxy:8080", geoip=False)
+
+# WebRTC IP spoofing without the timezone/locale lookup
+browser = launch(proxy="http://proxy:8080", geoip=False, args=["--fingerprint-webrtc-ip=auto"])
 
 # Explicit WebRTC IP (no network call)
 browser = launch(proxy="http://proxy:8080", args=["--fingerprint-webrtc-ip=1.2.3.4"])
@@ -428,7 +426,7 @@ ctx = launch_persistent_context(
 )
 ```
 
-Supports all the same options as `launch_context()`: `proxy`, `user_agent`, `viewport`, `locale`, `timezone`, `color_scheme`, `geoip`, `extension_paths`.
+Supports all the same options as `launch_context()`: `proxy`, `user_agent`, `viewport`, `locale`, `timezone`, `color_scheme`, `geoip` (on by default), `extension_paths`.
 
 Async version: `launch_persistent_context_async()`.
 
@@ -484,7 +482,7 @@ python -m cloakbrowser clear-cache  # Remove cached binaries
 
 `login` with no argument prompts you to paste a license key or press Enter to get a free key via a GitHub sign-in; `login <key>` saves a key directly. Both validate the key, then store it at `~/.cloakbrowser/license.key` so every launch picks it up.
 
-`info` reports the binary that will actually launch given your license, runs a quick launch test (and flags missing system libraries on Linux), shows your license tier, and checks fonts, GeoIP, and optional dependencies. Add `--quick` to skip the launch test or `--json` for machine-readable output.
+`info` reports the binary that will actually launch given your license, runs a quick launch test (and flags missing system libraries on Linux), shows your license tier, and checks fonts and optional dependencies. It also **resolves GeoIP for real** and prints the timezone and locale a launch would apply, flagging a system clock that contradicts the exit IP. Add `--proxy URL` to check the exit your proxy would produce, `--quick` to skip the launch test and the GeoIP check, or `--json` for machine-readable output.
 
 `CLOAKBROWSER_RELEASE_CHANNEL=preview` also applies to `install`, `info`, and `update`. `info` shows the exact version that will launch and whether Preview resolved to Stable for the current platform.
 
@@ -550,7 +548,7 @@ const ctx = await launchPersistentContext({
 
 > **Note:** Each example above is standalone — not meant to run as one block.
 
-All Python options work in JS: `stealthArgs: false` to disable defaults, `geoip: true` to auto-detect timezone/locale from proxy IP.
+All Python options work in JS: `stealthArgs: false` to disable defaults, `geoip: false` to skip the timezone/locale lookup (it runs by default).
 
 ### Puppeteer
 
@@ -664,7 +662,8 @@ Access the original un-patched Playwright page at `page._original` if you need r
 | `CLOAKBROWSER_DOWNLOAD_URL` | `cloakbrowser.dev` | Custom download URL for binary |
 | `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
 | `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Only applies to a custom `CLOAKBROWSER_DOWNLOAD_URL`: set to `true` to skip its checksum check. Signature verification on the official download path is mandatory and cannot be skipped. |
-| `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | `5` | Max seconds for GeoIP resolution before continuing without it |
+| `CLOAKBROWSER_GEOIP` | *(unset)* | Set to `0`/`false`/`no`/`off` to turn GeoIP off entirely. Use this to disable it — `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS=0` means *no deadline*, not off |
+| `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | `5` | Max seconds for GeoIP resolution before continuing without it. Does not bound the first-use database download, which has its own budget |
 | `CLOAKBROWSER_WIDEVINE_CDM` | — | Path to a sideloaded `WidevineCdm` directory (overrides auto-detection next to the binary). See [Widevine / DRM](#widevine--drm) |
 | `CLOAKBROWSER_WIDEVINE` | `1` | Set to `0` to disable automatic Widevine hint-file seeding for persistent contexts |
 | `CLOAKBROWSER_FETCH_WIDEVINE` | `0` | Docker only: set to `1` to auto-fetch the Widevine CDM on container start (Linux x86-64 only). See [Widevine / DRM](#widevine--drm) |
@@ -729,9 +728,9 @@ Supported by the binary but **not set by default** — pass via `args` to custom
 | `--fingerprint-taskbar-height` | Override taskbar height (binary defaults: Win=48, Mac=95, Linux=0) |
 | `--fingerprint-fonts-dir` | Path to directory containing target-platform fonts (see [Font Setup on Linux](#font-setup-on-linux)) |
 | `--fingerprint-windows-font-metrics` | **Chromium 148+ binary only** (no-op on earlier builds). Align font metrics with the Windows platform when spoofing Windows on Linux — used in the [FingerprintJS config](#detected-by-fingerprintjs). Requires Windows fonts installed (see [Font Setup on Linux](#font-setup-on-linux)); no effect without them |
-| `--fingerprint-webrtc-ip` | WebRTC ICE candidate IP replacement. Use `auto` to resolve from proxy exit IP (makes an HTTP call through the proxy), or pass an explicit IP. Auto-injected when `geoip=True` |
+| `--fingerprint-webrtc-ip` | WebRTC ICE candidate IP replacement. Use `auto` to resolve from proxy exit IP (makes an HTTP call through the proxy), or pass an explicit IP. Auto-injected by the default GeoIP lookup |
 | `--fingerprint-noise=false` | Disable noise injection (canvas, WebGL, audio, client rects) while keeping the deterministic fingerprint seed active |
-| `--fingerprint=off` | **Chromium 148+ binary only.** Pass-through debug mode — turns spoofing off and presents the machine's **real native fingerprint** (keeps only the baseline any Chrome needs). The binary strips the injected seed *and* `--fingerprint-platform`, so there's no mixed OS profile. Most useful on a genuine Windows machine to check whether an issue is our spoofing or the environment. Accepts `off`/`false`/`0`/`disable`/`disabled`. For a *pure* pass-through don't combine it with `geoip=True` / explicit timezone / locale — those stay applied. |
+| `--fingerprint=off` | **Chromium 148+ binary only.** Pass-through debug mode — turns spoofing off and presents the machine's **real native fingerprint** (keeps only the baseline any Chrome needs). The binary strips the injected seed *and* `--fingerprint-platform`, so there's no mixed OS profile. Most useful on a genuine Windows machine to check whether an issue is our spoofing or the environment. Accepts `off`/`false`/`0`/`disable`/`disabled`. For a *pure* pass-through also pass `geoip=False` and no explicit timezone/locale — GeoIP is on by default and those stay applied. |
 | `--fingerprint-allow-3p-cookies` | **Chromium 148+ binary only.** Re-enable third-party cookies for embedded flows that need them (reCAPTCHA v3, SSO, some payment challenges). Off by default; turn on only where a login/payment/embedded challenge loads but never finishes. |
 | `--fingerprint-sapi-voices=false` | **Chromium 150+ binary only.** Opt out of the Windows speech-voice tables when spoofing Windows. On by default (the voice set matches a real Chrome install); turn off only if a target reacts badly to the Windows voice list. |
 | `--license-through-proxy` | **Chromium 148+ binary only (all platforms).** Route the Pro license/session calls through your `--proxy-server` instead of direct to cloakbrowser.dev. Off by default (these calls go direct, so they never spend proxy bandwidth or touch your scraping session). |
@@ -1004,6 +1003,8 @@ b4 = pw.chromium.connect_over_cdp(
 
 Supported query params: `fingerprint`, `timezone`, `locale`, `platform`, `platform-version`, `brand`, `brand-version`, `gpu-vendor`, `gpu-renderer`, `hardware-concurrency`, `device-memory`, `screen-width`, `screen-height`, `proxy`, `geoip`. Same seed reuses the same process (first connection's params win). No seed = shared default process (backward compatible).
 
+> `geoip` stays **opt-in here**, unlike the wrappers, where it is the default. The server resolves it while handling a request, so enabling it by default would make every connection wait on the lookup. Pass `&geoip=true` when you want it.
+
 By default, per-seed processes stay alive until `cloakserve` exits. If clients create many unique seeds, set `--idle-timeout=SECONDS` or `CLOAKSERVE_IDLE_TIMEOUT=SECONDS` to automatically terminate a seed's Chrome process after its last CDP WebSocket disconnects. `0`, `off`, `false`, `none`, or `disabled` disable idle cleanup. When cleanup runs, the seed's temporary profile directory under `--data-dir` is removed too. Check active processes at `GET /` (returns JSON with PIDs, ports, connection counts, idle timeout, and pending cleanup status).
 
 **Persistent profiles** — mount a volume to keep cookies and sessions across container restarts:
@@ -1089,16 +1090,17 @@ Most blocks come from missing one of these three things, not from browser finger
 ```python
 browser = launch(
     proxy="http://your-residential-proxy:port",  # residential IP — datacenter IPs get blocked by reputation alone
-    geoip=True,      # matches timezone + locale to proxy exit IP (without this: UTC + en-US = bot signal)
     headless=False,   # headed mode — some sites detect headless even with C++ patches
     humanize=True,    # human-like mouse, keyboard, scroll behavior
 )
+# Timezone + locale are matched to the proxy exit IP by default. Verify it
+# actually resolved: cloakbrowser info --proxy http://your-residential-proxy:port
+# (a UTC clock behind a foreign exit IP is the single strongest bot signal)
 ```
 
 ```javascript
 const browser = await launch({
     proxy: 'http://your-residential-proxy:port',
-    geoip: true,
     headless: false,
     humanize: true,
 });
@@ -1107,7 +1109,7 @@ const browser = await launch({
 If your proxy supports SOCKS5, use it for better compatibility — SOCKS5 tunnels raw TCP, avoiding HTTP CONNECT issues that some proxies have with HTTP/2:
 
 ```python
-browser = launch(proxy="socks5://user:pass@proxy:1080", geoip=True, headless=False, humanize=True)
+browser = launch(proxy="socks5://user:pass@proxy:1080", headless=False, humanize=True)
 ```
 
 If you're still blocked after this, check the font setup below.
@@ -1120,7 +1122,7 @@ FingerprintJS (`demo.fingerprint.com/playground`) checks multiple signals. Each 
 
 | Detection | Cause | Fix |
 |-----------|-------|-----|
-| **`nodriver` / bad bot** | Stale binary/wrapper, missing current FPJS patches, or poor proxy IP reputation | Upgrade to the latest Pro binary (`150.0.7871.114.3+`), use a residential proxy with `geoip=True`, and use the config below. |
+| **`nodriver` / bad bot** | Stale binary/wrapper, missing current FPJS patches, or poor proxy IP reputation | Upgrade to the latest Pro binary (`150.0.7871.114.3+`), use a residential proxy, confirm GeoIP resolved with `cloakbrowser info --proxy <url>`, and use the config below. |
 | **Browser tampering** | Noise injection detected by ML | `--fingerprint-noise=false` |
 | **Browser tampering** (fonts) | Font metrics don't match the spoofed Windows platform | `--fingerprint-windows-font-metrics` (Chromium 148+ binary; requires [Windows fonts installed](#font-setup-on-linux)) |
 | **Virtual machine** | Screen dimensions don't match viewport | `--fingerprint-screen-width/height` matching viewport |
@@ -1131,7 +1133,6 @@ Config that passes FPJS on the latest binary (Linux, residential proxy):
 browser = launch(
     headless=False,
     proxy="http://user:pass@residential-proxy:port",
-    geoip=True,
     args=[
         "--fingerprint-noise=false",          # prevents tampering detection
         "--fingerprint-windows-font-metrics", # align font metrics — 148+ binary, needs Windows fonts
@@ -1143,7 +1144,6 @@ browser = launch(
 const browser = await launch({
     headless: false,
     proxy: 'http://user:pass@residential-proxy:port',
-    geoip: true,
     args: [
         '--fingerprint-noise=false',
         '--fingerprint-windows-font-metrics',  // align font metrics — 148+ binary, needs Windows fonts
@@ -1151,7 +1151,7 @@ const browser = await launch({
 });
 ```
 
-Requires a **Chromium 148+ binary** and **Windows fonts** installed (see [Font Setup on Linux](#font-setup-on-linux)); run with a **residential proxy** and `geoip=True`.
+Requires a **Chromium 148+ binary** and **Windows fonts** installed (see [Font Setup on Linux](#font-setup-on-linux)); run with a **residential proxy** (GeoIP is applied by default — verify with `cloakbrowser info --proxy <url>`).
 
 **Persistent contexts** (`launch_persistent_context` / `launchPersistentContext`) use the same FPJS config on the latest Pro binary. Use a real `userDataDir`. Storage-quota tuning is unrelated to FingerprintJS here; it only affects detectors that infer incognito from quota, such as BrowserScan (see [storage quota](#launch_persistent_context)). For DRM/media playback, see [Widevine / DRM](#widevine--drm).
 

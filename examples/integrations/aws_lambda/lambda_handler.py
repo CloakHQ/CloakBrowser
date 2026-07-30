@@ -9,7 +9,9 @@ Event schema (all fields except `url` are optional):
         proxy               str|dict         http://user:pass@host:port  or  Playwright proxy dict
         humanize            bool             False — enable human-like mouse/keyboard/scroll
         human_preset        str              "default" | "careful"
-        geoip               bool             False — auto timezone+locale from proxy IP
+        geoip               bool             True — auto timezone+locale from the exit IP.
+                                              Pass false to skip it; see the cold-start note
+                                              in INSTRUCTIONS.md about the GeoIP database.
         timezone            str              IANA tz, e.g. "America/New_York"
         locale              str              BCP-47, e.g. "en-US"
         viewport            {width,height}   defaults to 1920x947 (cloakbrowser DEFAULT_VIEWPORT)
