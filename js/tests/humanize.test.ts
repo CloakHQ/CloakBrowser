@@ -1700,3 +1700,130 @@ describe("pointer-events check fail-open", () => {
     );
   });
 });
+
+describe("CJK pinyin-IME humanize (ime_language='zh')", () => {
+  function mockRaw() {
+    return {
+      down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      type: vi.fn(async () => {}),
+      insertText: vi.fn(async () => {}),
+    };
+  }
+  function mockCdp() {
+    const calls: Array<[string, any]> = [];
+    const cdp: any = { send: vi.fn(async (m: string, p: any) => { calls.push([m, p]); }) };
+    return { cdp, calls };
+  }
+
+  it("pinyinMap uses word context for polyphonic chars", async () => {
+    const { pinyinMap } = await import("../src/human/keyboard.js");
+    const m = await pinyinMap("重庆", "zh");
+    expect(m.get(0)).toBe("chong");
+    expect(m.get(1)).toBe("qing");
+  });
+
+  it("pinyinMap only maps Chinese indices, skips ASCII", async () => {
+    const { pinyinMap } = await import("../src/human/keyboard.js");
+    const m = await pinyinMap("你好A中B", "zh");
+    expect([...m.entries()].sort((a, b) => a[0] - b[0]))
+      .toEqual([[0, "ni"], [1, "hao"], [3, "zhong"]]);
+  });
+
+  it("pinyinMap outputs ASCII 'v' for ü-syllable chars (女 → nv), matching pypinyin", async () => {
+    const { pinyinMap } = await import("../src/human/keyboard.js");
+    const m = await pinyinMap("女绿略", "zh");
+    expect(m.get(0)).toBe("nv");
+    expect(m.get(1)).toBe("lv");
+    expect(m.get(2)).toBe("lve");
+  });
+
+  it("pinyinMap is empty when disabled or no Han", async () => {
+    const { pinyinMap } = await import("../src/human/keyboard.js");
+    expect((await pinyinMap("中文", null)).size).toBe(0);
+    expect((await pinyinMap("中文", "ja")).size).toBe(0);
+    expect((await pinyinMap("hello", "zh")).size).toBe(0);
+  });
+
+  it("zh char drives the IME sequence (kc229 keydowns + composition + commit)", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { ime_language: "zh", mistype_chance: 0 });
+    const raw = mockRaw();
+    const { cdp, calls } = mockCdp();
+
+    await humanType({} as any, raw as any, "中", cfg, cdp);
+
+    const methods = calls.map(c => c[0]);
+    expect(methods.filter(m => m === "Input.dispatchKeyEvent").length).toBe(10);
+    expect(methods.filter(m => m === "Input.imeSetComposition").length).toBe(5);
+    expect(calls[calls.length - 1]).toEqual(["Input.insertText", { text: "中" }]);
+    const keydowns = calls.filter(([m, p]) => m === "Input.dispatchKeyEvent" && p.type === "keyDown");
+    expect(keydowns.every(([, p]) => p.windowsVirtualKeyCode === 229)).toBe(true);
+    expect(keydowns.map(([, p]) => p.code)).toEqual(["KeyZ", "KeyH", "KeyO", "KeyN", "KeyG"]);
+    expect(raw.insertText).not.toHaveBeenCalled();
+  });
+
+  it("falls back to insertText when ime_language unset", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { mistype_chance: 0 });
+    const raw = mockRaw();
+    const { cdp } = mockCdp();
+    await humanType({} as any, raw as any, "中", cfg, cdp);
+    expect(raw.insertText).toHaveBeenCalledWith("中");
+    expect(cdp.send).not.toHaveBeenCalled();
+  });
+
+  it("Cyrillic and emoji stay on insertText even with zh", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { ime_language: "zh", mistype_chance: 0 });
+    for (const ch of ["я", "😀"]) {
+      const raw = mockRaw();
+      const { cdp } = mockCdp();
+      await humanType({} as any, raw as any, ch, cfg, cdp);
+      expect(raw.insertText).toHaveBeenCalledWith(ch);
+      expect(cdp.send).not.toHaveBeenCalled();
+    }
+  });
+
+  it("falls back to insertText when no CDP session", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { ime_language: "zh", mistype_chance: 0 });
+    const raw = mockRaw();
+    await humanType({} as any, raw as any, "中", cfg, null);
+    expect(raw.insertText).toHaveBeenCalledWith("中");
+  });
+
+  it("falls back to insertText on a CDP error (does not abort)", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { ime_language: "zh", mistype_chance: 0 });
+    const raw = mockRaw();
+    const cdp: any = { send: vi.fn(async () => { throw new Error("focus lost"); }) };
+    await expect(humanType({} as any, raw as any, "中", cfg, cdp)).resolves.toBeUndefined();
+    expect(raw.insertText).toHaveBeenCalledWith("中");
+  });
+
+  it("Puppeteer humanType drives the same IME sequence (parity)", async () => {
+    const { humanType } = await import("../src/human-puppeteer/keyboard.js");
+    const cfg = resolveConfig("default", { ime_language: "zh", mistype_chance: 0 });
+    const raw = mockRaw();
+    const { cdp, calls } = mockCdp();
+
+    await humanType({} as any, raw as any, "中", cfg, cdp);
+
+    const methods = calls.map(c => c[0]);
+    expect(methods.filter(m => m === "Input.dispatchKeyEvent").length).toBe(10);
+    expect(methods.filter(m => m === "Input.imeSetComposition").length).toBe(5);
+    expect(calls[calls.length - 1]).toEqual(["Input.insertText", { text: "中" }]);
+    expect(raw.insertText).not.toHaveBeenCalled();
+  });
+
+  it("Puppeteer humanType falls back to insertText when disabled", async () => {
+    const { humanType } = await import("../src/human-puppeteer/keyboard.js");
+    const cfg = resolveConfig("default", { mistype_chance: 0 });
+    const raw = mockRaw();
+    const { cdp } = mockCdp();
+    await humanType({} as any, raw as any, "中", cfg, cdp);
+    expect(raw.insertText).toHaveBeenCalledWith("中");
+    expect(cdp.send).not.toHaveBeenCalled();
+  });
+});

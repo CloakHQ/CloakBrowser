@@ -7,10 +7,17 @@ Falls back to page.evaluate when no CDP session is available.
 
 from __future__ import annotations
 
+import logging
 import random
 from typing import Any, Optional, Protocol
 
 from .config import HumanConfig, rand, rand_range, sleep_ms
+
+_log = logging.getLogger("cloakbrowser.human")
+_pypinyin_warned = False
+
+# Physical key `code` for each latin letter (used by the CJK IME keydown layer).
+_LETTER_CODES = {c: f"Key{c.upper()}" for c in "abcdefghijklmnopqrstuvwxyz"}
 
 
 class RawKeyboard(Protocol):
@@ -63,6 +70,97 @@ def _get_nearby_key(ch: str) -> str:
     return ch
 
 
+def _is_chinese_ideograph(ch: str) -> bool:
+    """True for Han ideographs (CJK Unified + Ext A + Compat).
+
+    This block is shared: Japanese kanji and Korean hanja are indistinguishable
+    from Chinese hanzi by code point, so with ime_language='zh' they too get
+    Mandarin pinyin. The precise guarantee is only that kana and Hangul syllables
+    are excluded — not "Chinese-only".
+    """
+    o = ord(ch)
+    return (0x4E00 <= o <= 0x9FFF) or (0x3400 <= o <= 0x4DBF) or (0xF900 <= o <= 0xFAFF)
+
+
+def _pinyin_map(text: str, ime_language: Optional[str]) -> dict[int, str]:
+    """Map each Chinese-ideograph char index → its lowercase pinyin syllable.
+
+    Converts per contiguous Han run (not per isolated char) so pypinyin's
+    word-context disambiguation gives correct polyphonic readings
+    (重庆 → chong/qing, not zhong/qing). Returns {} when disabled, when the
+    text has no Han chars, or when pypinyin is not installed (warns once).
+    """
+    global _pypinyin_warned
+    if ime_language != "zh" or not any(_is_chinese_ideograph(c) for c in text):
+        return {}
+    try:
+        from pypinyin import lazy_pinyin
+    except ImportError:
+        if not _pypinyin_warned:
+            _pypinyin_warned = True
+            _log.warning(
+                "Chinese IME humanization (ime_language='zh') requires pypinyin; "
+                "falling back to basic insertion. Install with: "
+                "pip install 'cloakbrowser[cjk]'"
+            )
+        return {}
+
+    result: dict[int, str] = {}
+    i, n = 0, len(text)
+    while i < n:
+        if not _is_chinese_ideograph(text[i]):
+            i += 1
+            continue
+        j = i
+        while j < n and _is_chinese_ideograph(text[j]):
+            j += 1
+        # Pure-Han run → lazy_pinyin returns exactly one syllable per char.
+        for k, syl in enumerate(lazy_pinyin(text[i:j])):
+            syl = syl.lower()
+            if syl.isascii() and syl.isalpha():
+                result[i + k] = syl
+        i = j
+    return result
+
+
+def _type_cjk_ime(ch: str, pinyin: str, cfg: HumanConfig, cdp_session: Any) -> None:
+    """Reproduce a real pinyin-IME flow for one Han char.
+
+    Per pinyin letter: a keydown/keyup carrying the IME-processing code
+    (windowsVirtualKeyCode 229 / key "Process") plus an ``Input.imeSetComposition``
+    that grows the composition string (fires compositionstart/update). Then commit
+    the composed hanzi via ``Input.insertText`` (fires compositionend + input).
+
+    NOTE: exact keyCode/key on keyUp and any commit-key (Space) modeling are to be
+    tuned against a real-Chrome IME capture (docs Phase-0 spec); the pinyin-letter
+    keydown stream and composition/commit events are the load-bearing signals.
+    """
+    for i, letter in enumerate(pinyin):
+        code = _LETTER_CODES.get(letter, "")
+        cdp_session.send("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "windowsVirtualKeyCode": 229,  # VK_PROCESSKEY — IME is processing
+            "key": "Process",
+            "code": code,
+        })
+        cdp_session.send("Input.imeSetComposition", {
+            "text": pinyin[:i + 1],
+            "selectionStart": i + 1,
+            "selectionEnd": i + 1,
+        })
+        sleep_ms(rand_range(cfg.key_hold))
+        cdp_session.send("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "windowsVirtualKeyCode": 229,
+            "key": "Process",
+            "code": code,
+        })
+        if i < len(pinyin) - 1:
+            sleep_ms(rand_range(cfg.key_hold))
+    # Commit the top candidate → compositionend + input.
+    cdp_session.send("Input.insertText", {"text": ch})
+
+
 def human_type(
     page: Any, raw: RawKeyboard, text: str, cfg: HumanConfig,
     cdp_session: Any = None,
@@ -74,11 +172,26 @@ def human_type(
             producing isTrusted=true events with no evaluate stack trace.
             If None, falls back to page.evaluate (detectable).
     """
+    # Chinese ideographs get a real pinyin-IME flow when enabled (ime_language='zh'
+    # + a CDP session + pypinyin available); everything else keeps insertText.
+    pinyin_map = (
+        _pinyin_map(text, cfg.ime_language) if cdp_session is not None else {}
+    )
+
     for i, ch in enumerate(text):
         # Non-ASCII characters (Cyrillic, CJK, emoji) — use insertText
         if not ch.isascii():
             sleep_ms(rand_range(cfg.key_hold))
-            raw.insert_text(ch)
+            if i in pinyin_map:
+                try:
+                    _type_cjk_ime(ch, pinyin_map[i], cfg, cdp_session)
+                except Exception:
+                    # A CDP hiccup on one char (e.g. focus lost mid-type) must not
+                    # abort the whole type() — fall back to plain insertion.
+                    _log.debug("CJK IME failed for %r; using insertText", ch, exc_info=True)
+                    raw.insert_text(ch)
+            else:
+                raw.insert_text(ch)
             if i < len(text) - 1:
                 _inter_char_delay(cfg)
             continue

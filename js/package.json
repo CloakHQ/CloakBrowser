@@ -59,6 +59,7 @@
   },
   "peerDependencies": {
     "mmdb-lib": ">=2.0.0",
+    "pinyin-pro": ">=3.0.0",
     "playwright-core": ">=1.53.0",
     "puppeteer-core": ">=21.0.0",
     "socks-proxy-agent": ">=10.0.0"
@@ -73,6 +74,9 @@
     "mmdb-lib": {
       "optional": true
     },
+    "pinyin-pro": {
+      "optional": true
+    },
     "socks-proxy-agent": {
       "optional": true
     }
@@ -83,6 +87,7 @@
   "devDependencies": {
     "@types/node": "^26.0.1",
     "mmdb-lib": "^3.0.2",
+    "pinyin-pro": "^3.28.2",
     "playwright-core": "1.62",
     "puppeteer-core": "^25.0.4",
     "socks-proxy-agent": "^10.0.0",

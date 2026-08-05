@@ -62,6 +62,7 @@ class HumanConfigOverrides(TypedDict, total=False):
     initial_cursor_y: Range
     idle_between_actions: bool
     idle_between_duration: Range
+    ime_language: str
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +130,11 @@ class HumanConfig:
     # Idle micro-movements between actions (opt-in, adds latency)
     idle_between_actions: bool = False
     idle_between_duration: Range = (0.3, 0.8)
+
+    # CJK input-method emulation. None = current insertText fallback (no regression).
+    # "zh" = drive a real pinyin IME flow (keydown/composition/commit) for Chinese
+    # ideographs. Requires the optional `pypinyin` dependency (pip install cloakbrowser[cjk]).
+    ime_language: str | None = None
 
 
 # ---------------------------------------------------------------------------

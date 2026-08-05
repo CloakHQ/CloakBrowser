@@ -66,6 +66,12 @@ export interface HumanConfig {
   // Idle micro-movements between actions (opt-in, adds latency)
   idle_between_actions: boolean;
   idle_between_duration: [number, number];
+
+  // CJK input-method emulation. undefined = current insertText fallback (no
+  // regression). 'zh' = drive a real pinyin IME flow (keydown/composition/commit)
+  // for Chinese ideographs. Requires the optional `pinyin-pro` dependency
+  // (npm install pinyin-pro).
+  ime_language?: string | null;
 }
 
 export type HumanPreset = 'default' | 'careful';

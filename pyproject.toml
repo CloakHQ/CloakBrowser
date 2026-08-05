@@ -56,8 +56,9 @@ dependencies = [
 
 [project.optional-dependencies]
 geoip = ["geoip2>=4.0", "socksio>=1.0"]  # socksio: SOCKS5 transport for httpx
+cjk = ["pypinyin>=0.50"]  # hanzi→pinyin for Chinese IME humanization (ime_language='zh')
 serve = ["aiohttp>=3.9", "websockets>=12.0"]
-dev = ["pytest>=7.0", "pytest-asyncio>=0.23"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "pypinyin>=0.50"]  # pypinyin: exercise the cjk IME tests in CI
 
 [project.scripts]
 cloakbrowser = "cloakbrowser.__main__:main"

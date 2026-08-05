@@ -14,6 +14,35 @@ import type { Page, CDPSession } from 'puppeteer-core';
 import { RawKeyboard } from '../human/mouse.js';
 import type { HumanConfig } from '../human/config.js';
 import { rand, randRange, sleep } from '../human/config.js';
+import { LETTER_CODES, pinyinMap } from '../human/keyboard.js';
+
+/**
+ * Reproduce a real pinyin-IME flow for one Han char (Puppeteer CDPSession).
+ * See the Playwright keyboard.ts typeCjkIme for the full rationale; compositionend
+ * fires isTrusted=false (a CDP Input.insertText binary-level limitation).
+ */
+async function typeCjkIme(
+  ch: string,
+  pinyin: string,
+  cfg: HumanConfig,
+  cdpSession: CDPSession,
+): Promise<void> {
+  for (let i = 0; i < pinyin.length; i++) {
+    const code = LETTER_CODES[pinyin[i]] || '';
+    await cdpSession.send('Input.dispatchKeyEvent', {
+      type: 'keyDown', windowsVirtualKeyCode: 229, key: 'Process', code,
+    });
+    await cdpSession.send('Input.imeSetComposition', {
+      text: pinyin.slice(0, i + 1), selectionStart: i + 1, selectionEnd: i + 1,
+    });
+    await sleep(randRange(cfg.key_hold));
+    await cdpSession.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', windowsVirtualKeyCode: 229, key: 'Process', code,
+    });
+    if (i < pinyin.length - 1) await sleep(randRange(cfg.key_hold));
+  }
+  await cdpSession.send('Input.insertText', { text: ch });
+}
 
 const SHIFT_SYMBOLS = new Set([
   '@', '#', '!', '$', '%', '^', '&', '*', '(', ')',
@@ -76,13 +105,30 @@ export async function humanType(
 ): Promise<void> {
   const chars = [...text];
 
+  // Chinese ideographs get a real pinyin-IME flow when enabled (ime_language='zh'
+  // + a CDP session + pinyin-pro available); everything else keeps insertText.
+  const pinyinIdx = cdpSession
+    ? await pinyinMap(text, cfg.ime_language)
+    : new Map<number, string>();
+
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i];
 
     // Non-ASCII → sendCharacter via insertText adapter
     if (!isAscii(ch)) {
       await sleep(randRange(cfg.key_hold));
-      await raw.insertText(ch);
+      const py = pinyinIdx.get(i);
+      if (py && cdpSession) {
+        try {
+          await typeCjkIme(ch, py, cfg, cdpSession);
+        } catch (err) {
+          // A CDP hiccup on one char must not abort the whole type().
+          console.debug(`[cloakbrowser] CJK IME failed for ${ch}; using insertText`, err);
+          await raw.insertText(ch);
+        }
+      } else {
+        await raw.insertText(ch);
+      }
       if (i < chars.length - 1) await interCharDelay(cfg);
       continue;
     }

@@ -1478,6 +1478,165 @@ class TestStealthBrowserReal:
 
 
 # =========================================================================
+# CJK pinyin-IME humanization (ime_language='zh')
+# =========================================================================
+
+def _pinyin_installed():
+    try:
+        import pypinyin  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+requires_pypinyin = pytest.mark.skipif(
+    not _pinyin_installed(), reason="pypinyin not installed (optional cjk extra)"
+)
+
+
+class TestPinyinMap:
+    """_pinyin_map: word-context conversion, scoping, graceful degradation."""
+
+    @requires_pypinyin
+    def test_polyphonic_uses_word_context(self):
+        from cloakbrowser.human.keyboard import _pinyin_map
+        # 重庆 is chong-qing, not zhong-qing — only word context gets this right.
+        assert _pinyin_map("重庆", "zh") == {0: "chong", 1: "qing"}
+
+    @requires_pypinyin
+    def test_u_umlaut_syllables_are_ascii_v(self):
+        from cloakbrowser.human.keyboard import _pinyin_map
+        # 女/绿/略 use ü, which pypinyin returns as ASCII "v" (nv/lv/lve) —
+        # what a real pinyin IME types. Must pass the isascii guard, not fall back.
+        assert _pinyin_map("女绿略", "zh") == {0: "nv", 1: "lv", 2: "lve"}
+
+    @requires_pypinyin
+    def test_only_chinese_indices_mapped(self):
+        from cloakbrowser.human.keyboard import _pinyin_map
+        # ASCII 'A' at index 2 is skipped; hanzi keep their positions.
+        assert _pinyin_map("你好A中B", "zh") == {0: "ni", 1: "hao", 3: "zhong"}
+
+    def test_disabled_when_language_not_zh(self):
+        from cloakbrowser.human.keyboard import _pinyin_map
+        assert _pinyin_map("中文", None) == {}
+        assert _pinyin_map("中文", "ja") == {}
+
+    def test_empty_when_no_han(self):
+        from cloakbrowser.human.keyboard import _pinyin_map
+        assert _pinyin_map("hello", "zh") == {}
+
+    def test_missing_pypinyin_degrades_and_warns_once(self):
+        import cloakbrowser.human.keyboard as kb
+        kb._pypinyin_warned = False
+        with mock_patch.dict(sys.modules, {"pypinyin": None}):
+            with mock_patch.object(kb._log, "warning") as warn:
+                assert kb._pinyin_map("中文", "zh") == {}
+                assert kb._pinyin_map("中文", "zh") == {}  # second call: no re-warn
+        warn.assert_called_once()
+        assert "pypinyin" in warn.call_args[0][0]
+
+
+class TestCJKCompositionSync:
+    """human_type CJK path: real pinyin-IME flow vs insertText fallback."""
+
+    @requires_pypinyin
+    def test_zh_char_drives_ime_sequence(self):
+        from cloakbrowser.human.keyboard import human_type
+        cfg = _cfg(ime_language="zh", mistype_chance=0)
+        raw = MagicMock()
+        cdp_calls = []
+        cdp = MagicMock()
+        cdp.send = MagicMock(side_effect=lambda m, p: cdp_calls.append((m, p)))
+
+        human_type(MagicMock(), raw, "中", cfg, cdp_session=cdp)
+
+        methods = [m for m, _ in cdp_calls]
+        # 5 pinyin letters (zhong) → 5 keyDown + 5 keyUp + 5 imeSetComposition, then commit.
+        assert methods.count("Input.dispatchKeyEvent") == 10
+        assert methods.count("Input.imeSetComposition") == 5
+        assert cdp_calls[-1] == ("Input.insertText", {"text": "中"})
+        # kc229 IME-processing keydowns, not literal-letter keydowns.
+        keydowns = [p for m, p in cdp_calls
+                    if m == "Input.dispatchKeyEvent" and p["type"] == "keyDown"]
+        assert all(p["windowsVirtualKeyCode"] == 229 for p in keydowns)
+        assert [p["code"] for p in keydowns] == ["KeyZ", "KeyH", "KeyO", "KeyN", "KeyG"]
+        raw.insert_text.assert_not_called()
+
+    def test_fallback_when_language_none(self):
+        from cloakbrowser.human.keyboard import human_type
+        cfg = _cfg(mistype_chance=0)  # ime_language defaults to None
+        raw = MagicMock()
+        cdp = MagicMock()
+        human_type(MagicMock(), raw, "中", cfg, cdp_session=cdp)
+        raw.insert_text.assert_called_once_with("中")
+        cdp.send.assert_not_called()
+
+    @requires_pypinyin
+    def test_cyrillic_and_emoji_stay_insert_text(self):
+        from cloakbrowser.human.keyboard import human_type
+        cfg = _cfg(ime_language="zh", mistype_chance=0)
+        for ch in ("я", "😀"):
+            raw = MagicMock()
+            cdp = MagicMock()
+            human_type(MagicMock(), raw, ch, cfg, cdp_session=cdp)
+            raw.insert_text.assert_called_once_with(ch)
+            cdp.send.assert_not_called()
+
+    def test_fallback_when_no_cdp_session(self):
+        from cloakbrowser.human.keyboard import human_type
+        cfg = _cfg(ime_language="zh", mistype_chance=0)
+        raw = MagicMock()
+        human_type(MagicMock(), raw, "中", cfg, cdp_session=None)
+        raw.insert_text.assert_called_once_with("中")
+
+    @requires_pypinyin
+    def test_cdp_error_falls_back_to_insert_text(self):
+        from cloakbrowser.human.keyboard import human_type
+        cfg = _cfg(ime_language="zh", mistype_chance=0)
+        raw = MagicMock()
+        cdp = MagicMock()
+        cdp.send = MagicMock(side_effect=RuntimeError("focus lost"))
+        # A CDP failure mid-IME must not raise — it falls back to insertText.
+        human_type(MagicMock(), raw, "中", cfg, cdp_session=cdp)
+        raw.insert_text.assert_called_once_with("中")
+
+
+class TestCJKCompositionAsync:
+    """Async mirror of the CJK pinyin-IME path."""
+
+    @requires_pypinyin
+    def test_async_zh_char_drives_ime_sequence(self):
+        from cloakbrowser.human.keyboard_async import async_human_type
+        cfg = _cfg(ime_language="zh", mistype_chance=0)
+        raw = MagicMock()
+        raw.insert_text = AsyncMock()
+        raw.down = AsyncMock()
+        raw.up = AsyncMock()
+        cdp_calls = []
+        cdp = MagicMock()
+        cdp.send = AsyncMock(side_effect=lambda m, p: cdp_calls.append((m, p)))
+
+        asyncio.run(async_human_type(MagicMock(), raw, "中", cfg, cdp_session=cdp))
+
+        methods = [m for m, _ in cdp_calls]
+        assert methods.count("Input.dispatchKeyEvent") == 10
+        assert methods.count("Input.imeSetComposition") == 5
+        assert cdp_calls[-1] == ("Input.insertText", {"text": "中"})
+        raw.insert_text.assert_not_called()
+
+    def test_async_fallback_when_language_none(self):
+        from cloakbrowser.human.keyboard_async import async_human_type
+        cfg = _cfg(mistype_chance=0)
+        raw = MagicMock()
+        raw.insert_text = AsyncMock()
+        cdp = MagicMock()
+        cdp.send = AsyncMock()
+        asyncio.run(async_human_type(MagicMock(), raw, "中", cfg, cdp_session=cdp))
+        raw.insert_text.assert_called_once_with("中")
+        cdp.send.assert_not_called()
+
+
+# =========================================================================
 # Direct runner
 # =========================================================================
 
