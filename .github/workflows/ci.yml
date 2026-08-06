@@ -44,3 +44,15 @@ jobs:
         run: dotnet build dotnet/CloakBrowser.sln -c Release
       - name: Run tests
         run: dotnet test dotnet/CloakBrowser.sln -c Release --no-build
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Test
+        run: cargo test -p cloakbrowser --lib
+        working-directory: rust
