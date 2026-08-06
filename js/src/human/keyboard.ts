@@ -112,16 +112,31 @@ async function getPinyinFn(): Promise<((s: string, opts: object) => string[]) | 
   return _pinyinFn;
 }
 
+// A real IME commits by natural phrase, not per char. Chunk a Han run into
+// phrases of this many chars (each is one composition + one Space commit).
+const CJK_PHRASE_MIN = 2;
+const CJK_PHRASE_MAX = 4;
+
+/** Windows virtual key code for a latin letter (a→65 … z→90), matching a real
+ * Microsoft Pinyin capture (x=88, i=73, n=78, z=90). */
+export function letterKeycode(letter: string): number {
+  return letter.toUpperCase().charCodeAt(0);
+}
+
 /**
- * Map each Chinese-ideograph char index → its lowercase pinyin syllable.
+ * Map each Han phrase's start index → [hanzi, pinyin syllables, end index].
  *
- * Converts per contiguous Han run (not per isolated char) so pinyin-pro's
- * word-context disambiguation gives correct polyphonic readings
- * (重庆 → chong/qing). Returns an empty Map when disabled, when there are no Han
- * chars, or when pinyin-pro is not installed (warns once).
+ * Contiguous Han runs are converted with word context (polyphonic-correct,
+ * 重庆 → chong/qing) then chunked into short phrases — a real user types a whole
+ * phrase then confirms it, rather than committing every character separately.
+ * Empty Map when disabled, no Han chars, or pinyin-pro missing (warns once). A char
+ * whose pinyin isn't plain ASCII is left out of any phrase and falls back.
  */
-export async function pinyinMap(text: string, imeLanguage?: string | null): Promise<Map<number, string>> {
-  const result = new Map<number, string>();
+export async function buildPhrases(
+  text: string,
+  imeLanguage?: string | null,
+): Promise<Map<number, [string, string[], number]>> {
+  const result = new Map<number, [string, string[], number]>();
   const chars = [...text];
   if (imeLanguage !== 'zh' || !chars.some(isChineseIdeograph)) return result;
   const pinyinFn = await getPinyinFn();
@@ -132,61 +147,72 @@ export async function pinyinMap(text: string, imeLanguage?: string | null): Prom
     if (!isChineseIdeograph(chars[i])) { i++; continue; }
     let j = i;
     while (j < chars.length && isChineseIdeograph(chars[j])) j++;
-    // Pure-Han run → pinyin-pro returns exactly one syllable per char.
-    // `v: true` outputs ü as ASCII "v" (nü→nv), matching pypinyin and how a real
-    // pinyin IME works (no ü key — users press v); without it ü fails the [a-z] guard.
-    const syllables = pinyinFn(chars.slice(i, j).join(''), { toneType: 'none', type: 'array', v: true });
-    for (let k = 0; k < syllables.length; k++) {
-      const syl = (syllables[k] || '').toLowerCase();
-      if (/^[a-z]+$/.test(syl)) result.set(i + k, syl);
+    // `v: true` → ü as ASCII "v" (nü→nv), matching pypinyin and a real IME (no ü key).
+    const runSylls = pinyinFn(chars.slice(i, j).join(''), { toneType: 'none', type: 'array', v: true })
+      .map(s => (s || '').toLowerCase());
+    let k = i, off = 0;
+    while (k < j) {
+      const size = Math.min(
+        CJK_PHRASE_MIN + Math.floor(Math.random() * (CJK_PHRASE_MAX - CJK_PHRASE_MIN + 1)),
+        j - k,
+      );
+      const sylls = runSylls.slice(off, off + size);
+      if (sylls.length === size && sylls.every(s => /^[a-z]+$/.test(s))) {
+        result.set(k, [chars.slice(k, k + size).join(''), sylls, k + size - 1]);
+      }
+      k += size;
+      off += size;
     }
     i = j;
   }
   return result;
 }
 
+/** Composition string a Microsoft Pinyin IME shows for the letters typed so far:
+ * syllables joined by an apostrophe (xin + z → "xin'z"). */
+export function composeDisplay(typed: Array<[number, string]>): string {
+  const parts = new Map<number, string>();
+  for (const [si, letter] of typed) parts.set(si, (parts.get(si) || '') + letter);
+  return [...parts.values()].join("'");
+}
+
 /**
- * Reproduce a real pinyin-IME flow for one Han char.
+ * Reproduce a real pinyin-IME phrase, modeled on a Microsoft Pinyin capture.
+ * Per letter: a Process/229 keydown grows the composition, then a DUAL keyup
+ * (229 and the physical key, x→88). Space confirms the top candidate: composition
+ * switches to the hanzi, commits (compositionend), then Space's own dual keyup (229, 32).
  *
- * Per pinyin letter: a keydown/keyup carrying the IME-processing code
- * (windowsVirtualKeyCode 229 / key "Process") plus an Input.imeSetComposition
- * that grows the composition string (fires compositionstart/update). Then commit
- * the composed hanzi via Input.insertText (fires compositionend + input).
- *
- * NOTE: compositionend fires isTrusted=false — a CDP Input.insertText limitation
- * at the binary level, not fixable from the wrapper. The pinyin-letter keydown
- * stream and composition/input events are all trusted.
+ * NOTE: compositionend fires isTrusted=false — a CDP Input.insertText limitation the
+ * customer confirmed matches a real IME on the same machine, so it is correct.
  */
-async function typeCjkIme(
-  ch: string,
-  pinyin: string,
+export async function typeCjkPhrase(
+  hanzi: string,
+  syllables: string[],
   cfg: HumanConfig,
   cdpSession: CDPSession,
 ): Promise<void> {
-  for (let i = 0; i < pinyin.length; i++) {
-    const code = LETTER_CODES[pinyin[i]] || '';
-    await cdpSession.send('Input.dispatchKeyEvent', {
-      type: 'keyDown',
-      windowsVirtualKeyCode: 229, // VK_PROCESSKEY — IME is processing
-      key: 'Process',
-      code,
-    });
-    await cdpSession.send('Input.imeSetComposition', {
-      text: pinyin.slice(0, i + 1),
-      selectionStart: i + 1,
-      selectionEnd: i + 1,
-    });
-    await sleep(randRange(cfg.key_hold));
-    await cdpSession.send('Input.dispatchKeyEvent', {
-      type: 'keyUp',
-      windowsVirtualKeyCode: 229,
-      key: 'Process',
-      code,
-    });
-    if (i < pinyin.length - 1) await sleep(randRange(cfg.key_hold));
+  const typed: Array<[number, string]> = [];
+  for (let si = 0; si < syllables.length; si++) {
+    for (const letter of syllables[si]) {
+      const code = LETTER_CODES[letter] || '';
+      const kc = letterKeycode(letter);
+      await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyDown', windowsVirtualKeyCode: 229, key: 'Process', code });
+      typed.push([si, letter]);
+      const disp = composeDisplay(typed);
+      await cdpSession.send('Input.imeSetComposition', { text: disp, selectionStart: disp.length, selectionEnd: disp.length });
+      await sleep(randRange(cfg.key_hold));
+      await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 229, key: 'Process', code });
+      await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: kc, key: letter, code });
+      await sleep(randRange(cfg.key_hold));
+    }
   }
-  // Commit the top candidate → compositionend + input.
-  await cdpSession.send('Input.insertText', { text: ch });
+  // Brief thinking pause, then Space confirms the phrase's top candidate.
+  await sleep(randRange(cfg.mistype_delay_notice));
+  await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyDown', windowsVirtualKeyCode: 229, key: 'Process', code: 'Space' });
+  await cdpSession.send('Input.imeSetComposition', { text: hanzi, selectionStart: hanzi.length, selectionEnd: hanzi.length });
+  await cdpSession.send('Input.insertText', { text: hanzi }); // commit → compositionend
+  await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 229, key: 'Process', code: 'Space' });
+  await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 32, key: ' ', code: 'Space' });
 }
 
 function getNearbyKey(ch: string): string {
@@ -220,27 +246,31 @@ export async function humanType(
 ): Promise<void> {
   const chars = [...text]; // Handle emoji surrogate pairs correctly
 
-  // Chinese ideographs get a real pinyin-IME flow when enabled (ime_language='zh'
+  // Chinese phrases get a real pinyin-IME flow when enabled (ime_language='zh'
   // + a CDP session + pinyin-pro available); everything else keeps insertText.
-  const pinyinIdx = cdpSession
-    ? await pinyinMap(text, cfg.ime_language)
-    : new Map<number, string>();
+  const phrases = cdpSession
+    ? await buildPhrases(text, cfg.ime_language)
+    : new Map<number, [string, string[], number]>();
+  let skipUntil = -1;
 
   for (let i = 0; i < chars.length; i++) {
+    if (i <= skipUntil) continue; // already typed as part of a phrase
     const ch = chars[i];
 
     // Non-ASCII characters (Cyrillic, CJK, emoji) — use insertText
     if (!isAscii(ch)) {
       await sleep(randRange(cfg.key_hold));
-      const py = pinyinIdx.get(i);
-      if (py && cdpSession) {
+      const phrase = phrases.get(i);
+      if (phrase && cdpSession) {
+        const [hanzi, sylls, end] = phrase;
         try {
-          await typeCjkIme(ch, py, cfg, cdpSession);
+          await typeCjkPhrase(hanzi, sylls, cfg, cdpSession);
         } catch (err) {
-          // A CDP hiccup on one char must not abort the whole type().
-          console.debug(`[cloakbrowser] CJK IME failed for ${ch}; using insertText`, err);
-          await raw.insertText(ch);
+          // A CDP hiccup mid-phrase must not abort the whole type().
+          console.debug(`[cloakbrowser] CJK IME failed for ${hanzi}; using insertText`, err);
+          for (const c of hanzi) await raw.insertText(c);
         }
+        skipUntil = end;
       } else {
         await raw.insertText(ch);
       }

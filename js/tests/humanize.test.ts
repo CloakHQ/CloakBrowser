@@ -1716,50 +1716,54 @@ describe("CJK pinyin-IME humanize (ime_language='zh')", () => {
     return { cdp, calls };
   }
 
-  it("pinyinMap uses word context for polyphonic chars", async () => {
-    const { pinyinMap } = await import("../src/human/keyboard.js");
-    const m = await pinyinMap("重庆", "zh");
-    expect(m.get(0)).toBe("chong");
-    expect(m.get(1)).toBe("qing");
+  it("buildPhrases uses word context for polyphonic chars", async () => {
+    const { buildPhrases } = await import("../src/human/keyboard.js");
+    const m = await buildPhrases("重庆", "zh"); // 2-char run → one phrase
+    expect(m.get(0)).toEqual(["重庆", ["chong", "qing"], 1]);
   });
 
-  it("pinyinMap only maps Chinese indices, skips ASCII", async () => {
-    const { pinyinMap } = await import("../src/human/keyboard.js");
-    const m = await pinyinMap("你好A中B", "zh");
-    expect([...m.entries()].sort((a, b) => a[0] - b[0]))
-      .toEqual([[0, "ni"], [1, "hao"], [3, "zhong"]]);
+  it("buildPhrases keeps Han runs separate, skips ASCII", async () => {
+    const { buildPhrases } = await import("../src/human/keyboard.js");
+    const m = await buildPhrases("你好A中B", "zh");
+    expect(m.get(0)).toEqual(["你好", ["ni", "hao"], 1]);
+    expect(m.get(3)).toEqual(["中", ["zhong"], 3]);
+    expect([...m.keys()].sort((a, b) => a - b)).toEqual([0, 3]);
   });
 
-  it("pinyinMap outputs ASCII 'v' for ü-syllable chars (女 → nv), matching pypinyin", async () => {
-    const { pinyinMap } = await import("../src/human/keyboard.js");
-    const m = await pinyinMap("女绿略", "zh");
-    expect(m.get(0)).toBe("nv");
-    expect(m.get(1)).toBe("lv");
-    expect(m.get(2)).toBe("lve");
+  it("buildPhrases outputs ASCII 'v' for ü-syllable chars (女 → nv)", async () => {
+    const { buildPhrases } = await import("../src/human/keyboard.js");
+    const m = await buildPhrases("女", "zh");
+    expect(m.get(0)).toEqual(["女", ["nv"], 0]);
   });
 
-  it("pinyinMap is empty when disabled or no Han", async () => {
-    const { pinyinMap } = await import("../src/human/keyboard.js");
-    expect((await pinyinMap("中文", null)).size).toBe(0);
-    expect((await pinyinMap("中文", "ja")).size).toBe(0);
-    expect((await pinyinMap("hello", "zh")).size).toBe(0);
+  it("buildPhrases is empty when disabled or no Han", async () => {
+    const { buildPhrases } = await import("../src/human/keyboard.js");
+    expect((await buildPhrases("中文", null)).size).toBe(0);
+    expect((await buildPhrases("中文", "ja")).size).toBe(0);
+    expect((await buildPhrases("hello", "zh")).size).toBe(0);
   });
 
-  it("zh char drives the IME sequence (kc229 keydowns + composition + commit)", async () => {
+  it("drives the real IME phrase sequence (dual keyup + apostrophe + Space commit)", async () => {
     const { humanType } = await import("../src/human/keyboard.js");
     const cfg = resolveConfig("default", { ime_language: "zh", mistype_chance: 0 });
     const raw = mockRaw();
     const { cdp, calls } = mockCdp();
 
-    await humanType({} as any, raw as any, "中", cfg, cdp);
+    await humanType({} as any, raw as any, "薪资", cfg, cdp); // xin + zi
 
-    const methods = calls.map(c => c[0]);
-    expect(methods.filter(m => m === "Input.dispatchKeyEvent").length).toBe(10);
-    expect(methods.filter(m => m === "Input.imeSetComposition").length).toBe(5);
-    expect(calls[calls.length - 1]).toEqual(["Input.insertText", { text: "中" }]);
+    const comps = calls.filter(([m]) => m === "Input.imeSetComposition").map(([, p]) => p.text);
+    expect(comps).toEqual(["x", "xi", "xin", "xin'z", "xin'zi", "薪资"]);
+    expect(calls).toContainEqual(["Input.insertText", { text: "薪资" }]);
     const keydowns = calls.filter(([m, p]) => m === "Input.dispatchKeyEvent" && p.type === "keyDown");
     expect(keydowns.every(([, p]) => p.windowsVirtualKeyCode === 229)).toBe(true);
-    expect(keydowns.map(([, p]) => p.code)).toEqual(["KeyZ", "KeyH", "KeyO", "KeyN", "KeyG"]);
+    expect(keydowns[keydowns.length - 1][1].code).toBe("Space");
+    const keyups = calls
+      .filter(([m, p]) => m === "Input.dispatchKeyEvent" && p.type === "keyUp")
+      .map(([, p]) => [p.windowsVirtualKeyCode, p.code]);
+    expect(keyups).toContainEqual([229, "KeyX"]); // dual keyup: 229 + physical
+    expect(keyups).toContainEqual([88, "KeyX"]);
+    expect(keyups).toContainEqual([229, "Space"]); // Space's own dual keyup
+    expect(keyups).toContainEqual([32, "Space"]);
     expect(raw.insertText).not.toHaveBeenCalled();
   });
 
@@ -1802,18 +1806,22 @@ describe("CJK pinyin-IME humanize (ime_language='zh')", () => {
     expect(raw.insertText).toHaveBeenCalledWith("中");
   });
 
-  it("Puppeteer humanType drives the same IME sequence (parity)", async () => {
+  it("Puppeteer humanType drives the same IME phrase sequence (parity)", async () => {
     const { humanType } = await import("../src/human-puppeteer/keyboard.js");
     const cfg = resolveConfig("default", { ime_language: "zh", mistype_chance: 0 });
     const raw = mockRaw();
     const { cdp, calls } = mockCdp();
 
-    await humanType({} as any, raw as any, "中", cfg, cdp);
+    await humanType({} as any, raw as any, "薪资", cfg, cdp);
 
-    const methods = calls.map(c => c[0]);
-    expect(methods.filter(m => m === "Input.dispatchKeyEvent").length).toBe(10);
-    expect(methods.filter(m => m === "Input.imeSetComposition").length).toBe(5);
-    expect(calls[calls.length - 1]).toEqual(["Input.insertText", { text: "中" }]);
+    const comps = calls.filter(([m]) => m === "Input.imeSetComposition").map(([, p]) => p.text);
+    expect(comps).toEqual(["x", "xi", "xin", "xin'z", "xin'zi", "薪资"]);
+    expect(calls).toContainEqual(["Input.insertText", { text: "薪资" }]);
+    const keyups = calls
+      .filter(([m, p]) => m === "Input.dispatchKeyEvent" && p.type === "keyUp")
+      .map(([, p]) => [p.windowsVirtualKeyCode, p.code]);
+    expect(keyups).toContainEqual([88, "KeyX"]);
+    expect(keyups).toContainEqual([32, "Space"]);
     expect(raw.insertText).not.toHaveBeenCalled();
   });
 

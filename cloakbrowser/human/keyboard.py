@@ -82,13 +82,28 @@ def _is_chinese_ideograph(ch: str) -> bool:
     return (0x4E00 <= o <= 0x9FFF) or (0x3400 <= o <= 0x4DBF) or (0xF900 <= o <= 0xFAFF)
 
 
-def _pinyin_map(text: str, ime_language: Optional[str]) -> dict[int, str]:
-    """Map each Chinese-ideograph char index → its lowercase pinyin syllable.
+def _letter_keycode(letter: str) -> int:
+    """Windows virtual key code for a latin letter (a→65 … z→90), verified
+    against a real Microsoft Pinyin capture (x=88, i=73, n=78, z=90)."""
+    return ord(letter.upper())
 
-    Converts per contiguous Han run (not per isolated char) so pypinyin's
-    word-context disambiguation gives correct polyphonic readings
-    (重庆 → chong/qing, not zhong/qing). Returns {} when disabled, when the
-    text has no Han chars, or when pypinyin is not installed (warns once).
+
+# A real IME commits by natural phrase, not per char. Chunk a Han run into
+# phrases of this many chars (each is one composition + one Space commit).
+_CJK_PHRASE_MIN, _CJK_PHRASE_MAX = 2, 4
+
+
+def _build_phrases(
+    text: str, ime_language: Optional[str]
+) -> dict[int, tuple[str, list[str], int]]:
+    """Map the start index of each Han phrase → (hanzi, [pinyin syllables], end index).
+
+    Contiguous Han runs are converted with word context (polyphonic-correct, e.g.
+    重庆 → chong/qing) then chunked into short phrases — a real user types a whole
+    phrase then confirms it, rather than committing every character separately.
+    Returns {} when disabled, when there are no Han chars, or when pypinyin is
+    missing (warns once). A char whose pinyin isn't plain ASCII is left out of any
+    phrase and falls back to insertText.
     """
     global _pypinyin_warned
     if ime_language != "zh" or not any(_is_chinese_ideograph(c) for c in text):
@@ -105,7 +120,7 @@ def _pinyin_map(text: str, ime_language: Optional[str]) -> dict[int, str]:
             )
         return {}
 
-    result: dict[int, str] = {}
+    phrases: dict[int, tuple[str, list[str], int]] = {}
     i, n = 0, len(text)
     while i < n:
         if not _is_chinese_ideograph(text[i]):
@@ -114,51 +129,80 @@ def _pinyin_map(text: str, ime_language: Optional[str]) -> dict[int, str]:
         j = i
         while j < n and _is_chinese_ideograph(text[j]):
             j += 1
-        # Pure-Han run → lazy_pinyin returns exactly one syllable per char.
-        for k, syl in enumerate(lazy_pinyin(text[i:j])):
-            syl = syl.lower()
-            if syl.isascii() and syl.isalpha():
-                result[i + k] = syl
+        # Convert the whole run once (keeps word context), then slice into phrases.
+        run_sylls = [s.lower() for s in lazy_pinyin(text[i:j])]
+        k, off = i, 0
+        while k < j:
+            size = min(random.randint(_CJK_PHRASE_MIN, _CJK_PHRASE_MAX), j - k)
+            sylls = run_sylls[off:off + size]
+            if len(sylls) == size and all(s.isascii() and s.isalpha() for s in sylls):
+                phrases[k] = (text[k:k + size], sylls, k + size - 1)
+            k += size
+            off += size
         i = j
-    return result
+    return phrases
 
 
-def _type_cjk_ime(ch: str, pinyin: str, cfg: HumanConfig, cdp_session: Any) -> None:
-    """Reproduce a real pinyin-IME flow for one Han char.
+def _compose_display(typed: list[tuple[int, str]]) -> str:
+    """Build the composition string a Microsoft Pinyin IME shows for the letters
+    typed so far: syllables joined by an apostrophe separator (xin + z → "xin'z")."""
+    parts: dict[int, str] = {}
+    order: list[int] = []
+    for si, letter in typed:
+        if si not in parts:
+            parts[si] = ""
+            order.append(si)
+        parts[si] += letter
+    return "'".join(parts[si] for si in order)
 
-    Per pinyin letter: a keydown/keyup carrying the IME-processing code
-    (windowsVirtualKeyCode 229 / key "Process") plus an ``Input.imeSetComposition``
-    that grows the composition string (fires compositionstart/update). Then commit
-    the composed hanzi via ``Input.insertText`` (fires compositionend + input).
 
-    NOTE: exact keyCode/key on keyUp and any commit-key (Space) modeling are to be
-    tuned against a real-Chrome IME capture (docs Phase-0 spec); the pinyin-letter
-    keydown stream and composition/commit events are the load-bearing signals.
+def _key_event(type_: str, vk: int, key: str, code: str) -> dict:
+    return {"type": type_, "windowsVirtualKeyCode": vk, "key": key, "code": code}
+
+
+def _type_cjk_phrase(
+    hanzi: str, syllables: list[str], cfg: HumanConfig, cdp_session: Any
+) -> None:
+    """Reproduce a real pinyin-IME phrase, modeled on a Microsoft Pinyin capture.
+
+    For each pinyin letter: a keydown carrying the IME-processing code
+    (windowsVirtualKeyCode 229 / key "Process") grows one composition string
+    (apostrophe-separated syllables), followed by a DUAL keyup — one 229 event and
+    one for the real physical key (x→88). Then Space confirms the top candidate:
+    the composition switches to the hanzi, commits (compositionend), and Space emits
+    its own dual keyup (229 then 32).
+
+    NOTE: compositionend fires isTrusted=false — a CDP Input.insertText limitation
+    the customer confirmed matches a real IME on the same machine, so it is correct.
     """
-    for i, letter in enumerate(pinyin):
-        code = _LETTER_CODES.get(letter, "")
-        cdp_session.send("Input.dispatchKeyEvent", {
-            "type": "keyDown",
-            "windowsVirtualKeyCode": 229,  # VK_PROCESSKEY — IME is processing
-            "key": "Process",
-            "code": code,
-        })
-        cdp_session.send("Input.imeSetComposition", {
-            "text": pinyin[:i + 1],
-            "selectionStart": i + 1,
-            "selectionEnd": i + 1,
-        })
-        sleep_ms(rand_range(cfg.key_hold))
-        cdp_session.send("Input.dispatchKeyEvent", {
-            "type": "keyUp",
-            "windowsVirtualKeyCode": 229,
-            "key": "Process",
-            "code": code,
-        })
-        if i < len(pinyin) - 1:
+    typed: list[tuple[int, str]] = []
+    for si, syl in enumerate(syllables):
+        for letter in syl:
+            code = _LETTER_CODES.get(letter, "")
+            kc = _letter_keycode(letter)
+            cdp_session.send("Input.dispatchKeyEvent",
+                             _key_event("keyDown", 229, "Process", code))
+            typed.append((si, letter))
+            disp = _compose_display(typed)
+            cdp_session.send("Input.imeSetComposition",
+                             {"text": disp, "selectionStart": len(disp), "selectionEnd": len(disp)})
             sleep_ms(rand_range(cfg.key_hold))
-    # Commit the top candidate → compositionend + input.
-    cdp_session.send("Input.insertText", {"text": ch})
+            cdp_session.send("Input.dispatchKeyEvent",
+                             _key_event("keyUp", 229, "Process", code))
+            cdp_session.send("Input.dispatchKeyEvent",
+                             _key_event("keyUp", kc, letter, code))
+            sleep_ms(rand_range(cfg.key_hold))
+    # Brief thinking pause, then Space confirms the phrase's top candidate.
+    sleep_ms(rand_range(cfg.mistype_delay_notice))
+    cdp_session.send("Input.dispatchKeyEvent",
+                     _key_event("keyDown", 229, "Process", "Space"))
+    cdp_session.send("Input.imeSetComposition",
+                     {"text": hanzi, "selectionStart": len(hanzi), "selectionEnd": len(hanzi)})
+    cdp_session.send("Input.insertText", {"text": hanzi})  # commit → compositionend
+    cdp_session.send("Input.dispatchKeyEvent",
+                     _key_event("keyUp", 229, "Process", "Space"))
+    cdp_session.send("Input.dispatchKeyEvent",
+                     _key_event("keyUp", 32, " ", "Space"))
 
 
 def human_type(
@@ -172,24 +216,29 @@ def human_type(
             producing isTrusted=true events with no evaluate stack trace.
             If None, falls back to page.evaluate (detectable).
     """
-    # Chinese ideographs get a real pinyin-IME flow when enabled (ime_language='zh'
+    # Chinese phrases get a real pinyin-IME flow when enabled (ime_language='zh'
     # + a CDP session + pypinyin available); everything else keeps insertText.
-    pinyin_map = (
-        _pinyin_map(text, cfg.ime_language) if cdp_session is not None else {}
+    phrases = (
+        _build_phrases(text, cfg.ime_language) if cdp_session is not None else {}
     )
+    skip_until = -1
 
     for i, ch in enumerate(text):
+        if i <= skip_until:
+            continue  # already typed as part of a phrase
         # Non-ASCII characters (Cyrillic, CJK, emoji) — use insertText
         if not ch.isascii():
             sleep_ms(rand_range(cfg.key_hold))
-            if i in pinyin_map:
+            if i in phrases:
+                hanzi, sylls, end = phrases[i]
                 try:
-                    _type_cjk_ime(ch, pinyin_map[i], cfg, cdp_session)
+                    _type_cjk_phrase(hanzi, sylls, cfg, cdp_session)
                 except Exception:
-                    # A CDP hiccup on one char (e.g. focus lost mid-type) must not
-                    # abort the whole type() — fall back to plain insertion.
-                    _log.debug("CJK IME failed for %r; using insertText", ch, exc_info=True)
-                    raw.insert_text(ch)
+                    # A CDP hiccup mid-phrase must not abort the whole type().
+                    _log.debug("CJK IME failed for %r; using insertText", hanzi, exc_info=True)
+                    for c in hanzi:
+                        raw.insert_text(c)
+                skip_until = end
             else:
                 raw.insert_text(ch)
             if i < len(text) - 1:

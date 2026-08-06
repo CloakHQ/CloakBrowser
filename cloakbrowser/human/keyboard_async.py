@@ -15,7 +15,10 @@ from typing import Any, Optional, Protocol
 from .config import HumanConfig, rand, rand_range, async_sleep_ms
 from .keyboard import SHIFT_SYMBOLS, NEARBY_KEYS, _get_nearby_key
 from .keyboard import _SHIFT_SYMBOL_CODES, _SHIFT_SYMBOL_KEYCODES
-from .keyboard import _LETTER_CODES, _pinyin_map, _log  # pure helpers, reused as-is
+from .keyboard import (  # pure helpers, reused as-is
+    _LETTER_CODES, _build_phrases, _compose_display, _letter_keycode,
+    _key_event, _log,
+)
 
 
 class AsyncRawKeyboard(Protocol):
@@ -25,33 +28,37 @@ class AsyncRawKeyboard(Protocol):
     async def insert_text(self, text: str) -> None: ...
 
 
-async def _type_cjk_ime(
-    ch: str, pinyin: str, cfg: HumanConfig, cdp_session: Any
+async def _type_cjk_phrase(
+    hanzi: str, syllables: list[str], cfg: HumanConfig, cdp_session: Any
 ) -> None:
-    """Async mirror of keyboard._type_cjk_ime — real pinyin-IME flow for one Han char."""
-    for i, letter in enumerate(pinyin):
-        code = _LETTER_CODES.get(letter, "")
-        await cdp_session.send("Input.dispatchKeyEvent", {
-            "type": "keyDown",
-            "windowsVirtualKeyCode": 229,  # VK_PROCESSKEY — IME is processing
-            "key": "Process",
-            "code": code,
-        })
-        await cdp_session.send("Input.imeSetComposition", {
-            "text": pinyin[:i + 1],
-            "selectionStart": i + 1,
-            "selectionEnd": i + 1,
-        })
-        await async_sleep_ms(rand_range(cfg.key_hold))
-        await cdp_session.send("Input.dispatchKeyEvent", {
-            "type": "keyUp",
-            "windowsVirtualKeyCode": 229,
-            "key": "Process",
-            "code": code,
-        })
-        if i < len(pinyin) - 1:
+    """Async mirror of keyboard._type_cjk_phrase — real pinyin-IME phrase flow."""
+    typed: list = []
+    for si, syl in enumerate(syllables):
+        for letter in syl:
+            code = _LETTER_CODES.get(letter, "")
+            kc = _letter_keycode(letter)
+            await cdp_session.send("Input.dispatchKeyEvent",
+                                   _key_event("keyDown", 229, "Process", code))
+            typed.append((si, letter))
+            disp = _compose_display(typed)
+            await cdp_session.send("Input.imeSetComposition",
+                                   {"text": disp, "selectionStart": len(disp), "selectionEnd": len(disp)})
             await async_sleep_ms(rand_range(cfg.key_hold))
-    await cdp_session.send("Input.insertText", {"text": ch})
+            await cdp_session.send("Input.dispatchKeyEvent",
+                                   _key_event("keyUp", 229, "Process", code))
+            await cdp_session.send("Input.dispatchKeyEvent",
+                                   _key_event("keyUp", kc, letter, code))
+            await async_sleep_ms(rand_range(cfg.key_hold))
+    await async_sleep_ms(rand_range(cfg.mistype_delay_notice))
+    await cdp_session.send("Input.dispatchKeyEvent",
+                           _key_event("keyDown", 229, "Process", "Space"))
+    await cdp_session.send("Input.imeSetComposition",
+                           {"text": hanzi, "selectionStart": len(hanzi), "selectionEnd": len(hanzi)})
+    await cdp_session.send("Input.insertText", {"text": hanzi})
+    await cdp_session.send("Input.dispatchKeyEvent",
+                           _key_event("keyUp", 229, "Process", "Space"))
+    await cdp_session.send("Input.dispatchKeyEvent",
+                           _key_event("keyUp", 32, " ", "Space"))
 
 
 async def async_human_type(
@@ -65,21 +72,27 @@ async def async_human_type(
             producing isTrusted=true events with no evaluate stack trace.
             If None, falls back to page.evaluate (detectable).
     """
-    pinyin_map = (
-        _pinyin_map(text, cfg.ime_language) if cdp_session is not None else {}
+    phrases = (
+        _build_phrases(text, cfg.ime_language) if cdp_session is not None else {}
     )
+    skip_until = -1
 
     for i, ch in enumerate(text):
+        if i <= skip_until:
+            continue  # already typed as part of a phrase
         # Non-ASCII characters (Cyrillic, CJK, emoji) — use insertText
         if not ch.isascii():
             await async_sleep_ms(rand_range(cfg.key_hold))
-            if i in pinyin_map:
+            if i in phrases:
+                hanzi, sylls, end = phrases[i]
                 try:
-                    await _type_cjk_ime(ch, pinyin_map[i], cfg, cdp_session)
+                    await _type_cjk_phrase(hanzi, sylls, cfg, cdp_session)
                 except Exception:
-                    # A CDP hiccup on one char must not abort the whole type().
-                    _log.debug("CJK IME failed for %r; using insertText", ch, exc_info=True)
-                    await raw.insert_text(ch)
+                    # A CDP hiccup mid-phrase must not abort the whole type().
+                    _log.debug("CJK IME failed for %r; using insertText", hanzi, exc_info=True)
+                    for c in hanzi:
+                        await raw.insert_text(c)
+                skip_until = end
             else:
                 await raw.insert_text(ch)
             if i < len(text) - 1:
