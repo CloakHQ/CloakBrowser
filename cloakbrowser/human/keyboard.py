@@ -205,6 +205,52 @@ def _type_cjk_phrase(
                      _key_event("keyUp", 32, " ", "Space"))
 
 
+# Full-width Chinese punctuation → physical key it's typed on in Microsoft Pinyin,
+# verified from a real capture. Fields: (needs_shift, code, keyCode, base_key,
+# shifted_key). keyCode is always the physical key's base code; the keyup `key`
+# char is the shifted form only while Shift is still held.
+_CJK_PUNCT: dict[str, tuple[bool, str, int, str, str]] = {
+    "，": (False, "Comma", 188, ",", ","),
+    "。": (False, "Period", 190, ".", "."),
+    "；": (False, "Semicolon", 186, ";", ";"),
+    "、": (False, "Backslash", 220, "\\", "\\"),
+    "？": (True, "Slash", 191, "/", "?"),
+    "！": (True, "Digit1", 49, "1", "!"),
+    "：": (True, "Semicolon", 186, ";", ":"),
+}
+
+
+def _type_cjk_punct(ch: str, cfg: HumanConfig, cdp_session: Any) -> None:
+    """Type one full-width Chinese punctuation mark through the IME, matching a real
+    Microsoft Pinyin capture: keydown Process/229 on its physical key → composition →
+    commit (compositionend, untrusted) → dual keyup (229 + physical keyCode). Shift
+    marks wrap it in Shift; the Shift-release order is randomized (real users vary it),
+    and the keyup `key` char follows the Shift state at release."""
+    shift, code, kc, base_key, shifted_key = _CJK_PUNCT[ch]
+    if shift:
+        cdp_session.send("Input.dispatchKeyEvent",
+                         _key_event("keyDown", 16, "Shift", "ShiftLeft"))
+        sleep_ms(rand_range(cfg.shift_down_delay))
+    cdp_session.send("Input.dispatchKeyEvent", _key_event("keyDown", 229, "Process", code))
+    cdp_session.send("Input.imeSetComposition",
+                     {"text": ch, "selectionStart": len(ch), "selectionEnd": len(ch)})
+    sleep_ms(rand_range(cfg.key_hold))
+    cdp_session.send("Input.insertText", {"text": ch})  # commit → compositionend
+    release_shift_first = shift and random.random() < 0.5
+    if release_shift_first:
+        cdp_session.send("Input.dispatchKeyEvent",
+                         _key_event("keyUp", 16, "Shift", "ShiftLeft"))
+        cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code))
+        cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", kc, base_key, code))
+    else:
+        cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code))
+        cdp_session.send("Input.dispatchKeyEvent",
+                         _key_event("keyUp", kc, shifted_key if shift else base_key, code))
+        if shift:
+            cdp_session.send("Input.dispatchKeyEvent",
+                             _key_event("keyUp", 16, "Shift", "ShiftLeft"))
+
+
 def human_type(
     page: Any, raw: RawKeyboard, text: str, cfg: HumanConfig,
     cdp_session: Any = None,
@@ -239,6 +285,13 @@ def human_type(
                     for c in hanzi:
                         raw.insert_text(c)
                 skip_until = end
+            elif (cfg.ime_language == "zh" and cdp_session is not None
+                  and ch in _CJK_PUNCT):
+                try:
+                    _type_cjk_punct(ch, cfg, cdp_session)
+                except Exception:
+                    _log.debug("CJK punct failed for %r; using insertText", ch, exc_info=True)
+                    raw.insert_text(ch)
             else:
                 raw.insert_text(ch)
             if i < len(text) - 1:

@@ -215,6 +215,52 @@ export async function typeCjkPhrase(
   await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 32, key: ' ', code: 'Space' });
 }
 
+// Full-width Chinese punctuation → physical key in Microsoft Pinyin (verified from a
+// real capture): [needsShift, code, keyCode, baseKey, shiftedKey]. keyCode is the
+// physical key's base code; the keyup `key` char is shifted only while Shift is held.
+export const CJK_PUNCT: Record<string, [boolean, string, number, string, string]> = {
+  '，': [false, 'Comma', 188, ',', ','],
+  '。': [false, 'Period', 190, '.', '.'],
+  '；': [false, 'Semicolon', 186, ';', ';'],
+  '、': [false, 'Backslash', 220, '\\', '\\'],
+  '？': [true, 'Slash', 191, '/', '?'],
+  '！': [true, 'Digit1', 49, '1', '!'],
+  '：': [true, 'Semicolon', 186, ';', ':'],
+};
+
+/**
+ * Type one full-width Chinese punctuation mark through the IME, matching a real
+ * Microsoft Pinyin capture: keydown Process/229 on its physical key → composition →
+ * commit → dual keyup (229 + physical keyCode). Shift marks wrap it in Shift; the
+ * Shift-release order is randomized (real users vary it) and the keyup `key` char
+ * follows the Shift state.
+ */
+export async function typeCjkPunct(
+  ch: string,
+  cfg: HumanConfig,
+  cdpSession: CDPSession,
+): Promise<void> {
+  const [shift, code, kc, baseKey, shiftedKey] = CJK_PUNCT[ch];
+  if (shift) {
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyDown', windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
+    await sleep(randRange(cfg.shift_down_delay));
+  }
+  await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyDown', windowsVirtualKeyCode: 229, key: 'Process', code });
+  await cdpSession.send('Input.imeSetComposition', { text: ch, selectionStart: ch.length, selectionEnd: ch.length });
+  await sleep(randRange(cfg.key_hold));
+  await cdpSession.send('Input.insertText', { text: ch });
+  const releaseShiftFirst = shift && Math.random() < 0.5;
+  if (releaseShiftFirst) {
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 229, key: 'Process', code });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: kc, key: baseKey, code });
+  } else {
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 229, key: 'Process', code });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: kc, key: shift ? shiftedKey : baseKey, code });
+    if (shift) await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
+  }
+}
+
 function getNearbyKey(ch: string): string {
   const lower = ch.toLowerCase();
   if (lower in NEARBY_KEYS) {
@@ -271,6 +317,13 @@ export async function humanType(
           for (const c of hanzi) await raw.insertText(c);
         }
         skipUntil = end;
+      } else if (cfg.ime_language === 'zh' && cdpSession && ch in CJK_PUNCT) {
+        try {
+          await typeCjkPunct(ch, cfg, cdpSession);
+        } catch (err) {
+          console.debug(`[cloakbrowser] CJK punct failed for ${ch}; using insertText`, err);
+          await raw.insertText(ch);
+        }
       } else {
         await raw.insertText(ch);
       }

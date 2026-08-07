@@ -17,7 +17,7 @@ from .keyboard import SHIFT_SYMBOLS, NEARBY_KEYS, _get_nearby_key
 from .keyboard import _SHIFT_SYMBOL_CODES, _SHIFT_SYMBOL_KEYCODES
 from .keyboard import (  # pure helpers, reused as-is
     _LETTER_CODES, _build_phrases, _compose_display, _letter_keycode,
-    _key_event, _log,
+    _key_event, _log, _CJK_PUNCT,
 )
 
 
@@ -61,6 +61,33 @@ async def _type_cjk_phrase(
                            _key_event("keyUp", 32, " ", "Space"))
 
 
+async def _type_cjk_punct(ch: str, cfg: HumanConfig, cdp_session: Any) -> None:
+    """Async mirror of keyboard._type_cjk_punct — full-width punctuation via the IME."""
+    shift, code, kc, base_key, shifted_key = _CJK_PUNCT[ch]
+    if shift:
+        await cdp_session.send("Input.dispatchKeyEvent",
+                               _key_event("keyDown", 16, "Shift", "ShiftLeft"))
+        await async_sleep_ms(rand_range(cfg.shift_down_delay))
+    await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyDown", 229, "Process", code))
+    await cdp_session.send("Input.imeSetComposition",
+                           {"text": ch, "selectionStart": len(ch), "selectionEnd": len(ch)})
+    await async_sleep_ms(rand_range(cfg.key_hold))
+    await cdp_session.send("Input.insertText", {"text": ch})
+    release_shift_first = shift and random.random() < 0.5
+    if release_shift_first:
+        await cdp_session.send("Input.dispatchKeyEvent",
+                               _key_event("keyUp", 16, "Shift", "ShiftLeft"))
+        await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code))
+        await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", kc, base_key, code))
+    else:
+        await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code))
+        await cdp_session.send("Input.dispatchKeyEvent",
+                               _key_event("keyUp", kc, shifted_key if shift else base_key, code))
+        if shift:
+            await cdp_session.send("Input.dispatchKeyEvent",
+                                   _key_event("keyUp", 16, "Shift", "ShiftLeft"))
+
+
 async def async_human_type(
     page: Any, raw: AsyncRawKeyboard, text: str, cfg: HumanConfig,
     cdp_session: Any = None,
@@ -93,6 +120,13 @@ async def async_human_type(
                     for c in hanzi:
                         await raw.insert_text(c)
                 skip_until = end
+            elif (cfg.ime_language == "zh" and cdp_session is not None
+                  and ch in _CJK_PUNCT):
+                try:
+                    await _type_cjk_punct(ch, cfg, cdp_session)
+                except Exception:
+                    _log.debug("CJK punct failed for %r; using insertText", ch, exc_info=True)
+                    await raw.insert_text(ch)
             else:
                 await raw.insert_text(ch)
             if i < len(text) - 1:

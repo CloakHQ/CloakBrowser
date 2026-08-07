@@ -14,7 +14,31 @@ import type { Page, CDPSession } from 'puppeteer-core';
 import { RawKeyboard } from '../human/mouse.js';
 import type { HumanConfig } from '../human/config.js';
 import { rand, randRange, sleep } from '../human/config.js';
-import { LETTER_CODES, buildPhrases, composeDisplay, letterKeycode } from '../human/keyboard.js';
+import { LETTER_CODES, buildPhrases, composeDisplay, letterKeycode, CJK_PUNCT } from '../human/keyboard.js';
+
+/** Full-width Chinese punctuation via the IME (Puppeteer CDPSession). See the
+ * Playwright keyboard.ts typeCjkPunct for the model. */
+async function typeCjkPunct(ch: string, cfg: HumanConfig, cdpSession: CDPSession): Promise<void> {
+  const [shift, code, kc, baseKey, shiftedKey] = CJK_PUNCT[ch];
+  if (shift) {
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyDown', windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
+    await sleep(randRange(cfg.shift_down_delay));
+  }
+  await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyDown', windowsVirtualKeyCode: 229, key: 'Process', code });
+  await cdpSession.send('Input.imeSetComposition', { text: ch, selectionStart: ch.length, selectionEnd: ch.length });
+  await sleep(randRange(cfg.key_hold));
+  await cdpSession.send('Input.insertText', { text: ch });
+  const releaseShiftFirst = shift && Math.random() < 0.5;
+  if (releaseShiftFirst) {
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 229, key: 'Process', code });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: kc, key: baseKey, code });
+  } else {
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 229, key: 'Process', code });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: kc, key: shift ? shiftedKey : baseKey, code });
+    if (shift) await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
+  }
+}
 
 /**
  * Reproduce a real pinyin-IME phrase (Puppeteer CDPSession). See the Playwright
@@ -137,6 +161,13 @@ export async function humanType(
           for (const c of hanzi) await raw.insertText(c);
         }
         skipUntil = end;
+      } else if (cfg.ime_language === 'zh' && cdpSession && ch in CJK_PUNCT) {
+        try {
+          await typeCjkPunct(ch, cfg, cdpSession);
+        } catch (err) {
+          console.debug(`[cloakbrowser] CJK punct failed for ${ch}; using insertText`, err);
+          await raw.insertText(ch);
+        }
       } else {
         await raw.insertText(ch);
       }

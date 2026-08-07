@@ -1834,4 +1834,45 @@ describe("CJK pinyin-IME humanize (ime_language='zh')", () => {
     expect(raw.insertText).toHaveBeenCalledWith("中");
     expect(cdp.send).not.toHaveBeenCalled();
   });
+
+  it("full-width punctuation goes through the IME with a dual keyup", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { ime_language: "zh", mistype_chance: 0 });
+    const raw = mockRaw();
+    const { cdp, calls } = mockCdp();
+    await humanType({} as any, raw as any, "，", cfg, cdp); // Comma
+    expect(calls).toContainEqual(["Input.insertText", { text: "，" }]);
+    const kd = calls.filter(([m, p]) => m === "Input.dispatchKeyEvent" && p.type === "keyDown")
+      .map(([, p]) => [p.windowsVirtualKeyCode, p.code]);
+    expect(kd).toEqual([[229, "Comma"]]);
+    const keyups = calls.filter(([m, p]) => m === "Input.dispatchKeyEvent" && p.type === "keyUp")
+      .map(([, p]) => [p.windowsVirtualKeyCode, p.code]);
+    expect(keyups).toContainEqual([229, "Comma"]);
+    expect(keyups).toContainEqual([188, "Comma"]);
+    expect(raw.insertText).not.toHaveBeenCalled();
+  });
+
+  it("shift punctuation (？) wraps Shift + Slash through the IME", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { ime_language: "zh", mistype_chance: 0 });
+    const raw = mockRaw();
+    const { cdp, calls } = mockCdp();
+    await humanType({} as any, raw as any, "？", cfg, cdp);
+    const kd = calls.filter(([m, p]) => m === "Input.dispatchKeyEvent" && p.type === "keyDown")
+      .map(([, p]) => [p.windowsVirtualKeyCode, p.code]);
+    expect(kd).toContainEqual([16, "ShiftLeft"]);
+    expect(kd).toContainEqual([229, "Slash"]);
+    expect(calls).toContainEqual(["Input.insertText", { text: "？" }]);
+    expect(raw.insertText).not.toHaveBeenCalled();
+  });
+
+  it("punctuation falls back to insertText when disabled", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { mistype_chance: 0 });
+    const raw = mockRaw();
+    const { cdp } = mockCdp();
+    await humanType({} as any, raw as any, "，", cfg, cdp);
+    expect(raw.insertText).toHaveBeenCalledWith("，");
+    expect(cdp.send).not.toHaveBeenCalled();
+  });
 });

@@ -1653,6 +1653,67 @@ class TestCJKPhraseAsync:
         cdp.send.assert_not_called()
 
 
+class TestCJKPunctuation:
+    """Full-width Chinese punctuation through the IME (real Microsoft Pinyin capture)."""
+
+    def _run(self, text, ime="zh", cdp_on=True):
+        from cloakbrowser.human.keyboard import human_type
+        cfg = _cfg(ime_language=ime, mistype_chance=0) if ime else _cfg(mistype_chance=0)
+        calls = []
+        raw = MagicMock()
+        cdp = MagicMock()
+        cdp.send = MagicMock(side_effect=lambda m, p: calls.append((m, p)))
+        human_type(MagicMock(), raw, text, cfg, cdp_session=(cdp if cdp_on else None))
+        return raw, calls
+
+    def test_simple_punct_dual_keyup(self):
+        # ，= physical Comma; keydown Process/229 + composition + dual keyup (229, 188).
+        raw, calls = self._run("，")
+        assert ("Input.insertText", {"text": "，"}) in calls
+        kd = [p for m, p in calls if m == "Input.dispatchKeyEvent" and p["type"] == "keyDown"]
+        assert [(p["windowsVirtualKeyCode"], p["code"]) for p in kd] == [(229, "Comma")]
+        keyups = [(p["windowsVirtualKeyCode"], p["code"]) for m, p in calls
+                  if m == "Input.dispatchKeyEvent" and p["type"] == "keyUp"]
+        assert (229, "Comma") in keyups and (188, "Comma") in keyups
+        raw.insert_text.assert_not_called()
+
+    def test_shift_punct_wraps_shift(self):
+        # ？= Shift + Slash; both a Shift keydown/keyup and the Process/Slash/229 stream.
+        raw, calls = self._run("？")
+        kd = [(p["windowsVirtualKeyCode"], p["code"]) for m, p in calls
+              if m == "Input.dispatchKeyEvent" and p["type"] == "keyDown"]
+        assert (16, "ShiftLeft") in kd and (229, "Slash") in kd
+        keyups = [(p["windowsVirtualKeyCode"], p["code"]) for m, p in calls
+                  if m == "Input.dispatchKeyEvent" and p["type"] == "keyUp"]
+        assert (16, "ShiftLeft") in keyups and (229, "Slash") in keyups and (191, "Slash") in keyups
+        assert ("Input.insertText", {"text": "？"}) in calls
+        raw.insert_text.assert_not_called()
+
+    def test_shift_release_order_varies(self):
+        # Real users vary the Shift-release order — over many runs we see both orderings.
+        seen_first, seen_last = False, False
+        for _ in range(40):
+            _, calls = self._run("！")
+            order = [(p["windowsVirtualKeyCode"], p["type"]) for m, p in calls
+                     if m == "Input.dispatchKeyEvent" and p["windowsVirtualKeyCode"] in (16, 49)
+                     and p["type"] == "keyUp"]
+            # position of the Shift keyup relative to the physical Digit1 keyup
+            shift_idx = next(i for i, (vk, _) in enumerate(order) if vk == 16)
+            phys_idx = next(i for i, (vk, _) in enumerate(order) if vk == 49)
+            if shift_idx < phys_idx:
+                seen_first = True
+            else:
+                seen_last = True
+        assert seen_first and seen_last  # both orderings occur
+
+    def test_disabled_and_no_cdp_fall_back(self):
+        raw, calls = self._run("，", ime=None)
+        raw.insert_text.assert_called_once_with("，")
+        assert calls == []
+        raw2, calls2 = self._run("，", cdp_on=False)
+        raw2.insert_text.assert_called_once_with("，")
+
+
 # =========================================================================
 # Direct runner
 # =========================================================================
