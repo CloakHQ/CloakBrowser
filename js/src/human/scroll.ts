@@ -5,6 +5,7 @@
 import type { Page } from 'playwright-core';
 import { HumanConfig, rand, randRange, randIntRange, sleep } from './config.js';
 import { RawMouse, humanMove } from './mouse.js';
+import { buildBoxJs, evalParsed, getWorld, OK, NOT_FOUND, UNSUPPORTED, VIEWPORT_JS } from './stealthDom.js';
 
 interface ElementBounds {
   x: number;
@@ -58,9 +59,17 @@ export async function humanScrollIntoView(
   // dimensions so humanize works headed (the stealth-relevant mode).
   let viewport = page.viewportSize();
   if (!viewport) {
-    viewport = await page.evaluate(
-      () => ({ width: window.innerWidth, height: window.innerHeight }),
-    );
+    // Read the live window dimensions through the isolated world, consistent with
+    // the other geometry reads here.
+    const world = getWorld(page);
+    if (world) {
+      try { viewport = await world.evaluate(VIEWPORT_JS); } catch { /* fall back below */ }
+    }
+    if (!viewport) {
+      viewport = await page.evaluate(
+        () => ({ width: window.innerWidth, height: window.innerHeight }),
+      );
+    }
   }
   if (!viewport || !viewport.height) throw new Error('Viewport size not available');
 
@@ -175,11 +184,30 @@ export async function scrollToElement(
   );
 }
 
-async function getElementBox(
+export async function getElementBox(
   page: Page,
   selector: string,
   timeout: number = 30000,
 ): Promise<ElementBounds | null> {
+  // Read geometry through the isolated world when available; a not-found is retried
+  // briefly in-world (SPA re-renders) and only an unsupported selector reaches
+  // Playwright's boundingBox.
+  const world = getWorld(page);
+  if (world) {
+    let { status, data } = await evalParsed(world, buildBoxJs(selector));
+    if (status === OK) return data.box;
+    if (status === NOT_FOUND) {
+      const deadline = Date.now() + Math.min(timeout, 2000);
+      while (Date.now() < deadline) {
+        await sleep(50);
+        ({ status, data } = await evalParsed(world, buildBoxJs(selector)));
+        if (status === OK) return data.box;
+        if (status === UNSUPPORTED) break;
+      }
+      if (status !== UNSUPPORTED) return null;
+    }
+    // UNSUPPORTED -> Playwright fallback below
+  }
   const el = page.locator(selector).first();
   try {
     const box = await el.boundingBox({ timeout: Math.max(1, timeout) });

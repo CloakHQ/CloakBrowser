@@ -6,13 +6,16 @@ Mirrors scroll.py but uses ``await`` for all Playwright calls and
 
 from __future__ import annotations
 
+import asyncio
 import math
 import random
+import time
 from typing import Any, Awaitable, Callable, Optional, Tuple
 
 from .config import HumanConfig, rand, rand_range, rand_int_range, async_sleep_ms
 from .mouse_async import AsyncRawMouse, async_human_move
 from .scroll import _is_in_viewport
+from .stealth_dom import build_box_js, async_eval_parsed, OK, NOT_FOUND, UNSUPPORTED, _VIEWPORT_JS
 
 
 async def _get_element_box_async(
@@ -20,7 +23,28 @@ async def _get_element_box_async(
 ) -> Optional[dict]:
     """Async variant. ``timeout`` is forwarded to Playwright's
     ``boundingBox(timeout=...)`` so callers can extend it for slow-loading
-    elements (#172)."""
+    elements (#172).
+
+    Reads geometry through the isolated world when available; a not-found is
+    retried briefly in-world (SPA re-renders) and only an *unsupported* selector
+    reaches Playwright's ``bounding_box``."""
+    world = getattr(page, "_stealth_world", None)
+    if world is not None:
+        status, data = await async_eval_parsed(world, build_box_js(selector))
+        if status == OK:
+            return data["box"]
+        if status == NOT_FOUND:
+            deadline = time.monotonic() + min(timeout, 2000) / 1000.0
+            while time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+                status, data = await async_eval_parsed(world, build_box_js(selector))
+                if status == OK:
+                    return data["box"]
+                if status == UNSUPPORTED:
+                    break
+            if status != UNSUPPORTED:
+                return None
+        # UNSUPPORTED -> Playwright fallback below
     try:
         el = page.locator(selector).first
         return await el.bounding_box(timeout=max(1, timeout))
@@ -61,11 +85,18 @@ async def async_human_scroll_into_view(
     viewport = page.viewport_size
     if not viewport:
         # Headed launches default to no_viewport so the page tracks the real OS
-        # window; page.viewport_size is then None. Fall back to the live window
-        # dimensions so humanize works headed (the stealth-relevant mode).
-        viewport = await page.evaluate(
-            "() => ({ width: window.innerWidth, height: window.innerHeight })"
-        )
+        # window; page.viewport_size is then None. Read the live window dimensions
+        # through the isolated world, consistent with the other geometry reads here.
+        world = getattr(page, "_stealth_world", None)
+        if world is not None:
+            try:
+                viewport = await world.evaluate(_VIEWPORT_JS)
+            except Exception:
+                viewport = None
+        if not viewport:
+            viewport = await page.evaluate(
+                "() => ({ width: window.innerWidth, height: window.innerHeight })"
+            )
     if not viewport or not viewport.get("height"):
         raise RuntimeError("Viewport size not available")
 

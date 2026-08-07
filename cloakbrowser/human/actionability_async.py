@@ -25,6 +25,10 @@ from .actionability import (
     _POINTER_EVENTS_LOCATOR_JS,
     _POINTER_EVENTS_HANDLE_JS,
 )
+from .stealth_dom import (
+    build_actionable_js, build_box_js, build_pointer_js, async_eval_parsed,
+    OK, NOT_FOUND, UNSUPPORTED,
+)
 
 
 async def _async_backoff_sleep(attempt: int) -> None:
@@ -35,6 +39,46 @@ async def _async_backoff_sleep(attempt: int) -> None:
 # ---------------------------------------------------------------------------
 # Pre-scroll actionability
 # ---------------------------------------------------------------------------
+
+async def _async_stealth_actionable(page: Any, selector: str, checks: FrozenSet[str]) -> bool:
+    """Async mirror of ``_stealth_actionable`` — isolated-world actionability read.
+
+    Returns True when handled (raising on a failed check), False when the
+    selector/world is unsupported (caller falls back to Playwright).
+    """
+    world = getattr(page, "_stealth_world", None)
+    if world is None:
+        return False
+    status, data = await async_eval_parsed(world, build_actionable_js(selector))
+    if status == UNSUPPORTED:
+        return False
+    if status == NOT_FOUND:
+        raise ElementNotAttachedError(selector)
+    if "visible" in checks and not data.get("visible"):
+        raise ElementNotVisibleError(selector)
+    if "enabled" in checks and not data.get("enabled"):
+        raise ElementNotEnabledError(selector)
+    if "editable" in checks and not data.get("editable"):
+        raise ElementNotEditableError(selector)
+    return True
+
+
+async def _async_read_box(page: Any, selector: str, remaining_ms: float) -> Optional[dict]:
+    """Async mirror of ``_read_box`` — isolated-world box with Playwright fallback."""
+    world = getattr(page, "_stealth_world", None)
+    if world is not None:
+        status, data = await async_eval_parsed(world, build_box_js(selector))
+        if status == OK:
+            return data["box"]
+        if status == NOT_FOUND:
+            return None
+        # UNSUPPORTED -> Playwright below
+    try:
+        loc = page.locator(selector).first
+        return await loc.bounding_box(timeout=max(1, min(remaining_ms, 1000)))
+    except Exception:
+        return None
+
 
 async def async_ensure_actionable(
     page: Any,
@@ -58,25 +102,26 @@ async def async_ensure_actionable(
             raise ActionabilityError(selector, "timeout", "timeout expired before first check")
 
         try:
-            loc = page.locator(selector).first
+            if not await _async_stealth_actionable(page, selector, checks):
+                loc = page.locator(selector).first
 
-            if "attached" in checks:
-                try:
-                    await loc.wait_for(state="attached", timeout=max(1, min(remaining_ms, 2000)))
-                except Exception:
-                    raise ElementNotAttachedError(selector)
+                if "attached" in checks:
+                    try:
+                        await loc.wait_for(state="attached", timeout=max(1, min(remaining_ms, 2000)))
+                    except Exception:
+                        raise ElementNotAttachedError(selector)
 
-            if "visible" in checks:
-                if not await loc.is_visible():
-                    raise ElementNotVisibleError(selector)
+                if "visible" in checks:
+                    if not await loc.is_visible():
+                        raise ElementNotVisibleError(selector)
 
-            if "enabled" in checks:
-                if not await loc.is_enabled():
-                    raise ElementNotEnabledError(selector)
+                if "enabled" in checks:
+                    if not await loc.is_enabled():
+                        raise ElementNotEnabledError(selector)
 
-            if "editable" in checks:
-                if not await loc.is_editable():
-                    raise ElementNotEditableError(selector)
+                if "editable" in checks:
+                    if not await loc.is_editable():
+                        raise ElementNotEditableError(selector)
 
             return
 
@@ -105,14 +150,13 @@ async def async_ensure_stable(
         if remaining_ms <= 0:
             raise ElementNotStableError(selector)
 
-        loc = page.locator(selector).first
-        box1 = await loc.bounding_box(timeout=max(1, min(remaining_ms, 1000)))
+        box1 = await _async_read_box(page, selector, remaining_ms)
         if box1 is None:
             raise ElementNotAttachedError(selector)
 
         await asyncio.sleep(0.1)
 
-        box2 = await loc.bounding_box(timeout=max(1, min(remaining_ms, 1000)))
+        box2 = await _async_read_box(page, selector, remaining_ms)
         if box2 is None:
             raise ElementNotAttachedError(selector)
 
@@ -143,13 +187,25 @@ async def async_check_pointer_events(
     last_miss: Optional[str] = None
 
     while True:
-        try:
-            loc = page.locator(selector).first
-            box = await loc.bounding_box(timeout=max(1, min((deadline - time.monotonic()) * 1000, 1000)))
-            result = await loc.evaluate(_POINTER_EVENTS_LOCATOR_JS, {"x": x, "y": y, "box": box})
-        except Exception as exc:
-            logger.debug("pointer_events check failed for %r: %s", selector, exc)
-            result = None
+        world = stealth if stealth is not None else getattr(page, "_stealth_world", None)
+        result: Optional[dict] = None
+        handled = False
+        if world is not None:
+            status, data = await async_eval_parsed(world, build_pointer_js(selector, x, y))
+            if status == OK:
+                result = {"hit": data.get("hit", False), "covering": data.get("covering", "unknown")}
+                handled = True
+            elif status == NOT_FOUND:
+                result = None
+                handled = True
+        if not handled:
+            try:
+                loc = page.locator(selector).first
+                box = await loc.bounding_box(timeout=max(1, min((deadline - time.monotonic()) * 1000, 1000)))
+                result = await loc.evaluate(_POINTER_EVENTS_LOCATOR_JS, {"x": x, "y": y, "box": box})
+            except Exception as exc:
+                logger.debug("pointer_events check failed for %r: %s", selector, exc)
+                result = None
 
         # Proceed if the check confirms a hit, or if it could not be determined
         # (None) — failing closed would block legitimate clicks. But once a miss
