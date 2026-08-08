@@ -1864,6 +1864,22 @@ describe("CJK pinyin-IME humanize (ime_language='zh')", () => {
     expect(kd).toContainEqual([229, "Slash"]);
     expect(calls).toContainEqual(["Input.insertText", { text: "？" }]);
     expect(raw.insertText).not.toHaveBeenCalled();
+    // Shift modifier: events while Shift is held carry modifiers=8, then 0 after keyup.
+    const evs = calls.filter(([m]) => m === "Input.dispatchKeyEvent").map(([, p]) => p);
+    const shiftUp = evs.findIndex(p => p.type === "keyUp" && p.code === "ShiftLeft");
+    evs.forEach((p, i) => {
+      expect(p.modifiers).toBe(i < shiftUp ? 8 : 0);
+    });
+  });
+
+  it("non-shift punctuation (，) carries no Shift modifier", async () => {
+    const { humanType } = await import("../src/human/keyboard.js");
+    const cfg = resolveConfig("default", { ime_language: "zh", mistype_chance: 0 });
+    const raw = mockRaw();
+    const { cdp, calls } = mockCdp();
+    await humanType({} as any, raw as any, "，", cfg, cdp);
+    const evs = calls.filter(([m]) => m === "Input.dispatchKeyEvent").map(([, p]) => p);
+    evs.forEach(p => expect(p.modifiers ?? 0).toBe(0));
   });
 
   it("punctuation falls back to insertText when disabled", async () => {

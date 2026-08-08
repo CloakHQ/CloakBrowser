@@ -156,8 +156,11 @@ def _compose_display(typed: list[tuple[int, str]]) -> str:
     return "'".join(parts[si] for si in order)
 
 
-def _key_event(type_: str, vk: int, key: str, code: str) -> dict:
-    return {"type": type_, "windowsVirtualKeyCode": vk, "key": key, "code": code}
+def _key_event(type_: str, vk: int, key: str, code: str, modifiers: int = 0) -> dict:
+    ev = {"type": type_, "windowsVirtualKeyCode": vk, "key": key, "code": code}
+    if modifiers:
+        ev["modifiers"] = modifiers  # 8 = Shift, so DOM events report shiftKey=true
+    return ev
 
 
 def _type_cjk_phrase(
@@ -225,30 +228,35 @@ def _type_cjk_punct(ch: str, cfg: HumanConfig, cdp_session: Any) -> None:
     Microsoft Pinyin capture: keydown Process/229 on its physical key → composition →
     commit (compositionend, untrusted) → dual keyup (229 + physical keyCode). Shift
     marks wrap it in Shift; the Shift-release order is randomized (real users vary it),
-    and the keyup `key` char follows the Shift state at release."""
+    and the keyup `key` char follows the Shift state at release. Every event dispatched
+    while Shift is held carries modifiers=8 so the DOM reports shiftKey=true, matching a
+    real capture; events at/after the Shift keyup carry 0."""
     shift, code, kc, base_key, shifted_key = _CJK_PUNCT[ch]
+    held = 8 if shift else 0  # Shift modifier flag while Shift is down
     if shift:
         cdp_session.send("Input.dispatchKeyEvent",
-                         _key_event("keyDown", 16, "Shift", "ShiftLeft"))
+                         _key_event("keyDown", 16, "Shift", "ShiftLeft", 8))
         sleep_ms(rand_range(cfg.shift_down_delay))
-    cdp_session.send("Input.dispatchKeyEvent", _key_event("keyDown", 229, "Process", code))
+    cdp_session.send("Input.dispatchKeyEvent", _key_event("keyDown", 229, "Process", code, held))
     cdp_session.send("Input.imeSetComposition",
                      {"text": ch, "selectionStart": len(ch), "selectionEnd": len(ch)})
     sleep_ms(rand_range(cfg.key_hold))
     cdp_session.send("Input.insertText", {"text": ch})  # commit → compositionend
     release_shift_first = shift and random.random() < 0.5
     if release_shift_first:
+        # Shift released first → subsequent keyups are already shiftKey=false.
         cdp_session.send("Input.dispatchKeyEvent",
-                         _key_event("keyUp", 16, "Shift", "ShiftLeft"))
-        cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code))
-        cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", kc, base_key, code))
+                         _key_event("keyUp", 16, "Shift", "ShiftLeft", 0))
+        cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code, 0))
+        cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", kc, base_key, code, 0))
     else:
-        cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code))
+        # Shift still held → these keyups are shiftKey=true; Shift keyup last is false.
+        cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code, held))
         cdp_session.send("Input.dispatchKeyEvent",
-                         _key_event("keyUp", kc, shifted_key if shift else base_key, code))
+                         _key_event("keyUp", kc, shifted_key if shift else base_key, code, held))
         if shift:
             cdp_session.send("Input.dispatchKeyEvent",
-                             _key_event("keyUp", 16, "Shift", "ShiftLeft"))
+                             _key_event("keyUp", 16, "Shift", "ShiftLeft", 0))
 
 
 def human_type(

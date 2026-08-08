@@ -241,23 +241,26 @@ export async function typeCjkPunct(
   cdpSession: CDPSession,
 ): Promise<void> {
   const [shift, code, kc, baseKey, shiftedKey] = CJK_PUNCT[ch];
+  // modifiers=8 (Shift) on every event dispatched while Shift is held, so the DOM
+  // reports shiftKey=true, matching a real capture; 0 at/after the Shift keyup.
+  const held = shift ? 8 : 0;
   if (shift) {
-    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyDown', windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyDown', modifiers: 8, windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
     await sleep(randRange(cfg.shift_down_delay));
   }
-  await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyDown', windowsVirtualKeyCode: 229, key: 'Process', code });
+  await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyDown', modifiers: held, windowsVirtualKeyCode: 229, key: 'Process', code });
   await cdpSession.send('Input.imeSetComposition', { text: ch, selectionStart: ch.length, selectionEnd: ch.length });
   await sleep(randRange(cfg.key_hold));
   await cdpSession.send('Input.insertText', { text: ch });
   const releaseShiftFirst = shift && Math.random() < 0.5;
   if (releaseShiftFirst) {
-    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
-    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 229, key: 'Process', code });
-    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: kc, key: baseKey, code });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 0, windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 0, windowsVirtualKeyCode: 229, key: 'Process', code });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 0, windowsVirtualKeyCode: kc, key: baseKey, code });
   } else {
-    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 229, key: 'Process', code });
-    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: kc, key: shift ? shiftedKey : baseKey, code });
-    if (shift) await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: held, windowsVirtualKeyCode: 229, key: 'Process', code });
+    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: held, windowsVirtualKeyCode: kc, key: shift ? shiftedKey : baseKey, code });
+    if (shift) await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 0, windowsVirtualKeyCode: 16, key: 'Shift', code: 'ShiftLeft' });
   }
 }
 

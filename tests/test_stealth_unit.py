@@ -1706,6 +1706,25 @@ class TestCJKPunctuation:
                 seen_last = True
         assert seen_first and seen_last  # both orderings occur
 
+    def test_shift_modifier_tracks_shift_state(self):
+        # Every event while Shift is held carries modifiers=8 (shiftKey=true); the
+        # Shift keyup and everything after carry 0. Holds for both release orders.
+        for _ in range(30):
+            _, calls = self._run("！")
+            evs = [p for m, p in calls if m == "Input.dispatchKeyEvent"]
+            shift_up = next(i for i, p in enumerate(evs)
+                            if p["type"] == "keyUp" and p["code"] == "ShiftLeft")
+            for i, p in enumerate(evs):
+                if i < shift_up:
+                    assert p.get("modifiers") == 8, f"{p} should be shiftKey=true"
+                else:
+                    assert p.get("modifiers", 0) == 0, f"{p} should be shiftKey=false"
+
+    def test_non_shift_punct_has_no_modifier(self):
+        _, calls = self._run("，")
+        evs = [p for m, p in calls if m == "Input.dispatchKeyEvent"]
+        assert all("modifiers" not in p for p in evs)
+
     def test_disabled_and_no_cdp_fall_back(self):
         raw, calls = self._run("，", ime=None)
         raw.insert_text.assert_called_once_with("，")

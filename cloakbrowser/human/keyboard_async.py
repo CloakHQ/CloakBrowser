@@ -64,11 +64,12 @@ async def _type_cjk_phrase(
 async def _type_cjk_punct(ch: str, cfg: HumanConfig, cdp_session: Any) -> None:
     """Async mirror of keyboard._type_cjk_punct — full-width punctuation via the IME."""
     shift, code, kc, base_key, shifted_key = _CJK_PUNCT[ch]
+    held = 8 if shift else 0  # Shift modifier flag while Shift is down
     if shift:
         await cdp_session.send("Input.dispatchKeyEvent",
-                               _key_event("keyDown", 16, "Shift", "ShiftLeft"))
+                               _key_event("keyDown", 16, "Shift", "ShiftLeft", 8))
         await async_sleep_ms(rand_range(cfg.shift_down_delay))
-    await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyDown", 229, "Process", code))
+    await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyDown", 229, "Process", code, held))
     await cdp_session.send("Input.imeSetComposition",
                            {"text": ch, "selectionStart": len(ch), "selectionEnd": len(ch)})
     await async_sleep_ms(rand_range(cfg.key_hold))
@@ -76,16 +77,16 @@ async def _type_cjk_punct(ch: str, cfg: HumanConfig, cdp_session: Any) -> None:
     release_shift_first = shift and random.random() < 0.5
     if release_shift_first:
         await cdp_session.send("Input.dispatchKeyEvent",
-                               _key_event("keyUp", 16, "Shift", "ShiftLeft"))
-        await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code))
-        await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", kc, base_key, code))
+                               _key_event("keyUp", 16, "Shift", "ShiftLeft", 0))
+        await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code, 0))
+        await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", kc, base_key, code, 0))
     else:
-        await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code))
+        await cdp_session.send("Input.dispatchKeyEvent", _key_event("keyUp", 229, "Process", code, held))
         await cdp_session.send("Input.dispatchKeyEvent",
-                               _key_event("keyUp", kc, shifted_key if shift else base_key, code))
+                               _key_event("keyUp", kc, shifted_key if shift else base_key, code, held))
         if shift:
             await cdp_session.send("Input.dispatchKeyEvent",
-                                   _key_event("keyUp", 16, "Shift", "ShiftLeft"))
+                                   _key_event("keyUp", 16, "Shift", "ShiftLeft", 0))
 
 
 async def async_human_type(
