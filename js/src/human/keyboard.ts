@@ -226,6 +226,12 @@ export const CJK_PUNCT: Record<string, [boolean, string, number, string, string]
   '？': [true, 'Slash', 191, '/', '?'],
   '！': [true, 'Digit1', 49, '1', '!'],
   '：': [true, 'Semicolon', 186, ';', ':'],
+  // Full-width parentheses and curly quotes (Shift + physical key). The composed
+  // char is the specific mark, so the alternating left/right quote needs no state.
+  '（': [true, 'Digit9', 57, '9', '('],
+  '）': [true, 'Digit0', 48, '0', ')'],
+  '“': [true, 'Quote', 222, "'", '"'],
+  '”': [true, 'Quote', 222, "'", '"'],
 };
 
 /**

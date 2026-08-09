@@ -1725,6 +1725,16 @@ class TestCJKPunctuation:
         evs = [p for m, p in calls if m == "Input.dispatchKeyEvent"]
         assert all("modifiers" not in p for p in evs)
 
+    def test_parens_and_curly_quotes_via_ime(self):
+        # Full-width （）and curly “” route through the IME on their Shift+key, not insertText.
+        for ch, code in [("（", "Digit9"), ("）", "Digit0"), ("“", "Quote"), ("”", "Quote")]:
+            raw, calls = self._run(ch)
+            assert ("Input.insertText", {"text": ch}) in calls
+            kd = [p for m, p in calls if m == "Input.dispatchKeyEvent"
+                  and p["type"] == "keyDown" and p["code"] == code]
+            assert kd and kd[0]["modifiers"] == 8, f"{ch} keydown on {code} missing/unshifted"
+            raw.insert_text.assert_not_called()
+
     def test_disabled_and_no_cdp_fall_back(self):
         raw, calls = self._run("，", ime=None)
         raw.insert_text.assert_called_once_with("，")

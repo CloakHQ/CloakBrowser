@@ -220,6 +220,13 @@ _CJK_PUNCT: dict[str, tuple[bool, str, int, str, str]] = {
     "？": (True, "Slash", 191, "/", "?"),
     "！": (True, "Digit1", 49, "1", "!"),
     "：": (True, "Semicolon", 186, ";", ":"),
+    # Full-width parentheses and curly quotes (Shift + physical key). The composed
+    # char is the specific full-width mark, so the alternating left/right quote needs
+    # no state — the caller's text already carries “ vs ” and （ vs ）.
+    "（": (True, "Digit9", 57, "9", "("),
+    "）": (True, "Digit0", 48, "0", ")"),
+    "“": (True, "Quote", 222, "'", '"'),
+    "”": (True, "Quote", 222, "'", '"'),
 }
 
 
