@@ -6,6 +6,7 @@ import type { Page } from 'playwright-core';
 import { HumanConfig, rand, randRange, randIntRange, sleep } from './config.js';
 import { RawMouse, humanMove } from './mouse.js';
 import { buildBoxJs, evalParsed, getWorld, OK, NOT_FOUND, UNSUPPORTED, VIEWPORT_JS } from './stealthDom.js';
+import { timeoutBudget, toPlaywrightTimeout, type TimeoutInput } from './timeout.js';
 
 interface ElementBounds {
   x: number;
@@ -175,11 +176,12 @@ export async function scrollToElement(
   cursorX: number,
   cursorY: number,
   cfg: HumanConfig,
-  timeout?: number,
+  timeout: TimeoutInput = 30000,
 ): Promise<{ box: ElementBounds; cursorX: number; cursorY: number; didScroll: boolean }> {
+  const budget = timeoutBudget(timeout);
   return humanScrollIntoView(
     page, raw,
-    () => getElementBox(page, selector, timeout),
+    () => getElementBox(page, selector, budget),
     cursorX, cursorY, cfg,
   );
 }
@@ -187,8 +189,10 @@ export async function scrollToElement(
 export async function getElementBox(
   page: Page,
   selector: string,
-  timeout: number = 30000,
+  timeout: TimeoutInput = 30000,
 ): Promise<ElementBounds | null> {
+  const budget = timeoutBudget(timeout);
+
   // Read geometry through the isolated world when available; a not-found is retried
   // briefly in-world (SPA re-renders) and only an unsupported selector reaches
   // Playwright's boundingBox.
@@ -197,8 +201,8 @@ export async function getElementBox(
     let { status, data } = await evalParsed(world, buildBoxJs(selector));
     if (status === OK) return data.box;
     if (status === NOT_FOUND) {
-      const deadline = Date.now() + Math.min(timeout, 2000);
-      while (Date.now() < deadline) {
+      const retryDeadline = Math.min(budget.deadline, Date.now() + 2000);
+      while (Date.now() < retryDeadline) {
         await sleep(50);
         ({ status, data } = await evalParsed(world, buildBoxJs(selector)));
         if (status === OK) return data.box;
@@ -210,7 +214,9 @@ export async function getElementBox(
   }
   const el = page.locator(selector).first();
   try {
-    const box = await el.boundingBox({ timeout: Math.max(1, timeout) });
+    const box = await el.boundingBox({
+      timeout: toPlaywrightTimeout(budget),
+    });
     return box;
   } catch {
     return null;
