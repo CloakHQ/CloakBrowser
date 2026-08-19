@@ -1750,3 +1750,160 @@ def _resolve_proxy_config(
     if isinstance(proxy, dict):
         return {"proxy": proxy}, []
     return {"proxy": _parse_proxy_url(proxy)}, []
+
+
+def launch_chrome_direct(
+    user_data_dir: str | os.PathLike,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 9222,
+    headless: bool = False,
+    extension_paths: list[str] | None = None,
+    stealth_args: bool = True,
+    locale: str | None = None,
+    timezone: str | None = None,
+    license_key: str | None = None,
+    browser_version: str | None = None,
+    release_channel: str | None = None,
+    extra_args: list[str] | None = None,
+    startup_timeout: float = 30.0,
+) -> Any:
+    """Launch stealth Chromium directly via subprocess with a TCP CDP endpoint.
+
+    Unlike ``launch_persistent_context()``, this bypasses Playwright's managed
+    browser lifecycle entirely. Chrome is started with ``--remote-debugging-port``
+    — a TCP listener — instead of Playwright's ``--remote-debugging-pipe``, so
+    external CDP clients can connect via ``ws://<host>:<port>``. This is the
+    correct primitive for server-style runtimes (e.g. an MCP browser server)
+    that surface a debugging port to other processes.
+
+    Returns a ``subprocess.Popen`` handle; the caller owns process cleanup
+    (typically ``proc.terminate()``/``proc.kill()`` in a finally block).
+
+    Args:
+        user_data_dir: Path to the browser profile directory.
+        host: Remote debugging bind address (default ``127.0.0.1``).
+        port: Remote debugging port (default 9222).
+        headless: Run in headless mode (default False).
+        extension_paths: Chrome extension paths to load.
+        stealth_args: Include default stealth fingerprint args (default True).
+        locale: Browser locale, e.g. ``"en-US"``.
+        timezone: IANA timezone (e.g. ``"America/New_York"``).
+        license_key: License key for the Pro binary.
+        browser_version: Specific browser version to use.
+        release_channel: Release channel ("stable" or "beta").
+        extra_args: Additional Chrome CLI arguments.
+        startup_timeout: Seconds to wait for the CDP port to become ready.
+            Raises if the process exits early or the port never opens.
+
+    Returns:
+        ``subprocess.Popen`` handle for the Chrome process.
+
+    Example:
+        >>> from cloakbrowser import launch_chrome_direct
+        >>> proc = launch_chrome_direct("./profile", port=9222)
+        >>> # connect your CDP client to ws://127.0.0.1:9222
+        >>> proc.terminate()
+        >>> proc.wait()
+    """
+    import socket
+    import subprocess
+    import time as _time
+
+    binary_path = ensure_binary(
+        license_key=license_key,
+        browser_version=browser_version,
+        release_channel=release_channel,
+    )
+    seed_widevine_hint(user_data_dir, binary_path)
+
+    chrome_args = build_args(
+        stealth_args=stealth_args,
+        extra_args=extra_args,
+        timezone=timezone,
+        locale=locale,
+        headless=headless,
+        extension_paths=extension_paths,
+        start_maximized=binary_supports_maximized_window(
+            license_key, browser_version, release_channel
+        ) and not headless,
+    )
+
+    # Playwright normally injects --remote-debugging-pipe; we want TCP instead.
+    chrome_args = [
+        a for a in chrome_args if not a.startswith("--remote-debugging-pipe")
+    ]
+    # Windows only: this patched binary exits 0 immediately on startup when
+    # Chromium's AutoDeElevate feature is enabled (Chrome >= 131 relaunches
+    # itself de-elevated; the re-exec fails inside the patched build and the
+    # parent exits cleanly, killing the session). Playwright's default args
+    # happen to disable it — direct launches must do so explicitly.
+    if os.name == "nt" and not any(
+        a.startswith("--disable-features=") for a in chrome_args
+    ):
+        chrome_args.append("--disable-features=AutoDeElevate")
+    elif os.name == "nt":
+        chrome_args = [
+            a if not a.startswith("--disable-features=")
+            or "AutoDeElevate" in a
+            else a + ",AutoDeElevate"
+            for a in chrome_args
+        ]
+    chrome_args.append(f"--remote-debugging-address={host}")
+    chrome_args.append(f"--remote-debugging-port={port}")
+    chrome_args.append(f"--user-data-dir={os.fspath(user_data_dir)}")
+
+    logger.debug(
+        "Launching direct Chrome (headless=%s, port=%s, profile=%s)",
+        headless,
+        port,
+        user_data_dir,
+    )
+
+    denial_path = mint_denial_file() if resolve_license_key(license_key) else None
+    launch_env = build_launch_env(license_key, status_file=denial_path)
+    env = os.environ.copy()
+    if launch_env:
+        env.update(launch_env)
+
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+        )
+    start_new_session = os.name != "nt"
+
+    proc = subprocess.Popen(
+        [str(binary_path), *chrome_args],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=start_new_session,
+        creationflags=creationflags,
+    )
+
+    # Wait for the CDP listener to come up (or the process to die).
+    deadline = _time.monotonic() + startup_timeout
+    last_error = "unknown"
+    while True:
+        if proc.poll() is not None:
+            proc.wait()
+            raise RuntimeError(
+                f"Chrome exited early (pid={proc.pid}, returncode={proc.returncode})"
+            )
+        if _time.monotonic() >= deadline:
+            break
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return proc
+        except OSError as exc:
+            last_error = str(exc)
+        _time.sleep(0.25)
+
+    raise RuntimeError(
+        f"Chrome (pid={proc.pid}) did not open CDP port {host}:{port} within "
+        f"{startup_timeout}s. Last error: {last_error}"
+    )
