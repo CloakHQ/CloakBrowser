@@ -179,6 +179,55 @@ def test_structural_has_text_and_open_shadow_dom_match_playwright():
 
 
 @pytest.mark.slow
+def test_mixed_light_and_nested_shadow_order_matches_playwright():
+    """Broad selector first/nth order must match Playwright across roots."""
+    from cloakbrowser import launch
+
+    browser = launch(headless=False, humanize=True, release_channel="preview")
+    try:
+        page = browser.new_page()
+        page.goto("https://example.com", wait_until="domcontentloaded")
+        page.evaluate(
+            """() => {
+                document.body.innerHTML = `
+                    <div id="host-one"></div>
+                    <button id="normal-one">Normal one</button>
+                    <div id="host-two"></div>
+                    <button id="normal-two">Normal two</button>`;
+                document.querySelector('#host-one')
+                    .attachShadow({mode: 'open'}).innerHTML =
+                    '<button id="shadow-one">Shadow one</button>';
+                const second = document.querySelector('#host-two')
+                    .attachShadow({mode: 'open'});
+                second.innerHTML = `
+                    <button id="shadow-two">Shadow two</button>
+                    <div id="nested-host"></div>`;
+                second.querySelector('#nested-host')
+                    .attachShadow({mode: 'open'}).innerHTML =
+                    '<button id="shadow-nested">Shadow nested</button>';
+            }"""
+        )
+
+        playwright_ids = page.locator("button").evaluate_all(
+            "elements => elements.map(element => element.id)"
+        )
+        isolated_ids = [
+            page._stealth_world.evaluate(
+                _resolve_identity_js(f"button >> nth={index}")
+            )["id"]
+            for index in range(len(playwright_ids))
+        ]
+
+        assert playwright_ids == [
+            "normal-one", "normal-two", "shadow-one", "shadow-two",
+            "shadow-nested",
+        ]
+        assert isolated_ids == playwright_ids
+    finally:
+        browser.close()
+
+
+@pytest.mark.slow
 def test_actionability_state_matches_playwright():
     """Visibility, native disabled, and ARIA readonly semantics stay in parity."""
     from cloakbrowser import launch
