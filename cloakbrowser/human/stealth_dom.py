@@ -276,14 +276,21 @@ function __allElements(){
   if (!document.children && document.querySelectorAll)
     return Array.prototype.slice.call(document.querySelectorAll('*'));
   const out = [];
-  function visit(root){
-    for (const el of root.children || []) {
-      out.push(el);
-      if (el.shadowRoot) visit(el.shadowRoot);
-      visit(el);
+  function visitRoot(root){
+    const light = [];
+    function collectLight(parent){
+      for (const el of parent.children || []) {
+        out.push(el);
+        light.push(el);
+        collectLight(el);
+      }
+    }
+    collectLight(root);
+    for (const host of light) {
+      if (host.shadowRoot) visitRoot(host.shadowRoot);
     }
   }
-  visit(document);
+  visitRoot(document);
   return out;
 }
 function __readQuoted(value){

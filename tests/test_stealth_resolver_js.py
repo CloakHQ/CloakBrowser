@@ -86,6 +86,16 @@ eq('structural has-text target', r.text, 'Go');
 let plainChild = el('SPAN','hi',[],{className:'c'}); let plainParent = el('DIV','hi',[plainChild],{id:'x'});
 r = run('#x .c >> nth=0', [ plainParent ]); eq('plain css cls', r.cls, 'ok'); eq('plain css target', r.tag, 'SPAN');
 
+// Playwright orders all light-DOM matches before open-shadow matches.
+let shadowButton = el('BUTTON','shadow',[],{id:'shadow'});
+let shadowHost = el('DIV','host',[],{id:'host'});
+shadowHost.shadowRoot = { children: [shadowButton] };
+let normalButton = el('BUTTON','normal',[],{id:'normal'});
+r = run('button >> nth=0', [shadowHost, normalButton]);
+eq('mixed shadow first', r.text, 'normal');
+r = run('button >> nth=1', [shadowHost, normalButton]);
+eq('mixed shadow second', r.text, 'shadow');
+
 // chaining and get_by_* engines are unsupported
 eq('chaining', run('a >> b', [el('A')]).cls, 'unsupported');
 eq('internal role', run('internal:role=button', []).cls, 'unsupported');
