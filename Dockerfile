@@ -31,10 +31,27 @@ RUN cd js && npm install && npm run build
 # Examples
 COPY examples/ examples/
 
-# Pre-download stealth Chromium binary during build (not at runtime)
-# Remove welcome marker so users see it on first container run
+# Pre-download stealth Chromium binary during build
 RUN python -c "from cloakbrowser import ensure_binary; ensure_binary()" \
     && rm -f ~/.cloakbrowser/.welcome_shown
+
+# ============================================================
+# CRITICAL FIX: Disable Crashpad
+# ============================================================
+RUN find /root/.cloakbrowser -type d -name "chromium-*" | while read dir; do \
+        cd "$dir" && \
+        # Remove the real crashpad handler
+        rm -f chrome_crashpad_handler && \
+        # Create no-op handler
+        printf '#!/bin/sh\nexit 0\n' > chrome_crashpad_handler && \
+        chmod +x chrome_crashpad_handler && \
+        echo "✅ Disabled crashpad in $dir"; \
+    done
+
+# Also disable via environment
+ENV CHROME_CRASHPAD_DISABLE=1
+ENV BREAKPAD_DUMP_LOCATION=/dev/null
+ENV CLOAKBROWSER_AUTO_UPDATE=false
 
 # CLI shortcuts
 COPY bin/cloaktest /usr/local/bin/cloaktest
