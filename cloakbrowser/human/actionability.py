@@ -88,6 +88,19 @@ def _backoff_sleep(attempt: int) -> None:
 # Pre-scroll actionability: attached, visible, enabled, editable
 # ---------------------------------------------------------------------------
 
+def _box_has_area(box: Optional[dict]) -> bool:
+    return bool(box) and (box.get("width", 0) > 0 or box.get("height", 0) > 0)
+
+
+def _playwright_says_visible(page: Any, selector: str) -> bool:
+    """Cheap, non-waiting cross-check used before trusting an in-world 'not visible'
+    verdict that disagrees with a non-empty box (defense-in-depth for #560)."""
+    try:
+        return page.locator(selector).first.is_visible()
+    except Exception:
+        return False
+
+
 def _stealth_actionable(page: Any, selector: str, checks: FrozenSet[str]) -> bool:
     """Run the actionability checks through the isolated world.
 
@@ -106,7 +119,11 @@ def _stealth_actionable(page: Any, selector: str, checks: FrozenSet[str]) -> boo
         # retry loop backs off and re-reads in-world (mirrors wait_for(attached)).
         raise ElementNotAttachedError(selector)
     if "visible" in checks and not data.get("visible"):
-        raise ElementNotVisibleError(selector)
+        # A non-empty box despite an in-world "not visible" verdict means the two
+        # reads disagree; cross-check with Playwright's own is_visible() rather
+        # than trusting a possible false negative (#560) before raising.
+        if not (_box_has_area(data.get("box")) and _playwright_says_visible(page, selector)):
+            raise ElementNotVisibleError(selector)
     if "enabled" in checks and not data.get("enabled"):
         raise ElementNotEnabledError(selector)
     if "editable" in checks and not data.get("editable"):
