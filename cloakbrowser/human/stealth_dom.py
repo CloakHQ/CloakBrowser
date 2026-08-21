@@ -97,7 +97,7 @@ function __isVisible(el){
   if (style.display === 'contents') {
     for (let child = el.firstChild; child; child = child.nextSibling) {
       if (child.nodeType === 1 && __isVisible(child)) return true;
-      if (child.nodeType === 3 && __visibleTextNode(child)) return true;
+      if (child.nodeType === 3 && style.visibility === 'visible' && __visibleTextNode(child)) return true;
     }
     return false;
   }
@@ -109,6 +109,38 @@ function __isVisible(el){
   if (style.visibility !== 'visible') return false;
   const rect = el.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0;
+}
+function __visBox(el){
+  const style = getComputedStyle(el);
+  if (style && style.display === 'contents') {
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    let found = false;
+    for (let child = el.firstChild; child; child = child.nextSibling) {
+      let box = null;
+      if (child.nodeType === 1 && __isVisible(child)) {
+        box = __visBox(child);
+      } else if (child.nodeType === 3 && style.visibility === 'visible' &&
+                 __normWS(child.nodeValue)) {
+        const range = child.ownerDocument.createRange();
+        range.selectNode(child);
+        const rect = range.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          box = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }
+      }
+      if (!box) continue;
+      found = true;
+      x1 = Math.min(x1, box.x);
+      y1 = Math.min(y1, box.y);
+      x2 = Math.max(x2, box.x + box.width);
+      y2 = Math.max(y2, box.y + box.height);
+    }
+    return found ? { x: x1, y: y1, width: x2 - x1, height: y2 - y1 } : null;
+  }
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0
+    ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+    : null;
 }
 const __ARIA_DISABLED_ROLES = new Set([
   'application','button','composite','gridcell','group','input','link','menuitem',
@@ -513,8 +545,8 @@ _SNAPSHOT_OP = r"""
 const __el = __resolve(__SEL);
 if (__el === 'UNSUPPORTED') return { v: __V, r: 'unsupported' };
 if (!__el) return { v: __V, r: 'not_found' };
-const __rc = __el.getBoundingClientRect();
-const __hasBox = __rc.width > 0 && __rc.height > 0;
+const __box = __visBox(__el);
+const __hasBox = __box !== null;
 const __tag = __el.tagName.toLowerCase();
 const __enabled = __isEnabled(__el);
 const __editable = __isEditable(__el, __enabled);
@@ -529,7 +561,7 @@ return {
   isInput: __tag === 'input' || __tag === 'textarea' || __el.isContentEditable === true,
   focused: __deepActiveElement() === __el,
   checked: typeof __el.checked === 'boolean' ? __el.checked : null,
-  box: __hasBox ? { x: __rc.x, y: __rc.y, width: __rc.width, height: __rc.height } : null
+  box: __box
 };
 """
 
