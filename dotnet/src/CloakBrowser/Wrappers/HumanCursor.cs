@@ -32,6 +32,7 @@ internal sealed class HumanCursor
     public double X { get; private set; }
     public double Y { get; private set; }
     public IRawMouse RawMouse => _rawMouse;
+    internal IPage Page => _page;
 
     public HumanCursor(IPage page)
     {

@@ -20,7 +20,33 @@ public class StealthDomTests
     [Fact]
     public void BuildPointerJs_InlinesCoordinates()
     {
-        Assert.Contains("elementFromPoint(1.5, 2.5)", StealthDom.BuildPointerJs("#x", 1.5, 2.5));
+        Assert.Contains("__deepElementFromPoint(1.5, 2.5)", StealthDom.BuildPointerJs("#x", 1.5, 2.5));
+    }
+
+    [Fact]
+    public void ParseResult_strictly_validates_protocol_and_target_identity()
+    {
+        Assert.Equal(StealthStatus.Ok, StealthDom.ParseResult(
+            JsonSerializer.SerializeToElement(new { v = 1, r = "ok", targetId = 7 })).Status);
+        Assert.Equal(StealthStatus.Stale, StealthDom.ParseResult(
+            JsonSerializer.SerializeToElement(new { v = 1, r = "stale", targetId = 8 })).Status);
+        Assert.Equal(StealthStatus.NotFound, StealthDom.ParseResult(
+            JsonSerializer.SerializeToElement(new { v = 1, r = "not_found" })).Status);
+        Assert.Equal(StealthStatus.Unsupported, StealthDom.ParseResult(
+            JsonSerializer.SerializeToElement(new { v = 1, r = "unsupported" })).Status);
+
+        JsonElement?[] malformed =
+        {
+            null,
+            JsonSerializer.SerializeToElement(new { }),
+            JsonSerializer.SerializeToElement(new { v = 2, r = "ok", targetId = 1 }),
+            JsonSerializer.SerializeToElement(new { v = 1, r = "ok" }),
+            JsonSerializer.SerializeToElement(new { v = 1, r = "ok", targetId = 1.5 }),
+            JsonSerializer.SerializeToElement(new { v = 1, r = "stale" }),
+            JsonSerializer.SerializeToElement(new { v = 1, r = "unknown", targetId = 1 }),
+        };
+        foreach (var value in malformed)
+            Assert.Equal(StealthStatus.EvaluationFailed, StealthDom.ParseResult(value).Status);
     }
 
     // Runs the SHIPPED resolver JS (as produced by the C# builders) under Node against
@@ -43,7 +69,8 @@ function el(tag, text){
   const e = { tagName: tag, textContent: text || '', children: [] };
   e.contains = o => o === e;
   e.getBoundingClientRect = () => ({ x: 5, y: 6, width: 20, height: 10 });
-  e.getAttribute = () => null; e.disabled = false; e.readOnly = false; e.isContentEditable = false;
+  e.getAttribute = () => null; e.hasAttribute = () => false; e.closest = () => null;
+  e.disabled = false; e.readOnly = false; e.isContentEditable = false; e.isConnected = true;
   return e;
 }
 function run(js, matches, point){
@@ -71,7 +98,9 @@ console.log('POINTER', JSON.stringify(run(p, [t], t)));
         Assert.Contains("HASTEXT ok", outp);
         Assert.Contains("UNSUPPORTED unsupported", outp);
         Assert.Contains("NOTFOUND not_found", outp);
-        Assert.Contains("POINTER {\"r\":\"ok\",\"hit\":true}", outp);
+        Assert.Contains("POINTER", outp);
+        Assert.Contains("\"r\":\"ok\"", outp);
+        Assert.Contains("\"hit\":true", outp);
     }
 
     private static string JsStr(string s) => JsonSerializer.Serialize(s);
