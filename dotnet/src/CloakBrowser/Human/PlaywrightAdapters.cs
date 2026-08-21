@@ -75,7 +75,13 @@ internal sealed class PlaywrightEvaluator : IRawEvaluator
 internal sealed class PlaywrightScrollPage : IRawScrollPage
 {
     private readonly IPage _page;
-    public PlaywrightScrollPage(IPage page) => _page = page;
+    private readonly Func<Task<IsolatedWorld>> _getStealthAsync;
+
+    public PlaywrightScrollPage(IPage page, Func<Task<IsolatedWorld>> getStealthAsync)
+    {
+        _page = page;
+        _getStealthAsync = getStealthAsync;
+    }
 
     public (int Width, int Height)? ViewportSize
     {
@@ -88,46 +94,31 @@ internal sealed class PlaywrightScrollPage : IRawScrollPage
 
     public async Task<(int Width, int Height)?> GetLiveWindowSizeAsync()
     {
-        try
-        {
-            var dims = await _page.EvaluateAsync<WindowDims>(
-                "() => ({ width: window.innerWidth, height: window.innerHeight })")
-                .ConfigureAwait(false);
-            if (dims.Width <= 0 || dims.Height <= 0)
-                return null;
-            return (dims.Width, dims.Height);
-        }
-        catch (System.Exception)
-        {
-            return null;
-        }
+        var world = await _getStealthAsync().ConfigureAwait(false);
+        var value = await world.EvaluateAsync(StealthDom.ViewportJs).ConfigureAwait(false);
+        if (value == null || value.Value.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !value.Value.TryGetProperty("width", out var width)
+            || !value.Value.TryGetProperty("height", out var height))
+            throw new StealthEvaluationError("<viewport>");
+
+        int resolvedWidth = (int)width.GetDouble();
+        int resolvedHeight = (int)height.GetDouble();
+        if (resolvedWidth <= 0 || resolvedHeight <= 0)
+            throw new StealthEvaluationError("<viewport>");
+        return (resolvedWidth, resolvedHeight);
     }
 
     public async Task<(double Y, double MaxY)?> GetScrollStateAsync()
     {
-        try
-        {
-            var s = await _page.EvaluateAsync<ScrollDims>(
-                "() => { const e = document.scrollingElement || document.documentElement;" +
-                " return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight) }; }")
-                .ConfigureAwait(false);
-            return (s.Y, s.MaxY);
-        }
-        catch (System.Exception)
-        {
-            return null;
-        }
-    }
-
-    private struct WindowDims
-    {
-        public int Width { get; set; }
-        public int Height { get; set; }
-    }
-
-    private struct ScrollDims
-    {
-        public double Y { get; set; }
-        public double MaxY { get; set; }
+        var world = await _getStealthAsync().ConfigureAwait(false);
+        var value = await world.EvaluateAsync(
+            "(() => { const e = document.scrollingElement || document.documentElement;" +
+            " return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight) }; })()")
+            .ConfigureAwait(false);
+        if (value == null || value.Value.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !value.Value.TryGetProperty("y", out var y)
+            || !value.Value.TryGetProperty("maxY", out var maxY))
+            throw new StealthEvaluationError("<scroll-state>");
+        return (y.GetDouble(), maxY.GetDouble());
     }
 }

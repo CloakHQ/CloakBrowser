@@ -94,6 +94,19 @@ public class LocatorWrapperTests
     }
 
     [Fact]
+    public void Frame_Locator_remains_on_legacy_path()
+    {
+        var (page, _, _) = BuildPage();
+        var (locator, _) = BuildLocator();
+        var (frame, frameRec) = Fake.Of<IFrame>();
+        frameRec.On("Locator", locator);
+        var human = new HumanizedFrame(frame, new HumanCursor(page), FastConfig());
+
+        var wrapped = Assert.IsType<HumanizedLocator>(human.Locator("#inside-frame"));
+        Assert.Null(wrapped.Selector);
+    }
+
+    [Fact]
     public async Task Frame_PressAsync_forwards_delay()
     {
         var (page, _, kbRec) = BuildPage();
