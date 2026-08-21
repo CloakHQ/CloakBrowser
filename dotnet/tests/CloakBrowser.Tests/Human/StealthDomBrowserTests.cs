@@ -78,6 +78,35 @@ public class StealthDomBrowserTests
     }
 
     [Fact]
+    public async Task Display_contents_text_and_nested_geometry_are_clickable()
+    {
+        if (!BrowserAvailable) return;
+
+        await using var browser = await CloakLauncher.LaunchAsync(FastLaunchOptions());
+        var page = await browser.NewPageAsync();
+        await page.GotoAsync("https://example.com", new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+        });
+        await page.EvaluateAsync(@"() => {
+            document.body.innerHTML = `
+                <ul><li id='target' style='display:contents'>Hoy</li></ul>
+                <div id='nested' style='display:contents'><span>nested</span></div>`;
+            window.__targetClicks = 0;
+            window.__nestedClicks = 0;
+            document.querySelector('#target').addEventListener('click', () => window.__targetClicks++);
+            document.querySelector('#nested').addEventListener('click', () => window.__nestedClicks++);
+        }");
+
+        Assert.Equal(0, await page.EvaluateAsync<double>(
+            "() => document.querySelector('#target').getBoundingClientRect().width"));
+        await page.ClickAsync("text=Hoy", new PageClickOptions { Timeout = 3000 });
+        await page.ClickAsync("#nested", new PageClickOptions { Timeout = 3000 });
+        Assert.Equal(1, await page.EvaluateAsync<int>("() => window.__targetClicks"));
+        Assert.Equal(1, await page.EvaluateAsync<int>("() => window.__nestedClicks"));
+    }
+
+    [Fact]
     public async Task Text_css_and_actionability_state_match_direct_selector_behavior()
     {
         if (!BrowserAvailable) return;

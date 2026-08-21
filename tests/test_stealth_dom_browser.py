@@ -71,6 +71,87 @@ def test_text_selector_ignores_hidden_head_script_and_clicks_visible_target():
 
 
 @pytest.mark.slow
+def test_display_contents_uses_rendered_content_geometry():
+    """A boxless display:contents target uses its rendered text/child union."""
+    from cloakbrowser import launch
+    from cloakbrowser.human.stealth_dom import build_snapshot_js
+
+    browser = launch(headless=False, humanize=True, release_channel="preview")
+    try:
+        page = browser.new_page()
+        page.goto("https://example.com", wait_until="domcontentloaded")
+        page.evaluate(
+            """() => {
+                document.body.innerHTML = `
+                    <ul><li id="target" style="display:contents">Hoy</li></ul>
+                    <div id="union" style="display:contents">
+                        <span id="left">left</span><span id="right">right</span>
+                        <span id="nested" style="display:contents">
+                            <span id="nested-child">nested</span>
+                        </span>
+                        <span id="hidden" style="visibility:hidden;position:absolute;
+                              left:1000px;top:1000px;font-size:100px">hidden</span>
+                    </div>
+                    <div id="hidden-text" style="display:contents;visibility:hidden">
+                        hidden text
+                    </div>`;
+                window.targetClicks = 0;
+                window.nestedClicks = 0;
+                document.querySelector('#target').addEventListener(
+                    'click', () => window.targetClicks++
+                );
+                document.querySelector('#nested').addEventListener(
+                    'click', () => window.nestedClicks++
+                );
+            }"""
+        )
+
+        own_rect = page.evaluate(
+            """() => {
+                const rect = document.querySelector('#target').getBoundingClientRect();
+                return {width: rect.width, height: rect.height};
+            }"""
+        )
+        assert own_rect == {"width": 0, "height": 0}
+
+        target = page._stealth_world.evaluate(build_snapshot_js("text=Hoy"))
+        assert target["visible"] is True
+        assert target["box"]["width"] > 0
+        assert target["box"]["height"] > 0
+
+        union = page._stealth_world.evaluate(build_snapshot_js("#union"))
+        assert union["visible"] is True
+        rects = page.evaluate(
+            """() => Object.fromEntries(
+                ['left', 'right', 'nested-child', 'hidden'].map(id => {
+                    const r = document.querySelector('#' + id).getBoundingClientRect();
+                    return [id, {x: r.x, y: r.y, width: r.width, height: r.height}];
+                })
+            )"""
+        )
+        union_right = union["box"]["x"] + union["box"]["width"]
+        union_bottom = union["box"]["y"] + union["box"]["height"]
+        for child_id in ("left", "right", "nested-child"):
+            child = rects[child_id]
+            assert union["box"]["x"] <= child["x"]
+            assert union["box"]["y"] <= child["y"]
+            assert union_right >= child["x"] + child["width"]
+            assert union_bottom >= child["y"] + child["height"]
+        assert union_right < rects["hidden"]["x"]
+
+        hidden_text = page._stealth_world.evaluate(build_snapshot_js("#hidden-text"))
+        assert hidden_text["visible"] is False
+        assert hidden_text["box"] is None
+
+        page.click("text=Hoy", timeout=3000)
+        page.click("#nested", timeout=3000)
+        assert page.evaluate("window.targetClicks") == 1
+        assert page.evaluate("window.nestedClicks") == 1
+    finally:
+        browser.close()
+
+
+@pytest.mark.slow
 def test_text_selector_semantics_match_playwright():
     """Text regex, exact fragments, input values, and normalization stay in parity."""
     from cloakbrowser import launch

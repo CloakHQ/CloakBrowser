@@ -103,6 +103,56 @@ console.log('POINTER', JSON.stringify(run(p, [t], t)));
         Assert.Contains("\"hit\":true", outp);
     }
 
+    [Fact]
+    public void DisplayContentsGeometry_RunUnderNode()
+    {
+        var node = FindNode();
+        if (node == null) return;
+
+        string targetJs = StealthDom.BuildSnapshotJs(".target");
+        string unionJs = StealthDom.BuildSnapshotJs(".union");
+        string hiddenJs = StealthDom.BuildSnapshotJs(".hidden-text");
+        string script = @"
+function rect(x,y,width,height){ return {x,y,width,height}; }
+function el(tag,text,box,display,visibility){
+  const e={tagName:tag,nodeType:1,textContent:text||'',childNodes:[],children:[],firstChild:null,
+    parentElement:null,previousElementSibling:null,nextSibling:null,isConnected:true,disabled:false,
+    readOnly:false,isContentEditable:false,type:'text',value:'',checked:false,attrs:{},
+    style:{display:display||'block',visibility:visibility||'visible'},box:box};
+  if(text){const t={nodeType:3,nodeValue:text,textContent:text,nextSibling:null,box:box};e.childNodes.push(t);e.firstChild=t;}
+  e.getBoundingClientRect=()=>e.box;e.getAttribute=n=>e.attrs[n]||null;e.hasAttribute=n=>n in e.attrs;
+  e.closest=()=>null;e.contains=o=>o===e||e.children.some(c=>c.contains(o));e.getRootNode=()=>document;
+  return e;
+}
+function append(parent,child){const prev=parent.childNodes[parent.childNodes.length-1];if(prev)prev.nextSibling=child;
+  child.parentElement=parent;child.previousElementSibling=parent.children[parent.children.length-1]||null;
+  parent.children.push(child);parent.childNodes.push(child);parent.firstChild=parent.childNodes[0];}
+function run(js,target){let selected=null;const document={children:[target],head:{contains:()=>false},activeElement:null,
+  querySelectorAll:()=>[target],evaluate:()=>({snapshotLength:0,snapshotItem:()=>null}),elementFromPoint:()=>null,
+  createRange:()=>({selectNode:n=>{selected=n;},getBoundingClientRect:()=>selected.box})};
+  function wire(n){n.ownerDocument=document;for(const child of n.childNodes||[])wire(child);}wire(target);
+  return new Function('document','XPathResult','getComputedStyle','globalThis','return '+js)(
+    document,{ORDERED_NODE_SNAPSHOT_TYPE:7},n=>n.style,{});
+}
+const target=el('LI','Hoy',rect(0,0,0,0),'contents');target.childNodes[0].box=rect(5,6,25,10);
+const union=el('DIV','',rect(0,0,0,0),'contents');
+const left=el('SPAN','left',rect(10,20,20,10));const right=el('SPAN','right',rect(40,20,30,10));
+const nested=el('SPAN','',rect(0,0,0,0),'contents');append(nested,el('SPAN','nested',rect(75,20,25,10)));
+const hidden=el('SPAN','hidden',rect(1000,1000,100,100),'block','hidden');
+append(union,left);append(union,right);append(union,nested);append(union,hidden);
+const hiddenText=el('DIV','hidden text',rect(0,0,0,0),'contents','hidden');hiddenText.childNodes[0].box=rect(5,6,50,10);
+const t=run(" + JsStr(targetJs) + @",target);const u=run(" + JsStr(unionJs) + @",union);const h=run(" + JsStr(hiddenJs) + @",hiddenText);
+console.log('TARGET',JSON.stringify({visible:t.visible,box:t.box}));
+console.log('UNION',JSON.stringify({visible:u.visible,box:u.box}));
+console.log('HIDDEN',JSON.stringify({visible:h.visible,box:h.box}));
+";
+
+        string outp = RunNode(node, script);
+        Assert.Contains("TARGET {\"visible\":true,\"box\":{\"x\":5,\"y\":6,\"width\":25,\"height\":10}}", outp);
+        Assert.Contains("UNION {\"visible\":true,\"box\":{\"x\":10,\"y\":20,\"width\":90,\"height\":10}}", outp);
+        Assert.Contains("HIDDEN {\"visible\":false,\"box\":null}", outp);
+    }
+
     private static string JsStr(string s) => JsonSerializer.Serialize(s);
 
     private static string? FindNode()

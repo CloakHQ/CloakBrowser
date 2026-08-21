@@ -1148,6 +1148,36 @@ describeIfSlow("stealth browser: selector parity and target identity", () => {
     }
   }, 60000);
 
+  it("clicks visible display:contents text and nested content", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+    try {
+      const page = await browser.newPage();
+      await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => {
+        document.body.innerHTML = `
+          <ul><li id="target" style="display:contents">Hoy</li></ul>
+          <div id="nested" style="display:contents"><span>nested</span></div>`;
+        (window as any).__targetClicks = 0;
+        (window as any).__nestedClicks = 0;
+        document.querySelector("#target")!.addEventListener("click", () => (window as any).__targetClicks++);
+        document.querySelector("#nested")!.addEventListener("click", () => (window as any).__nestedClicks++);
+      });
+      expect(await page.locator("#target").evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return { width: rect.width, height: rect.height };
+      })).toEqual({ width: 0, height: 0 });
+      await page.click("text=Hoy", { timeout: 3000 });
+      await page.click("#nested", { timeout: 3000 });
+      expect(await page.evaluate(() => ({
+        target: (window as any).__targetClicks,
+        nested: (window as any).__nestedClicks,
+      }))).toEqual({ target: 1, nested: 1 });
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+
   it("matches Playwright ordering across mixed and nested open Shadow DOM", async () => {
     const { launch } = await import("../src/index.js");
     const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
