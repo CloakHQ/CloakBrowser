@@ -235,10 +235,7 @@ static void PrintDiagnostics(Dictionary<string, object?> diag)
 
     if (lic.TryGetValue("sessions", out var sessionsObj) && sessionsObj is Dictionary<string, object?> sessions)
     {
-        var active = sessions["active"] as int?;
-        Console.WriteLine(active is null
-            ? "Sessions:  unavailable"
-            : $"Sessions:  {active} seat{(active == 1 ? "" : "s")} in use");
+        Console.WriteLine($"Sessions:  {Diagnostics.FormatSeats(sessions)}");
     }
 
     var geoip = (Dictionary<string, object?>)diag["geoip"]!;

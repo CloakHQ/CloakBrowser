@@ -265,11 +265,17 @@ def _collect_diagnostics(quick: bool, proxy: str | None = None) -> dict:
     # latest-version check below: --quick keeps `info` network-free, and a free
     # tier holds no seats. Never cached (a cached count is a wrong count).
     if entitled_pro and not quick:
-        from .license import get_active_session_count, resolve_license_key
+        from .license import get_session_seats, resolve_license_key
 
         key = resolve_license_key(None)
         if key:
-            license_info["sessions"] = {"active": get_active_session_count(key)}
+            seats = get_session_seats(key)
+            license_info["sessions"] = {
+                "active": seats.active,
+                "limit": seats.limit,
+                "state": seats.state,
+                "reason": seats.reason,
+            }
 
     from .config import get_platform_tag
 
@@ -351,6 +357,36 @@ def _collect_diagnostics(quick: bool, proxy: str | None = None) -> dict:
     }
 
     return diag
+
+
+# Server error codes → the words a customer can act on. Anything unrecognised is
+# printed verbatim rather than swallowed, so a new server code still says something.
+_SEAT_DENIAL_REASONS = {
+    "invalid_key": "invalid key",
+    "license_inactive": "license inactive",
+    "rate_limited": "rate limited",
+}
+
+
+def _format_seats(sessions: dict) -> str:
+    """Render the seat lookup. Kept identical in the JS and .NET wrappers."""
+    state = sessions.get("state", "ok")
+    if state == "unreachable":
+        return "unavailable (cannot reach cloakbrowser.dev)"
+    if state == "denied":
+        reason = sessions.get("reason") or "refused"
+        return f"unavailable ({_SEAT_DENIAL_REASONS.get(reason, reason)})"
+    if state != "ok" or sessions.get("active") is None:
+        # The server is up and the key is fine — it just cannot count right now.
+        return "unavailable (server cannot report seats right now)"
+
+    active = sessions["active"]
+    limit = sessions.get("limit")
+    if limit is None:
+        # No cap to show (unlimited, unrecognised plan, or a server predating the
+        # field). Fall back to the bare count — never print "N/unknown".
+        return f"{active} seat{'' if active == 1 else 's'} in use"
+    return f"{active}/{limit} in use"
 
 
 def _print_diagnostics(diag: dict) -> None:
@@ -459,11 +495,7 @@ def _print_diagnostics(diag: dict) -> None:
         print(f"License:   {tier}")
 
     if "sessions" in lic:
-        active = lic["sessions"]["active"]
-        if active is None:
-            print("Sessions:  unavailable")
-        else:
-            print(f"Sessions:  {active} seat{'' if active == 1 else 's'} in use")
+        print(f"Sessions:  {_format_seats(lic['sessions'])}")
 
     geoip = diag["geoip"]
     db_line = "present" if geoip["db_present"] else "not downloaded (optional)"

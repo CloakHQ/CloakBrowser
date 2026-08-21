@@ -565,6 +565,137 @@ public class LicenseTests : IDisposable
     }
 
     // =======================================================================
+    // GetSessionSeats — the six failure paths that used to collapse into one
+    // bare null (count, cap, and the reason either is missing)
+    // =======================================================================
+
+    [Fact]
+    public void SessionSeats_reports_count_and_limit()
+    {
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":8,\"limit\":2000}"),
+            () =>
+            {
+                var seats = License.GetSessionSeats("cb_key");
+                Assert.Equal("ok", seats.State);
+                Assert.Equal(8, seats.Active);
+                Assert.Equal(2000, seats.Limit);
+            });
+    }
+
+    [Fact]
+    public void SessionSeats_missing_limit_is_null_not_an_error()
+    {
+        // A server predating the field still yields a usable count.
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":8}"),
+            () =>
+            {
+                var seats = License.GetSessionSeats("cb_key");
+                Assert.Equal("ok", seats.State);
+                Assert.Equal(8, seats.Active);
+                Assert.Null(seats.Limit);
+            });
+    }
+
+    [Fact]
+    public void SessionSeats_null_limit_is_null()
+    {
+        // Unlimited licence or unrecognised plan — the server says so explicitly.
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":3,\"limit\":null}"),
+            () => Assert.Null(License.GetSessionSeats("cb_key").Limit));
+    }
+
+    [Fact]
+    public void SessionSeats_zero_is_a_real_answer()
+    {
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":0,\"limit\":5}"),
+            () =>
+            {
+                var seats = License.GetSessionSeats("cb_key");
+                Assert.Equal("ok", seats.State);
+                Assert.Equal(0, seats.Active);
+            });
+    }
+
+    [Fact]
+    public void SessionSeats_network_failure_is_unreachable()
+    {
+        // info is a diagnostic — it degrades, it never throws out of the command.
+        var original = License.Http;
+        License.Http = new HttpClient(new ThrowingHandler());
+        try
+        {
+            var seats = License.GetSessionSeats("cb_key");
+            Assert.Equal("unreachable", seats.State);
+            Assert.Null(seats.Active);
+        }
+        finally
+        {
+            License.Http.Dispose();
+            License.Http = original;
+        }
+    }
+
+    [Theory]
+    [InlineData("license_inactive", HttpStatusCode.Forbidden)]
+    [InlineData("invalid_key", HttpStatusCode.Forbidden)]
+    [InlineData("rate_limited", HttpStatusCode.TooManyRequests)]
+    public void SessionSeats_denial_carries_the_server_reason(string code, HttpStatusCode status)
+    {
+        WithSessionCountHttp(
+            new SessionCountHandler($"{{\"valid\":false,\"error\":\"{code}\"}}", status),
+            () =>
+            {
+                var seats = License.GetSessionSeats("cb_key");
+                Assert.Equal("denied", seats.State);
+                Assert.Equal(code, seats.Reason);
+            });
+    }
+
+    [Fact]
+    public void SessionSeats_denial_without_a_body_falls_back_to_the_status()
+    {
+        WithSessionCountHttp(
+            new SessionCountHandler("not json", HttpStatusCode.InternalServerError),
+            () => Assert.Equal("HTTP 500", License.GetSessionSeats("cb_key").Reason));
+    }
+
+    [Fact]
+    public void SessionSeats_server_reported_unavailable_is_unknown_not_denied()
+    {
+        // Leaseless mode: 200, key is fine, the server just cannot count. This is
+        // the distinction the old single null destroyed.
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":null,\"limit\":null}"),
+            () =>
+            {
+                var seats = License.GetSessionSeats("cb_key");
+                Assert.Equal("unknown", seats.State);
+                Assert.Null(seats.Active);
+            });
+    }
+
+    [Fact]
+    public void SessionSeats_unparseable_body_is_unknown()
+    {
+        WithSessionCountHttp(
+            new SessionCountHandler("not json"),
+            () => Assert.Equal("unknown", License.GetSessionSeats("cb_key").State));
+    }
+
+    [Fact]
+    public void SessionSeats_old_helper_still_returns_the_bare_count()
+    {
+        // GetActiveSessionCount is shipped public API — it must keep behaving.
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":4,\"limit\":20}"),
+            () => Assert.Equal(4, License.GetActiveSessionCount("cb_key")));
+    }
+
+    // =======================================================================
     // Config Pro paths
     // =======================================================================
 

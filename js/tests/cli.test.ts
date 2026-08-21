@@ -54,7 +54,9 @@ describe("collectDiagnostics", () => {
       resolvedChannel: "stable",
       fallback: true,
     });
-    vi.spyOn(license, "getActiveSessionCount").mockResolvedValue(null);
+    vi.spyOn(license, "getSessionSeats").mockResolvedValue({
+      active: null, limit: null, state: "unknown", reason: null,
+    });
 
     const { collectDiagnostics } = await import("../src/cli.js");
     const diag = (await collectDiagnostics(false)) as Record<string, any>;
@@ -106,5 +108,70 @@ describe("collectDiagnostics", () => {
     const { collectDiagnostics } = await import("../src/cli.js");
     const diag = (await collectDiagnostics(true, "http://p:8080")) as Record<string, any>;
     expect(diag.geoip.resolved.error).toContain("proxy refused");
+  });
+});
+
+// ── formatSeats ───────────────────────────────────────
+//
+// Kept byte-identical to the Python (_format_seats) and .NET (FormatSeats)
+// renderers — the three wrappers must print the same line for the same state.
+
+describe("formatSeats", () => {
+  const fmt = async (section: Record<string, unknown>) => {
+    const { formatSeats } = await import("../src/cli.js");
+    return formatSeats(section);
+  };
+
+  it("shows used over limit", async () => {
+    // The point of the change: a scale-plan customer can see they are nowhere
+    // near the ceiling (or right on it) instead of reading a bare number.
+    expect(await fmt({ active: 8, limit: 2000, state: "ok" })).toBe("8/2000 in use");
+  });
+
+  it("falls back to the bare count when the server sends no limit", async () => {
+    // Older server, unlimited licence, or an unrecognised plan. Never "8/unknown".
+    expect(await fmt({ active: 8, limit: null, state: "ok" })).toBe("8 seats in use");
+  });
+
+  it("uses the singular in the fallback", async () => {
+    expect(await fmt({ active: 1, limit: null, state: "ok" })).toBe("1 seat in use");
+  });
+
+  it("shows the limit for a single seat", async () => {
+    // A free key holds exactly one seat — the cohort most likely to hit its cap.
+    expect(await fmt({ active: 1, limit: 1, state: "ok" })).toBe("1/1 in use");
+  });
+
+  it("keeps zero as a real answer", async () => {
+    expect(await fmt({ active: 0, limit: 5, state: "ok" })).toBe("0/5 in use");
+  });
+
+  it("says so when the server is unreachable", async () => {
+    expect(await fmt({ state: "unreachable" })).toBe(
+      "unavailable (cannot reach cloakbrowser.dev)"
+    );
+  });
+
+  it.each([
+    ["license_inactive", "license inactive"],
+    ["invalid_key", "invalid key"],
+    ["rate_limited", "rate limited"],
+  ])("spells out the %s denial", async (code, shown) => {
+    // These used to be one string. A dead key and a healthy key behind a
+    // degraded backend must not read identically.
+    expect(await fmt({ state: "denied", reason: code })).toBe(`unavailable (${shown})`);
+  });
+
+  it("passes an unrecognised denial reason through", async () => {
+    expect(await fmt({ state: "denied", reason: "some_new_code" })).toBe(
+      "unavailable (some_new_code)"
+    );
+  });
+
+  it("does not make a degraded backend read like a licence problem", async () => {
+    // Leaseless mode / seat store down: the key is fine, nothing for them to do.
+    expect(await fmt({ state: "unknown" })).toBe(
+      "unavailable (server cannot report seats right now)"
+    );
   });
 });
