@@ -1,0 +1,425 @@
+"""Real-browser parity tests for isolated-world humanize DOM reads."""
+
+import json
+
+import pytest
+
+from cloakbrowser.human.stealth_dom import _RESOLVER_BODY
+
+
+def _resolve_identity_js(selector: str) -> str:
+    """Resolve with the shipped isolated-world resolver and return its identity."""
+    return (
+        "(() => {\n"
+        + _RESOLVER_BODY
+        + "\nconst el = __resolve("
+        + json.dumps(selector)
+        + ");\n"
+        + "if (el === 'UNSUPPORTED') return {status: 'unsupported'};\n"
+        + "if (!el) return {status: 'not_found'};\n"
+        + "return {status: 'ok', id: el.id, tag: el.tagName};\n"
+        + "})()"
+    )
+
+
+@pytest.mark.slow
+def test_text_selector_ignores_hidden_head_script_and_clicks_visible_target():
+    """Issue #512: isolated text resolution must agree with Playwright.
+
+    A non-rendered script containing the same text precedes the visible dropdown
+    item. Playwright ignores the script; the isolated resolver must select and
+    click the same visible ``<li>`` rather than failing its visibility check.
+    """
+    from cloakbrowser import launch
+
+    browser = launch(headless=False, humanize=True, release_channel="preview")
+    try:
+        page = browser.new_page()
+        page.goto("https://example.com", wait_until="domcontentloaded")
+        page.evaluate(
+            """() => {
+                document.head.innerHTML =
+                    '<script id="hidden-copy" type="application/json">["Hoy"]<\\/script>';
+                document.body.innerHTML = `
+                    <div class="daterangepicker dropdown-menu"
+                         style="display:block; position:absolute">
+                        <ul><li id="target" class="active">Hoy</li></ul>
+                    </div>`;
+                window.targetClicks = 0;
+                document.querySelector('#target').addEventListener(
+                    'click', () => window.targetClicks++
+                );
+            }"""
+        )
+
+        selector = "text=Hoy"
+        expected = {"status": "ok", "id": "target", "tag": "LI"}
+        playwright_identity = page.locator(selector).first.evaluate(
+            "el => ({status: 'ok', id: el.id, tag: el.tagName})"
+        )
+        isolated_identity = page._stealth_world.evaluate(
+            _resolve_identity_js(selector)
+        )
+
+        assert playwright_identity == expected
+        assert isolated_identity == expected
+
+        page.click(selector, timeout=3000)
+        assert page.evaluate("window.targetClicks") == 1
+    finally:
+        browser.close()
+
+
+@pytest.mark.slow
+def test_text_selector_semantics_match_playwright():
+    """Text regex, exact fragments, input values, and normalization stay in parity."""
+    from cloakbrowser import launch
+
+    browser = launch(headless=False, humanize=True, release_channel="preview")
+    try:
+        page = browser.new_page()
+        page.goto("https://example.com", wait_until="domcontentloaded")
+        page.evaluate(
+            """() => {
+                document.head.innerHTML = '';
+                document.body.innerHTML = `
+                    <button id="regex-target">Alpha42</button>
+                    <button id="nested-target">Hello<span>World</span></button>
+                    <input id="value-target" type="button" value="Submit Me">
+                    <button id="normalized-target">foo\u200bbar</button>`;
+            }"""
+        )
+
+        cases = [
+            ("text=/^Alpha\\d+$/", "regex-target"),
+            ('text="Hello"', "nested-target"),
+            ("text=Submit Me", "value-target"),
+            ("text=foobar", "normalized-target"),
+        ]
+        for selector, expected_id in cases:
+            playwright_identity = page.locator(selector).first.evaluate(
+                "el => ({status: 'ok', id: el.id, tag: el.tagName})"
+            )
+            isolated_identity = page._stealth_world.evaluate(
+                _resolve_identity_js(selector)
+            )
+            assert playwright_identity["id"] == expected_id
+            assert isolated_identity == playwright_identity
+    finally:
+        browser.close()
+
+
+@pytest.mark.slow
+def test_structural_has_text_and_open_shadow_dom_match_playwright():
+    """Custom text pseudos keep their compound position and pierce open shadows."""
+    from cloakbrowser import launch
+    from cloakbrowser.human.stealth_dom import build_snapshot_js
+
+    browser = launch(headless=False, humanize=True, release_channel="preview")
+    try:
+        page = browser.new_page()
+        page.goto("https://example.com", wait_until="domcontentloaded")
+        page.evaluate(
+            """() => {
+                document.head.innerHTML = '';
+                document.body.innerHTML = `
+                    <article>Wanted<button id="correct">Go</button></article>
+                    <article>Other<button id="wrong">Wanted</button></article>
+                    <div id="shadow-host" style="display:inline-block"></div>`;
+                const shadow = document.querySelector('#shadow-host')
+                    .attachShadow({mode: 'open'});
+                shadow.innerHTML = `
+                    <button id="shadow-target">Shadow</button>
+                    <input id="shadow-input">`;
+                document.body.dataset.shadowClicks = '0';
+                document.body.dataset.hostClicks = '0';
+                shadow.querySelector('#shadow-target').addEventListener('click', () => {
+                    document.body.dataset.shadowClicks = String(
+                        Number(document.body.dataset.shadowClicks) + 1
+                    );
+                });
+                document.querySelector('#shadow-host').addEventListener('click', () => {
+                    document.body.dataset.hostClicks = String(
+                        Number(document.body.dataset.hostClicks) + 1
+                    );
+                });
+            }"""
+        )
+
+        cases = [
+            ('article:has-text("Wanted") > button', "correct"),
+            ("#shadow-target", "shadow-target"),
+        ]
+        for selector, expected_id in cases:
+            playwright_identity = page.locator(selector).first.evaluate(
+                "el => ({status: 'ok', id: el.id, tag: el.tagName})"
+            )
+            isolated_identity = page._stealth_world.evaluate(
+                _resolve_identity_js(selector)
+            )
+            assert playwright_identity["id"] == expected_id
+            assert isolated_identity == playwright_identity
+
+        page.click("#shadow-target", timeout=3000)
+        assert page._stealth_world.evaluate(
+            "document.body.dataset.shadowClicks"
+        ) == "1"
+
+        # A shadow host is a composed ancestor of the deep elementFromPoint hit.
+        page.click("#shadow-host", timeout=3000)
+        assert page._stealth_world.evaluate(
+            "document.body.dataset.hostClicks"
+        ) == "2"
+
+        page.locator("#shadow-input").focus()
+        focused = page._stealth_world.evaluate(build_snapshot_js("#shadow-input"))
+        assert focused["focused"] is True
+    finally:
+        browser.close()
+
+
+@pytest.mark.slow
+def test_actionability_state_matches_playwright():
+    """Visibility, native disabled, and ARIA readonly semantics stay in parity."""
+    from cloakbrowser import launch
+    from cloakbrowser.human.stealth_dom import build_snapshot_js
+
+    browser = launch(headless=False, humanize=True, release_channel="preview")
+    try:
+        page = browser.new_page()
+        page.goto("https://example.com", wait_until="domcontentloaded")
+        page.evaluate(
+            """() => {
+                document.body.innerHTML = `
+                    <fieldset disabled><input id="fieldset-input"></fieldset>
+                    <div role="group" aria-disabled="true">
+                        <button id="aria-button">Button</button>
+                    </div>
+                    <div id="aria-readonly" role="textbox"
+                         contenteditable="true" aria-readonly="true">Edit</div>
+                    <select><optgroup disabled>
+                        <option id="disabled-option">Choice</option>
+                    </optgroup></select>
+                    <div id="display-contents" style="display:contents">
+                        <span>Rendered child</span>
+                    </div>
+                    <div style="content-visibility:hidden">
+                        <button id="content-hidden">Hidden</button>
+                    </div>
+                    <button id="zero-width"
+                            style="width:0;height:30px;padding:0;border:0">X</button>
+                    <input id="check-target" type="checkbox">`;
+            }"""
+        )
+
+        cases = [
+            ("#fieldset-input", ("visible", "enabled", "editable")),
+            ("#aria-button", ("visible", "enabled")),
+            ("#aria-readonly", ("visible", "enabled", "editable")),
+            ("#disabled-option", ("visible", "enabled")),
+            ("#display-contents", ("visible",)),
+            ("#content-hidden", ("visible",)),
+            ("#zero-width", ("visible",)),
+        ]
+        method_for = {
+            "visible": "is_visible",
+            "enabled": "is_enabled",
+            "editable": "is_editable",
+        }
+        for selector, fields in cases:
+            locator = page.locator(selector).first
+            isolated = page._stealth_world.evaluate(build_snapshot_js(selector))
+            assert isolated["r"] == "ok"
+            for field in fields:
+                expected = getattr(locator, method_for[field])()
+                assert isolated[field] is expected, (
+                    selector, field, expected, isolated[field]
+                )
+
+        # Selector check state must come from the same isolated snapshot, not
+        # Playwright's page.is_checked DOM read.
+        page.is_checked = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("page.is_checked must not be called")
+        )
+        page.check("#check-target", timeout=3000)
+        checked = page._stealth_world.evaluate(build_snapshot_js("#check-target"))
+        assert checked["checked"] is True
+
+        checkbox = page.locator("#check-target")
+        checkbox.is_checked = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("locator.is_checked must not be called")
+        )
+        checkbox.uncheck(timeout=3000)
+        assert page._stealth_world.evaluate(
+            build_snapshot_js("#check-target")
+        )["checked"] is False
+        checkbox.set_checked(True, timeout=3000)
+        assert page._stealth_world.evaluate(
+            build_snapshot_js("#check-target")
+        )["checked"] is True
+    finally:
+        browser.close()
+
+
+@pytest.mark.slow
+def test_force_click_keeps_identity_but_skips_coverage_rejection():
+    """Force dispatches through a covering element without changing identity."""
+    from cloakbrowser import launch
+
+    browser = launch(headless=False, humanize=True, release_channel="preview")
+    try:
+        page = browser.new_page()
+        page.goto("https://example.com", wait_until="domcontentloaded")
+        page.evaluate(
+            """() => {
+                document.body.innerHTML = `
+                    <button id="target" style="position:absolute;left:20px;top:20px">
+                        Target
+                    </button>
+                    <div id="cover" style="position:absolute;left:20px;top:20px;
+                         width:100px;height:40px;z-index:2"></div>`;
+                document.body.dataset.targetClicks = '0';
+                document.body.dataset.coverClicks = '0';
+                document.querySelector('#target').addEventListener('click', () => {
+                    document.body.dataset.targetClicks = String(
+                        Number(document.body.dataset.targetClicks) + 1
+                    );
+                });
+                document.querySelector('#cover').addEventListener('click', () => {
+                    document.body.dataset.coverClicks = String(
+                        Number(document.body.dataset.coverClicks) + 1
+                    );
+                });
+            }"""
+        )
+
+        page.click("#target", force=True, timeout=3000)
+        counts = page._stealth_world.evaluate(
+            """(() => ({
+                target: document.body.dataset.targetClicks,
+                cover: document.body.dataset.coverClicks,
+            }))()"""
+        )
+        assert counts == {"target": "0", "cover": "1"}
+    finally:
+        browser.close()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("mutation", ["remove", "replace"])
+def test_click_rejects_target_mutation_after_mouse_movement(
+    monkeypatch, force, mutation,
+):
+    """Never dispatch to an underlying/replacement target after movement."""
+    from cloakbrowser import launch
+    import cloakbrowser.human as human
+    from cloakbrowser.human.actionability import (
+        ElementNotAttachedError, ElementTargetChangedError,
+    )
+
+    browser = launch(headless=False, humanize=True, release_channel="preview")
+    try:
+        page = browser.new_page()
+        page.goto("https://example.com", wait_until="domcontentloaded")
+        page.evaluate(
+            """() => {
+                document.body.innerHTML = `
+                    <button id="underlying" style="position:absolute;left:20px;top:20px">
+                        Underlying
+                    </button>
+                    <button id="target" style="position:absolute;left:20px;top:20px">
+                        Original
+                    </button>`;
+                document.body.dataset.underlyingClicks = '0';
+                document.body.dataset.replacementClicks = '0';
+                document.querySelector('#underlying').addEventListener('click', () => {
+                    document.body.dataset.underlyingClicks = String(
+                        Number(document.body.dataset.underlyingClicks) + 1
+                    );
+                });
+            }"""
+        )
+
+        def mutate_during_move(raw, start_x, start_y, end_x, end_y, cfg):
+            page._stealth_world.evaluate(
+                """((mutation) => {
+                    const old = document.querySelector('#target');
+                    if (mutation === 'remove') {
+                        old.remove();
+                        return;
+                    }
+                    const replacement = document.createElement('button');
+                    replacement.id = 'target';
+                    replacement.textContent = 'Replacement';
+                    replacement.style.cssText = old.style.cssText;
+                    replacement.addEventListener('click', () => {
+                        document.body.dataset.replacementClicks = String(
+                            Number(document.body.dataset.replacementClicks) + 1
+                        );
+                    });
+                    old.replaceWith(replacement);
+                })""" + "(" + json.dumps(mutation) + ")"
+            )
+
+        monkeypatch.setattr(human, "human_move", mutate_during_move)
+        with pytest.raises((ElementNotAttachedError, ElementTargetChangedError)):
+            page.click("#target", force=force, timeout=1000)
+
+        click_counts = page._stealth_world.evaluate(
+            """(() => ({
+                underlying: document.body.dataset.underlyingClicks,
+                replacement: document.body.dataset.replacementClicks,
+            }))()"""
+        )
+        assert click_counts == {"underlying": "0", "replacement": "0"}
+    finally:
+        browser.close()
+
+
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_async_click_rejects_replacement_after_mouse_movement(monkeypatch):
+    """Async humanized clicks enforce the same exact-target invariant."""
+    from cloakbrowser import launch_async
+    import cloakbrowser.human as human
+    from cloakbrowser.human.actionability import ElementTargetChangedError
+
+    browser = await launch_async(
+        headless=False, humanize=True, release_channel="preview"
+    )
+    try:
+        page = await browser.new_page()
+        await page.goto("https://example.com", wait_until="domcontentloaded")
+        await page.evaluate(
+            """() => {
+                document.body.innerHTML = '<button id="target">Original</button>';
+                document.body.dataset.replacementClicks = '0';
+            }"""
+        )
+
+        async def replace_during_move(raw, start_x, start_y, end_x, end_y, cfg):
+            await page._stealth_world.evaluate(
+                """(() => {
+                    const old = document.querySelector('#target');
+                    const replacement = document.createElement('button');
+                    replacement.id = 'target';
+                    replacement.textContent = 'Replacement';
+                    replacement.addEventListener('click', () => {
+                        document.body.dataset.replacementClicks = String(
+                            Number(document.body.dataset.replacementClicks) + 1
+                        );
+                    });
+                    old.replaceWith(replacement);
+                })()"""
+            )
+
+        monkeypatch.setattr(human, "async_human_move", replace_during_move)
+        with pytest.raises(ElementTargetChangedError):
+            await page.click("#target", force=True, timeout=1000)
+
+        assert await page._stealth_world.evaluate(
+            "document.body.dataset.replacementClicks"
+        ) == "0"
+    finally:
+        await browser.close()
