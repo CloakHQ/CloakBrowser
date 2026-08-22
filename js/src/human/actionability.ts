@@ -10,6 +10,7 @@ import {
   buildActionableJs, buildBoxJs, buildPointerJs, evalParsed, getWorld,
   OK, NOT_FOUND, UNSUPPORTED, type StealthWorld,
 } from './stealthDom.js';
+import { remainingTimeout, timeoutBudget, type TimeoutInput } from './timeout.js';
 
 // ---------------------------------------------------------------------------
 // Error hierarchy
@@ -150,17 +151,17 @@ export async function ensureActionable(
   pageOrFrame: Page | Frame,
   selector: string,
   checks: ReadonlySet<CheckName>,
-  timeout: number = 30000,
+  timeout: TimeoutInput = 30000,
   force: boolean = false,
 ): Promise<void> {
   if (force) return;
 
-  const deadline = Date.now() + timeout;
+  const budget = timeoutBudget(timeout);
   let attempt = 0;
   let lastError: ActionabilityError | null = null;
 
   while (true) {
-    const remainingMs = Math.max(0, deadline - Date.now());
+    const remainingMs = remainingTimeout(budget);
     if (remainingMs <= 0) {
       if (lastError) throw lastError;
       throw new ActionabilityError(selector, 'timeout', 'timeout expired before first check');
@@ -197,7 +198,7 @@ export async function ensureActionable(
     } catch (e) {
       if (e instanceof ActionabilityError) {
         lastError = e;
-        if (Date.now() >= deadline) throw lastError;
+        if (Date.now() >= budget.deadline) throw lastError;
         await backoffSleep(attempt);
         attempt++;
       } else {
@@ -226,13 +227,13 @@ function boxesDiffer(
 export async function ensureStable(
   pageOrFrame: Page | Frame,
   selector: string,
-  timeout: number = 5000,
+  timeout: TimeoutInput = 5000,
 ): Promise<void> {
-  const deadline = Date.now() + timeout;
+  const budget = timeoutBudget(timeout);
   let attempt = 0;
 
   while (true) {
-    const remainingMs = Math.max(0, deadline - Date.now());
+    const remainingMs = remainingTimeout(budget);
     if (remainingMs <= 0) throw new ElementNotStableError(selector);
 
     const box1 = await readBox(pageOrFrame, selector, remainingMs);
@@ -245,7 +246,7 @@ export async function ensureStable(
 
     if (!boxesDiffer(box1, box2)) return;
 
-    if (Date.now() >= deadline) throw new ElementNotStableError(selector);
+    if (Date.now() >= budget.deadline) throw new ElementNotStableError(selector);
 
     await backoffSleep(attempt);
     attempt++;
@@ -286,9 +287,9 @@ export async function checkPointerEvents(
   x: number,
   y: number,
   stealth?: { evaluate(expression: string): Promise<any> } | null,
-  timeout: number = 5000,
+  timeout: TimeoutInput = 5000,
 ): Promise<void> {
-  const deadline = Date.now() + timeout;
+  const budget = timeoutBudget(timeout);
   let attempt = 0;
   let lastMiss: string | null = null;
 
@@ -311,7 +312,7 @@ export async function checkPointerEvents(
     if (!handled) {
       try {
         const loc = pageOrFrame.locator(selector).first();
-        const box = await loc.boundingBox({ timeout: Math.max(1, Math.min(deadline - Date.now(), 1000)) });
+        const box = await loc.boundingBox({ timeout: Math.max(1, Math.min(remainingTimeout(budget), 1000)) });
         result = await loc.evaluate(POINTER_EVENTS_LOCATOR_JS, { x, y, box });
       } catch {
         result = null;
@@ -324,7 +325,7 @@ export async function checkPointerEvents(
     // timeout is clamped to ~1ms and always throws, which used to turn a proven
     // miss into "unknown" and let the click through silently (#329).
     if (!result) {
-      if (lastMiss !== null && Date.now() >= deadline) {
+      if (lastMiss !== null && Date.now() >= budget.deadline) {
         throw new ElementNotReceivingEventsError(selector, lastMiss);
       }
       return;
@@ -333,7 +334,7 @@ export async function checkPointerEvents(
 
     const covering = (result as any)?.covering ?? 'unknown';
     lastMiss = covering;
-    if (Date.now() >= deadline) throw new ElementNotReceivingEventsError(selector, covering);
+    if (Date.now() >= budget.deadline) throw new ElementNotReceivingEventsError(selector, covering);
 
     await backoffSleep(attempt);
     attempt++;
@@ -347,18 +348,18 @@ export async function checkPointerEvents(
 export async function ensureActionableHandle(
   el: ElementHandle,
   checks: ReadonlySet<CheckName>,
-  timeout: number = 30000,
+  timeout: TimeoutInput = 30000,
   force: boolean = false,
 ): Promise<void> {
   if (force) return;
 
-  const deadline = Date.now() + timeout;
+  const budget = timeoutBudget(timeout);
   let attempt = 0;
   let lastError: ActionabilityError | null = null;
   const label = '<ElementHandle>';
 
   while (true) {
-    const remainingMs = Math.max(0, deadline - Date.now());
+    const remainingMs = remainingTimeout(budget);
     if (remainingMs <= 0) {
       if (lastError) throw lastError;
       throw new ActionabilityError(label, 'timeout', 'timeout expired before first check');
@@ -393,7 +394,7 @@ export async function ensureActionableHandle(
     } catch (e) {
       if (e instanceof ActionabilityError) {
         lastError = e;
-        if (Date.now() >= deadline) throw lastError;
+        if (Date.now() >= budget.deadline) throw lastError;
         await backoffSleep(attempt);
         attempt++;
       } else {
@@ -407,9 +408,9 @@ export async function checkPointerEventsHandle(
   el: ElementHandle,
   x: number,
   y: number,
-  timeout: number = 5000,
+  timeout: TimeoutInput = 5000,
 ): Promise<void> {
-  const deadline = Date.now() + timeout;
+  const budget = timeoutBudget(timeout);
   let attempt = 0;
 
   while (true) {
@@ -424,7 +425,7 @@ export async function checkPointerEventsHandle(
     if (!result || result.hit) return;
 
     const covering = (result as any)?.covering ?? 'unknown';
-    if (Date.now() >= deadline) throw new ElementNotReceivingEventsError('<ElementHandle>', covering);
+    if (Date.now() >= budget.deadline) throw new ElementNotReceivingEventsError('<ElementHandle>', covering);
 
     await backoffSleep(attempt);
     attempt++;

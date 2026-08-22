@@ -32,6 +32,7 @@ import {
   ensureActionable, ensureStable, checkPointerEvents,
   CHECKS_CLICK, CHECKS_HOVER, CHECKS_INPUT, CHECKS_FOCUS, CHECKS_CHECK,
 } from './actionability.js';
+import { timeoutBudget, toPlaywrightTimeout, type TimeoutBudget } from './timeout.js';
 
 export { HumanConfig, resolveConfig, mergeConfig } from './config.js';
 export { humanMove, humanClick, clickTarget, humanIdle } from './mouse.js';
@@ -315,39 +316,42 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   };
 
   // --- click ---
-  const humanClickFn = async (selector: string, options?: HumanActionOptions & { _skipChecks?: boolean }) => {
+  const humanClickFn = async (
+    selector: string,
+    options?: HumanActionOptions & { _skipChecks?: boolean },
+    inheritedBudget?: TimeoutBudget,
+  ) => {
     await ensureCursorInit();
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
     const skipChecks = (options as any)?._skipChecks ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = inheritedBudget ?? timeoutBudget(timeout);
 
     if (!force && !skipChecks) {
-      await ensureActionable(page, selector, CHECKS_CLICK, remainingMs(), force);
+      await ensureActionable(page, selector, CHECKS_CLICK, budget, force);
     }
     if (callCfg.idle_between_actions) {
       await humanIdle(raw, cursor.x, cursor.y, callCfg);
     }
-    const { box, cursorX, cursorY, didScroll } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
+    const { box, cursorX, cursorY, didScroll } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, budget);
     cursor.x = cursorX;
     cursor.y = cursorY;
     const isInput = await isInputElement(stealth, page, selector);
     let finalBox = box;
     if (!force && didScroll) {
-      await ensureStable(page, selector, remainingMs());
+      await ensureStable(page, selector, budget);
       // Waiting for the reflow to settle can push the element back out of view,
       // and scrolling once before the wait is not enough: the click coords would
       // land outside the viewport and hit nothing (#329).
-      const rescrolled = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
+      const rescrolled = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, budget);
       finalBox = rescrolled.box;
       cursor.x = rescrolled.cursorX;
       cursor.y = rescrolled.cursorY;
     }
     const target = clickTarget(finalBox, isInput, callCfg);
     if (!force) {
-      await checkPointerEvents(page, selector, target.x, target.y, stealth, remainingMs());
+      await checkPointerEvents(page, selector, target.x, target.y, stealth, budget);
     }
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
@@ -361,31 +365,30 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = timeoutBudget(timeout);
 
-    if (!force) await ensureActionable(page, selector, CHECKS_CLICK, remainingMs(), force);
+    if (!force) await ensureActionable(page, selector, CHECKS_CLICK, budget, force);
     if (callCfg.idle_between_actions) {
       await humanIdle(raw, cursor.x, cursor.y, callCfg);
     }
-    const { box, cursorX, cursorY, didScroll } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
+    const { box, cursorX, cursorY, didScroll } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, budget);
     cursor.x = cursorX;
     cursor.y = cursorY;
     const isInput = await isInputElement(stealth, page, selector);
     let finalBox = box;
     if (!force && didScroll) {
-      await ensureStable(page, selector, remainingMs());
+      await ensureStable(page, selector, budget);
       // Waiting for the reflow to settle can push the element back out of view,
       // and scrolling once before the wait is not enough: the click coords would
       // land outside the viewport and hit nothing (#329).
-      const rescrolled = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
+      const rescrolled = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, budget);
       finalBox = rescrolled.box;
       cursor.x = rescrolled.cursorX;
       cursor.y = rescrolled.cursorY;
     }
     const target = clickTarget(finalBox, isInput, callCfg);
     if (!force) {
-      await checkPointerEvents(page, selector, target.x, target.y, stealth, remainingMs());
+      await checkPointerEvents(page, selector, target.x, target.y, stealth, budget);
     }
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
@@ -396,36 +399,39 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   };
 
   // --- hover ---
-  const humanHoverFn = async (selector: string, options?: HumanActionOptions & { _skipChecks?: boolean }) => {
+  const humanHoverFn = async (
+    selector: string,
+    options?: HumanActionOptions & { _skipChecks?: boolean },
+    inheritedBudget?: TimeoutBudget,
+  ) => {
     await ensureCursorInit();
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
     const skipChecks = (options as any)?._skipChecks ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = inheritedBudget ?? timeoutBudget(timeout);
 
-    if (!force && !skipChecks) await ensureActionable(page, selector, CHECKS_HOVER, remainingMs(), force);
+    if (!force && !skipChecks) await ensureActionable(page, selector, CHECKS_HOVER, budget, force);
     if (callCfg.idle_between_actions) {
       await humanIdle(raw, cursor.x, cursor.y, callCfg);
     }
-    const { box, cursorX, cursorY, didScroll } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
+    const { box, cursorX, cursorY, didScroll } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, budget);
     cursor.x = cursorX;
     cursor.y = cursorY;
     let finalBox = box;
     if (!force && didScroll) {
-      await ensureStable(page, selector, remainingMs());
+      await ensureStable(page, selector, budget);
       // Waiting for the reflow to settle can push the element back out of view,
       // and scrolling once before the wait is not enough: the click coords would
       // land outside the viewport and hit nothing (#329).
-      const rescrolled = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
+      const rescrolled = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, budget);
       finalBox = rescrolled.box;
       cursor.x = rescrolled.cursorX;
       cursor.y = rescrolled.cursorY;
     }
     const target = clickTarget(finalBox, false, callCfg);
     if (!force) {
-      await checkPointerEvents(page, selector, target.x, target.y, stealth, remainingMs());
+      await checkPointerEvents(page, selector, target.x, target.y, stealth, budget);
     }
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
@@ -437,12 +443,11 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = timeoutBudget(timeout);
 
-    if (!force) await ensureActionable(page, selector, CHECKS_INPUT, remainingMs(), force);
+    if (!force) await ensureActionable(page, selector, CHECKS_INPUT, budget, force);
     await sleep(randRange(callCfg.field_switch_delay));
-    await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
+    await humanClickFn(selector, { _skipChecks: true, force, human_config: options?.human_config } as any, budget);
     await sleep(rand(100, 250));
     const cdp = await ensureCdp();
     await humanType(page, rawKb, text, callCfg, cdp);
@@ -453,12 +458,11 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = timeoutBudget(timeout);
 
-    if (!force) await ensureActionable(page, selector, CHECKS_INPUT, remainingMs(), force);
+    if (!force) await ensureActionable(page, selector, CHECKS_INPUT, budget, force);
     await sleep(randRange(callCfg.field_switch_delay));
-    await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
+    await humanClickFn(selector, { _skipChecks: true, force, human_config: options?.human_config } as any, budget);
     await sleep(rand(100, 250));
     await originals.keyboardPress(SELECT_ALL);
     await sleep(rand(30, 80));
@@ -472,12 +476,11 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   const humanClearFn = async (selector: string, options?: HumanActionOptions) => {
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = timeoutBudget(timeout);
 
-    if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
+    if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, budget, force);
     if (!await isSelectorFocused(stealth, page, selector)) {
-      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
+      await humanClickFn(selector, { _skipChecks: true, force, human_config: options?.human_config } as any, budget);
     }
     await sleep(rand(50, 150));
     await originals.keyboardPress(SELECT_ALL);
@@ -490,16 +493,15 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = timeoutBudget(timeout);
 
-    if (!force) await ensureActionable(page, selector, CHECKS_CHECK, remainingMs(), force);
+    if (!force) await ensureActionable(page, selector, CHECKS_CHECK, budget, force);
     if (callCfg.idle_between_actions) {
       await humanIdle(raw, cursor.x, cursor.y, callCfg);
     }
     const checked = await originals.isChecked(selector).catch(() => false);
     if (!checked) {
-      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
+      await humanClickFn(selector, { _skipChecks: true, force, human_config: options?.human_config } as any, budget);
     }
   };
 
@@ -508,16 +510,15 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = timeoutBudget(timeout);
 
-    if (!force) await ensureActionable(page, selector, CHECKS_CHECK, remainingMs(), force);
+    if (!force) await ensureActionable(page, selector, CHECKS_CHECK, budget, force);
     if (callCfg.idle_between_actions) {
       await humanIdle(raw, cursor.x, cursor.y, callCfg);
     }
     const checked = await originals.isChecked(selector).catch(() => true);
     if (checked) {
-      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
+      await humanClickFn(selector, { _skipChecks: true, force, human_config: options?.human_config } as any, budget);
     }
   };
 
@@ -525,11 +526,10 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   const humanSelectOptionFn = async (selector: string, values: any, options?: HumanActionOptions) => {
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = timeoutBudget(timeout);
 
-    if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
-    await humanHoverFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
+    if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, budget, force);
+    await humanHoverFn(selector, { _skipChecks: true, force, human_config: options?.human_config } as any, budget);
     await sleep(rand(100, 300));
     return originals.selectOption(selector, values, options);
   };
@@ -538,12 +538,11 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   const humanPressFn = async (selector: string, key: string, options?: HumanActionOptions) => {
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = timeoutBudget(timeout);
 
-    if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
+    if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, budget, force);
     if (!await isSelectorFocused(stealth, page, selector)) {
-      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
+      await humanClickFn(selector, { _skipChecks: true, force, human_config: options?.human_config } as any, budget);
     }
     await sleep(rand(50, 150));
     await pressWithDelay(originals.keyboardPress, key, options);
@@ -554,12 +553,11 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const timeout = options?.timeout ?? 30000;
     const force = options?.force ?? false;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
+    const budget = timeoutBudget(timeout);
 
-    if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
+    if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, budget, force);
     if (!await isSelectorFocused(stealth, page, selector)) {
-      await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
+      await humanClickFn(selector, { _skipChecks: true, force, human_config: options?.human_config } as any, budget);
     }
     await sleep(rand(100, 250));
     const cdp = await ensureCdp();
@@ -758,7 +756,7 @@ function patchSingleFrame(
     selector: string,
     options: HumanActionOptions | undefined,
     inputBias: boolean,
-    remainingMs: () => number,
+    budget: TimeoutBudget,
   ) => {
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     if (callCfg.idle_between_actions) {
@@ -767,9 +765,9 @@ function patchSingleFrame(
 
     const locator = firstFrameLocator(frame, selector);
     if (typeof locator.scrollIntoViewIfNeeded === 'function') {
-      await locator.scrollIntoViewIfNeeded({ timeout: Math.max(1, remainingMs()) }).catch(() => undefined);
+      await locator.scrollIntoViewIfNeeded({ timeout: toPlaywrightTimeout(budget) }).catch(() => undefined);
     }
-    const box = await locator.boundingBox({ timeout: Math.max(1, remainingMs()) }).catch(() => null);
+    const box = await locator.boundingBox({ timeout: toPlaywrightTimeout(budget) }).catch(() => null);
     if (!box) return null;
 
     const isInput = inputBias || await isFrameInputElement(frame, selector);
@@ -782,10 +780,9 @@ function patchSingleFrame(
 
   const frameClick = async (selector: string, options?: HumanActionOptions) => {
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    const moved = await moveToFrameSelector(selector, options, false, remainingMs);
-    if (!moved) return origFrameClick(selector, { ...options, timeout: Math.max(1, remainingMs()) });
+    const budget = timeoutBudget(timeout);
+    const moved = await moveToFrameSelector(selector, options, false, budget);
+    if (!moved) return origFrameClick(selector, { ...options, timeout: toPlaywrightTimeout(budget) });
     await humanClick(raw, moved.isInput, moved.callCfg);
   };
 
@@ -793,20 +790,18 @@ function patchSingleFrame(
 
   const frameHover = async (selector: string, options?: HumanActionOptions) => {
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    const moved = await moveToFrameSelector(selector, options, false, remainingMs);
-    if (!moved) return origFrameHover(selector, { ...options, timeout: Math.max(1, remainingMs()) });
+    const budget = timeoutBudget(timeout);
+    const moved = await moveToFrameSelector(selector, options, false, budget);
+    if (!moved) return origFrameHover(selector, { ...options, timeout: toPlaywrightTimeout(budget) });
   };
 
   (frame as any).click = frameClick;
 
   (frame as any).dblclick = async (selector: string, options?: HumanActionOptions) => {
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    const moved = await moveToFrameSelector(selector, options, false, remainingMs);
-    if (!moved) return origFrameDblclick(selector, { ...options, timeout: Math.max(1, remainingMs()) });
+    const budget = timeoutBudget(timeout);
+    const moved = await moveToFrameSelector(selector, options, false, budget);
+    if (!moved) return origFrameDblclick(selector, { ...options, timeout: toPlaywrightTimeout(budget) });
     await raw.down({ clickCount: 2 });
     await sleep(rand(30, 60));
     await raw.up({ clickCount: 2 });
@@ -898,10 +893,9 @@ function patchSingleFrame(
     trial?: boolean;
   }) => {
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(1, deadline - Date.now());
-    const srcBox = await firstFrameLocator(frame, source).boundingBox({ timeout: remainingMs() }).catch(() => null);
-    const tgtBox = await firstFrameLocator(frame, target).boundingBox({ timeout: remainingMs() }).catch(() => null);
+    const budget = timeoutBudget(timeout);
+    const srcBox = await firstFrameLocator(frame, source).boundingBox({ timeout: toPlaywrightTimeout(budget) }).catch(() => null);
+    const tgtBox = await firstFrameLocator(frame, target).boundingBox({ timeout: toPlaywrightTimeout(budget) }).catch(() => null);
 
     if (srcBox && tgtBox) {
       const sx = srcBox.x + srcBox.width / 2;
@@ -917,7 +911,7 @@ function patchSingleFrame(
       await sleep(rand(80, 150));
       await originals.mouseUp();
     } else {
-      return origFrameDragAndDrop(source, target, { ...options, timeout: Math.max(1, remainingMs()) });
+      return origFrameDragAndDrop(source, target, { ...options, timeout: toPlaywrightTimeout(budget) });
     }
   };
 }

@@ -1347,7 +1347,9 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
     };
 
     await scrollToElement(page, raw, "#x", 0, 0, cfg, 5000);
-    expect(boundingBox).toHaveBeenCalledWith({ timeout: 5000 });
+    const forwarded = boundingBox.mock.calls[0][0].timeout;
+    expect(forwarded).toBeGreaterThan(4900);
+    expect(forwarded).toBeLessThanOrEqual(5000);
   });
 
   it("default timeout matches Playwright's 30000ms when not specified", async () => {
@@ -1367,18 +1369,21 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
     };
 
     await scrollToElement(page, raw, "#x", 0, 0, cfg);
-    expect(boundingBox).toHaveBeenCalledWith({ timeout: 30000 });
+    const forwarded = boundingBox.mock.calls[0][0].timeout;
+    expect(forwarded).toBeGreaterThan(29900);
+    expect(forwarded).toBeLessThanOrEqual(30000);
   });
 
   it("page.click({ timeout }) reaches scrollToElement", async () => {
     const scrollMod = await import("../src/human/scroll.js");
     const { patchPage } = await import("../src/human/index.js");
+    const { remainingTimeout, timeoutBudget } = await import("../src/human/timeout.js");
     const cfg = resolveConfig("default", { idle_between_actions: false });
 
     let captured = -1;
     const spy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
-      async (_page, _raw, _sel, cx, cy, _cfg, timeout?: number) => {
-        captured = timeout ?? -1;
+      async (_page, _raw, _sel, cx, cy, _cfg, timeout: any = -1) => {
+        captured = remainingTimeout(timeoutBudget(timeout));
         return { box: { x: 100, y: 100, width: 50, height: 30 }, cursorX: cx, cursorY: cy, didScroll: false };
       },
     );
@@ -1395,6 +1400,116 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
       expect(captured).toBeLessThanOrEqual(2000);
     }
     spy.mockRestore();
+  });
+});
+
+describe("Playwright timeout: 0 semantics", () => {
+  const fastConfig = () => resolveConfig("default", {
+    idle_between_actions: false,
+    mouse_min_steps: 1,
+    mouse_max_steps: 1,
+    mouse_burst_pause: [0, 0],
+    click_aim_delay_input: [0, 0],
+    click_aim_delay_button: [0, 0],
+    click_hold_input: [0, 0],
+    click_hold_button: [0, 0],
+  });
+
+  it("keeps disabled budgets infinite internally and maps them back to zero", async () => {
+    const {
+      capTimeout, remainingTimeout, timeoutBudget, toPlaywrightTimeout,
+    } = await import("../src/human/timeout.js");
+    const budget = timeoutBudget(0);
+
+    expect(remainingTimeout(budget)).toBe(Number.POSITIVE_INFINITY);
+    expect(remainingTimeout(capTimeout(budget, 5000))).toBe(Number.POSITIVE_INFINITY);
+    expect(toPlaywrightTimeout(budget)).toBe(0);
+  });
+
+  it("does not revive an exhausted finite budget as a disabled timeout", async () => {
+    const { CHECKS_CLICK, ensureActionable } = await import("../src/human/actionability.js");
+    const {
+      capTimeout, remainingTimeout, timeoutBudget, toPlaywrightTimeout,
+    } = await import("../src/human/timeout.js");
+    const expired = { deadline: Date.now() - 1 };
+
+    expect(timeoutBudget(expired)).toBe(expired);
+    expect(remainingTimeout(capTimeout(expired, 5000))).toBe(0);
+    expect(toPlaywrightTimeout(expired)).toBe(1);
+    await expect(
+      ensureActionable(buildMockPage(), "#ready", CHECKS_CLICK, expired),
+    ).rejects.toThrow("timeout expired before first check");
+  });
+
+  it("keeps a ready humanized page action timeout-free", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+    const page = buildMockPage();
+    const cursor = { x: 100, y: 100, initialized: true };
+
+    patchPage(page as any, fastConfig(), cursor as any);
+
+    await expect((page as any).click("#ready", { timeout: 0 })).resolves.toBeUndefined();
+    expect(page.mouse.down).toHaveBeenCalledOnce();
+    expect(page.mouse.up).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a ready ElementHandle action timeout-free", async () => {
+    const { patchSingleElementHandle } = await import("../src/human/elementhandle.js");
+    const element = buildMockElementHandle();
+    const raw = {
+      move: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      wheel: vi.fn(async () => {}),
+    };
+
+    patchSingleElementHandle(
+      element,
+      buildMockPage(),
+      fastConfig(),
+      { x: 100, y: 100, initialized: true },
+      raw,
+      { down: vi.fn(), up: vi.fn(), type: vi.fn(), insertText: vi.fn() },
+      { keyboardPress: vi.fn(), keyboardDown: vi.fn(), keyboardUp: vi.fn() },
+      null,
+    );
+
+    await expect(element.click({ timeout: 0 })).resolves.toBeUndefined();
+    expect(raw.down).toHaveBeenCalledOnce();
+    expect(raw.up).toHaveBeenCalledOnce();
+  });
+
+  it("passes zero rather than Infinity into frame Playwright calls", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+    const childFrame = buildMockFrame();
+    const mainFrame = { ...buildMockFrame(), childFrames: vi.fn(() => [childFrame]) };
+    const page = buildMockPage({ mainFrameReturn: mainFrame });
+
+    patchPage(page, fastConfig(), { x: 100, y: 100, initialized: true });
+    await childFrame.click("#ready", { timeout: 0 });
+
+    const locator = childFrame.locator.mock.results.at(-1)?.value;
+    expect(locator.scrollIntoViewIfNeeded).toHaveBeenCalledWith({ timeout: 0 });
+    expect(locator.boundingBox).toHaveBeenCalledWith({ timeout: 0 });
+  });
+
+  it("passes zero rather than one into selector boundingBox", async () => {
+    const { scrollToElement } = await import("../src/human/scroll.js");
+    const boundingBox = vi.fn(async () => ({ x: 100, y: 200, width: 50, height: 30 }));
+    const page: any = {
+      viewportSize: () => ({ width: 1280, height: 720 }),
+      locator: vi.fn(() => ({ first: () => ({ boundingBox }) })),
+    };
+    const raw = {
+      move: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      wheel: vi.fn(async () => {}),
+    };
+
+    await scrollToElement(page, raw, "#ready", 0, 0, fastConfig(), 0);
+
+    expect(boundingBox).toHaveBeenCalledWith({ timeout: 0 });
   });
 });
 
