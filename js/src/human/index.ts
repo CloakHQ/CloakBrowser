@@ -4,10 +4,10 @@
  * Activated via humanize: true in launch() / launchContext().
  * Patches page methods to use Bezier mouse curves, realistic typing, and smooth scrolling.
  *
- * Stealth-aware (fixes #110):
- *   - isInputElement / isSelectorFocused use CDP Isolated Worlds instead of page.evaluate
+ * Stealth-aware (fixes #110, #512):
+ *   - Selector resolution, state, geometry, and revalidation use the CDP isolated world
  *   - Shift symbol typing uses CDP Input.dispatchKeyEvent for isTrusted=true events
- *   - Falls back to page.evaluate only when CDP session is unavailable
+ *   - Unsupported selectors and isolated-world failures raise typed errors
  *
  * Patches all interaction methods:
  * click, dblclick, hover, type, fill, check, uncheck, selectOption,
@@ -29,15 +29,29 @@ import { humanType, pressWithDelay } from './keyboard.js';
 import { scrollToElement } from './scroll.js';
 import { patchPageElementHandles, patchFrameElementHandles } from './elementhandle.js';
 import {
-  ensureActionable, ensureStable, checkPointerEvents,
+  ensureActionable, ensureStable, checkPointerEvents, ElementNotAttachedError,
   CHECKS_CLICK, CHECKS_HOVER, CHECKS_INPUT, CHECKS_FOCUS, CHECKS_CHECK,
 } from './actionability.js';
+import {
+  buildSnapshotJs, evalParsed, OK, NOT_FOUND, UNSUPPORTED,
+  StealthEvaluationError, StealthWorldUnavailableError,
+  UnsupportedHumanizeSelectorError, type SnapshotPayload,
+} from './stealthDom.js';
 
 export { HumanConfig, resolveConfig, mergeConfig } from './config.js';
 export { humanMove, humanClick, clickTarget, humanIdle } from './mouse.js';
 export { humanType } from './keyboard.js';
 export { scrollToElement, humanScrollIntoView } from './scroll.js';
 export { patchSingleElementHandle } from './elementhandle.js';
+export {
+  ActionabilityError, ElementNotAttachedError, ElementNotVisibleError,
+  ElementNotStableError, ElementNotEnabledError, ElementNotEditableError,
+  ElementNotReceivingEventsError, ElementTargetChangedError,
+} from './actionability.js';
+export {
+  StealthDomError, UnsupportedHumanizeSelectorError,
+  StealthWorldUnavailableError, StealthEvaluationError,
+} from './stealthDom.js';
 
 // --- Platform-aware select-all shortcut (macOS uses Meta, others use Control) ---
 const SELECT_ALL = process.platform === 'darwin' ? 'Meta+a' : 'Control+a';
@@ -153,74 +167,19 @@ class CursorState {
 
 
 // ============================================================================
-// Stealth DOM queries — isolated world with evaluate fallback
+// Canonical selector snapshot — isolated world only
 // ============================================================================
 
-/**
- * Check if selector matches an input/textarea/contenteditable element.
- * Uses CDP Isolated World when available — invisible to main world.
- */
-async function isInputElement(
+async function selectorSnapshot(
   stealth: StealthEval | null,
-  page: Page,
   selector: string,
-): Promise<boolean> {
-  if (stealth) {
-    try {
-      const escaped = JSON.stringify(selector);
-      const result = await stealth.evaluate(`
-        (() => {
-          const el = document.querySelector(${escaped});
-          if (!el) return false;
-          const tag = el.tagName.toLowerCase();
-          return tag === 'input' || tag === 'textarea'
-            || el.getAttribute('contenteditable') === 'true';
-        })()
-      `);
-      return !!result;
-    } catch {
-      // Fall through to page.evaluate
-    }
-  }
-
-  // Fallback: page.evaluate (detectable — should only happen if CDP fails)
-  return page.evaluate((sel: string) => {
-    const el = document.querySelector(sel);
-    if (!el) return false;
-    const tag = el.tagName.toLowerCase();
-    return tag === 'input' || tag === 'textarea'
-      || el.getAttribute('contenteditable') === 'true';
-  }, selector).catch(() => false);
-}
-
-/**
- * Check if the element matching selector is currently focused.
- * Uses CDP Isolated World when available — invisible to main world.
- */
-async function isSelectorFocused(
-  stealth: StealthEval | null,
-  page: Page,
-  selector: string,
-): Promise<boolean> {
-  if (stealth) {
-    try {
-      const escaped = JSON.stringify(selector);
-      const result = await stealth.evaluate(`
-        (() => {
-          const el = document.querySelector(${escaped});
-          return el === document.activeElement;
-        })()
-      `);
-      return !!result;
-    } catch {
-      // Fall through to page.evaluate
-    }
-  }
-
-  return page.evaluate((sel: string) => {
-    const el = document.querySelector(sel);
-    return el === document.activeElement;
-  }, selector).catch(() => false);
+): Promise<SnapshotPayload> {
+  if (!stealth) throw new StealthWorldUnavailableError();
+  const { status, data } = await evalParsed(stealth, buildSnapshotJs(selector));
+  if (status === OK && data) return data as SnapshotPayload;
+  if (status === NOT_FOUND) throw new ElementNotAttachedError(selector);
+  if (status === UNSUPPORTED) throw new UnsupportedHumanizeSelectorError(selector);
+  throw new StealthEvaluationError(selector);
 }
 
 
@@ -333,7 +292,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const { box, cursorX, cursorY, didScroll } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
     cursor.x = cursorX;
     cursor.y = cursorY;
-    const isInput = await isInputElement(stealth, page, selector);
+    const isInput = (await selectorSnapshot(stealth, selector)).isInput;
     let finalBox = box;
     if (!force && didScroll) {
       await ensureStable(page, selector, remainingMs());
@@ -346,12 +305,15 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
       cursor.y = rescrolled.cursorY;
     }
     const target = clickTarget(finalBox, isInput, callCfg);
-    if (!force) {
-      await checkPointerEvents(page, selector, target.x, target.y, stealth, remainingMs());
-    }
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
+    if (!force) {
+      await checkPointerEvents(
+        page, selector, finalBox.targetId, finalBox.gen, target.x, target.y,
+        stealth, remainingMs(),
+      );
+    }
     await humanClick(raw, isInput, callCfg);
   };
 
@@ -371,7 +333,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const { box, cursorX, cursorY, didScroll } = await scrollToElement(page, raw, selector, cursor.x, cursor.y, callCfg, remainingMs());
     cursor.x = cursorX;
     cursor.y = cursorY;
-    const isInput = await isInputElement(stealth, page, selector);
+    const isInput = (await selectorSnapshot(stealth, selector)).isInput;
     let finalBox = box;
     if (!force && didScroll) {
       await ensureStable(page, selector, remainingMs());
@@ -384,12 +346,15 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
       cursor.y = rescrolled.cursorY;
     }
     const target = clickTarget(finalBox, isInput, callCfg);
-    if (!force) {
-      await checkPointerEvents(page, selector, target.x, target.y, stealth, remainingMs());
-    }
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
+    if (!force) {
+      await checkPointerEvents(
+        page, selector, finalBox.targetId, finalBox.gen, target.x, target.y,
+        stealth, remainingMs(),
+      );
+    }
     await raw.down({ clickCount: 2 });
     await sleep(rand(30, 60));
     await raw.up({ clickCount: 2 });
@@ -424,12 +389,15 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
       cursor.y = rescrolled.cursorY;
     }
     const target = clickTarget(finalBox, false, callCfg);
-    if (!force) {
-      await checkPointerEvents(page, selector, target.x, target.y, stealth, remainingMs());
-    }
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
+    if (!force) {
+      await checkPointerEvents(
+        page, selector, finalBox.targetId, finalBox.gen, target.x, target.y,
+        stealth, remainingMs(),
+      );
+    }
   };
 
   // --- type ---
@@ -476,7 +444,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const remainingMs = () => Math.max(0, deadline - Date.now());
 
     if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
-    if (!await isSelectorFocused(stealth, page, selector)) {
+    if (!(await selectorSnapshot(stealth, selector)).focused) {
       await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     }
     await sleep(rand(50, 150));
@@ -497,7 +465,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     if (callCfg.idle_between_actions) {
       await humanIdle(raw, cursor.x, cursor.y, callCfg);
     }
-    const checked = await originals.isChecked(selector).catch(() => false);
+    const checked = (await selectorSnapshot(stealth, selector)).checked === true;
     if (!checked) {
       await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     }
@@ -515,7 +483,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     if (callCfg.idle_between_actions) {
       await humanIdle(raw, cursor.x, cursor.y, callCfg);
     }
-    const checked = await originals.isChecked(selector).catch(() => true);
+    const checked = (await selectorSnapshot(stealth, selector)).checked === true;
     if (checked) {
       await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     }
@@ -542,7 +510,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const remainingMs = () => Math.max(0, deadline - Date.now());
 
     if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
-    if (!await isSelectorFocused(stealth, page, selector)) {
+    if (!(await selectorSnapshot(stealth, selector)).focused) {
       await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     }
     await sleep(rand(50, 150));
@@ -558,7 +526,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     const remainingMs = () => Math.max(0, deadline - Date.now());
 
     if (!force) await ensureActionable(page, selector, CHECKS_FOCUS, remainingMs(), force);
-    if (!await isSelectorFocused(stealth, page, selector)) {
+    if (!(await selectorSnapshot(stealth, selector)).focused) {
       await humanClickFn(selector, { _skipChecks: true, timeout: remainingMs(), force, human_config: options?.human_config } as any);
     }
     await sleep(rand(100, 250));

@@ -16,6 +16,8 @@ import asyncio
 import pytest
 from unittest.mock import MagicMock
 
+from cloakbrowser.human.stealth_dom import PROTOCOL_VERSION
+
 
 def _mock_el_evaluate(is_input=False):
     """Mock evaluate that returns is_input for tagName checks and {hit: True} for pointer events."""
@@ -502,6 +504,7 @@ class TestCheckUncheckIdle:
         page._original = MagicMock()
         page._original.mouse_move = MagicMock()
         page._human_cfg = cfg
+        page._stealth_world = _FakeWorld({"r": "ok", "checked": False})
 
         idle_called = {"n": 0}
         def fake_idle(*a, **kw):
@@ -529,6 +532,7 @@ class TestCheckUncheckIdle:
         page._original = MagicMock()
         page._original.mouse_move = MagicMock()
         page._human_cfg = cfg
+        page._stealth_world = _FakeWorld({"r": "ok", "checked": True})
 
         idle_called = {"n": 0}
         def fake_idle(*a, **kw):
@@ -1954,53 +1958,23 @@ class TestAsyncElementHandle:
 # =========================================================================
 
 class TestPerCallTimeoutForwarding:
-    """page.click('#x', timeout=5000) must forward 5000 to bounding_box(),
-    not silently use the hardcoded 2000ms in scroll."""
-
-    def test_get_element_box_default_timeout(self):
-        """Default timeout matches Playwright's 30000ms."""
-        from cloakbrowser.human.scroll import _get_element_box
-        from unittest.mock import MagicMock
-
-        page = MagicMock()
-        loc = MagicMock()
-        loc.bounding_box = MagicMock(return_value={"x": 0, "y": 0, "width": 1, "height": 1})
-        page.locator = MagicMock(return_value=MagicMock(first=loc))
-
-        _get_element_box(page, "#x")
-        loc.bounding_box.assert_called_once_with(timeout=30000)
-
-    def test_get_element_box_custom_timeout(self):
-        """Caller can pass a custom timeout that overrides the default."""
-        from cloakbrowser.human.scroll import _get_element_box
-        from unittest.mock import MagicMock
-
-        page = MagicMock()
-        loc = MagicMock()
-        loc.bounding_box = MagicMock(return_value={"x": 0, "y": 0, "width": 1, "height": 1})
-        page.locator = MagicMock(return_value=MagicMock(first=loc))
-
-        _get_element_box(page, "#x", timeout=5000)
-        loc.bounding_box.assert_called_once_with(timeout=5000)
+    """Per-call deadlines must reach isolated-world geometry polling."""
 
     def test_scroll_to_element_forwards_timeout(self):
-        """scroll_to_element passes timeout through to bounding_box()."""
-        from cloakbrowser.human.scroll import scroll_to_element
+        from cloakbrowser.human import scroll as scroll_module
         from cloakbrowser.human.config import resolve_config
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
 
         cfg = resolve_config("default", None)
         page = MagicMock()
         page.viewport_size = {"width": 1280, "height": 720}
-        loc = MagicMock()
-        # Already in viewport so we don't actually scroll — just verify
-        # the timeout was forwarded on the first bounding_box() call.
-        loc.bounding_box = MagicMock(return_value={"x": 100, "y": 200, "width": 50, "height": 30})
-        page.locator = MagicMock(return_value=MagicMock(first=loc))
-
         raw = MagicMock()
-        scroll_to_element(page, raw, "#x", 0, 0, cfg, timeout=7500)
-        loc.bounding_box.assert_called_with(timeout=7500)
+        box = {"x": 100, "y": 200, "width": 50, "height": 30}
+
+        with patch.object(scroll_module, "_get_element_box", return_value=box) as get_box:
+            scroll_module.scroll_to_element(page, raw, "#x", 0, 0, cfg, timeout=7500)
+
+        get_box.assert_called_with(page, "#x", 7500)
 
     def test_page_click_forwards_timeout_kwarg(self):
         """page.click(selector, timeout=...) reaches scroll_to_element.
@@ -2045,7 +2019,9 @@ class TestPerCallTimeoutForwarding:
             return ({"x": 100, "y": 100, "width": 50, "height": 30}, cx, cy, False)
 
         with patch.object(h, "scroll_to_element", side_effect=fake_scroll), \
-             patch.object(h, "ensure_actionable"):
+             patch.object(h, "ensure_actionable"), \
+             patch.object(h, "_is_input_element", return_value=False), \
+             patch.object(h, "check_pointer_events"):
             h.patch_page(page, cfg, cursor)
             page.click("#slow-button", timeout=5000)
 
@@ -2137,6 +2113,7 @@ class TestPerCallHumanConfigOverride:
         with patch.object(h, "human_type", side_effect=fake_human_type), \
              patch.object(h, "scroll_to_element", side_effect=fake_scroll), \
              patch.object(h, "ensure_actionable"), \
+             patch.object(h, "_is_input_element", return_value=True), \
              patch.object(h, "check_pointer_events"):
             h.patch_page(page, cfg, cursor)
             page.type(
@@ -2187,6 +2164,7 @@ class TestPerCallHumanConfigOverride:
         with patch.object(h, "human_type", side_effect=fake_human_type), \
              patch.object(h, "scroll_to_element", side_effect=fake_scroll), \
              patch.object(h, "ensure_actionable"), \
+             patch.object(h, "_is_input_element", return_value=True), \
              patch.object(h, "check_pointer_events"):
             h.patch_page(page, cfg, cursor)
             page.fill("#password", "secret", human_config={"typing_delay": 150})
@@ -2466,10 +2444,8 @@ class TestTimeoutBudget307:
         )
 
 
-class TestPointerEventsFailOpen:
-    """The pointer-events check must fail open: when it cannot run (evaluate /
-    bounding_box throws -> result None), proceed with the click instead of
-    blocking it until the timeout expires."""
+class TestPointerEventsFailurePolicy:
+    """Legacy handles fail open; selector paths in the stealth world fail closed."""
 
     def test_handle_failopen_returns_on_evaluate_error(self):
         from cloakbrowser.human.actionability import check_pointer_events_handle
@@ -2481,18 +2457,15 @@ class TestPointerEventsFailOpen:
         elapsed_ms = (time.monotonic() - start) * 1000
         assert elapsed_ms < 500, f"fail-open should return promptly, took {elapsed_ms:.0f}ms"
 
-    def test_locator_failopen_returns_on_evaluate_error(self):
+    def test_selector_evaluation_error_fails_closed_without_playwright(self):
         from cloakbrowser.human.actionability import check_pointer_events
-        page = MagicMock()
-        loc = MagicMock()
-        loc.first = loc
-        loc.bounding_box = MagicMock(side_effect=Exception("no element"))
-        loc.evaluate = MagicMock(side_effect=Exception("no element"))
-        page.locator = MagicMock(return_value=loc)
+        from cloakbrowser.human.stealth_dom import StealthEvaluationError
+        page = _no_locator_page(_FakeWorld(None))
         start = time.monotonic()
-        check_pointer_events(page, "#x", 100, 100, timeout=2000)  # must not raise
+        with pytest.raises(StealthEvaluationError):
+            check_pointer_events(page, "#x", 1, 1, 100, 100, timeout=1)
         elapsed_ms = (time.monotonic() - start) * 1000
-        assert elapsed_ms < 500, f"fail-open should return promptly, took {elapsed_ms:.0f}ms"
+        assert elapsed_ms < 500
 
     def test_handle_still_raises_when_covered(self):
         """A genuine 'covered' result (not None) must still raise — fail-open
@@ -2522,16 +2495,27 @@ class TestPointerEventsFailOpen:
 # Isolated-world DOM helper (stealth_dom) + rewired actionability/scroll
 # =========================================================================
 
+def _versioned_fake_payload(response):
+    if not isinstance(response, dict):
+        return response
+    payload = dict(response)
+    payload.setdefault("v", PROTOCOL_VERSION)
+    if payload.get("r") in ("ok", "stale"):
+        payload.setdefault("targetId", 1)
+        payload.setdefault("gen", 1)
+    return payload
+
+
 class _FakeWorld:
-    """Sync stand-in for page._stealth_world. Returns a canned dict (or a
-    per-expression callable) and records the expressions it was asked to run."""
+    """Sync stand-in for page._stealth_world with protocol-valid payloads."""
     def __init__(self, response):
         self.response = response
         self.calls = []
 
     def evaluate(self, expr):
         self.calls.append(expr)
-        return self.response(expr) if callable(self.response) else self.response
+        response = self.response(expr) if callable(self.response) else self.response
+        return _versioned_fake_payload(response)
 
 
 class _AsyncFakeWorld:
@@ -2541,7 +2525,8 @@ class _AsyncFakeWorld:
 
     async def evaluate(self, expr):
         self.calls.append(expr)
-        return self.response(expr) if callable(self.response) else self.response
+        response = self.response(expr) if callable(self.response) else self.response
+        return _versioned_fake_payload(response)
 
 
 def _no_locator_page(world):
@@ -2566,20 +2551,46 @@ class TestStealthDomBuilders:
         assert '"#x"' in js
         assert "visible" in js and "getComputedStyle" in js
 
+    def test_snapshot_js_uses_versioned_identity_protocol(self):
+        from cloakbrowser.human.stealth_dom import build_snapshot_js
+        js = build_snapshot_js("#x")
+        assert "v: __V" in js
+        assert "targetId: __targetId(__el)" in js
+        assert "Object.defineProperty(globalThis" in js
+
+    def test_validate_js_requires_same_target_at_point(self):
+        from cloakbrowser.human.stealth_dom import build_validate_js
+        js = build_validate_js("#x", 7, 3, 1.5, 2.5)
+        assert "__id !== 7" in js
+        assert "r: 'stale'" in js
+        assert "__deepElementFromPoint(1.5, 2.5)" in js
+
     def test_pointer_js_inlines_coords(self):
         from cloakbrowser.human.stealth_dom import build_pointer_js
         js = build_pointer_js("#x", 1.5, 2.5)
-        assert "elementFromPoint(1.5, 2.5)" in js
+        assert "__deepElementFromPoint(1.5, 2.5)" in js
 
     def test_parse_result(self):
-        from cloakbrowser.human.stealth_dom import parse_result, OK, NOT_FOUND, UNSUPPORTED
-        assert parse_result({"r": "ok", "box": {"x": 1}}) == (OK, {"r": "ok", "box": {"x": 1}})
-        assert parse_result({"r": "not_found"}) == (NOT_FOUND, None)
-        assert parse_result({"r": "unsupported"}) == (UNSUPPORTED, None)
-        # world.evaluate returns None on CDP/JS error -> unsupported, never not_found
-        assert parse_result(None) == (UNSUPPORTED, None)
-        assert parse_result("UNSUPPORTED") == (UNSUPPORTED, None)
-        assert parse_result([]) == (UNSUPPORTED, None)
+        from cloakbrowser.human.stealth_dom import (
+            parse_result, EVALUATION_FAILED, NOT_FOUND, OK, STALE, UNSUPPORTED,
+        )
+        ok = {"v": 2, "r": "ok", "targetId": 4, "gen": 3, "box": {"x": 1}}
+        assert parse_result(ok) == (OK, ok)
+        assert parse_result({"v": 2, "r": "not_found"}) == (NOT_FOUND, None)
+        stale = {"v": 2, "r": "stale", "targetId": 9, "gen": 3}
+        assert parse_result(stale) == (STALE, stale)
+        assert parse_result({"v": 2, "r": "unsupported"}) == (UNSUPPORTED, None)
+        # A payload without the world generation cannot be trusted for identity.
+        assert parse_result({"v": 2, "r": "ok", "targetId": 4}) == (EVALUATION_FAILED, None)
+        assert parse_result({"v": 2, "r": "stale", "targetId": 4}) == (EVALUATION_FAILED, None)
+        # Malformed/empty evaluation results are explicit failures, never fallback signals.
+        assert parse_result(None) == (EVALUATION_FAILED, None)
+        assert parse_result("UNSUPPORTED") == (EVALUATION_FAILED, None)
+        assert parse_result([]) == (EVALUATION_FAILED, None)
+        assert parse_result({"v": 999, "r": "ok", "targetId": 1}) == (
+            EVALUATION_FAILED, None,
+        )
+        assert parse_result({"v": 1, "r": "ok"}) == (EVALUATION_FAILED, None)
 
 
 class TestEnsureActionableStealth:
@@ -2608,55 +2619,105 @@ class TestEnsureActionableStealth:
         with pytest.raises(ElementNotAttachedError):
             ensure_actionable(page, "#x", CHECKS_CLICK, timeout=100)
 
-    def test_unsupported_falls_back_to_playwright(self):
+    def test_unsupported_raises_without_playwright(self):
         from cloakbrowser.human.actionability import ensure_actionable, CHECKS_CLICK
-        world = _FakeWorld({"r": "unsupported"})
-        page = MagicMock()
-        page._stealth_world = world
-        loc = MagicMock()
-        loc.wait_for = MagicMock()
-        loc.is_visible = MagicMock(return_value=True)
-        loc.is_enabled = MagicMock(return_value=True)
-        loc.is_editable = MagicMock(return_value=True)
-        page.locator = MagicMock(return_value=MagicMock(first=loc))
-        ensure_actionable(page, "internal:role=button", CHECKS_CLICK, timeout=100)
-        page.locator.assert_called()  # unsupported grammar -> Playwright read
+        from cloakbrowser.human.stealth_dom import UnsupportedHumanizeSelectorError
+        page = _no_locator_page(_FakeWorld({"r": "unsupported"}))
+        with pytest.raises(UnsupportedHumanizeSelectorError):
+            ensure_actionable(page, "internal:role=button", CHECKS_CLICK, timeout=100)
 
-    def test_no_world_uses_playwright(self):
+    def test_no_world_raises_without_playwright(self):
         from cloakbrowser.human.actionability import ensure_actionable, CHECKS_CLICK
+        from cloakbrowser.human.stealth_dom import StealthWorldUnavailableError
         page = MagicMock()
         page._stealth_world = None
-        loc = MagicMock()
-        loc.wait_for = MagicMock()
-        loc.is_visible = MagicMock(return_value=True)
-        loc.is_enabled = MagicMock(return_value=True)
-        page.locator = MagicMock(return_value=MagicMock(first=loc))
-        ensure_actionable(page, "#x", CHECKS_CLICK, timeout=100)
-        page.locator.assert_called()
+        page.locator = MagicMock(side_effect=AssertionError("must not call Playwright"))
+        with pytest.raises(StealthWorldUnavailableError):
+            ensure_actionable(page, "#x", CHECKS_CLICK, timeout=100)
+        page.locator.assert_not_called()
+
+
+class TestSelectorSnapshotHelpers:
+    def test_input_and_focus_use_canonical_snapshot(self):
+        from cloakbrowser.human import _is_input_element, _is_selector_focused
+        world = _FakeWorld({
+            "r": "ok", "isInput": True, "focused": True,
+        })
+        page = _no_locator_page(world)
+        page.evaluate = MagicMock(side_effect=AssertionError("must stay isolated"))
+        assert _is_input_element(page, "text=Submit") is True
+        assert _is_selector_focused(page, "text=Submit") is True
+        page.evaluate.assert_not_called()
+
+    def test_unsupported_input_selector_raises(self):
+        from cloakbrowser.human import _is_input_element
+        from cloakbrowser.human.stealth_dom import UnsupportedHumanizeSelectorError
+        page = _no_locator_page(_FakeWorld({"r": "unsupported"}))
+        with pytest.raises(UnsupportedHumanizeSelectorError):
+            _is_input_element(page, "internal:role=button")
+
+    def test_async_input_and_focus_use_canonical_snapshot(self):
+        from cloakbrowser.human import (
+            _async_is_input_element, _async_is_selector_focused,
+        )
+        world = _AsyncFakeWorld({
+            "r": "ok", "isInput": True, "focused": False,
+        })
+        page = _no_locator_page(world)
+        assert asyncio.run(_async_is_input_element(page, "text=Submit")) is True
+        assert asyncio.run(_async_is_selector_focused(page, "text=Submit")) is False
 
 
 class TestGetElementBoxStealth:
     def test_ok_returns_box_without_playwright(self):
         from cloakbrowser.human.scroll import _get_element_box
         box = {"x": 10.0, "y": 20.0, "width": 30.0, "height": 40.0}
-        page = _no_locator_page(_FakeWorld({"r": "ok", "box": box}))
-        assert _get_element_box(page, "#x") == box
+        page = _no_locator_page(_FakeWorld({"r": "ok", "targetId": 7, "gen": 3, "box": box}))
+        assert _get_element_box(page, "#x") == {**box, "targetId": 7, "gen": 3}
 
     def test_not_found_returns_none_stays_in_world(self):
         from cloakbrowser.human.scroll import _get_element_box
         page = _no_locator_page(_FakeWorld({"r": "not_found"}))
         assert _get_element_box(page, "#x", timeout=100) is None
 
-    def test_unsupported_falls_back(self):
+    def test_unsupported_raises_without_fallback(self):
         from cloakbrowser.human.scroll import _get_element_box
-        box = {"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0}
-        page = MagicMock()
-        page._stealth_world = _FakeWorld({"r": "unsupported"})
-        loc = MagicMock()
-        loc.bounding_box = MagicMock(return_value=box)
-        page.locator = MagicMock(return_value=MagicMock(first=loc))
-        assert _get_element_box(page, "internal:role=button") == box
-        page.locator.assert_called()
+        from cloakbrowser.human.stealth_dom import UnsupportedHumanizeSelectorError
+        page = _no_locator_page(_FakeWorld({"r": "unsupported"}))
+        with pytest.raises(UnsupportedHumanizeSelectorError):
+            _get_element_box(page, "internal:role=button")
+
+    def test_custom_timeout_is_not_capped_at_two_seconds(self):
+        from cloakbrowser.human.scroll import _get_element_box
+        from unittest.mock import patch
+
+        responses = iter([
+            {"r": "not_found"},
+            {"r": "ok", "targetId": 3,
+             "box": {"x": 1, "y": 2, "width": 3, "height": 4}},
+        ])
+        page = _no_locator_page(_FakeWorld(lambda expr: next(responses)))
+        with patch("cloakbrowser.human.scroll.time") as mock_time:
+            mock_time.monotonic.side_effect = [0, 2.5]
+            box = _get_element_box(page, "#slow", timeout=5000)
+        assert box["targetId"] == 3
+
+    def test_async_custom_timeout_is_not_capped_at_two_seconds(self):
+        from cloakbrowser.human.scroll_async import _get_element_box_async
+        from unittest.mock import AsyncMock, patch
+
+        responses = iter([
+            {"r": "not_found"},
+            {"r": "ok", "targetId": 4,
+             "box": {"x": 1, "y": 2, "width": 3, "height": 4}},
+        ])
+        page = _no_locator_page(_AsyncFakeWorld(lambda expr: next(responses)))
+        with patch("cloakbrowser.human.scroll_async.time") as mock_time, patch(
+            "cloakbrowser.human.scroll_async.asyncio.sleep", new=AsyncMock()
+        ):
+            mock_time.monotonic.side_effect = [0, 2.5]
+            box = asyncio.run(_get_element_box_async(page, "#slow", timeout=5000))
+        assert box["targetId"] == 4
 
 
 class TestCheckPointerEventsStealth:
@@ -2664,26 +2725,68 @@ class TestCheckPointerEventsStealth:
         from cloakbrowser.human.actionability import check_pointer_events
         world = _FakeWorld({"r": "ok", "hit": True})
         page = _no_locator_page(world)
-        check_pointer_events(page, "#x", 5, 5, stealth=world, timeout=200)
+        check_pointer_events(page, "#x", 1, 1, 5, 5, stealth=world, timeout=200)
 
     def test_miss_raises(self):
         from cloakbrowser.human.actionability import check_pointer_events, ElementNotReceivingEventsError
         world = _FakeWorld({"r": "ok", "hit": False, "covering": "DIV"})
         page = _no_locator_page(world)
         with pytest.raises(ElementNotReceivingEventsError):
-            check_pointer_events(page, "#x", 5, 5, stealth=world, timeout=200)
+            check_pointer_events(page, "#x", 1, 1, 5, 5, stealth=world, timeout=200)
 
-    def test_unsupported_falls_back(self):
-        from cloakbrowser.human.actionability import check_pointer_events
-        world = _FakeWorld({"r": "unsupported"})
+    def test_force_skips_the_check_entirely(self):
+        """force=True bypasses the pointer check, matching Playwright, where
+        force skips all actionability rather than only coverage rejection."""
+        from unittest.mock import patch
+
+        import cloakbrowser.human as h
+        from cloakbrowser.human.config import resolve_config
+
+        cfg = resolve_config("default")
+        cursor = h._CursorState()
+        cursor.initialized = True
+        cursor.x = 100
+        cursor.y = 100
+
         page = MagicMock()
-        page._stealth_world = world
-        loc = MagicMock()
-        loc.bounding_box = MagicMock(return_value={"x": 0, "y": 0, "width": 10, "height": 10})
-        loc.evaluate = MagicMock(return_value={"hit": True})
-        page.locator = MagicMock(return_value=MagicMock(first=loc))
-        check_pointer_events(page, "internal:role=button", 5, 5, stealth=world, timeout=200)
-        page.locator.assert_called()
+        page.viewport_size = {"width": 1280, "height": 720}
+        page.context.new_cdp_session = MagicMock(side_effect=Exception("no cdp"))
+        page.main_frame = MagicMock()
+        page.main_frame.child_frames = []
+
+        def fake_scroll(page_arg, raw, selector, cx, cy, cfg_arg, timeout=30000):
+            return ({"x": 10, "y": 10, "width": 50, "height": 30, "targetId": 1}, cx, cy, False)
+
+        with patch.object(h, "scroll_to_element", side_effect=fake_scroll), \
+             patch.object(h, "ensure_actionable"), \
+             patch.object(h, "_is_input_element", return_value=False), \
+             patch.object(h, "check_pointer_events") as checked:
+            h.patch_page(page, cfg, cursor)
+            page.click("#x", force=True)
+            assert not checked.called, "force=True must not run the pointer check"
+
+            page.click("#x")
+            assert checked.called, "force=False must still run the pointer check"
+
+    def test_stale_target_raises(self):
+        from cloakbrowser.human.actionability import (
+            check_pointer_events, ElementTargetChangedError,
+        )
+        world = _FakeWorld({"r": "stale", "targetId": 2})
+        page = _no_locator_page(world)
+        with pytest.raises(ElementTargetChangedError):
+            check_pointer_events(page, "#x", 1, 1, 5, 5, stealth=world, timeout=200)
+
+    def test_unsupported_raises_without_fallback(self):
+        from cloakbrowser.human.actionability import check_pointer_events
+        from cloakbrowser.human.stealth_dom import UnsupportedHumanizeSelectorError
+        world = _FakeWorld({"r": "unsupported"})
+        page = _no_locator_page(world)
+        with pytest.raises(UnsupportedHumanizeSelectorError):
+            check_pointer_events(
+                page, "internal:role=button", 1, 1, 5, 5,
+                stealth=world, timeout=200,
+            )
 
 
 class TestStealthAsync:
@@ -2698,8 +2801,8 @@ class TestStealthAsync:
     def test_async_get_element_box_ok(self):
         from cloakbrowser.human.scroll_async import _get_element_box_async
         box = {"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0}
-        page = _no_locator_page(_AsyncFakeWorld({"r": "ok", "box": box}))
-        assert asyncio.run(_get_element_box_async(page, "#x")) == box
+        page = _no_locator_page(_AsyncFakeWorld({"r": "ok", "targetId": 9, "gen": 3, "box": box}))
+        assert asyncio.run(_get_element_box_async(page, "#x")) == {**box, "targetId": 9, "gen": 3}
 
 
 # =========================================================================

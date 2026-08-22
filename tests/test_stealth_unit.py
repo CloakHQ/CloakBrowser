@@ -20,6 +20,7 @@ import time
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch as mock_patch, call
+from cloakbrowser.human.stealth_dom import PROTOCOL_VERSION
 
 
 # =========================================================================
@@ -310,243 +311,146 @@ class TestAsyncIsolatedWorld:
 # 14. _is_input_element stealth
 # =========================================================================
 
-class TestIsInputElementStealth:
-    """Tests for stealth-aware _is_input_element."""
+def _snapshot_payload(**overrides):
+    payload = {
+        "v": PROTOCOL_VERSION, "r": "ok", "targetId": 1, "gen": 1,
+        "isInput": False, "focused": False,
+    }
+    payload.update(overrides)
+    return payload
 
-    def test_uses_isolated_world_when_available(self):
+
+class TestIsInputElementStealth:
+    def test_uses_canonical_isolated_snapshot(self):
         from cloakbrowser.human import _is_input_element
 
         mock_world = MagicMock()
-        mock_world.evaluate = MagicMock(return_value=True)
+        mock_world.evaluate.return_value = _snapshot_payload(isInput=True)
+        page = MagicMock(_stealth_world=mock_world)
 
-        page = MagicMock()
-        page._stealth_world = mock_world
-
-        result = _is_input_element(page, "#myInput")
-        assert result is True
-        # Should have called isolated world, NOT page.evaluate
+        assert _is_input_element(page, "text=Submit") is True
         mock_world.evaluate.assert_called_once()
         page.evaluate.assert_not_called()
 
-    def test_isolated_world_receives_escaped_selector(self):
+    def test_returns_false_for_non_input_and_escapes_selector(self):
         from cloakbrowser.human import _is_input_element
 
         mock_world = MagicMock()
-        mock_world.evaluate = MagicMock(return_value=False)
+        mock_world.evaluate.return_value = _snapshot_payload(isInput=False)
+        page = MagicMock(_stealth_world=mock_world)
+        selector = 'input[name="email"]'
 
-        page = MagicMock()
-        page._stealth_world = mock_world
+        assert _is_input_element(page, selector) is False
+        assert json.dumps(selector) in mock_world.evaluate.call_args.args[0]
 
-        _is_input_element(page, 'input[name="email"]')
-
-        call_args = mock_world.evaluate.call_args[0][0]
-        # The escaped selector must appear in the expression
-        assert json.dumps('input[name="email"]') in call_args or 'input[name=\\"email\\"]' in call_args
-
-    def test_returns_false_for_non_input(self):
+    def test_no_world_raises_without_page_evaluate(self):
         from cloakbrowser.human import _is_input_element
+        from cloakbrowser.human.stealth_dom import StealthWorldUnavailableError
+
+        page = MagicMock(_stealth_world=None)
+        with pytest.raises(StealthWorldUnavailableError):
+            _is_input_element(page, "#inp")
+        page.evaluate.assert_not_called()
+
+    def test_evaluation_failure_raises_without_fallback(self):
+        from cloakbrowser.human import _is_input_element
+        from cloakbrowser.human.stealth_dom import StealthEvaluationError
 
         mock_world = MagicMock()
-        mock_world.evaluate = MagicMock(return_value=False)
+        mock_world.evaluate.side_effect = Exception("CDP gone")
+        page = MagicMock(_stealth_world=mock_world)
+        with pytest.raises(StealthEvaluationError):
+            _is_input_element(page, "#inp")
+        page.evaluate.assert_not_called()
 
-        page = MagicMock()
-        page._stealth_world = mock_world
-
-        result = _is_input_element(page, "#btn")
-        assert result is False
-
-    def test_falls_back_to_evaluate_when_no_stealth_world(self):
-        from cloakbrowser.human import _is_input_element
-
-        page = MagicMock()
-        page._stealth_world = None
-        page.evaluate = MagicMock(return_value=True)
-
-        result = _is_input_element(page, "#inp")
-        assert result is True
-        page.evaluate.assert_called_once()
-
-    def test_falls_back_to_evaluate_when_isolated_world_raises(self):
-        from cloakbrowser.human import _is_input_element
-
-        mock_world = MagicMock()
-        mock_world.evaluate = MagicMock(side_effect=Exception("CDP gone"))
-
-        page = MagicMock()
-        page._stealth_world = mock_world
-        page.evaluate = MagicMock(return_value=True)
-
-        result = _is_input_element(page, "#inp")
-        assert result is True
-        page.evaluate.assert_called_once()
-
-    def test_returns_false_when_both_paths_fail(self):
-        from cloakbrowser.human import _is_input_element
-
-        mock_world = MagicMock()
-        mock_world.evaluate = MagicMock(side_effect=Exception("CDP gone"))
-
-        page = MagicMock()
-        page._stealth_world = mock_world
-        page.evaluate = MagicMock(side_effect=Exception("page gone"))
-
-        result = _is_input_element(page, "#inp")
-        assert result is False
-
-    def test_no_stealth_world_attr_falls_back(self):
-        """If page doesn't have _stealth_world at all, use fallback."""
-        from cloakbrowser.human import _is_input_element
-
-        page = MagicMock(spec=[])  # no _stealth_world attribute
-        page.evaluate = MagicMock(return_value=False)
-
-        result = _is_input_element(page, "#x")
-        assert result is False
-
-
-# =========================================================================
-# 14b. _async_is_input_element stealth
-# =========================================================================
 
 class TestAsyncIsInputElementStealth:
-
     @pytest.mark.asyncio
-    async def test_uses_isolated_world_when_available(self):
+    async def test_uses_canonical_isolated_snapshot(self):
         from cloakbrowser.human import _async_is_input_element
 
         mock_world = MagicMock()
-        mock_world.evaluate = AsyncMock(return_value=True)
-
-        page = MagicMock()
-        page._stealth_world = mock_world
+        mock_world.evaluate = AsyncMock(
+            return_value=_snapshot_payload(isInput=True)
+        )
+        page = MagicMock(_stealth_world=mock_world)
         page.evaluate = AsyncMock()
 
-        result = await _async_is_input_element(page, "#myInput")
-        assert result is True
-        mock_world.evaluate.assert_called_once()
+        assert await _async_is_input_element(page, "text=Submit") is True
         page.evaluate.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_falls_back_when_isolated_world_fails(self):
+    async def test_evaluation_failure_raises_without_fallback(self):
         from cloakbrowser.human import _async_is_input_element
+        from cloakbrowser.human.stealth_dom import StealthEvaluationError
 
         mock_world = MagicMock()
         mock_world.evaluate = AsyncMock(side_effect=Exception("dead"))
+        page = MagicMock(_stealth_world=mock_world)
+        page.evaluate = AsyncMock()
+        with pytest.raises(StealthEvaluationError):
+            await _async_is_input_element(page, "#inp")
+        page.evaluate.assert_not_called()
 
-        page = MagicMock()
-        page._stealth_world = mock_world
-        page.evaluate = AsyncMock(return_value=True)
-
-        result = await _async_is_input_element(page, "#inp")
-        assert result is True
-
-
-# =========================================================================
-# 15. _is_selector_focused stealth
-# =========================================================================
 
 class TestIsSelectorFocusedStealth:
-    """Tests for stealth-aware _is_selector_focused."""
-
-    def test_uses_isolated_world_when_available(self):
+    def test_uses_canonical_isolated_snapshot(self):
         from cloakbrowser.human import _is_selector_focused
 
         mock_world = MagicMock()
-        mock_world.evaluate = MagicMock(return_value=True)
+        mock_world.evaluate.return_value = _snapshot_payload(focused=True)
+        page = MagicMock(_stealth_world=mock_world)
 
-        page = MagicMock()
-        page._stealth_world = mock_world
-
-        result = _is_selector_focused(page, "#field")
-        assert result is True
-        mock_world.evaluate.assert_called_once()
+        assert _is_selector_focused(page, "text=Field") is True
         page.evaluate.assert_not_called()
 
     def test_returns_false_when_not_focused(self):
         from cloakbrowser.human import _is_selector_focused
 
         mock_world = MagicMock()
-        mock_world.evaluate = MagicMock(return_value=False)
+        mock_world.evaluate.return_value = _snapshot_payload(focused=False)
+        page = MagicMock(_stealth_world=mock_world)
+        assert _is_selector_focused(page, "#field") is False
 
-        page = MagicMock()
-        page._stealth_world = mock_world
-
-        result = _is_selector_focused(page, "#field")
-        assert result is False
-
-    def test_falls_back_when_no_stealth_world(self):
+    def test_failure_is_explicit_without_fallback(self):
         from cloakbrowser.human import _is_selector_focused
-
-        page = MagicMock()
-        page._stealth_world = None
-        page.evaluate = MagicMock(return_value=True)
-
-        result = _is_selector_focused(page, "#f")
-        assert result is True
-        page.evaluate.assert_called_once()
-
-    def test_falls_back_when_isolated_world_raises(self):
-        from cloakbrowser.human import _is_selector_focused
+        from cloakbrowser.human.stealth_dom import StealthEvaluationError
 
         mock_world = MagicMock()
-        mock_world.evaluate = MagicMock(side_effect=Exception("CDP fail"))
+        mock_world.evaluate.side_effect = Exception("gone")
+        page = MagicMock(_stealth_world=mock_world)
+        with pytest.raises(StealthEvaluationError):
+            _is_selector_focused(page, "#field")
+        page.evaluate.assert_not_called()
 
-        page = MagicMock()
-        page._stealth_world = mock_world
-        page.evaluate = MagicMock(return_value=False)
-
-        result = _is_selector_focused(page, "#f")
-        assert result is False
-
-    def test_returns_false_when_both_paths_fail(self):
-        from cloakbrowser.human import _is_selector_focused
-
-        mock_world = MagicMock()
-        mock_world.evaluate = MagicMock(side_effect=Exception("gone"))
-
-        page = MagicMock()
-        page._stealth_world = mock_world
-        page.evaluate = MagicMock(side_effect=Exception("also gone"))
-
-        result = _is_selector_focused(page, "#f")
-        assert result is False
-
-
-# =========================================================================
-# 15b. _async_is_selector_focused stealth
-# =========================================================================
 
 class TestAsyncIsSelectorFocusedStealth:
-
     @pytest.mark.asyncio
-    async def test_uses_isolated_world_when_available(self):
+    async def test_uses_canonical_isolated_snapshot(self):
         from cloakbrowser.human import _async_is_selector_focused
 
         mock_world = MagicMock()
-        mock_world.evaluate = AsyncMock(return_value=True)
-
-        page = MagicMock()
-        page._stealth_world = mock_world
+        mock_world.evaluate = AsyncMock(
+            return_value=_snapshot_payload(focused=True)
+        )
+        page = MagicMock(_stealth_world=mock_world)
         page.evaluate = AsyncMock()
 
-        result = await _async_is_selector_focused(page, "#field")
-        assert result is True
-        mock_world.evaluate.assert_called_once()
+        assert await _async_is_selector_focused(page, "#field") is True
         page.evaluate.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_falls_back_when_isolated_world_raises(self):
+    async def test_failure_is_explicit_without_fallback(self):
         from cloakbrowser.human import _async_is_selector_focused
+        from cloakbrowser.human.stealth_dom import StealthEvaluationError
 
         mock_world = MagicMock()
         mock_world.evaluate = AsyncMock(side_effect=Exception("dead"))
-
-        page = MagicMock()
-        page._stealth_world = mock_world
-        page.evaluate = AsyncMock(return_value=False)
-
-        result = await _async_is_selector_focused(page, "#f")
-        assert result is False
+        page = MagicMock(_stealth_world=mock_world)
+        page.evaluate = AsyncMock()
+        with pytest.raises(StealthEvaluationError):
+            await _async_is_selector_focused(page, "#field")
+        page.evaluate.assert_not_called()
 
 
 # =========================================================================
@@ -1106,7 +1010,9 @@ class TestIsolatedWorldSafety:
 
         mock_world = MagicMock()
         calls = []
-        mock_world.evaluate = MagicMock(side_effect=lambda expr: calls.append(expr) or False)
+        mock_world.evaluate = MagicMock(
+            side_effect=lambda expr: calls.append(expr) or _snapshot_payload()
+        )
 
         page = MagicMock()
         page._stealth_world = mock_world
@@ -1124,7 +1030,9 @@ class TestIsolatedWorldSafety:
 
         mock_world = MagicMock()
         calls = []
-        mock_world.evaluate = MagicMock(side_effect=lambda expr: calls.append(expr) or False)
+        mock_world.evaluate = MagicMock(
+            side_effect=lambda expr: calls.append(expr) or _snapshot_payload()
+        )
 
         page = MagicMock()
         page._stealth_world = mock_world

@@ -4,9 +4,9 @@ Activated via humanize=True in launch() / launch_async().
 Patches page methods to use Bezier mouse curves, realistic typing, and smooth scrolling.
 
 Stealth-aware (fixes #110):
-  - isInputElement / isSelectorFocused use CDP Isolated Worlds instead of page.evaluate
+  - Selector state, geometry, and hit-testing stay in a CDP isolated world
   - Shift symbol typing uses CDP Input.dispatchKeyEvent for isTrusted=true events
-  - Falls back to page.evaluate only when CDP session is unavailable
+  - Unsupported/unavailable isolated reads fail explicitly without DOM-read fallback
 
 Supports both sync and async Playwright APIs.
 """
@@ -38,6 +38,12 @@ from .actionability import (
 from .actionability_async import (
     async_ensure_actionable, async_ensure_stable, async_check_pointer_events,
     async_ensure_actionable_handle, async_check_pointer_events_handle,
+)
+from .stealth_dom import (
+    async_eval_parsed, build_snapshot_js, eval_parsed,
+    NOT_FOUND, OK, UNSUPPORTED,
+    StealthEvaluationError, StealthWorldUnavailableError,
+    UnsupportedHumanizeSelectorError,
 )
 
 _SELECT_ALL = "Meta+a" if sys.platform == "darwin" else "Control+a"
@@ -219,134 +225,51 @@ class _CursorState:
 
 
 # ============================================================================
-# Stealth DOM queries — isolated world with evaluate fallback
+# Stealth DOM queries — canonical isolated-world snapshot only
 # ============================================================================
 
-def _is_input_element(page: Any, selector: str) -> bool:
-    """Check if selector is an input element. Uses CDP isolated world when available."""
-    world: Optional[_SyncIsolatedWorld] = getattr(page, '_stealth_world', None)
-    if world is not None:
-        try:
-            escaped = json.dumps(selector)
-            result = world.evaluate(
-                f"(() => {{"
-                f"  const el = document.querySelector({escaped});"
-                f"  if (!el) return false;"
-                f"  const tag = el.tagName.toLowerCase();"
-                f"  return tag === 'input' || tag === 'textarea'"
-                f"    || el.getAttribute('contenteditable') === 'true';"
-                f"}})()"
-            )
-            return bool(result)
-        except Exception:
-            pass
+def _selector_snapshot(page: Any, selector: str) -> dict:
+    world = getattr(page, "_stealth_world", None)
+    if world is None:
+        raise StealthWorldUnavailableError()
+    status, data = eval_parsed(world, build_snapshot_js(selector))
+    if status == OK:
+        return data
+    if status == NOT_FOUND:
+        raise ElementNotAttachedError(selector)
+    if status == UNSUPPORTED:
+        raise UnsupportedHumanizeSelectorError(selector)
+    raise StealthEvaluationError(selector)
 
-    # Fallback: page.evaluate (detectable — should only happen if CDP fails)
-    try:
-        return page.evaluate(
-            """(sel) => {
-                const el = document.querySelector(sel);
-                if (!el) return false;
-                const tag = el.tagName.toLowerCase();
-                return tag === 'input' || tag === 'textarea'
-                    || el.getAttribute('contenteditable') === 'true';
-            }""",
-            selector,
-        )
-    except Exception:
-        return False
+
+async def _async_selector_snapshot(page: Any, selector: str) -> dict:
+    world = getattr(page, "_stealth_world", None)
+    if world is None:
+        raise StealthWorldUnavailableError()
+    status, data = await async_eval_parsed(world, build_snapshot_js(selector))
+    if status == OK:
+        return data
+    if status == NOT_FOUND:
+        raise ElementNotAttachedError(selector)
+    if status == UNSUPPORTED:
+        raise UnsupportedHumanizeSelectorError(selector)
+    raise StealthEvaluationError(selector)
+
+
+def _is_input_element(page: Any, selector: str) -> bool:
+    return bool(_selector_snapshot(page, selector)["isInput"])
 
 
 async def _async_is_input_element(page: Any, selector: str) -> bool:
-    """Check if selector is an input element (async). Uses CDP isolated world when available."""
-    world: Optional[_AsyncIsolatedWorld] = getattr(page, '_stealth_world', None)
-    if world is not None:
-        try:
-            escaped = json.dumps(selector)
-            result = await world.evaluate(
-                f"(() => {{"
-                f"  const el = document.querySelector({escaped});"
-                f"  if (!el) return false;"
-                f"  const tag = el.tagName.toLowerCase();"
-                f"  return tag === 'input' || tag === 'textarea'"
-                f"    || el.getAttribute('contenteditable') === 'true';"
-                f"}})()"
-            )
-            return bool(result)
-        except Exception:
-            pass
-
-    try:
-        return await page.evaluate(
-            """(sel) => {
-                const el = document.querySelector(sel);
-                if (!el) return false;
-                const tag = el.tagName.toLowerCase();
-                return tag === 'input' || tag === 'textarea'
-                    || el.getAttribute('contenteditable') === 'true';
-            }""",
-            selector,
-        )
-    except Exception:
-        return False
+    return bool((await _async_selector_snapshot(page, selector))["isInput"])
 
 
 def _is_selector_focused(page: Any, selector: str) -> bool:
-    """Check if the element matching selector is currently focused.
-    Uses CDP isolated world when available."""
-    world: Optional[_SyncIsolatedWorld] = getattr(page, '_stealth_world', None)
-    if world is not None:
-        try:
-            escaped = json.dumps(selector)
-            result = world.evaluate(
-                f"(() => {{"
-                f"  const el = document.querySelector({escaped});"
-                f"  return el === document.activeElement;"
-                f"}})()"
-            )
-            return bool(result)
-        except Exception:
-            pass
-
-    try:
-        return page.evaluate(
-            """(sel) => {
-                const el = document.querySelector(sel);
-                return el === document.activeElement;
-            }""",
-            selector,
-        )
-    except Exception:
-        return False
+    return bool(_selector_snapshot(page, selector)["focused"])
 
 
 async def _async_is_selector_focused(page: Any, selector: str) -> bool:
-    """Check if the element matching selector is currently focused (async).
-    Uses CDP isolated world when available."""
-    world: Optional[_AsyncIsolatedWorld] = getattr(page, '_stealth_world', None)
-    if world is not None:
-        try:
-            escaped = json.dumps(selector)
-            result = await world.evaluate(
-                f"(() => {{"
-                f"  const el = document.querySelector({escaped});"
-                f"  return el === document.activeElement;"
-                f"}})()"
-            )
-            return bool(result)
-        except Exception:
-            pass
-
-    try:
-        return await page.evaluate(
-            """(sel) => {
-                const el = document.querySelector(sel);
-                return el === document.activeElement;
-            }""",
-            selector,
-        )
-    except Exception:
-        return False
+    return bool((await _async_selector_snapshot(page, selector))["focused"])
 
 
 # ============================================================================
@@ -513,9 +436,10 @@ def _patch_locator_class_sync():
             if cfg and cfg.idle_between_actions:
                 raw = type("_R", (), {"move": self.page._original.mouse_move})()
                 human_idle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg)
-            checked = self.is_checked()
-            if not checked:
-                tgt.click(_get_selector(self), **fwd)
+            selector = _get_selector(self)
+            checked = _selector_snapshot(tgt, selector)["checked"]
+            if checked is not True:
+                tgt.click(selector, **fwd)
         else:
             _orig_check(self, **kwargs)
 
@@ -530,9 +454,10 @@ def _patch_locator_class_sync():
             if cfg and cfg.idle_between_actions:
                 raw = type("_R", (), {"move": self.page._original.mouse_move})()
                 human_idle(raw, rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]), 0, 0, cfg)
-            checked = self.is_checked()
-            if checked:
-                tgt.click(_get_selector(self), **fwd)
+            selector = _get_selector(self)
+            checked = _selector_snapshot(tgt, selector)["checked"]
+            if checked is True:
+                tgt.click(selector, **fwd)
         else:
             _orig_uncheck(self, **kwargs)
 
@@ -543,9 +468,10 @@ def _patch_locator_class_sync():
                 _orig_set_checked(self, checked, **kwargs)
                 return
             fwd = _forward_kwargs(kwargs)
-            current = self.is_checked()
-            if current != checked:
-                tgt.click(_get_selector(self), **fwd)
+            selector = _get_selector(self)
+            current = _selector_snapshot(tgt, selector)["checked"]
+            if current is not checked:
+                tgt.click(selector, **fwd)
         else:
             _orig_set_checked(self, checked, **kwargs)
 
@@ -831,9 +757,10 @@ def _patch_locator_class_async():
                     rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]),
                     0, 0, cfg,
                 )
-            checked = await self.is_checked()
-            if not checked:
-                await tgt.click(_get_selector(self), **fwd)
+            selector = _get_selector(self)
+            checked = (await _async_selector_snapshot(tgt, selector))["checked"]
+            if checked is not True:
+                await tgt.click(selector, **fwd)
         else:
             await _orig_check(self, **kwargs)
 
@@ -852,9 +779,10 @@ def _patch_locator_class_async():
                     rand(cfg.idle_between_duration[0], cfg.idle_between_duration[1]),
                     0, 0, cfg,
                 )
-            checked = await self.is_checked()
-            if checked:
-                await tgt.click(_get_selector(self), **fwd)
+            selector = _get_selector(self)
+            checked = (await _async_selector_snapshot(tgt, selector))["checked"]
+            if checked is True:
+                await tgt.click(selector, **fwd)
         else:
             await _orig_uncheck(self, **kwargs)
 
@@ -865,9 +793,10 @@ def _patch_locator_class_async():
                 await _orig_set_checked(self, checked, **kwargs)
                 return
             fwd = _forward_kwargs(kwargs)
-            current = await self.is_checked()
-            if current != checked:
-                await tgt.click(_get_selector(self), **fwd)
+            selector = _get_selector(self)
+            current = (await _async_selector_snapshot(tgt, selector))["checked"]
+            if current is not checked:
+                await tgt.click(selector, **fwd)
         else:
             await _orig_set_checked(self, checked, **kwargs)
 
@@ -1098,11 +1027,14 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
             cursor.x = cx
             cursor.y = cy
         target = click_target(box, is_input, call_cfg)
-        if not force:
-            check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
         human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
+        if not force:
+            check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
         human_click(raw_mouse, is_input, call_cfg)
 
     def _human_dblclick(selector: str, **kwargs: Any) -> None:
@@ -1136,11 +1068,14 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
             cursor.x = cx
             cursor.y = cy
         target = click_target(box, is_input, call_cfg)
-        if not force:
-            check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
         human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
+        if not force:
+            check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
         raw_mouse.down(click_count=2)
         sleep_ms(rand(30, 60))
         raw_mouse.up(click_count=2)
@@ -1176,11 +1111,14 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
             cursor.x = cx
             cursor.y = cy
         target = click_target(box, False, call_cfg)
-        if not force:
-            check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
         human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
+        if not force:
+            check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
 
     def _human_type(selector: str, text: str, **kwargs: Any) -> None:
         call_cfg = merge_config(cfg, kwargs.get("human_config"))
@@ -1228,11 +1166,8 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
         if not force:
             ensure_actionable(page, selector, CHECKS_CHECK, timeout=_remaining_ms(), force=force)
-        try:
-            checked = page.is_checked(selector)
-        except Exception:
-            checked = False
-        if not checked:
+        checked = _selector_snapshot(page, selector)["checked"]
+        if checked is not True:
             _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
 
     def _human_uncheck(selector: str, **kwargs: Any) -> None:
@@ -1245,11 +1180,8 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
         if not force:
             ensure_actionable(page, selector, CHECKS_CHECK, timeout=_remaining_ms(), force=force)
-        try:
-            checked = page.is_checked(selector)
-        except Exception:
-            checked = True
-        if checked:
+        checked = _selector_snapshot(page, selector)["checked"]
+        if checked is True:
             _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
 
     def _human_select_option(selector: str, value: Any = None, **kwargs: Any) -> Any:
@@ -2184,11 +2116,14 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
             cursor.x = cx
             cursor.y = cy
         target = click_target(box, is_input, call_cfg)
-        if not force:
-            await async_check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
         await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
+        if not force:
+            await async_check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
         await async_human_click(raw_mouse, is_input, call_cfg)
 
     async def _human_dblclick(selector: str, **kwargs: Any) -> None:
@@ -2221,11 +2156,14 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
             cursor.x = cx
             cursor.y = cy
         target = click_target(box, is_input, call_cfg)
-        if not force:
-            await async_check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
         await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
+        if not force:
+            await async_check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
         await raw_mouse.down(click_count=2)
         await async_sleep_ms(rand(30, 60))
         await raw_mouse.up(click_count=2)
@@ -2260,11 +2198,14 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
             cursor.x = cx
             cursor.y = cy
         target = click_target(box, False, call_cfg)
-        if not force:
-            await async_check_pointer_events(page, selector, target.x, target.y, stealth, timeout=_remaining_ms())
         await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
+        if not force:
+            await async_check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
 
     async def _human_type(selector: str, text: str, **kwargs: Any) -> None:
         call_cfg = merge_config(cfg, kwargs.get("human_config"))
@@ -2314,11 +2255,8 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
         if not force:
             await async_ensure_actionable(page, selector, CHECKS_CHECK, timeout=_remaining_ms(), force=force)
-        try:
-            checked = await page.is_checked(selector)
-        except Exception:
-            checked = False
-        if not checked:
+        checked = (await _async_selector_snapshot(page, selector))["checked"]
+        if checked is not True:
             await _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
 
     async def _human_uncheck(selector: str, **kwargs: Any) -> None:
@@ -2331,11 +2269,8 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
 
         if not force:
             await async_ensure_actionable(page, selector, CHECKS_CHECK, timeout=_remaining_ms(), force=force)
-        try:
-            checked = await page.is_checked(selector)
-        except Exception:
-            checked = True
-        if checked:
+        checked = (await _async_selector_snapshot(page, selector))["checked"]
+        if checked is True:
             await _human_click(selector, _skip_checks=True, timeout=_remaining_ms(), force=force, human_config=kwargs.get("human_config"))
 
     async def _human_press(selector: str, key: str, **kwargs: Any) -> None:

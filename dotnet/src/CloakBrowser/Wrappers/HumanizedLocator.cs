@@ -39,7 +39,8 @@ public sealed partial class HumanizedLocator : ILocator
     /// <summary>Alias of <see cref="Original"/>.</summary>
     public ILocator Inner => _inner;
 
-    private ILocator Wrap(ILocator l) => Humanize.WrapLocator(l, _cursor, _cfg);
+    private ILocator Wrap(ILocator l, string? selector = null) =>
+        Humanize.WrapLocator(l, _cursor, _cfg, selector);
 
     // -----------------------------------------------------------------------
     // Humanized actions
@@ -73,23 +74,57 @@ public sealed partial class HumanizedLocator : ILocator
 
     public async Task CheckAsync(LocatorCheckOptions? options = null)
     {
-        if (!await _inner.IsCheckedAsync().ConfigureAwait(false))
-            await LocatorHumanizer.ClickAsync(_inner, _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options), _selector).ConfigureAwait(false);
+        if (_selector == null)
+        {
+            if (!await _inner.IsCheckedAsync().ConfigureAwait(false))
+                await LocatorHumanizer.ClickAsync(_inner, _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options), null).ConfigureAwait(false);
+            return;
+        }
+        var timeout = OptionReader.Timeout(options); var force = OptionReader.Force(options);
+        var deadline = Environment.TickCount64 + timeout;
+        await LocatorHumanizer.EnsureActionableAsync(_cursor, _selector, Actionability.ChecksCheck,
+            Actionability.RemainingMs(deadline), force).ConfigureAwait(false);
+        if ((await LocatorHumanizer.SnapshotAsync(_cursor, _selector).ConfigureAwait(false)).Checked != true)
+            await LocatorHumanizer.ClickAfterPrecheckAsync(_inner, _cursor, _cfg,
+                Actionability.RemainingMs(deadline), force, _selector).ConfigureAwait(false);
     }
 
     public async Task UncheckAsync(LocatorUncheckOptions? options = null)
     {
-        if (await _inner.IsCheckedAsync().ConfigureAwait(false))
-            await LocatorHumanizer.ClickAsync(_inner, _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options), _selector).ConfigureAwait(false);
+        if (_selector == null)
+        {
+            if (await _inner.IsCheckedAsync().ConfigureAwait(false))
+                await LocatorHumanizer.ClickAsync(_inner, _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options), null).ConfigureAwait(false);
+            return;
+        }
+        var timeout = OptionReader.Timeout(options); var force = OptionReader.Force(options);
+        var deadline = Environment.TickCount64 + timeout;
+        await LocatorHumanizer.EnsureActionableAsync(_cursor, _selector, Actionability.ChecksCheck,
+            Actionability.RemainingMs(deadline), force).ConfigureAwait(false);
+        if ((await LocatorHumanizer.SnapshotAsync(_cursor, _selector).ConfigureAwait(false)).Checked == true)
+            await LocatorHumanizer.ClickAfterPrecheckAsync(_inner, _cursor, _cfg,
+                Actionability.RemainingMs(deadline), force, _selector).ConfigureAwait(false);
     }
 
     public async Task SetCheckedAsync(bool checkedState, LocatorSetCheckedOptions? options = null)
     {
-        bool current;
-        try { current = await _inner.IsCheckedAsync().ConfigureAwait(false); }
-        catch (System.Exception) { current = !checkedState; }
-        if (current != checkedState)
-            await LocatorHumanizer.ClickAsync(_inner, _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options), _selector).ConfigureAwait(false);
+        if (_selector == null)
+        {
+            bool current;
+            try { current = await _inner.IsCheckedAsync().ConfigureAwait(false); }
+            catch (System.Exception) { current = !checkedState; }
+            if (current != checkedState)
+                await LocatorHumanizer.ClickAsync(_inner, _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options), null).ConfigureAwait(false);
+            return;
+        }
+        var timeout = OptionReader.Timeout(options); var force = OptionReader.Force(options);
+        var deadline = Environment.TickCount64 + timeout;
+        await LocatorHumanizer.EnsureActionableAsync(_cursor, _selector, Actionability.ChecksCheck,
+            Actionability.RemainingMs(deadline), force).ConfigureAwait(false);
+        var directCurrent = (await LocatorHumanizer.SnapshotAsync(_cursor, _selector).ConfigureAwait(false)).Checked == true;
+        if (directCurrent != checkedState)
+            await LocatorHumanizer.ClickAfterPrecheckAsync(_inner, _cursor, _cfg,
+                Actionability.RemainingMs(deadline), force, _selector).ConfigureAwait(false);
     }
 
     public async Task DragToAsync(ILocator target, LocatorDragToOptions? options = null)
@@ -171,9 +206,17 @@ public sealed partial class HumanizedLocator : ILocator
     // Locator-returning members - re-wrap so chains stay humanized.
     // -----------------------------------------------------------------------
 
-    public ILocator First => Wrap(_inner.First);
-    public ILocator Last => Wrap(_inner.Last);
-    public ILocator Nth(int index) => Wrap(_inner.Nth(index));
+    // These are the only locator transformations whose selector syntax is supported
+    // by the isolated resolver. A second positional transformation cannot be encoded
+    // by its one trailing nth component, so repeated chains deliberately become legacy.
+    private string? WithNth(int index) =>
+        _selector != null && !Regex.IsMatch(_selector, @"\s*>>\s*nth=-?\d+\s*$")
+            ? $"{_selector} >> nth={index}"
+            : null;
+
+    public ILocator First => Wrap(_inner.First, WithNth(0));
+    public ILocator Last => Wrap(_inner.Last, WithNth(-1));
+    public ILocator Nth(int index) => Wrap(_inner.Nth(index), WithNth(index));
     public ILocator Or(ILocator locator) =>
         Wrap(_inner.Or(locator is HumanizedLocator h ? h.Original : locator));
     public ILocator And(ILocator locator) =>

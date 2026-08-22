@@ -15,55 +15,49 @@ from typing import Any, Awaitable, Callable, Optional, Tuple
 from .config import HumanConfig, rand, rand_range, rand_int_range, async_sleep_ms
 from .mouse_async import AsyncRawMouse, async_human_move
 from .scroll import _is_in_viewport, _SCROLL_JS
-from .stealth_dom import build_box_js, async_eval_parsed, OK, NOT_FOUND, UNSUPPORTED, _VIEWPORT_JS
+from .stealth_dom import (
+    build_box_js, async_eval_parsed, EVALUATION_FAILED, NOT_FOUND, OK, UNSUPPORTED,
+    StealthEvaluationError, StealthWorldUnavailableError,
+    UnsupportedHumanizeSelectorError, _VIEWPORT_JS,
+)
 
 
 async def _get_element_box_async(
     page: Any, selector: str, timeout: float = 30000,
 ) -> Optional[dict]:
-    """Async variant. ``timeout`` is forwarded to Playwright's
-    ``boundingBox(timeout=...)`` so callers can extend it for slow-loading
-    elements (#172).
-
-    Reads geometry through the isolated world when available; a not-found is
-    retried briefly in-world (SPA re-renders) and only an *unsupported* selector
-    reaches Playwright's ``bounding_box``."""
+    """Async isolated-world geometry read with no Playwright fallback."""
     world = getattr(page, "_stealth_world", None)
-    if world is not None:
+    if world is None:
+        raise StealthWorldUnavailableError()
+    deadline = time.monotonic() + max(0, timeout) / 1000.0
+    status, data = await async_eval_parsed(world, build_box_js(selector))
+    while status in (NOT_FOUND, EVALUATION_FAILED) and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
         status, data = await async_eval_parsed(world, build_box_js(selector))
-        if status == OK:
-            return data["box"]
-        if status == NOT_FOUND:
-            deadline = time.monotonic() + min(timeout, 2000) / 1000.0
-            while time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
-                status, data = await async_eval_parsed(world, build_box_js(selector))
-                if status == OK:
-                    return data["box"]
-                if status == UNSUPPORTED:
-                    break
-            if status != UNSUPPORTED:
-                return None
-        # UNSUPPORTED -> Playwright fallback below
-    try:
-        el = page.locator(selector).first
-        return await el.bounding_box(timeout=max(1, timeout))
-    except Exception:
+    if status == OK:
+        box = dict(data["box"])
+        box["targetId"] = data["targetId"]
+        box["gen"] = data["gen"]
+        return box
+    if status == NOT_FOUND:
         return None
+    if status == UNSUPPORTED:
+        raise UnsupportedHumanizeSelectorError(selector)
+    raise StealthEvaluationError(selector)
 
 
 async def _async_read_scroll_state(page: Any) -> dict:
-    """Current vertical scroll offset and the maximum scrollable offset."""
+    """Read vertical scroll state only through the isolated world."""
     world = getattr(page, "_stealth_world", None)
-    if world is not None:
-        try:
-            return await world.evaluate(_SCROLL_JS)
-        except Exception:
-            pass
+    if world is None:
+        raise StealthWorldUnavailableError()
     try:
-        return await page.evaluate(_SCROLL_JS)
-    except Exception:
-        return {"y": 0, "maxY": 0}
+        state = await world.evaluate(_SCROLL_JS)
+    except Exception as exc:
+        raise StealthEvaluationError("<scroll-state>") from exc
+    if not isinstance(state, dict):
+        raise StealthEvaluationError("<scroll-state>")
+    return state
 
 
 async def _async_smooth_wheel(raw: AsyncRawMouse, delta: int, cfg: HumanConfig) -> None:
@@ -102,15 +96,12 @@ async def async_human_scroll_into_view(
         # window; page.viewport_size is then None. Read the live window dimensions
         # through the isolated world, consistent with the other geometry reads here.
         world = getattr(page, "_stealth_world", None)
-        if world is not None:
-            try:
-                viewport = await world.evaluate(_VIEWPORT_JS)
-            except Exception:
-                viewport = None
-        if not viewport:
-            viewport = await page.evaluate(
-                "() => ({ width: window.innerWidth, height: window.innerHeight })"
-            )
+        if world is None:
+            raise StealthWorldUnavailableError()
+        try:
+            viewport = await world.evaluate(_VIEWPORT_JS)
+        except Exception as exc:
+            raise StealthEvaluationError("<viewport>") from exc
     if not viewport or not viewport.get("height"):
         raise RuntimeError("Viewport size not available")
 
@@ -213,9 +204,8 @@ async def async_scroll_to_element(
 ) -> Tuple[dict, float, float, bool]:
     """Selector-based humanized scroll (async).
 
-    ``timeout`` is forwarded to ``locator.bounding_box(timeout=...)`` so callers
-    such as ``page.click('#x', timeout=5000)`` can wait longer for slow elements
-    (#172). Default matches Playwright's 30000ms when not specified.
+    ``timeout`` bounds isolated-world geometry polling so callers such as
+    ``page.click('#x', timeout=5000)`` can wait for slow elements (#172).
 
     Returns ``(box, cursor_x, cursor_y, did_scroll)``.
     """

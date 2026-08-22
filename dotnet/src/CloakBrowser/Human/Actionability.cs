@@ -65,6 +65,13 @@ public sealed class ElementNotReceivingEventsError : ActionabilityError
         : base(selector, "pointer_events", $"element is covered by <{coveringTag}>") { }
 }
 
+/// <summary>The selector resolved to a different element before input dispatch.</summary>
+public sealed class ElementTargetChangedError : ActionabilityError
+{
+    public ElementTargetChangedError(string selector)
+        : base(selector, "target_identity", "selector resolved to a different element before input dispatch") { }
+}
+
 // ---------------------------------------------------------------------------
 // Checks
 // ---------------------------------------------------------------------------
@@ -134,10 +141,12 @@ public static class Actionability
     {
         if (force)
             return;
+        if (stealth == null)
+            throw new StealthWorldUnavailableError();
 
         double deadline = NowMs() + timeoutMs;
         int attempt = 0;
-        ActionabilityError? lastError = null;
+        Exception? lastError = null;
 
         while (true)
         {
@@ -151,52 +160,29 @@ public static class Actionability
 
             try
             {
-                // Prefer the isolated-world read; fall back to Playwright's locator
-                // predicates only for selector grammar the isolated world can't resolve.
-                if (stealth != null)
-                {
-                    var (st, vis, en, ed) = await StealthDom.ActionableAsync(stealth, selector).ConfigureAwait(false);
-                    if (st == StealthStatus.Ok)
-                    {
-                        if (checks.Contains("visible") && !vis) throw new ElementNotVisibleError(selector);
-                        if (checks.Contains("enabled") && !en) throw new ElementNotEnabledError(selector);
-                        if (checks.Contains("editable") && !ed) throw new ElementNotEditableError(selector);
-                        return;
-                    }
-                    if (st == StealthStatus.NotFound)
-                        throw new ElementNotAttachedError(selector);
-                    // Unsupported -> Playwright below
-                }
+                var (status, snapshot) = await StealthDom.ActionableAsync(
+                    stealth, selector).ConfigureAwait(false);
+                if (status == StealthStatus.Unsupported)
+                    throw new UnsupportedHumanizeSelectorError(selector);
+                if (status == StealthStatus.EvaluationFailed)
+                    throw new StealthEvaluationError(selector);
+                if (status == StealthStatus.NotFound)
+                    throw new ElementNotAttachedError(selector);
+                if (status != StealthStatus.Ok || snapshot == null)
+                    throw new StealthEvaluationError(selector);
 
-                var loc = page.Locator(selector).First;
-
-                if (checks.Contains("attached"))
-                {
-                    try
-                    {
-                        await loc.WaitForAsync(new LocatorWaitForOptions
-                        {
-                            State = WaitForSelectorState.Attached,
-                            Timeout = (float)Math.Max(1, Math.Min(remainingMs, 2000)),
-                        }).ConfigureAwait(false);
-                    }
-                    catch (Exception) { throw new ElementNotAttachedError(selector); }
-                }
-
-                if (checks.Contains("visible") && !await loc.IsVisibleAsync().ConfigureAwait(false))
+                var value = snapshot.Value;
+                if (checks.Contains("visible") && !value.Visible)
                     throw new ElementNotVisibleError(selector);
-
-                if (checks.Contains("enabled") && !await loc.IsEnabledAsync().ConfigureAwait(false))
+                if (checks.Contains("enabled") && !value.Enabled)
                     throw new ElementNotEnabledError(selector);
-
-                if (checks.Contains("editable") && !await loc.IsEditableAsync().ConfigureAwait(false))
+                if (checks.Contains("editable") && !value.Editable)
                     throw new ElementNotEditableError(selector);
-
                 return;
             }
-            catch (ActionabilityError e)
+            catch (Exception error) when (error is ActionabilityError or StealthEvaluationError)
             {
-                lastError = e;
+                lastError = error;
                 if (NowMs() >= deadline)
                     throw;
                 await BackoffSleepAsync(attempt).ConfigureAwait(false);
@@ -215,30 +201,21 @@ public static class Actionability
         || Math.Abs(a.Width - b.Width) > 1
         || Math.Abs(a.Height - b.Height) > 1;
 
-    /// <summary>
-    /// Bounding box via the isolated world, falling back to Playwright. Returns null
-    /// when the element is not present. Only an unsupported selector (or no world)
-    /// reaches Playwright's BoundingBox; a genuine not-found stays in-world.
-    /// </summary>
+    /// <summary>Bounding box via the isolated world only.</summary>
     private static async Task<BoundingBox?> ReadBoxAsync(
         IPage page, string selector, IsolatedWorld? stealth, double remainingMs)
     {
-        if (stealth != null)
+        if (stealth == null)
+            throw new StealthWorldUnavailableError();
+
+        var (status, target) = await StealthDom.BoxAsync(stealth, selector).ConfigureAwait(false);
+        return status switch
         {
-            var (status, box) = await StealthDom.BoxAsync(stealth, selector).ConfigureAwait(false);
-            if (status == StealthStatus.Ok) return box;
-            if (status == StealthStatus.NotFound) return null;
-            // Unsupported -> Playwright below
-        }
-        try
-        {
-            var b = await page.Locator(selector).First.BoundingBoxAsync(new LocatorBoundingBoxOptions
-            {
-                Timeout = (float)Math.Max(1, Math.Min(remainingMs, 1000)),
-            }).ConfigureAwait(false);
-            return b == null ? null : new BoundingBox(b.X, b.Y, b.Width, b.Height);
-        }
-        catch (Exception) { return null; }
+            StealthStatus.Ok when target != null => target.Value.Box,
+            StealthStatus.NotFound => null,
+            StealthStatus.Unsupported => throw new UnsupportedHumanizeSelectorError(selector),
+            _ => throw new StealthEvaluationError(selector),
+        };
     }
 
     /// <summary>
@@ -256,18 +233,29 @@ public static class Actionability
             if (remainingMs <= 0)
                 throw new ElementNotStableError(selector);
 
-            var box1 = await ReadBoxAsync(page, selector, stealth, remainingMs).ConfigureAwait(false);
-            if (box1 == null)
-                throw new ElementNotAttachedError(selector);
+            try
+            {
+                var box1 = await ReadBoxAsync(page, selector, stealth, remainingMs).ConfigureAwait(false);
+                if (box1 == null)
+                    throw new ElementNotAttachedError(selector);
 
-            await Task.Delay(100).ConfigureAwait(false);
+                await Task.Delay(100).ConfigureAwait(false);
 
-            var box2 = await ReadBoxAsync(page, selector, stealth, remainingMs).ConfigureAwait(false);
-            if (box2 == null)
-                throw new ElementNotAttachedError(selector);
+                var box2 = await ReadBoxAsync(page, selector, stealth, remainingMs).ConfigureAwait(false);
+                if (box2 == null)
+                    throw new ElementNotAttachedError(selector);
 
-            if (!BoxesDiffer(box1.Value, box2.Value))
-                return;
+                if (!BoxesDiffer(box1.Value, box2.Value))
+                    return;
+            }
+            catch (StealthEvaluationError)
+            {
+                if (NowMs() >= deadline)
+                    throw;
+                await BackoffSleepAsync(attempt).ConfigureAwait(false);
+                attempt++;
+                continue;
+            }
 
             if (NowMs() >= deadline)
                 throw new ElementNotStableError(selector);
@@ -308,10 +296,9 @@ public static class Actionability
     }
 
     /// <summary>
-    /// Check that <c>elementFromPoint(x, y)</c> hits the expected element. Uses
-    /// <c>locator.evaluate()</c> so all Playwright selector types work. Retries
-    /// with backoff for transient overlays. Fails open when the result can't be
-    /// determined.
+    /// Compatibility overload for callers that do not yet carry a canonical target ID.
+    /// It snapshots the target in the isolated world, then delegates to identity-aware
+    /// revalidation. New interaction paths should pass the original target ID directly.
     /// </summary>
     public static async Task CheckPointerEventsAsync(
         IPage page,
@@ -321,75 +308,71 @@ public static class Actionability
         double timeoutMs = 5000,
         IsolatedWorld? stealth = null)
     {
+        if (stealth == null)
+            throw new StealthWorldUnavailableError();
+
+        var (status, snapshot) = await StealthDom.SnapshotAsync(stealth, selector).ConfigureAwait(false);
+        var resolved = status switch
+        {
+            StealthStatus.Ok when snapshot != null => snapshot.Value,
+            StealthStatus.NotFound => throw new ElementNotAttachedError(selector),
+            StealthStatus.Unsupported => throw new UnsupportedHumanizeSelectorError(selector),
+            _ => throw new StealthEvaluationError(selector),
+        };
+        await CheckPointerEventsAsync(
+            page, selector, resolved.TargetId, resolved.Gen, x, y, timeoutMs, stealth).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Revalidate that the click point still hits the same resolved element.
+    /// Callers skip this entirely when force is set (matching Playwright, where
+    /// force bypasses all actionability checks).
+    /// </summary>
+    public static async Task CheckPointerEventsAsync(
+        IPage page,
+        string selector,
+        int targetId,
+        int gen,
+        double x,
+        double y,
+        double timeoutMs = 5000,
+        IsolatedWorld? stealth = null)
+    {
+        if (stealth == null)
+            throw new StealthWorldUnavailableError();
+
         double deadline = NowMs() + timeoutMs;
         int attempt = 0;
-        string? lastMiss = null;
 
         while (true)
         {
-            PointerResult? result = null;
-            // Isolated-world hit test; fall back to Playwright only for unsupported selectors.
-            bool handled = false;
-            if (stealth != null)
-            {
-                var (status, hit, cov) = await StealthDom.PointerAsync(stealth, selector, x, y).ConfigureAwait(false);
-                if (status == StealthStatus.Ok)
-                {
-                    result = new PointerResult { Hit = hit, Covering = cov };
-                    handled = true;
-                }
-                else if (status == StealthStatus.NotFound)
-                {
-                    result = null; // indeterminate -> proceed (fail-open)
-                    handled = true;
-                }
-            }
-            if (!handled)
-            {
-                try
-                {
-                    var loc = page.Locator(selector).First;
-                    var box = await loc.BoundingBoxAsync(new LocatorBoundingBoxOptions
-                    {
-                        Timeout = (float)Math.Max(1, Math.Min(deadline - NowMs(), 1000)),
-                    }).ConfigureAwait(false);
-                    var data = new
-                    {
-                        x,
-                        y,
-                        box = box == null ? null : new { x = box.X, y = box.Y, width = box.Width, height = box.Height },
-                    };
-                    result = await loc.EvaluateAsync<PointerResult?>(PointerEventsJs, data).ConfigureAwait(false);
-                }
-                catch (Exception exc)
-                {
-                    CloakLog.Debug($"pointer_events check failed for '{selector}': {exc.Message}");
-                    result = null;
-                }
-            }
+            var (status, hit, covering, _) = await StealthDom.ValidateAsync(
+                stealth, selector, targetId, gen, x, y).ConfigureAwait(false);
 
-            // Proceed if the check confirms a hit, or if it could not be determined
-            // (null) - failing closed would block legitimate clicks.
-            // An indeterminate result (null) fails open - failing closed would
-            // block legitimate clicks. But once a miss has been *determined*, a
-            // later indeterminate attempt must not launder it into a pass: near
-            // the deadline the BoundingBox timeout is clamped to ~1ms and always
-            // throws, which used to turn a proven miss into "unknown" and let the
-            // click through silently (#329).
-            if (result == null)
+            if (status == StealthStatus.Unsupported)
+                throw new UnsupportedHumanizeSelectorError(selector);
+            if (status == StealthStatus.Stale)
+                throw new ElementTargetChangedError(selector);
+            if (status == StealthStatus.NotFound)
+                throw new ElementNotAttachedError(selector);
+            if (status == StealthStatus.EvaluationFailed)
             {
-                if (lastMiss != null && NowMs() >= deadline)
-                    throw new ElementNotReceivingEventsError(selector, lastMiss);
+                if (NowMs() >= deadline)
+                    throw new StealthEvaluationError(selector);
+            }
+            else if (status == StealthStatus.Ok && hit)
+            {
                 return;
             }
-            if (result.Hit)
-                return;
-
-            string covering = result.Covering ?? "unknown";
-            lastMiss = covering;
-
-            if (NowMs() >= deadline)
-                throw new ElementNotReceivingEventsError(selector, covering);
+            else if (status == StealthStatus.Ok)
+            {
+                if (NowMs() >= deadline)
+                    throw new ElementNotReceivingEventsError(selector, covering);
+            }
+            else
+            {
+                throw new StealthEvaluationError(selector);
+            }
 
             await BackoffSleepAsync(attempt).ConfigureAwait(false);
             attempt++;

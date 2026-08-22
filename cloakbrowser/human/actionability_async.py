@@ -6,11 +6,8 @@ Async mirror of actionability.py — same logic, uses asyncio.sleep and await.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from typing import Any, FrozenSet, Optional
-
-logger = logging.getLogger(__name__)
 
 from .actionability import (
     ActionabilityError,
@@ -20,14 +17,16 @@ from .actionability import (
     ElementNotEnabledError,
     ElementNotEditableError,
     ElementNotReceivingEventsError,
+    ElementTargetChangedError,
     _BACKOFF_MS,
     _boxes_differ,
-    _POINTER_EVENTS_LOCATOR_JS,
     _POINTER_EVENTS_HANDLE_JS,
 )
 from .stealth_dom import (
-    build_actionable_js, build_box_js, build_pointer_js, async_eval_parsed,
-    OK, NOT_FOUND, UNSUPPORTED,
+    build_actionable_js, build_box_js, build_validate_js, async_eval_parsed,
+    EVALUATION_FAILED, NOT_FOUND, OK, STALE, UNSUPPORTED,
+    StealthEvaluationError, StealthWorldUnavailableError,
+    UnsupportedHumanizeSelectorError,
 )
 
 
@@ -40,18 +39,16 @@ async def _async_backoff_sleep(attempt: int) -> None:
 # Pre-scroll actionability
 # ---------------------------------------------------------------------------
 
-async def _async_stealth_actionable(page: Any, selector: str, checks: FrozenSet[str]) -> bool:
-    """Async mirror of ``_stealth_actionable`` — isolated-world actionability read.
-
-    Returns True when handled (raising on a failed check), False when the
-    selector/world is unsupported (caller falls back to Playwright).
-    """
+async def _async_stealth_actionable(page: Any, selector: str, checks: FrozenSet[str]) -> None:
+    """Async isolated-world actionability read with no Playwright fallback."""
     world = getattr(page, "_stealth_world", None)
     if world is None:
-        return False
+        raise StealthWorldUnavailableError()
     status, data = await async_eval_parsed(world, build_actionable_js(selector))
     if status == UNSUPPORTED:
-        return False
+        raise UnsupportedHumanizeSelectorError(selector)
+    if status == EVALUATION_FAILED:
+        raise StealthEvaluationError(selector)
     if status == NOT_FOUND:
         raise ElementNotAttachedError(selector)
     if "visible" in checks and not data.get("visible"):
@@ -60,24 +57,21 @@ async def _async_stealth_actionable(page: Any, selector: str, checks: FrozenSet[
         raise ElementNotEnabledError(selector)
     if "editable" in checks and not data.get("editable"):
         raise ElementNotEditableError(selector)
-    return True
 
 
 async def _async_read_box(page: Any, selector: str, remaining_ms: float) -> Optional[dict]:
-    """Async mirror of ``_read_box`` — isolated-world box with Playwright fallback."""
+    """Async isolated-world geometry read with no Playwright fallback."""
     world = getattr(page, "_stealth_world", None)
-    if world is not None:
-        status, data = await async_eval_parsed(world, build_box_js(selector))
-        if status == OK:
-            return data["box"]
-        if status == NOT_FOUND:
-            return None
-        # UNSUPPORTED -> Playwright below
-    try:
-        loc = page.locator(selector).first
-        return await loc.bounding_box(timeout=max(1, min(remaining_ms, 1000)))
-    except Exception:
+    if world is None:
+        raise StealthWorldUnavailableError()
+    status, data = await async_eval_parsed(world, build_box_js(selector))
+    if status == OK:
+        return data["box"]
+    if status == NOT_FOUND:
         return None
+    if status == UNSUPPORTED:
+        raise UnsupportedHumanizeSelectorError(selector)
+    raise StealthEvaluationError(selector)
 
 
 async def async_ensure_actionable(
@@ -102,30 +96,10 @@ async def async_ensure_actionable(
             raise ActionabilityError(selector, "timeout", "timeout expired before first check")
 
         try:
-            if not await _async_stealth_actionable(page, selector, checks):
-                loc = page.locator(selector).first
-
-                if "attached" in checks:
-                    try:
-                        await loc.wait_for(state="attached", timeout=max(1, min(remaining_ms, 2000)))
-                    except Exception:
-                        raise ElementNotAttachedError(selector)
-
-                if "visible" in checks:
-                    if not await loc.is_visible():
-                        raise ElementNotVisibleError(selector)
-
-                if "enabled" in checks:
-                    if not await loc.is_enabled():
-                        raise ElementNotEnabledError(selector)
-
-                if "editable" in checks:
-                    if not await loc.is_editable():
-                        raise ElementNotEditableError(selector)
-
+            await _async_stealth_actionable(page, selector, checks)
             return
 
-        except ActionabilityError as e:
+        except (ActionabilityError, StealthEvaluationError) as e:
             last_error = e
             if time.monotonic() >= deadline:
                 raise last_error
@@ -150,15 +124,22 @@ async def async_ensure_stable(
         if remaining_ms <= 0:
             raise ElementNotStableError(selector)
 
-        box1 = await _async_read_box(page, selector, remaining_ms)
-        if box1 is None:
-            raise ElementNotAttachedError(selector)
+        try:
+            box1 = await _async_read_box(page, selector, remaining_ms)
+            if box1 is None:
+                raise ElementNotAttachedError(selector)
 
-        await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)
 
-        box2 = await _async_read_box(page, selector, remaining_ms)
-        if box2 is None:
-            raise ElementNotAttachedError(selector)
+            box2 = await _async_read_box(page, selector, remaining_ms)
+            if box2 is None:
+                raise ElementNotAttachedError(selector)
+        except StealthEvaluationError:
+            if time.monotonic() >= deadline:
+                raise
+            await _async_backoff_sleep(attempt)
+            attempt += 1
+            continue
 
         if not _boxes_differ(box1, box2):
             return
@@ -177,6 +158,8 @@ async def async_ensure_stable(
 async def async_check_pointer_events(
     page: Any,
     selector: str,
+    target_id: int,
+    gen: int,
     x: float,
     y: float,
     stealth: Any = None,
@@ -185,46 +168,31 @@ async def async_check_pointer_events(
     deadline = time.monotonic() + timeout / 1000.0
     attempt = 0
     last_miss: Optional[str] = None
+    world = stealth if stealth is not None else getattr(page, "_stealth_world", None)
+    if world is None:
+        raise StealthWorldUnavailableError()
+    if not isinstance(target_id, int) or not isinstance(gen, int):
+        raise StealthEvaluationError(selector)
 
     while True:
-        world = stealth if stealth is not None else getattr(page, "_stealth_world", None)
-        result: Optional[dict] = None
-        handled = False
-        if world is not None:
-            status, data = await async_eval_parsed(world, build_pointer_js(selector, x, y))
-            if status == OK:
-                result = {"hit": data.get("hit", False), "covering": data.get("covering", "unknown")}
-                handled = True
-            elif status == NOT_FOUND:
-                result = None
-                handled = True
-        if not handled:
-            try:
-                loc = page.locator(selector).first
-                box = await loc.bounding_box(timeout=max(1, min((deadline - time.monotonic()) * 1000, 1000)))
-                result = await loc.evaluate(_POINTER_EVENTS_LOCATOR_JS, {"x": x, "y": y, "box": box})
-            except Exception as exc:
-                logger.debug("pointer_events check failed for %r: %s", selector, exc)
-                result = None
-
-        # Proceed if the check confirms a hit, or if it could not be determined
-        # (None) — failing closed would block legitimate clicks. But once a miss
-        # has actually been *determined*, a later indeterminate attempt must not
-        # launder it into a pass: near the deadline the bounding_box timeout is
-        # clamped to ~1ms and always throws, which used to turn a proven miss
-        # into "unknown" and let the click through silently (#329).
-        if result is None:
-            if last_miss is not None and time.monotonic() >= deadline:
+        status, data = await async_eval_parsed(
+            world, build_validate_js(selector, target_id, gen, x, y)
+        )
+        if status == UNSUPPORTED:
+            raise UnsupportedHumanizeSelectorError(selector)
+        if status == STALE:
+            raise ElementTargetChangedError(selector)
+        if status == NOT_FOUND:
+            raise ElementNotAttachedError(selector)
+        if status == EVALUATION_FAILED:
+            if time.monotonic() >= deadline:
+                raise StealthEvaluationError(selector)
+        elif data.get("hit", False):
+            return
+        else:
+            last_miss = data.get("covering", "unknown")
+            if time.monotonic() >= deadline:
                 raise ElementNotReceivingEventsError(selector, last_miss)
-            return
-        if result.get("hit", False):
-            return
-
-        covering = result.get("covering", "unknown")
-        last_miss = covering
-
-        if time.monotonic() >= deadline:
-            raise ElementNotReceivingEventsError(selector, covering)
 
         await _async_backoff_sleep(attempt)
         attempt += 1

@@ -9,7 +9,7 @@ public sealed class HumanActionOptions
     /// <summary>Overall timeout in milliseconds (default 30000).</summary>
     public double Timeout { get; set; } = 30000;
 
-    /// <summary>Skip all actionability checks and motion guarantees when true.</summary>
+    /// <summary>Skip pre-actionability and coverage rejection; exact target identity remains enforced.</summary>
     public bool Force { get; set; }
 
     /// <summary>Delay in milliseconds between keydown and keyup for press actions.</summary>
@@ -68,7 +68,7 @@ public sealed class HumanPage
         _cfg = cfg ?? new HumanConfig();
         _rawMouse = new PlaywrightRawMouse(page.Mouse);
         _rawKeyboard = new PlaywrightRawKeyboard(page.Keyboard);
-        _scrollPage = new PlaywrightScrollPage(page);
+        _scrollPage = new PlaywrightScrollPage(page, GetStealthRequiredAsync);
         _evaluator = new PlaywrightEvaluator(page);
 
         // Invalidate the isolated world on any main-frame nav, not just goto, so
@@ -81,7 +81,7 @@ public sealed class HumanPage
 
     /// <summary>
     /// Create a humanized page and initialize the CDP isolated world + dispatchKeyEvent
-    /// stealth path. Falls back gracefully (stealth disabled) when CDP is unavailable.
+    /// stealth path. Selector DOM reads fail explicitly when the isolated world is unavailable.
     /// </summary>
     public static async Task<HumanPage> CreateAsync(IPage page, HumanConfig? cfg = null)
     {
@@ -138,97 +138,73 @@ public sealed class HumanPage
 
     private static double RemainingMs(double deadline) => Actionability.RemainingMs(deadline);
 
-    private async Task<bool> IsInputElementAsync(string selector)
+    private async Task<IsolatedWorld> GetStealthRequiredAsync()
     {
-        if (_stealth != null)
-        {
-            try
-            {
-                string escaped = IsolatedWorld.JsonEncode(selector);
-                return await _stealth.EvaluateBoolAsync(
-                    $"(() => {{" +
-                    $"  const el = document.querySelector({escaped});" +
-                    $"  if (!el) return false;" +
-                    $"  const tag = el.tagName.toLowerCase();" +
-                    $"  return tag === 'input' || tag === 'textarea'" +
-                    $"    || el.getAttribute('contenteditable') === 'true';" +
-                    $"}})()").ConfigureAwait(false);
-            }
-            catch (Exception) { /* fall through */ }
-        }
-        try
-        {
-            return await _page.EvaluateAsync<bool>(
-                @"(sel) => {
-                    const el = document.querySelector(sel);
-                    if (!el) return false;
-                    const tag = el.tagName.toLowerCase();
-                    return tag === 'input' || tag === 'textarea'
-                        || el.getAttribute('contenteditable') === 'true';
-                }", selector).ConfigureAwait(false);
-        }
-        catch (Exception) { return false; }
+        await InitStealthAsync().ConfigureAwait(false);
+        return _stealth ?? throw new StealthWorldUnavailableError();
     }
 
-    private async Task<bool> IsSelectorFocusedAsync(string selector)
+    private async Task<StealthSnapshot> SelectorSnapshotAsync(string selector)
     {
-        if (_stealth != null)
+        var world = await GetStealthRequiredAsync().ConfigureAwait(false);
+        var (status, snapshot) = await StealthDom.SnapshotAsync(world, selector).ConfigureAwait(false);
+        return status switch
         {
-            try
-            {
-                string escaped = IsolatedWorld.JsonEncode(selector);
-                return await _stealth.EvaluateBoolAsync(
-                    $"(() => {{" +
-                    $"  const el = document.querySelector({escaped});" +
-                    $"  return el === document.activeElement;" +
-                    $"}})()").ConfigureAwait(false);
-            }
-            catch (Exception) { /* fall through */ }
-        }
-        try
-        {
-            return await _page.EvaluateAsync<bool>(
-                @"(sel) => {
-                    const el = document.querySelector(sel);
-                    return el === document.activeElement;
-                }", selector).ConfigureAwait(false);
-        }
-        catch (Exception) { return false; }
+            StealthStatus.Ok when snapshot != null => snapshot.Value,
+            StealthStatus.NotFound => throw new ElementNotAttachedError(selector),
+            StealthStatus.Unsupported => throw new UnsupportedHumanizeSelectorError(selector),
+            _ => throw new StealthEvaluationError(selector),
+        };
     }
+
+    private async Task<bool> IsSelectorFocusedAsync(string selector) =>
+        (await SelectorSnapshotAsync(selector).ConfigureAwait(false)).Focused;
 
     private async Task<BoundingBox?> GetBoxAsync(string selector, double timeoutMs)
     {
-        // Read geometry through the isolated world when available; only an unsupported
-        // selector (or no world) reaches Playwright's BoundingBox.
-        if (_stealth != null)
+        var world = await GetStealthRequiredAsync().ConfigureAwait(false);
+        double deadline = Environment.TickCount64 + Math.Max(0, timeoutMs);
+        var result = await StealthDom.BoxAsync(world, selector).ConfigureAwait(false);
+        while ((result.Status == StealthStatus.NotFound || result.Status == StealthStatus.EvaluationFailed)
+            && Environment.TickCount64 < deadline)
         {
-            var (status, box) = await StealthDom.BoxAsync(_stealth, selector).ConfigureAwait(false);
-            if (status == StealthStatus.Ok) return box;
-            if (status == StealthStatus.NotFound) return null;
-            // Unsupported -> Playwright below
-        }
-        try
-        {
-            var b = await _page.Locator(selector).First.BoundingBoxAsync(new LocatorBoundingBoxOptions
-            {
-                Timeout = (float)Math.Max(1, timeoutMs),
-            }).ConfigureAwait(false);
-            return b == null ? null : new BoundingBox(b.X, b.Y, b.Width, b.Height);
-        }
-        catch (Exception)
-        {
-            return null;
+            await Task.Delay(50).ConfigureAwait(false);
+            result = await StealthDom.BoxAsync(world, selector).ConfigureAwait(false);
         }
 
+        return result.Status switch
+        {
+            StealthStatus.Ok when result.Target != null => result.Target.Value.Box,
+            StealthStatus.NotFound => null,
+            StealthStatus.Unsupported => throw new UnsupportedHumanizeSelectorError(selector),
+            _ => throw new StealthEvaluationError(selector),
+        };
     }
 
     // Thread the page's isolated world into the shared actionability helpers.
-    private Task EnsureActionableWorldAsync(string selector, IReadOnlySet<string> checks, double timeoutMs, bool force) =>
-        Actionability.EnsureActionableAsync(_page, selector, checks, timeoutMs, force, _stealth);
-    private Task EnsureStableWorldAsync(string selector, double timeoutMs) =>
-        Actionability.EnsureStableAsync(_page, selector, timeoutMs, _stealth);
-    private Task CheckPointerEventsWorldAsync(string selector, double x, double y, double timeoutMs) =>
-        Actionability.CheckPointerEventsAsync(_page, selector, x, y, timeoutMs, _stealth);
+    private async Task EnsureActionableWorldAsync(
+        string selector, IReadOnlySet<string> checks, double timeoutMs, bool force)
+    {
+        var world = await GetStealthRequiredAsync().ConfigureAwait(false);
+        await Actionability.EnsureActionableAsync(
+            _page, selector, checks, timeoutMs, force, world).ConfigureAwait(false);
+    }
+
+    private async Task EnsureStableWorldAsync(string selector, double timeoutMs)
+    {
+        var world = await GetStealthRequiredAsync().ConfigureAwait(false);
+        await Actionability.EnsureStableAsync(_page, selector, timeoutMs, world).ConfigureAwait(false);
+    }
+
+    private async Task CheckPointerEventsWorldAsync(
+        string selector, int targetId, int gen, double x, double y, double timeoutMs, bool force)
+    {
+        if (force)
+            return;
+        var world = await GetStealthRequiredAsync().ConfigureAwait(false);
+        await Actionability.CheckPointerEventsAsync(
+            _page, selector, targetId, gen, x, y, timeoutMs, world).ConfigureAwait(false);
+    }
 
     // -----------------------------------------------------------------------
     // Navigation
@@ -268,9 +244,7 @@ public sealed class HumanPage
             _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
         _cursor.X = scroll.CursorX;
         _cursor.Y = scroll.CursorY;
-        var box = scroll.Box;
 
-        bool isInput = await IsInputElementAsync(selector).ConfigureAwait(false);
         if (!force && scroll.DidScroll)
         {
             await EnsureStableWorldAsync(selector, RemainingMs(deadline)).ConfigureAwait(false);
@@ -282,15 +256,19 @@ public sealed class HumanPage
                 _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
             _cursor.X = rescroll.CursorX;
             _cursor.Y = rescroll.CursorY;
-            box = rescroll.Box;
         }
-        var target = HumanMouse.ClickTarget(box, isInput, callCfg);
-        if (!force)
-            await CheckPointerEventsWorldAsync(selector, target.X, target.Y, RemainingMs(deadline)).ConfigureAwait(false);
-        await HumanMouse.HumanMoveAsync(_rawMouse, _cursor.X, _cursor.Y, target.X, target.Y, callCfg).ConfigureAwait(false);
+
+        var snapshot = await SelectorSnapshotAsync(selector).ConfigureAwait(false);
+        var box = snapshot.Box ?? throw new ElementNotVisibleError(selector);
+        var target = HumanMouse.ClickTarget(box, snapshot.IsInput, callCfg);
+        await HumanMouse.HumanMoveAsync(
+            _rawMouse, _cursor.X, _cursor.Y, target.X, target.Y, callCfg).ConfigureAwait(false);
         _cursor.X = target.X;
         _cursor.Y = target.Y;
-        await HumanMouse.HumanClickAsync(_rawMouse, isInput, callCfg).ConfigureAwait(false);
+        await CheckPointerEventsWorldAsync(
+            selector, snapshot.TargetId, snapshot.Gen, target.X, target.Y,
+            RemainingMs(deadline), force).ConfigureAwait(false);
+        await HumanMouse.HumanClickAsync(_rawMouse, snapshot.IsInput, callCfg).ConfigureAwait(false);
     }
 
     // -----------------------------------------------------------------------
@@ -316,9 +294,7 @@ public sealed class HumanPage
             _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
         _cursor.X = scroll.CursorX;
         _cursor.Y = scroll.CursorY;
-        var box = scroll.Box;
 
-        bool isInput = await IsInputElementAsync(selector).ConfigureAwait(false);
         if (!force && scroll.DidScroll)
         {
             await EnsureStableWorldAsync(selector, RemainingMs(deadline)).ConfigureAwait(false);
@@ -330,14 +306,18 @@ public sealed class HumanPage
                 _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
             _cursor.X = rescroll.CursorX;
             _cursor.Y = rescroll.CursorY;
-            box = rescroll.Box;
         }
-        var target = HumanMouse.ClickTarget(box, isInput, callCfg);
-        if (!force)
-            await CheckPointerEventsWorldAsync(selector, target.X, target.Y, RemainingMs(deadline)).ConfigureAwait(false);
-        await HumanMouse.HumanMoveAsync(_rawMouse, _cursor.X, _cursor.Y, target.X, target.Y, callCfg).ConfigureAwait(false);
+
+        var snapshot = await SelectorSnapshotAsync(selector).ConfigureAwait(false);
+        var box = snapshot.Box ?? throw new ElementNotVisibleError(selector);
+        var target = HumanMouse.ClickTarget(box, snapshot.IsInput, callCfg);
+        await HumanMouse.HumanMoveAsync(
+            _rawMouse, _cursor.X, _cursor.Y, target.X, target.Y, callCfg).ConfigureAwait(false);
         _cursor.X = target.X;
         _cursor.Y = target.Y;
+        await CheckPointerEventsWorldAsync(
+            selector, snapshot.TargetId, snapshot.Gen, target.X, target.Y,
+            RemainingMs(deadline), force).ConfigureAwait(false);
         // Two presses for a double-click via Playwright IMouse click count.
         await _page.Mouse.DownAsync(new MouseDownOptions { ClickCount = 2 }).ConfigureAwait(false);
         await HumanRandom.SleepMsAsync(HumanRandom.Rand(30, 60)).ConfigureAwait(false);
@@ -370,7 +350,6 @@ public sealed class HumanPage
             _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
         _cursor.X = scroll.CursorX;
         _cursor.Y = scroll.CursorY;
-        var box = scroll.Box;
 
         if (!force && scroll.DidScroll)
         {
@@ -383,14 +362,18 @@ public sealed class HumanPage
                 _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
             _cursor.X = rescroll.CursorX;
             _cursor.Y = rescroll.CursorY;
-            box = rescroll.Box;
         }
+
+        var snapshot = await SelectorSnapshotAsync(selector).ConfigureAwait(false);
+        var box = snapshot.Box ?? throw new ElementNotVisibleError(selector);
         var target = HumanMouse.ClickTarget(box, false, callCfg);
-        if (!force)
-            await CheckPointerEventsWorldAsync(selector, target.X, target.Y, RemainingMs(deadline)).ConfigureAwait(false);
-        await HumanMouse.HumanMoveAsync(_rawMouse, _cursor.X, _cursor.Y, target.X, target.Y, callCfg).ConfigureAwait(false);
+        await HumanMouse.HumanMoveAsync(
+            _rawMouse, _cursor.X, _cursor.Y, target.X, target.Y, callCfg).ConfigureAwait(false);
         _cursor.X = target.X;
         _cursor.Y = target.Y;
+        await CheckPointerEventsWorldAsync(
+            selector, snapshot.TargetId, snapshot.Gen, target.X, target.Y,
+            RemainingMs(deadline), force).ConfigureAwait(false);
     }
 
     // -----------------------------------------------------------------------
@@ -446,9 +429,7 @@ public sealed class HumanPage
 
         if (!force)
             await EnsureActionableWorldAsync(selector, Actionability.ChecksCheck, RemainingMs(deadline), force).ConfigureAwait(false);
-        bool checked_;
-        try { checked_ = await _page.IsCheckedAsync(selector).ConfigureAwait(false); }
-        catch (Exception) { checked_ = false; }
+        bool checked_ = (await SelectorSnapshotAsync(selector).ConfigureAwait(false)).Checked == true;
         if (!checked_)
             await ClickInternalAsync(selector, new HumanActionOptions { Timeout = RemainingMs(deadline), Force = force, HumanConfig = options?.HumanConfig }, skipChecks: true).ConfigureAwait(false);
     }
@@ -462,9 +443,7 @@ public sealed class HumanPage
 
         if (!force)
             await EnsureActionableWorldAsync(selector, Actionability.ChecksCheck, RemainingMs(deadline), force).ConfigureAwait(false);
-        bool checked_;
-        try { checked_ = await _page.IsCheckedAsync(selector).ConfigureAwait(false); }
-        catch (Exception) { checked_ = true; }
+        bool checked_ = (await SelectorSnapshotAsync(selector).ConfigureAwait(false)).Checked == true;
         if (checked_)
             await ClickInternalAsync(selector, new HumanActionOptions { Timeout = RemainingMs(deadline), Force = force, HumanConfig = options?.HumanConfig }, skipChecks: true).ConfigureAwait(false);
     }
@@ -520,9 +499,7 @@ public sealed class HumanPage
 
         if (!force)
             await EnsureActionableWorldAsync(selector, Actionability.ChecksCheck, RemainingMs(deadline), force).ConfigureAwait(false);
-        bool current;
-        try { current = await _page.IsCheckedAsync(selector).ConfigureAwait(false); }
-        catch (Exception) { current = !checked_; }
+        bool current = (await SelectorSnapshotAsync(selector).ConfigureAwait(false)).Checked == true;
         if (current != checked_)
             await ClickInternalAsync(selector, new HumanActionOptions { Timeout = RemainingMs(deadline), Force = force, HumanConfig = options?.HumanConfig }, skipChecks: true).ConfigureAwait(false);
     }
@@ -633,22 +610,12 @@ public sealed class HumanPage
         await EnsureCursorInitAsync().ConfigureAwait(false);
         var callCfg = MergeCfg(options);
         double timeout = options?.Timeout ?? 30000;
-        try
-        {
-            var scroll = await HumanScroll.HumanScrollIntoViewAsync(
-                _scrollPage, _rawMouse, () => GetBoxAsync(selector, timeout),
-                _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
-            _cursor.X = scroll.CursorX;
-            _cursor.Y = scroll.CursorY;
-            return scroll.DidScroll;
-        }
-        catch (Exception)
-        {
-            // Fall back to native scroll, mirroring the Python except branch.
-            await _page.Locator(selector).First.ScrollIntoViewIfNeededAsync(
-                new LocatorScrollIntoViewIfNeededOptions { Timeout = (float)timeout }).ConfigureAwait(false);
-            return true;
-        }
+        var scroll = await HumanScroll.HumanScrollIntoViewAsync(
+            _scrollPage, _rawMouse, () => GetBoxAsync(selector, timeout),
+            _cursor.X, _cursor.Y, callCfg).ConfigureAwait(false);
+        _cursor.X = scroll.CursorX;
+        _cursor.Y = scroll.CursorY;
+        return scroll.DidScroll;
     }
 
     // -----------------------------------------------------------------------
@@ -665,12 +632,10 @@ public sealed class HumanPage
 
         var srcBox = await GetBoxAsync(sourceSelector, timeout).ConfigureAwait(false);
         var tgtBox = await GetBoxAsync(targetSelector, timeout).ConfigureAwait(false);
-        if (srcBox == null || tgtBox == null)
-        {
-            // Fall back to native drag-and-drop.
-            await _page.DragAndDropAsync(sourceSelector, targetSelector).ConfigureAwait(false);
-            return;
-        }
+        if (srcBox == null)
+            throw new ElementNotAttachedError(sourceSelector);
+        if (tgtBox == null)
+            throw new ElementNotAttachedError(targetSelector);
 
         BoundingBox src = srcBox.Value;
         BoundingBox tgt = tgtBox.Value;

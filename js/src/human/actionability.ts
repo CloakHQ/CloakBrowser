@@ -1,14 +1,16 @@
 /**
  * Playwright-style actionability checks for the humanize layer.
  *
- * Checks: attached, visible, stable, enabled, editable, receives pointer events.
- * Retry loop with backoff matching Playwright internals: [100, 250, 500, 1000]ms.
+ * Selector-based reads stay inside the CDP isolated world. ElementHandle paths
+ * remain separate because they already identify an exact Playwright handle.
  */
 
 import type { Page, Frame, ElementHandle } from 'playwright-core';
 import {
-  buildActionableJs, buildBoxJs, buildPointerJs, evalParsed, getWorld,
-  OK, NOT_FOUND, UNSUPPORTED, type StealthWorld,
+  buildActionableJs, buildBoxJs, buildValidateJs, evalParsed, getWorld,
+  OK, NOT_FOUND, UNSUPPORTED, STALE, EVALUATION_FAILED,
+  StealthEvaluationError, StealthWorldUnavailableError,
+  UnsupportedHumanizeSelectorError, type StealthWorld,
 } from './stealthDom.js';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +73,13 @@ export class ElementNotReceivingEventsError extends ActionabilityError {
   }
 }
 
+export class ElementTargetChangedError extends ActionabilityError {
+  constructor(selector: string) {
+    super(selector, 'target_identity', 'selector resolved to a different element before input dispatch');
+    this.name = 'ElementTargetChangedError';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Check-set constants
 // ---------------------------------------------------------------------------
@@ -94,56 +103,36 @@ function backoffSleep(attempt: number): Promise<void> {
 // Pre-scroll actionability
 // ---------------------------------------------------------------------------
 
-/**
- * Run the actionability checks through the isolated world.
- *
- * Returns true when handled (throwing the specific ActionabilityError on a failed
- * check), or false when the selector/world is unsupported so the caller falls back
- * to the regular Playwright read.
- */
 async function stealthActionable(
   pageOrFrame: Page | Frame,
   selector: string,
   checks: ReadonlySet<CheckName>,
-): Promise<boolean> {
+): Promise<void> {
   const world = getWorld(pageOrFrame);
-  if (!world) return false;
+  if (!world) throw new StealthWorldUnavailableError();
+
   const { status, data } = await evalParsed(world, buildActionableJs(selector));
-  if (status === UNSUPPORTED) return false;
-  if (status === NOT_FOUND) {
-    // Every check-set includes 'attached'; not present yet -> throw so the retry
-    // loop backs off and re-reads in-world (mirrors waitFor({ state: 'attached' })).
-    throw new ElementNotAttachedError(selector);
-  }
+  if (status === UNSUPPORTED) throw new UnsupportedHumanizeSelectorError(selector);
+  if (status === EVALUATION_FAILED) throw new StealthEvaluationError(selector);
+  if (status === NOT_FOUND) throw new ElementNotAttachedError(selector);
+  if (status !== OK || !data) throw new StealthEvaluationError(selector);
   if (checks.has('visible') && !data.visible) throw new ElementNotVisibleError(selector);
   if (checks.has('enabled') && !data.enabled) throw new ElementNotEnabledError(selector);
   if (checks.has('editable') && !data.editable) throw new ElementNotEditableError(selector);
-  return true;
 }
 
-/**
- * Bounding box via the isolated world, falling back to Playwright. Returns the box,
- * or null when the element is not present. Only an unsupported selector (or missing
- * world) reaches Playwright's `boundingBox`; a genuine not-found stays in-world.
- */
 async function readBox(
   pageOrFrame: Page | Frame,
   selector: string,
-  remainingMs: number,
 ): Promise<{ x: number; y: number; width: number; height: number } | null> {
   const world = getWorld(pageOrFrame);
-  if (world) {
-    const { status, data } = await evalParsed(world, buildBoxJs(selector));
-    if (status === OK) return data.box;
-    if (status === NOT_FOUND) return null;
-    // UNSUPPORTED -> Playwright below
-  }
-  try {
-    const loc = pageOrFrame.locator(selector).first();
-    return await loc.boundingBox({ timeout: Math.max(1, Math.min(remainingMs, 1000)) });
-  } catch {
-    return null;
-  }
+  if (!world) throw new StealthWorldUnavailableError();
+
+  const { status, data } = await evalParsed(world, buildBoxJs(selector));
+  if (status === OK && data?.box) return data.box;
+  if (status === NOT_FOUND) return null;
+  if (status === UNSUPPORTED) throw new UnsupportedHumanizeSelectorError(selector);
+  throw new StealthEvaluationError(selector);
 }
 
 export async function ensureActionable(
@@ -157,7 +146,7 @@ export async function ensureActionable(
 
   const deadline = Date.now() + timeout;
   let attempt = 0;
-  let lastError: ActionabilityError | null = null;
+  let lastError: Error | null = null;
 
   while (true) {
     const remainingMs = Math.max(0, deadline - Date.now());
@@ -167,41 +156,15 @@ export async function ensureActionable(
     }
 
     try {
-      // Prefer the isolated-world read; fall back to Playwright's locator
-      // predicates only for selector grammar the isolated world can't resolve.
-      if (!await stealthActionable(pageOrFrame, selector, checks)) {
-        const loc = pageOrFrame.locator(selector).first();
-
-        if (checks.has('attached')) {
-          try {
-            await loc.waitFor({ state: 'attached', timeout: Math.max(1, Math.min(remainingMs, 2000)) });
-          } catch {
-            throw new ElementNotAttachedError(selector);
-          }
-        }
-
-        if (checks.has('visible')) {
-          if (!await loc.isVisible()) throw new ElementNotVisibleError(selector);
-        }
-
-        if (checks.has('enabled')) {
-          if (!await loc.isEnabled()) throw new ElementNotEnabledError(selector);
-        }
-
-        if (checks.has('editable')) {
-          if (!await loc.isEditable()) throw new ElementNotEditableError(selector);
-        }
-      }
-
+      await stealthActionable(pageOrFrame, selector, checks);
       return;
-    } catch (e) {
-      if (e instanceof ActionabilityError) {
-        lastError = e;
+    } catch (error) {
+      if (error instanceof ActionabilityError || error instanceof StealthEvaluationError) {
+        lastError = error;
         if (Date.now() >= deadline) throw lastError;
-        await backoffSleep(attempt);
-        attempt++;
+        await backoffSleep(attempt++);
       } else {
-        throw e;
+        throw error;
       }
     }
   }
@@ -235,38 +198,32 @@ export async function ensureStable(
     const remainingMs = Math.max(0, deadline - Date.now());
     if (remainingMs <= 0) throw new ElementNotStableError(selector);
 
-    const box1 = await readBox(pageOrFrame, selector, remainingMs);
-    if (!box1) throw new ElementNotAttachedError(selector);
+    try {
+      const box1 = await readBox(pageOrFrame, selector);
+      if (!box1) throw new ElementNotAttachedError(selector);
 
-    await new Promise(r => setTimeout(r, 100));
+      await new Promise(resolve => setTimeout(resolve, 100));
 
-    const box2 = await readBox(pageOrFrame, selector, remainingMs);
-    if (!box2) throw new ElementNotAttachedError(selector);
-
-    if (!boxesDiffer(box1, box2)) return;
+      const box2 = await readBox(pageOrFrame, selector);
+      if (!box2) throw new ElementNotAttachedError(selector);
+      if (!boxesDiffer(box1, box2)) return;
+    } catch (error) {
+      if (error instanceof StealthEvaluationError) {
+        if (Date.now() >= deadline) throw error;
+        await backoffSleep(attempt++);
+        continue;
+      }
+      throw error;
+    }
 
     if (Date.now() >= deadline) throw new ElementNotStableError(selector);
-
-    await backoffSleep(attempt);
-    attempt++;
+    await backoffSleep(attempt++);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Pointer-events check (post-scroll, at actual click coordinates)
+// Pointer-events and exact-target check
 // ---------------------------------------------------------------------------
-
-const POINTER_EVENTS_LOCATOR_JS = `(expected, data) => {
-  const rect = expected.getBoundingClientRect();
-  const frameOffsetX = data.box ? data.box.x - rect.x : 0;
-  const frameOffsetY = data.box ? data.box.y - rect.y : 0;
-  const target = document.elementFromPoint(data.x - frameOffsetX, data.y - frameOffsetY);
-  if (!target) return { hit: false, reason: 'no_element_at_point', covering: 'none' };
-  let node = target;
-  while (node) { if (node === expected) return { hit: true }; node = node.parentNode; }
-  if (expected.contains(target)) return { hit: true };
-  return { hit: false, reason: 'covered', covering: target.tagName || 'unknown' };
-}`;
 
 const POINTER_EVENTS_HANDLE_JS = `(expected, data) => {
   const rect = expected.getBoundingClientRect();
@@ -283,65 +240,49 @@ const POINTER_EVENTS_HANDLE_JS = `(expected, data) => {
 export async function checkPointerEvents(
   pageOrFrame: Page | Frame,
   selector: string,
+  targetId: number,
+  gen: number,
   x: number,
   y: number,
-  stealth?: { evaluate(expression: string): Promise<any> } | null,
+  stealth?: StealthWorld | null,
   timeout: number = 5000,
 ): Promise<void> {
   const deadline = Date.now() + timeout;
   let attempt = 0;
   let lastMiss: string | null = null;
+  const world = stealth ?? getWorld(pageOrFrame);
+
+  if (!world) throw new StealthWorldUnavailableError();
+  if (!Number.isInteger(targetId) || !Number.isInteger(gen)) throw new StealthEvaluationError(selector);
 
   while (true) {
-    // Isolated-world hit test; the passed-in `stealth` world is reused, falling
-    // back to Playwright only for unsupported selectors.
-    const world: StealthWorld | null = stealth ?? getWorld(pageOrFrame);
-    let result: any = null;
-    let handled = false;
-    if (world) {
-      const { status, data } = await evalParsed(world, buildPointerJs(selector, x, y));
-      if (status === OK) {
-        result = { hit: !!data.hit, covering: data.covering ?? 'unknown' };
-        handled = true;
-      } else if (status === NOT_FOUND) {
-        result = null; // indeterminate -> proceed (fail-open)
-        handled = true;
-      }
-    }
-    if (!handled) {
-      try {
-        const loc = pageOrFrame.locator(selector).first();
-        const box = await loc.boundingBox({ timeout: Math.max(1, Math.min(deadline - Date.now(), 1000)) });
-        result = await loc.evaluate(POINTER_EVENTS_LOCATOR_JS, { x, y, box });
-      } catch {
-        result = null;
-      }
-    }
+    const { status, data } = await evalParsed(
+      world,
+      buildValidateJs(selector, targetId, gen, x, y),
+    );
 
-    // An indeterminate result fails open — failing closed would block legitimate
-    // clicks. But once a miss has been *determined*, a later indeterminate
-    // attempt must not launder it into a pass: near the deadline the boundingBox
-    // timeout is clamped to ~1ms and always throws, which used to turn a proven
-    // miss into "unknown" and let the click through silently (#329).
-    if (!result) {
-      if (lastMiss !== null && Date.now() >= deadline) {
-        throw new ElementNotReceivingEventsError(selector, lastMiss);
-      }
+    if (status === UNSUPPORTED) throw new UnsupportedHumanizeSelectorError(selector);
+    if (status === STALE) throw new ElementTargetChangedError(selector);
+    if (status === NOT_FOUND) throw new ElementNotAttachedError(selector);
+    if (status === EVALUATION_FAILED) {
+      if (Date.now() >= deadline) throw new StealthEvaluationError(selector);
+    } else if (status === OK && data && data.hit) {
       return;
+    } else if (status === OK && data) {
+      lastMiss = data.covering ?? 'unknown';
+      if (Date.now() >= deadline) {
+        throw new ElementNotReceivingEventsError(selector, lastMiss ?? 'unknown');
+      }
+    } else {
+      throw new StealthEvaluationError(selector);
     }
-    if (result.hit) return;
 
-    const covering = (result as any)?.covering ?? 'unknown';
-    lastMiss = covering;
-    if (Date.now() >= deadline) throw new ElementNotReceivingEventsError(selector, covering);
-
-    await backoffSleep(attempt);
-    attempt++;
+    await backoffSleep(attempt++);
   }
 }
 
 // ---------------------------------------------------------------------------
-// ElementHandle variant
+// ElementHandle variant (legacy handle-scoped path)
 // ---------------------------------------------------------------------------
 
 export async function ensureActionableHandle(
@@ -372,7 +313,6 @@ export async function ensureActionableHandle(
           throw new ElementNotVisibleError(label);
         }
       }
-
       if (checks.has('enabled')) {
         try {
           await el.waitForElementState('enabled', { timeout: Math.max(1, Math.min(remainingMs, 2000)) });
@@ -380,7 +320,6 @@ export async function ensureActionableHandle(
           throw new ElementNotEnabledError(label);
         }
       }
-
       if (checks.has('editable')) {
         try {
           await el.waitForElementState('editable', { timeout: Math.max(1, Math.min(remainingMs, 2000)) });
@@ -388,16 +327,14 @@ export async function ensureActionableHandle(
           throw new ElementNotEditableError(label);
         }
       }
-
       return;
-    } catch (e) {
-      if (e instanceof ActionabilityError) {
-        lastError = e;
+    } catch (error) {
+      if (error instanceof ActionabilityError) {
+        lastError = error;
         if (Date.now() >= deadline) throw lastError;
-        await backoffSleep(attempt);
-        attempt++;
+        await backoffSleep(attempt++);
       } else {
-        throw e;
+        throw error;
       }
     }
   }
@@ -423,10 +360,10 @@ export async function checkPointerEventsHandle(
 
     if (!result || result.hit) return;
 
-    const covering = (result as any)?.covering ?? 'unknown';
-    if (Date.now() >= deadline) throw new ElementNotReceivingEventsError('<ElementHandle>', covering);
-
-    await backoffSleep(attempt);
-    attempt++;
+    const covering = result?.covering ?? 'unknown';
+    if (Date.now() >= deadline) {
+      throw new ElementNotReceivingEventsError('<ElementHandle>', covering);
+    }
+    await backoffSleep(attempt++);
   }
 }

@@ -114,7 +114,12 @@ function buildMockCDP(overrides: Record<string, any> = {}): any {
         return { executionContextId: 42 };
       }
       if (method === "Runtime.evaluate") {
-        return { result: { value: false } };
+        return { result: { value: {
+          v: 2, r: "ok", targetId: 1, gen: 1, attached: true, visible: true,
+          enabled: true, editable: true, isInput: false, focused: false,
+          checked: false, hit: true,
+          box: { x: 100, y: 300, width: 200, height: 30 },
+        } } };
       }
       return {};
     }),
@@ -693,10 +698,12 @@ describe("isInputElement stealth integration via patchPage", () => {
         }
         if (method === "Runtime.evaluate") {
           stealthEvaluateCalls.push(params.expression);
-          if (params.expression.includes("elementFromPoint")) {
-            return { result: { value: { hit: true } } };
-          }
-          return { result: { value: false } }; // not an input
+          return { result: { value: {
+            v: 2, r: "ok", targetId: 1, gen: 1, attached: true, visible: true,
+            enabled: true, editable: true, isInput: false, focused: false,
+            checked: false, hit: true,
+            box: { x: 100, y: 300, width: 200, height: 30 },
+          } } };
         }
         return {};
       }),
@@ -763,8 +770,12 @@ describe("isSelectorFocused stealth integration via patchPage", () => {
         }
         if (method === "Runtime.evaluate") {
           stealthEvaluateCalls.push(params.expression);
-          // Return true = element IS focused → skip click
-          return { result: { value: true } };
+          return { result: { value: {
+            v: 2, r: "ok", targetId: 1, gen: 1, attached: true, visible: true,
+            enabled: true, editable: true, isInput: true, focused: true,
+            checked: false, hit: true,
+            box: { x: 100, y: 300, width: 200, height: 30 },
+          } } };
         }
         return {};
       }),
@@ -1103,6 +1114,194 @@ describeIfSlow("stealth browser: navigation invalidation", () => {
     expect(val).toContain('after navigation');
 
     await browser.close();
+  }, 60000);
+});
+
+describeIfSlow("stealth browser: selector parity and target identity", () => {
+  const fastHumanConfig = {
+    mouse_min_steps: 3,
+    mouse_max_steps: 3,
+    mouse_burst_pause: [0, 0] as [number, number],
+    idle_between_actions: false,
+    scroll_settle_delay: [0, 0] as [number, number],
+  };
+
+  it("clicks the visible text target when hidden script text matches (#512)", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+    try {
+      const page = await browser.newPage();
+      await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => {
+        document.body.innerHTML = `
+          <script type="application/json">Hoy</script>
+          <button id="visible">Hoy</button>`;
+        (window as any).__clicked = false;
+        document.querySelector("#visible")!.addEventListener("click", () => {
+          (window as any).__clicked = true;
+        });
+      });
+      await page.click("text=Hoy");
+      expect(await page.evaluate(() => (window as any).__clicked)).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+
+  it("clicks visible display:contents text and nested content", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+    try {
+      const page = await browser.newPage();
+      await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => {
+        document.body.innerHTML = `
+          <ul><li id="target" style="display:contents">Hoy</li></ul>
+          <div id="nested" style="display:contents"><span>nested</span></div>`;
+        (window as any).__targetClicks = 0;
+        (window as any).__nestedClicks = 0;
+        document.querySelector("#target")!.addEventListener("click", () => (window as any).__targetClicks++);
+        document.querySelector("#nested")!.addEventListener("click", () => (window as any).__nestedClicks++);
+      });
+      expect(await page.locator("#target").evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return { width: rect.width, height: rect.height };
+      })).toEqual({ width: 0, height: 0 });
+      await page.click("text=Hoy", { timeout: 3000 });
+      await page.click("#nested", { timeout: 3000 });
+      expect(await page.evaluate(() => ({
+        target: (window as any).__targetClicks,
+        nested: (window as any).__nestedClicks,
+      }))).toEqual({ target: 1, nested: 1 });
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+
+  it("matches Playwright ordering across mixed and nested open Shadow DOM", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+    try {
+      const page = await browser.newPage();
+      await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => {
+        document.body.innerHTML = `
+          <button data-id="light-1">one</button>
+          <div id="host-a"></div>
+          <button data-id="light-2">two</button>
+          <div id="host-b"></div>`;
+        const a = document.querySelector("#host-a")!.attachShadow({ mode: "open" });
+        a.innerHTML = `<button data-id="shadow-a">three</button><div id="nested"></div>`;
+        a.querySelector("#nested")!.attachShadow({ mode: "open" }).innerHTML =
+          `<button data-id="shadow-nested">four</button>`;
+        document.querySelector("#host-b")!.attachShadow({ mode: "open" }).innerHTML =
+          `<button data-id="shadow-b">five</button>`;
+        (window as any).__order = [];
+        const roots: (Document | ShadowRoot)[] = [document, a, a.querySelector("#nested")!.shadowRoot!, document.querySelector("#host-b")!.shadowRoot!];
+        for (const root of roots) {
+          for (const button of root.querySelectorAll("button")) {
+            button.addEventListener("click", () => (window as any).__order.push((button as HTMLElement).dataset.id));
+          }
+        }
+      });
+
+      const expected = ["light-1", "light-2", "shadow-a", "shadow-nested", "shadow-b"];
+      for (let i = 0; i < expected.length; i++) {
+        await page.locator("button").nth(i).click();
+      }
+      expect(await page.evaluate(() => (window as any).__order)).toEqual(expected);
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+
+  it.each([false, true])(
+    "rejects selector replacement after movement (force=%s)",
+    async (force) => {
+      const { launch } = await import("../src/index.js");
+      const { ElementTargetChangedError } = await import("../src/human/actionability.js");
+      const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+      try {
+        const page = await browser.newPage();
+        await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+        await page.evaluate(() => {
+          document.body.innerHTML = `<button id="race" style="margin:180px;width:180px;height:60px">race</button>`;
+          (window as any).__replacementClicked = false;
+          const original = document.querySelector("#race")!;
+          original.addEventListener("mousemove", () => {
+            const replacement = original.cloneNode(true) as HTMLElement;
+            replacement.addEventListener("click", () => { (window as any).__replacementClicked = true; });
+            original.replaceWith(replacement);
+          }, { once: true });
+        });
+
+        await expect(page.click("#race", { force })).rejects.toBeInstanceOf(ElementTargetChangedError);
+        expect(await page.evaluate(() => (window as any).__replacementClicked)).toBe(false);
+      } finally {
+        await browser.close();
+      }
+    },
+    60000,
+  );
+
+  it.each([false, true])(
+    "rejects target removal after movement without clicking underneath (force=%s)",
+    async (force) => {
+      const { launch } = await import("../src/index.js");
+      const { ElementNotAttachedError } = await import("../src/human/actionability.js");
+      const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+      try {
+        const page = await browser.newPage();
+        await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+        await page.evaluate(() => {
+          document.body.innerHTML = `
+            <button id="underlying" style="position:absolute;left:180px;top:180px;width:180px;height:60px">underlying</button>
+            <button id="race" style="position:absolute;left:180px;top:180px;width:180px;height:60px">race</button>`;
+          (window as any).__underlyingClicks = 0;
+          document.querySelector("#underlying")!.addEventListener("click", () => {
+            (window as any).__underlyingClicks++;
+          });
+          const original = document.querySelector("#race")!;
+          original.addEventListener("mousemove", () => original.remove(), { once: true });
+        });
+
+        await expect(page.click("#race", { force })).rejects.toBeInstanceOf(ElementNotAttachedError);
+        expect(await page.evaluate(() => (window as any).__underlyingClicks)).toBe(0);
+      } finally {
+        await browser.close();
+      }
+    },
+    60000,
+  );
+
+  it("force skips coverage rejection without changing target identity", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+    try {
+      const page = await browser.newPage();
+      await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => {
+        document.body.innerHTML = `
+          <button id="target" style="position:absolute;left:180px;top:180px;width:180px;height:60px">target</button>
+          <div id="cover" style="position:absolute;left:180px;top:180px;width:180px;height:60px;z-index:2"></div>`;
+        (window as any).__targetClicks = 0;
+        (window as any).__coverClicks = 0;
+        document.querySelector("#target")!.addEventListener("click", () => {
+          (window as any).__targetClicks++;
+        });
+        document.querySelector("#cover")!.addEventListener("click", () => {
+          (window as any).__coverClicks++;
+        });
+      });
+
+      await page.click("#target", { force: true, timeout: 3000 });
+      expect(await page.evaluate(() => ({
+        target: (window as any).__targetClicks,
+        cover: (window as any).__coverClicks,
+      }))).toEqual({ target: 0, cover: 1 });
+    } finally {
+      await browser.close();
+    }
   }, 60000);
 });
 

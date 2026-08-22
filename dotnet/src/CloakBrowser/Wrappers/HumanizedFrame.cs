@@ -176,7 +176,9 @@ public sealed partial class HumanizedFrame : IFrame
     // Locator-returning members - re-wrap.
     // -----------------------------------------------------------------------
 
-    public ILocator Locator(string selector, FrameLocatorOptions? options = null) => Wrap(_inner.Locator(selector, options), selector);
+    // Frame selectors belong to that frame's document; the cursor's isolated world is
+    // main-frame-only, so frame locators deliberately retain the legacy locator path.
+    public ILocator Locator(string selector, FrameLocatorOptions? options = null) => Wrap(_inner.Locator(selector, options));
     public ILocator GetByAltText(string text, FrameGetByAltTextOptions? options = null) => Wrap(_inner.GetByAltText(text, options));
     public ILocator GetByAltText(Regex text, FrameGetByAltTextOptions? options = null) => Wrap(_inner.GetByAltText(text, options));
     public ILocator GetByLabel(string text, FrameGetByLabelOptions? options = null) => Wrap(_inner.GetByLabel(text, options));
