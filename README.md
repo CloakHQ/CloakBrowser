@@ -200,6 +200,22 @@ export CLOAKBROWSER_LICENSE_KEY=cb_xxxxxxxx
 
 Try the latest free → **[cloakbrowser.dev/free](https://cloakbrowser.dev/free)**  ·  Scale up on Pro → **[cloakbrowser.dev](https://cloakbrowser.dev)**
 
+## CloakBrowser Manager
+
+**The anti-detect browser, with a GUI.** A self-hosted alternative to Multilogin, GoLogin, and AdsPower, running on this same engine, on your own machine, not someone else's cloud.
+
+Every profile is a genuinely separate computer: its own fingerprint, GPU, screen, timezone, proxy, cookies, and history. Nothing bleeds between them. Close a profile, reopen it next month, and it's the same person, warmed up and ready.
+
+- **Unlimited profiles** — the big brands charge per profile and push you up a tier when you hit the ceiling. Here profiles are unlimited and you pay only for how many run at the same time. A drawer full of dormant accounts costs nothing.
+- **Native desktop app** — profiles open as normal windows on Windows and macOS. On a Linux server they run in Docker and stream to your browser.
+- **The real engine** — most profile managers inject JavaScript into a stock browser. Every profile here runs the patched Chromium binary this repo ships.
+- **Automate what you can see** — every running profile exposes a CDP endpoint. Drive it with Playwright or Puppeteer while you watch the exact same window live.
+- **One key, both products** — your CloakBrowser key works in the Manager too. Free with a GitHub sign-in for one profile at a time.
+
+It's also the fastest way to try the browser without writing any code: download, create a profile, click **Launch**.
+
+[**Get the Manager →**](https://cloakbrowser.dev/manager) · [Manager repo](https://github.com/CloakHQ/CloakBrowser-Manager) — the GUI is open source (MIT)
+
 ## Test Results
 
 All tests verified against live detection services. Results below are for the latest Pro/current build unless noted. Last tested: Aug 2026 (Chromium 151).
