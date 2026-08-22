@@ -6,6 +6,12 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [Unreleased]
+
+- **[wrapper]** Fix `humanize=True` reporting a fully rendered, on-screen element as not visible when it (or an ancestor list item) uses `display: contents` — a pattern used by some dropdown/menu widgets to strip default list-item box styling. `getBoundingClientRect()` on such an element is always empty even though its children/text render normally; the isolated-world actionability read now recurses into children for this case, mirroring Playwright's own actionability engine, so `click`/`fill`/etc. no longer fail after the full timeout on an element that is genuinely visible. Also cross-checks a "not visible" in-world verdict against Playwright's own `is_visible()` before failing whenever geometry is present, as a safety net for other such divergences. Regression from 0.5.6. Python, JavaScript, and .NET.
+
+---
+
 ## [0.5.8] — 2026-08-18
 
 - **[wrapper]** Fix `humanize=True` actions (`fill`, `click`, `type`) failing with an element-not-attached error after a navigation driven by a click or form submission instead of `goto`. The pre-action element checks could stay bound to the previous document and never recover; they now refresh on every navigation. Regression from 0.5.6. Python, JavaScript Playwright/Puppeteer, and .NET.

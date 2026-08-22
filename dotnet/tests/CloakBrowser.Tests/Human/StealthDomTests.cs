@@ -76,6 +76,56 @@ console.log('POINTER', JSON.stringify(run(p, [t], t)));
 
     private static string JsStr(string s) => JsonSerializer.Serialize(s);
 
+    // Regression #560: a display:contents element (e.g. a reset "li { display: contents }"
+    // used by custom dropdown/menu widgets) has no box of its own, but its children/text
+    // still render. Verifies the shipped resolver JS recurses into children instead of
+    // reporting a false "not visible"/not_found, mirroring Playwright's own actionability
+    // engine (packages/injected/src/domUtils.ts::computeBox).
+    [Fact]
+    public void ResolverSemantics_DisplayContents_RunUnderNode()
+    {
+        var node = FindNode();
+        if (node == null) return; // skip: node unavailable
+
+        string actionableJs = StealthDom.BuildActionableJs("li");
+        string boxJs = StealthDom.BuildBoxJs("li");
+
+        string script = @"
+function contentsEl(tag, display){
+  const e = { tagName: tag, nodeType: 1, disabled: false, readOnly: false, isContentEditable: false,
+              firstChild: null, nextSibling: null, __display: display || 'block', __rect: { x: 0, y: 0, width: 0, height: 0 } };
+  e.getAttribute = () => null;
+  e.getBoundingClientRect = () => e.__rect;
+  return e;
+}
+function textNode(text, rect){ return { nodeType: 3, textContent: text, nextSibling: null, __rect: rect }; }
+function append(parent, child){
+  if (!parent.firstChild) { parent.firstChild = child; return; }
+  let last = parent.firstChild;
+  while (last.nextSibling) last = last.nextSibling;
+  last.nextSibling = child;
+}
+function run(js, root){
+  const document = {
+    querySelectorAll: () => [root],
+    createRange: () => ({ _n: null, selectNode(n){ this._n = n; }, getBoundingClientRect(){ return this._n.__rect; } }),
+  };
+  const getComputedStyle = (el) => ({ visibility: 'visible', display: el.__display || 'block' });
+  return new Function('document', 'getComputedStyle', 'return ' + js)(document, getComputedStyle);
+}
+const li = contentsEl('LI', 'contents');
+append(li, textNode('Hoy', { x: 10, y: 20, width: 30, height: 12 }));
+const actionableJs = " + JsStr(actionableJs) + @";
+const boxJs = " + JsStr(boxJs) + @";
+console.log('ACTIONABLE', JSON.stringify(run(actionableJs, li)));
+console.log('BOX', JSON.stringify(run(boxJs, li)));
+";
+
+        string outp = RunNode(node, script);
+        Assert.Contains("ACTIONABLE {\"r\":\"ok\",\"visible\":true,\"enabled\":true,\"editable\":false,\"box\":{\"x\":10,\"y\":20,\"width\":30,\"height\":12}}", outp);
+        Assert.Contains("BOX {\"r\":\"ok\",\"box\":{\"x\":10,\"y\":20,\"width\":30,\"height\":12}}", outp);
+    }
+
     private static string? FindNode()
     {
         foreach (var p in new[] { "node", "/usr/local/bin/node", "/opt/homebrew/bin/node", "/usr/bin/node" })

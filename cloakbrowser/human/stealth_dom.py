@@ -110,6 +110,41 @@ function __resolve(sel){
   if (idx < 0 || idx >= list.length) return null;
   return list[idx];
 }
+// display:contents elements have no box of their own (getBoundingClientRect is
+// always all-zero) even though their children/text render normally -- Playwright's
+// own actionability engine recurses into children for this case, so we mirror it
+// here rather than reporting a false negative for e.g. reset "li { display: contents }"
+// patterns used by custom dropdown/menu widgets (#560).
+function __visBox(el){
+  const st = getComputedStyle(el);
+  if (st.display === 'contents') {
+    let ux1 = Infinity, uy1 = Infinity, ux2 = -Infinity, uy2 = -Infinity, found = false;
+    for (let child = el.firstChild; child; child = child.nextSibling) {
+      let r = null;
+      if (child.nodeType === 1) {
+        const cv = __visBox(child);
+        if (cv.visible) r = cv.box;
+      } else if (child.nodeType === 3 && __normWS(child.textContent)) {
+        const rng = document.createRange();
+        rng.selectNode(child);
+        const rr = rng.getBoundingClientRect();
+        if (rr.width > 0 || rr.height > 0) r = { x: rr.x, y: rr.y, width: rr.width, height: rr.height };
+      }
+      if (r) {
+        found = true;
+        ux1 = Math.min(ux1, r.x); uy1 = Math.min(uy1, r.y);
+        ux2 = Math.max(ux2, r.x + r.width); uy2 = Math.max(uy2, r.y + r.height);
+      }
+    }
+    if (!found) return { visible: false, box: null };
+    return { visible: true, box: { x: ux1, y: uy1, width: ux2 - ux1, height: uy2 - uy1 } };
+  }
+  const rc = el.getBoundingClientRect();
+  const hasBox = rc.width > 0 || rc.height > 0;
+  const box = hasBox ? { x: rc.x, y: rc.y, width: rc.width, height: rc.height } : null;
+  const visible = hasBox && st.visibility !== 'hidden' && st.display !== 'none';
+  return { visible, box };
+}
 """
 
 # ---------------------------------------------------------------------------
@@ -120,24 +155,22 @@ _BOX_OP = r"""
 const __el = __resolve(__SEL);
 if (__el === 'UNSUPPORTED') return { r: 'unsupported' };
 if (!__el) return { r: 'not_found' };
-const __rc = __el.getBoundingClientRect();
+const __vb = __visBox(__el);
 // Playwright's bounding_box returns null for elements with no box (display:none).
-if (__rc.width === 0 && __rc.height === 0 && __rc.x === 0 && __rc.y === 0) return { r: 'not_found' };
-return { r: 'ok', box: { x: __rc.x, y: __rc.y, width: __rc.width, height: __rc.height } };
+if (!__vb.box) return { r: 'not_found' };
+return { r: 'ok', box: __vb.box };
 """
 
 _ACTIONABLE_OP = r"""
 const __el = __resolve(__SEL);
 if (__el === 'UNSUPPORTED') return { r: 'unsupported' };
 if (!__el) return { r: 'not_found' };
-const __st = getComputedStyle(__el);
-const __rc = __el.getBoundingClientRect();
-const __visible = __st.visibility !== 'hidden' && __st.display !== 'none' && (__rc.width > 0 || __rc.height > 0);
+const __vb = __visBox(__el);
 const __tag = __el.tagName.toLowerCase();
 const __enabled = !(__el.disabled === true || __el.getAttribute('aria-disabled') === 'true');
 const __editable = __enabled && !__el.readOnly &&
   (__tag === 'input' || __tag === 'textarea' || __tag === 'select' || __el.isContentEditable === true);
-return { r: 'ok', visible: __visible, enabled: __enabled, editable: __editable };
+return { r: 'ok', visible: __vb.visible, enabled: __enabled, editable: __editable, box: __vb.box };
 """
 
 _VIEWPORT_JS = "(() => ({ width: window.innerWidth, height: window.innerHeight }))()"
