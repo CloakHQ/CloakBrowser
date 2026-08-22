@@ -37,6 +37,7 @@ def _get_element_box(page: Any, selector: str, timeout: float = 30000) -> Option
     if status == OK:
         box = dict(data["box"])
         box["targetId"] = data["targetId"]
+        box["gen"] = data["gen"]
         return box
     if status == NOT_FOUND:
         return None

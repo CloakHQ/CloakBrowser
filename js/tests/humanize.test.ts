@@ -867,7 +867,7 @@ function buildMockPage(overrides: Record<string, any> = {}): any {
           if (method === 'Page.createIsolatedWorld') return { executionContextId: 42 };
           if (method === 'Runtime.evaluate') {
             return { result: { value: {
-              v: 1, r: 'ok', targetId: 1, attached: true, visible: true,
+              v: 2, r: 'ok', targetId: 1, gen: 1, attached: true, visible: true,
               enabled: true, editable: true, isInput: false,
               focused: overrides.snapshotFocused ?? false,
               checked: overrides.snapshotChecked ??
@@ -1378,9 +1378,9 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
       locator: vi.fn(),
       _stealth: { evaluate: vi.fn(async () => {
         evaluations++;
-        if (evaluations < 3) return { v: 1, r: "not_found" };
+        if (evaluations < 3) return { v: 2, r: "not_found" };
         return {
-          v: 1, r: "ok", targetId: 7,
+          v: 2, r: "ok", targetId: 7, gen: 1,
           box: { x: 100, y: 200, width: 50, height: 30 },
         };
       }) },
@@ -1400,7 +1400,7 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
     const { getElementBox } = await import("../src/human/scroll.js");
     const page: any = {
       locator: vi.fn(),
-      _stealth: { evaluate: vi.fn(async () => ({ v: 1, r: "not_found" })) },
+      _stealth: { evaluate: vi.fn(async () => ({ v: 2, r: "not_found" })) },
     };
 
     const started = Date.now();
@@ -1804,7 +1804,7 @@ describe("selector reads stay isolated", () => {
     const { ensureActionable, CHECKS_CLICK } = await import("../src/human/actionability.js");
     const { UnsupportedHumanizeSelectorError } = await import("../src/human/stealthDom.js");
     const page = {
-      _stealth: { evaluate: vi.fn().mockResolvedValue({ v: 1, r: "unsupported" }) },
+      _stealth: { evaluate: vi.fn().mockResolvedValue({ v: 2, r: "unsupported" }) },
       locator: vi.fn(),
     };
 
@@ -1818,11 +1818,11 @@ describe("selector reads stay isolated", () => {
     const { getElementBox } = await import("../src/human/scroll.js");
     const { UnsupportedHumanizeSelectorError } = await import("../src/human/stealthDom.js");
     const page = {
-      _stealth: { evaluate: vi.fn().mockResolvedValue({ v: 1, r: "unsupported" }) },
+      _stealth: { evaluate: vi.fn().mockResolvedValue({ v: 2, r: "unsupported" }) },
       locator: vi.fn(),
     };
 
-    await expect(getElementBox(page as any, "internal:text=save", 100))
+    await expect(getElementBox(page as any, "internal:role=button", 100))
       .rejects.toBeInstanceOf(UnsupportedHumanizeSelectorError);
     expect(page.locator).not.toHaveBeenCalled();
   });
@@ -1849,7 +1849,7 @@ describe("pointer-events failure semantics", () => {
     const world = { evaluate: vi.fn().mockRejectedValue(new Error("execution context destroyed")) };
 
     await expect(
-      checkPointerEvents(page as any, "#x", 1, 100, 100, world, 0),
+      checkPointerEvents(page as any, "#x", 1, 1, 100, 100, world, 0),
     ).rejects.toBeInstanceOf(StealthEvaluationError);
     expect(page.locator).not.toHaveBeenCalled();
   });

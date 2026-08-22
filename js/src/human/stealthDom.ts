@@ -1,5 +1,5 @@
 /** Versioned isolated-world DOM selector protocol; mirrors stealth_dom.py. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const OK = 'ok';
 export const NOT_FOUND = 'not_found';
 export const UNSUPPORTED = 'unsupported';
@@ -8,31 +8,38 @@ export const EVALUATION_FAILED = 'evaluation_failed';
 export type StealthStatus = typeof OK | typeof NOT_FOUND | typeof UNSUPPORTED | typeof STALE | typeof EVALUATION_FAILED;
 
 export class StealthDomError extends Error { constructor(message: string) { super(message); this.name = new.target.name; } }
-export class UnsupportedHumanizeSelectorError extends StealthDomError { constructor(selector: string) { super(`Humanized selector ${JSON.stringify(selector)} is not supported by the isolated-world resolver`); } }
+export class UnsupportedHumanizeSelectorError extends StealthDomError { constructor(selector: string) { super(`Humanized selector ${JSON.stringify(selector)} is not supported by the isolated-world resolver. Supported: CSS, text=, xpath=, getByTestId, getByPlaceholder, getByAltText, getByTitle, getByText, getByLabel, and a trailing .first()/.nth()/.last(). Not supported: getByRole, chained locators (a >> b, .filter(), .and(), .or()), frameLocator, :visible and :nth-match. Use a CSS or text= selector for this action, or humanize:false to fall back to Playwright.`); } }
 export class StealthWorldUnavailableError extends StealthDomError { constructor() { super('Humanized DOM read requires an active isolated world'); } }
 export class StealthEvaluationError extends StealthDomError { constructor(selector: string) { super(`Isolated-world DOM evaluation failed for ${JSON.stringify(selector)}`); } }
 
 export interface StealthWorld { evaluate(expression: string): Promise<any>; }
 export function getWorld(pageOrFrame: unknown): StealthWorld | null { return (pageOrFrame as any)?._stealth ?? null; }
 export interface StealthBox { x: number; y: number; width: number; height: number; }
-export interface StealthSnapshot { v: typeof PROTOCOL_VERSION; r: typeof OK; targetId: number; attached: boolean; visible: boolean; enabled: boolean; editable: boolean; isInput: boolean; focused: boolean; checked: boolean | null; box: StealthBox | null; }
+export interface StealthSnapshot { v: typeof PROTOCOL_VERSION; r: typeof OK; targetId: number; gen: number; attached: boolean; visible: boolean; enabled: boolean; editable: boolean; isInput: boolean; focused: boolean; checked: boolean | null; box: StealthBox | null; }
 /** Compatibility name used by the humanized action layer. */
 export type SnapshotPayload = StealthSnapshot;
-export interface StealthPointerPayload { v: typeof PROTOCOL_VERSION; r: typeof OK; targetId: number; hit: boolean; covering?: string; }
+export interface StealthPointerPayload { v: typeof PROTOCOL_VERSION; r: typeof OK; targetId: number; gen: number; hit: boolean; covering?: string; }
 export interface ParsedResult { status: StealthStatus; data?: any; }
 
 const RESOLVER_BODY = String.raw`
 const __UNS = 'UNSUPPORTED';
-const __V = 1;
+const __V = 2;
 const __STATE_KEY = '__cloakHumanDomV1';
 function __state(){
   let s = globalThis[__STATE_KEY];
   if (!s) {
-    s = { ids: new WeakMap(), nextId: 1 };
+    // Element ids restart at 1 in every new world, and the world is recreated on
+    // navigation (#507), so an id alone can name a different element after a nav.
+    // The generation makes that cross-world reuse detectable as 'stale'.
+    // 11 bits of wall clock + 20 bits of randomness. The maximum is exactly
+    // Int32.MaxValue, because the .NET wrapper carries the value as an Int32.
+    s = { ids: new WeakMap(), nextId: 1,
+          gen: (Date.now() & 2047) * 1048576 + Math.floor(Math.random() * 1048576) };
     Object.defineProperty(globalThis, __STATE_KEY, { value: s, configurable: false, enumerable: false });
   }
   return s;
 }
+function __gen(){ return __state().gen; }
 function __targetId(el){
   const s = __state();
   let id = s.ids.get(el);
@@ -198,13 +205,11 @@ function __elementText(el, cache){
       continue;
     } else {
       if (immediate) { fragments.push(immediate); immediate = ''; }
-      if (child.nodeType === 1) {
-        full += __elementText(child, cache).full;
-        if (child.tagName && child.tagName.toLowerCase() === 'br') full += '\n';
-      }
+      if (child.nodeType === 1) full += __elementText(child, cache).full;
     }
   }
   if (immediate) fragments.push(immediate);
+  if (el.shadowRoot) full += __elementText(el.shadowRoot, cache).full;
   out = { full: full, normalized: __normWS(full), immediate: fragments };
   cache.set(el, out);
   return out;
@@ -242,21 +247,224 @@ function __parseTextMatcher(arg){
   }
   return { kind: 'lax', value: __normWS(arg).toLowerCase() };
 }
-function __matchText(el, matcher, cache){
-  const text = __elementText(el, cache);
+function __matchTextValue(text, matcher){
   if (matcher.kind === 'regex') { matcher.regex.lastIndex = 0; return matcher.regex.test(text.full); }
+  // The public engine's exact rule compares immediate text-node runs, unlike
+  // internal:text which compares the full normalized subtree text.
   if (matcher.kind === 'exact') return text.immediate.some(x => __normWS(x) === matcher.value);
   return text.normalized.toLowerCase().includes(matcher.value);
+}
+function __matchText(el, matcher, cache){
+  return __matchTextValue(__elementText(el, cache), matcher);
+}
+function __publicTextMatches(el, matcher, cache){
+  // Playwright's elementMatchesText for the public text= engine.
+  if (__skipText(el)) return 'none';
+  if (!__matchText(el, matcher, cache)) return 'none';
+  for (const child of el.children || []) {
+    if (__matchText(child, matcher, cache)) return 'selfAndChildren';
+  }
+  // A host whose shadow content also matches is not the smallest match. This
+  // cannot be expressed with contains(), which does not pierce shadow roots.
+  if (el.shadowRoot && __matchTextValue(__elementText(el.shadowRoot, cache), matcher))
+    return 'selfAndChildren';
+  return 'self';
 }
 function __byText(arg){
   const matcher = __parseTextMatcher(arg);
   if (matcher === __UNS) return __UNS;
-  const matches = [], cache = new Map();
-  const all = __allElements();
-  for (const el of all) { if (__matchText(el, matcher, cache)) matches.push(el); }
-  // Playwright's text engine targets the smallest matching element: drop any
-  // element that has a descendant which also matches.
-  return matches.filter(el => !matches.some(o => o !== el && el.contains(o)));
+  const out = [], cache = new Map();
+  let lastMiss = null;
+  for (const el of __allElements()) {
+    // Nothing under a non-matching ancestor can match in lax mode.
+    if (matcher.kind === 'lax' && lastMiss && lastMiss.contains(el)) continue;
+    const m = __publicTextMatches(el, matcher, cache);
+    if (m === 'none') lastMiss = el;
+    // The public engine also keeps an ancestor when the match is exact.
+    if (m === 'self' || (m === 'selfAndChildren' && matcher.kind === 'exact')) out.push(el);
+  }
+  return out;
+}
+function __attrUnquote(s, i){
+  // parseAttributeSelector.readQuotedString: a backslash is dropped and the next
+  // character taken verbatim -- NOT JSON escapes, so "a\\nb" decodes to 'anb'.
+  const quote = s.charAt(i);
+  if (quote !== '"' && quote !== "'") return __UNS;
+  let out = '';
+  i++;
+  while (i < s.length && s.charAt(i) !== quote) {
+    if (s.charAt(i) === '\\') {
+      i++;
+      if (i >= s.length) return __UNS;
+    }
+    out += s.charAt(i++);
+  }
+  if (s.charAt(i) !== quote) return __UNS;
+  return { value: out, end: i + 1 };
+}
+function __parseAttrBody(body){
+  // [name="value"i] | [name="value"s] | [name=/re/flags]
+  body = body.trim();
+  if (body.charAt(0) !== '[' || body.charAt(body.length - 1) !== ']') return __UNS;
+  const inner = body.slice(1, -1);
+  const eq = inner.indexOf('=');
+  if (eq <= 0) return __UNS;
+  let name = inner.slice(0, eq).trim();
+  if (name.charAt(0) === '"' || name.charAt(0) === "'") {
+    const un = __attrUnquote(name, 0);
+    if (un === __UNS || un.end !== name.length) return __UNS;
+    name = un.value;
+  }
+  // isCSSNameChar, plus ',' for the comma-joined test-id name list. Also rejects
+  // the *= ^= $= |= ~= operators, whose extra character lands in the name.
+  if (!/^[\w\u0080-\uFFFF,-]+$/.test(name)) return __UNS;
+  const rest = inner.slice(eq + 1);
+  let j = 0;
+  while (j < rest.length && /\s/.test(rest.charAt(j))) j++;
+  if (rest.charAt(j) === '/') {
+    const end = rest.lastIndexOf('/');
+    if (end <= j) return __UNS;
+    const flags = rest.slice(end + 1).trim();
+    if (!/^[dgimsuvy]*$/.test(flags)) return __UNS;
+    try { return { name: name, regex: new RegExp(rest.slice(j + 1, end), flags), value: null, caseSensitive: true }; }
+    catch (e) { return __UNS; }
+  }
+  const un = __attrUnquote(rest, j);
+  if (un === __UNS) return __UNS;
+  let k = un.end, caseSensitive = true;
+  const flag = rest.charAt(k);
+  if (flag === 'i' || flag === 'I') { caseSensitive = false; k++; }
+  else if (flag === 's' || flag === 'S') { caseSensitive = true; k++; }
+  while (k < rest.length && /\s/.test(rest.charAt(k))) k++;
+  if (k !== rest.length) return __UNS;
+  return { name: name, regex: null, value: un.value, caseSensitive: caseSensitive };
+}
+function __byAttr(body){
+  // Serves internal:attr (placeholder/alt/title) AND internal:testid -- the
+  // attribute name comes from the selector. The 'i' flag means case-insensitive
+  // SUBSTRING, and the RAW attribute value is compared: no trim, no whitespace
+  // normalization. get_by_test_id always emits 's', so it is strict equality.
+  const parsed = __parseAttrBody(body);
+  if (parsed === __UNS) return __UNS;
+  const names = parsed.name.split(',');
+  const lower = (parsed.regex || parsed.caseSensitive) ? null : parsed.value.toLowerCase();
+  const out = [];
+  try {
+    for (const el of __allElements()) {
+      if (!el.getAttribute) continue;
+      for (const name of names) {
+        const actual = el.getAttribute(name);
+        if (actual === null || actual === undefined) continue;
+        let hit;
+        if (parsed.regex) { parsed.regex.lastIndex = 0; hit = !!String(actual).match(parsed.regex); }
+        else if (parsed.caseSensitive) hit = actual === parsed.value;
+        else hit = String(actual).toLowerCase().indexOf(lower) !== -1;
+        if (hit) { out.push(el); break; }
+      }
+    }
+  } catch (e) { return __UNS; }
+  return out;
+}
+function __parseInternalTextMatcher(arg){
+  // createTextMatcher(selector, internal=true). Playwright does not trim here.
+  if (arg.charAt(0) === '/' && arg.lastIndexOf('/') > 0) {
+    const end = arg.lastIndexOf('/');
+    try { return { kind: 'regex', regex: new RegExp(arg.slice(1, end), arg.slice(end + 1)) }; }
+    catch (e) { return __UNS; }
+  }
+  if (arg.length > 1 && arg.charAt(0) === '"') {
+    let body = null, strict = false;
+    const last = arg.charAt(arg.length - 1);
+    if (last === '"') { body = arg; strict = true; }
+    else if (arg.charAt(arg.length - 2) === '"' && (last === 's' || last === 'i')) {
+      body = arg.slice(0, -1); strict = last === 's';
+    } else return __UNS;
+    let value;
+    try { value = JSON.parse(body); } catch (e) { return __UNS; }
+    if (typeof value !== 'string') return __UNS;
+    const norm = __normWS(value);
+    return strict ? { kind: 'strict', value: norm } : { kind: 'lax', value: norm.toLowerCase() };
+  }
+  // A single-quoted body reaches unquote=JSON.parse in Playwright and throws.
+  if (arg.length > 1 && arg.charAt(0) === "'" && arg.charAt(arg.length - 1) === "'") return __UNS;
+  return { kind: 'lax', value: __normWS(arg).toLowerCase() };
+}
+function __matchInternalText(text, matcher){
+  if (matcher.kind === 'regex') { matcher.regex.lastIndex = 0; return matcher.regex.test(text.full); }
+  // strict compares the FULL normalized subtree text. The public text= engine
+  // compares immediate fragments instead (__matchText) -- genuinely different.
+  if (matcher.kind === 'strict') return text.normalized === matcher.value;
+  return text.normalized.toLowerCase().indexOf(matcher.value) !== -1;
+}
+function __internalTextMatches(el, matcher, cache){
+  if (__skipText(el)) return 'none';
+  if (!__matchInternalText(__elementText(el, cache), matcher)) return 'none';
+  // Direct children only, plus the shadow-root probe -- NOT contains() over the
+  // match set, which would drop an outer element matched only via a grandchild.
+  for (const child of el.children || []) {
+    if (__matchInternalText(__elementText(child, cache), matcher)) return 'selfAndChildren';
+  }
+  if (el.shadowRoot && __matchInternalText(__elementText(el.shadowRoot, cache), matcher)) return 'selfAndChildren';
+  return 'self';
+}
+function __byInternalText(arg){
+  const matcher = __parseInternalTextMatcher(arg);
+  if (matcher === __UNS) return __UNS;
+  const cache = new Map(), out = [];
+  let lastMiss = null;
+  for (const el of __allElements()) {
+    // lastDidNotMatchSelf: in lax mode nothing under a non-matching ancestor matches.
+    if (matcher.kind === 'lax' && lastMiss && lastMiss.contains(el)) continue;
+    const m = __internalTextMatches(el, matcher, cache);
+    if (m === 'none') lastMiss = el;
+    if (m === 'self') out.push(el);
+  }
+  return out;
+}
+function __idRefRoot(el){
+  const root = el.getRootNode ? el.getRootNode() : null;
+  return (root && typeof root.getElementById === 'function') ? root : document;
+}
+function __labelledByElements(el){
+  const ref = el.getAttribute ? el.getAttribute('aria-labelledby') : null;
+  if (ref === null || ref === undefined) return null;
+  const root = __idRefRoot(el), out = [];
+  for (const id of ref.split(/\s+/)) {
+    if (!id) continue;
+    const target = root.getElementById(id);
+    if (target && out.indexOf(target) === -1) out.push(target);
+  }
+  return out.length ? out : null;
+}
+function __elementLabels(el, cache){
+  // First non-empty source wins: aria-labelledby, then aria-label, then .labels.
+  const refs = __labelledByElements(el);
+  if (refs) return refs.map(function(x){ return __elementText(x, cache); });
+  const aria = el.getAttribute ? el.getAttribute('aria-label') : null;
+  if (aria !== null && aria !== undefined && aria.trim())
+    return [{ full: aria, normalized: __normWS(aria), immediate: [aria] }];
+  const tag = el.tagName ? el.tagName.toUpperCase() : '';
+  const nonHiddenInput = tag === 'INPUT' && String(el.type || '').toLowerCase() !== 'hidden';
+  if (nonHiddenInput || ['BUTTON','METER','OUTPUT','PROGRESS','SELECT','TEXTAREA'].indexOf(tag) !== -1) {
+    // Native .labels already resolves both for/id and a wrapping <label>.
+    const labels = el.labels;
+    if (labels) return Array.prototype.slice.call(labels).map(function(x){ return __elementText(x, cache); });
+  }
+  return [];
+}
+function __byLabel(arg){
+  const matcher = __parseInternalTextMatcher(arg);
+  if (matcher === __UNS) return __UNS;
+  const cache = new Map(), out = [];
+  try {
+    for (const el of __allElements()) {
+      const labels = __elementLabels(el, cache);
+      for (const label of labels) {
+        if (__matchInternalText(label, matcher)) { out.push(el); break; }
+      }
+    }
+  } catch (e) { return __UNS; }
+  return out;
 }
 function __allElements(){
   if (!document.children && document.querySelectorAll)
@@ -474,9 +682,15 @@ function __resolve(sel){
   const m = sel.match(/^([\s\S]*?)\s*>>\s*nth=(-?\d+)\s*$/);
   if (m) { sel = m[1].trim(); nth = parseInt(m[2], 10); hasNth = true; }
   if (sel.indexOf('>>') !== -1) return __UNS;        // chaining we don't reimplement
-  if (sel.indexOf('internal:') !== -1) return __UNS; // get_by_* engines
   let list;
-  if (sel.indexOf('xpath=') === 0) { list = __byXPath(sel.slice(6)); }
+  // get_by_* engines we reimplement. Anything else under internal: (role, has,
+  // has-text, and, or, chain, control, describe) stays unsupported.
+  if (sel.indexOf('internal:testid=') === 0) { list = __byAttr(sel.slice(16)); }
+  else if (sel.indexOf('internal:attr=') === 0) { list = __byAttr(sel.slice(14)); }
+  else if (sel.indexOf('internal:text=') === 0) { list = __byInternalText(sel.slice(14)); }
+  else if (sel.indexOf('internal:label=') === 0) { list = __byLabel(sel.slice(15)); }
+  else if (sel.indexOf('internal:') !== -1) return __UNS;
+  else if (sel.indexOf('xpath=') === 0) { list = __byXPath(sel.slice(6)); }
   else if (sel.indexOf('//') === 0 || sel.indexOf('(//') === 0 || sel.indexOf('..') === 0) { list = __byXPath(sel); }
   else if (sel.indexOf('text=') === 0) { list = __byText(sel.slice(5)); }
   else {
@@ -491,15 +705,14 @@ function __resolve(sel){
 }
 `;
 const SNAPSHOT_OP=String.raw`
-const __el=__resolve(__SEL);if(__el==='UNSUPPORTED')return {v:__V,r:'unsupported'};if(!__el)return {v:__V,r:'not_found'};const __box=__visBox(__el),__hasBox=__box!==null,__tag=__el.tagName.toLowerCase(),__enabled=__isEnabled(__el),__editable=__isEditable(__el,__enabled);return {v:__V,r:'ok',targetId:__targetId(__el),attached:__el.isConnected===true,visible:__isVisible(__el),enabled:__enabled,editable:__editable,isInput:__tag==='input'||__tag==='textarea'||__el.isContentEditable===true,focused:__deepActiveElement()===__el,checked:typeof __el.checked==='boolean'?__el.checked:null,box:__box};`;
+const __el=__resolve(__SEL);if(__el==='UNSUPPORTED')return {v:__V,r:'unsupported'};if(!__el)return {v:__V,r:'not_found'};const __box=__visBox(__el),__hasBox=__box!==null,__tag=__el.tagName.toLowerCase(),__enabled=__isEnabled(__el),__editable=__isEditable(__el,__enabled);return {v:__V,r:'ok',targetId:__targetId(__el),gen:__gen(),attached:__el.isConnected===true,visible:__isVisible(__el),enabled:__enabled,editable:__editable,isInput:__tag==='input'||__tag==='textarea'||__el.isContentEditable===true,focused:__deepActiveElement()===__el,checked:typeof __el.checked==='boolean'?__el.checked:null,box:__box};`;
 export const VIEWPORT_JS='(() => ({ width: window.innerWidth, height: window.innerHeight }))()';
 function wrap(selector:string,op:string){return `(() => {\nconst __SEL = ${JSON.stringify(selector)};\n${RESOLVER_BODY}\n${op}\n})()`;}
 export function buildSnapshotJs(selector:string){return wrap(selector,SNAPSHOT_OP);}
 export function buildBoxJs(selector:string){return wrap(selector,SNAPSHOT_OP.replace("r:'ok'","r:__hasBox?'ok':'not_found'"));}
 export function buildActionableJs(selector:string){return buildSnapshotJs(selector);}
-function pointer(selector:string,targetId:number|undefined,x:number,y:number,validate:boolean){const check=validate?`if(__id!==${Math.trunc(targetId!)})return {v:__V,r:'stale',targetId:__id};if(__el.isConnected!==true)return {v:__V,r:'stale',targetId:__id};`:'';return wrap(selector,`const __el=__resolve(__SEL);if(__el==='UNSUPPORTED')return {v:__V,r:'unsupported'};if(!__el)return {v:__V,r:'not_found'};const __id=__targetId(__el);${check}const __t=__deepElementFromPoint(${Number(x)},${Number(y)});let __n=__t;while(__n){if(__n===__el)return {v:__V,r:'ok',targetId:__id,hit:true};__n=__composedParent(__n);}if(__t&&__el.contains(__t))return {v:__V,r:'ok',targetId:__id,hit:true};return {v:__V,r:'ok',targetId:__id,hit:false,covering:__t?(__t.tagName||'unknown'):'none'};`);}
-export function buildValidateJs(selector:string,targetId:number,x:number,y:number){return pointer(selector,targetId,x,y,true);}
-export function buildPointerJs(selector:string,x:number,y:number){return pointer(selector,undefined,x,y,false);}
-export function parseResult(raw:any):ParsedResult{if(!raw||typeof raw!=='object'||Array.isArray(raw)||raw.v!==PROTOCOL_VERSION)return{status:EVALUATION_FAILED};if(raw.r===OK)return Number.isInteger(raw.targetId)?{status:OK,data:raw}:{status:EVALUATION_FAILED};if(raw.r===NOT_FOUND)return{status:NOT_FOUND};if(raw.r===STALE)return Number.isInteger(raw.targetId)?{status:STALE,data:raw}:{status:EVALUATION_FAILED};if(raw.r===UNSUPPORTED)return{status:UNSUPPORTED};return{status:EVALUATION_FAILED};}
+function pointer(selector:string,targetId:number|undefined,gen:number|undefined,x:number,y:number,validate:boolean){const check=validate?`if(__g!==${Math.trunc(gen!)})return {v:__V,r:'stale',targetId:__id,gen:__g};if(__id!==${Math.trunc(targetId!)})return {v:__V,r:'stale',targetId:__id,gen:__g};if(__el.isConnected!==true)return {v:__V,r:'stale',targetId:__id,gen:__g};`:'';return wrap(selector,`const __el=__resolve(__SEL);if(__el==='UNSUPPORTED')return {v:__V,r:'unsupported'};if(!__el)return {v:__V,r:'not_found'};const __g=__gen();const __id=__targetId(__el);${check}const __t=__deepElementFromPoint(${Number(x)},${Number(y)});let __n=__t;while(__n){if(__n===__el)return {v:__V,r:'ok',targetId:__id,gen:__g,hit:true};__n=__composedParent(__n);}if(__t&&__el.contains(__t))return {v:__V,r:'ok',targetId:__id,gen:__g,hit:true};return {v:__V,r:'ok',targetId:__id,gen:__g,hit:false,covering:__t?(__t.tagName||'unknown'):'none'};`);}
+export function buildValidateJs(selector:string,targetId:number,gen:number,x:number,y:number){return pointer(selector,targetId,gen,x,y,true);}
+export function buildPointerJs(selector:string,x:number,y:number){return pointer(selector,undefined,undefined,x,y,false);}
+export function parseResult(raw:any):ParsedResult{if(!raw||typeof raw!=='object'||Array.isArray(raw)||raw.v!==PROTOCOL_VERSION)return{status:EVALUATION_FAILED};if(raw.r===OK)return Number.isInteger(raw.targetId)&&Number.isInteger(raw.gen)?{status:OK,data:raw}:{status:EVALUATION_FAILED};if(raw.r===NOT_FOUND)return{status:NOT_FOUND};if(raw.r===STALE)return Number.isInteger(raw.targetId)&&Number.isInteger(raw.gen)?{status:STALE,data:raw}:{status:EVALUATION_FAILED};if(raw.r===UNSUPPORTED)return{status:UNSUPPORTED};return{status:EVALUATION_FAILED};}
 export async function evalParsed(world:StealthWorld,expression:string):Promise<ParsedResult>{try{return parseResult(await world.evaluate(expression));}catch{return{status:EVALUATION_FAILED};}}
-export async function readSnapshot(world:StealthWorld|null|undefined,selector:string):Promise<StealthSnapshot>{if(!world)throw new StealthWorldUnavailableError();const r=await evalParsed(world,buildSnapshotJs(selector));if(r.status===OK)return r.data as StealthSnapshot;if(r.status===UNSUPPORTED)throw new UnsupportedHumanizeSelectorError(selector);throw new StealthEvaluationError(selector);}

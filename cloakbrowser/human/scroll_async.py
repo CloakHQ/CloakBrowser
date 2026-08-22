@@ -37,6 +37,7 @@ async def _get_element_box_async(
     if status == OK:
         box = dict(data["box"])
         box["targetId"] = data["targetId"]
+        box["gen"] = data["gen"]
         return box
     if status == NOT_FOUND:
         return None

@@ -308,12 +308,12 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
-    // Identity is always revalidated after movement and before mouse-down.
-    // force skips only coverage rejection, never exact-target validation.
-    await checkPointerEvents(
-      page, selector, finalBox.targetId, target.x, target.y,
-      stealth, remainingMs(), force,
-    );
+    if (!force) {
+      await checkPointerEvents(
+        page, selector, finalBox.targetId, finalBox.gen, target.x, target.y,
+        stealth, remainingMs(),
+      );
+    }
     await humanClick(raw, isInput, callCfg);
   };
 
@@ -349,10 +349,12 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
-    await checkPointerEvents(
-      page, selector, finalBox.targetId, target.x, target.y,
-      stealth, remainingMs(), force,
-    );
+    if (!force) {
+      await checkPointerEvents(
+        page, selector, finalBox.targetId, finalBox.gen, target.x, target.y,
+        stealth, remainingMs(),
+      );
+    }
     await raw.down({ clickCount: 2 });
     await sleep(rand(30, 60));
     await raw.up({ clickCount: 2 });
@@ -390,10 +392,12 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
     cursor.x = target.x;
     cursor.y = target.y;
-    await checkPointerEvents(
-      page, selector, finalBox.targetId, target.x, target.y,
-      stealth, remainingMs(), force,
-    );
+    if (!force) {
+      await checkPointerEvents(
+        page, selector, finalBox.targetId, finalBox.gen, target.x, target.y,
+        stealth, remainingMs(),
+      );
+    }
   };
 
   // --- type ---

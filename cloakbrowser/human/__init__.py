@@ -1030,10 +1030,11 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
-        check_pointer_events(
-            page, selector, box.get("targetId"), target.x, target.y,
-            stealth, timeout=_remaining_ms(), force=force,
-        )
+        if not force:
+            check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
         human_click(raw_mouse, is_input, call_cfg)
 
     def _human_dblclick(selector: str, **kwargs: Any) -> None:
@@ -1070,10 +1071,11 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
-        check_pointer_events(
-            page, selector, box.get("targetId"), target.x, target.y,
-            stealth, timeout=_remaining_ms(), force=force,
-        )
+        if not force:
+            check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
         raw_mouse.down(click_count=2)
         sleep_ms(rand(30, 60))
         raw_mouse.up(click_count=2)
@@ -1112,10 +1114,11 @@ def patch_page(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
-        check_pointer_events(
-            page, selector, box.get("targetId"), target.x, target.y,
-            stealth, timeout=_remaining_ms(), force=force,
-        )
+        if not force:
+            check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
 
     def _human_type(selector: str, text: str, **kwargs: Any) -> None:
         call_cfg = merge_config(cfg, kwargs.get("human_config"))
@@ -2116,10 +2119,11 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
-        await async_check_pointer_events(
-            page, selector, box.get("targetId"), target.x, target.y,
-            stealth, timeout=_remaining_ms(), force=force,
-        )
+        if not force:
+            await async_check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
         await async_human_click(raw_mouse, is_input, call_cfg)
 
     async def _human_dblclick(selector: str, **kwargs: Any) -> None:
@@ -2155,10 +2159,11 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
-        await async_check_pointer_events(
-            page, selector, box.get("targetId"), target.x, target.y,
-            stealth, timeout=_remaining_ms(), force=force,
-        )
+        if not force:
+            await async_check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
         await raw_mouse.down(click_count=2)
         await async_sleep_ms(rand(30, 60))
         await raw_mouse.up(click_count=2)
@@ -2196,10 +2201,11 @@ def patch_page_async(page: Any, cfg: HumanConfig, cursor: _CursorState) -> None:
         await async_human_move(raw_mouse, cursor.x, cursor.y, target.x, target.y, call_cfg)
         cursor.x = target.x
         cursor.y = target.y
-        await async_check_pointer_events(
-            page, selector, box.get("targetId"), target.x, target.y,
-            stealth, timeout=_remaining_ms(), force=force,
-        )
+        if not force:
+            await async_check_pointer_events(
+                page, selector, box.get("targetId"), box.get("gen"),
+                target.x, target.y, stealth, timeout=_remaining_ms(),
+            )
 
     async def _human_type(selector: str, text: str, **kwargs: Any) -> None:
         call_cfg = merge_config(cfg, kwargs.get("human_config"))

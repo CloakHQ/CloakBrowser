@@ -131,9 +131,11 @@ internal static class LocatorHumanizer
         var target = HumanMouse.ClickTarget(box, snapshot.IsInput, cfg);
         await HumanMouse.HumanMoveAsync(cursor.RawMouse, cursor.X, cursor.Y, target.X, target.Y, cfg).ConfigureAwait(false);
         cursor.Set(target.X, target.Y);
-        // Validate identity after motion and immediately before the caller's mouse-down.
-        await Actionability.CheckPointerEventsAsync(cursor.Page, selector, snapshot.TargetId, target.X, target.Y,
-            RemainingMs(deadline), world, force).ConfigureAwait(false);
+        // Validate the click point after motion, immediately before the caller's mouse-down.
+        // force bypasses it entirely, matching Playwright.
+        if (!force)
+            await Actionability.CheckPointerEventsAsync(cursor.Page, selector, snapshot.TargetId, snapshot.Gen,
+                target.X, target.Y, RemainingMs(deadline), world).ConfigureAwait(false);
         return (target.X, target.Y, snapshot.IsInput);
     }
 

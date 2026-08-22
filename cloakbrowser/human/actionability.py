@@ -249,25 +249,29 @@ def check_pointer_events(
     page: Any,
     selector: str,
     target_id: int,
+    gen: int,
     x: float,
     y: float,
     stealth: Any = None,
     timeout: float = 5000,
-    force: bool = False,
 ) -> None:
-    """Revalidate exact identity; force skips only receives-events rejection."""
+    """Revalidate that the click point still hits the same resolved element.
+
+    Callers skip this entirely when ``force=True`` (matching Playwright, where
+    ``force`` bypasses all actionability checks).
+    """
     deadline = time.monotonic() + timeout / 1000.0
     attempt = 0
     last_miss: Optional[str] = None
     world = stealth if stealth is not None else getattr(page, "_stealth_world", None)
     if world is None:
         raise StealthWorldUnavailableError()
-    if not isinstance(target_id, int):
+    if not isinstance(target_id, int) or not isinstance(gen, int):
         raise StealthEvaluationError(selector)
 
     while True:
         status, data = eval_parsed(
-            world, build_validate_js(selector, target_id, x, y)
+            world, build_validate_js(selector, target_id, gen, x, y)
         )
         if status == UNSUPPORTED:
             raise UnsupportedHumanizeSelectorError(selector)
@@ -278,7 +282,7 @@ def check_pointer_events(
         if status == EVALUATION_FAILED:
             if time.monotonic() >= deadline:
                 raise StealthEvaluationError(selector)
-        elif force or data.get("hit", False):
+        elif data.get("hit", False):
             return
         else:
             last_miss = data.get("covering", "unknown")

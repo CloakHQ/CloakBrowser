@@ -20,6 +20,7 @@ import time
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch as mock_patch, call
+from cloakbrowser.human.stealth_dom import PROTOCOL_VERSION
 
 
 # =========================================================================
@@ -312,7 +313,7 @@ class TestAsyncIsolatedWorld:
 
 def _snapshot_payload(**overrides):
     payload = {
-        "v": 1, "r": "ok", "targetId": 1,
+        "v": PROTOCOL_VERSION, "r": "ok", "targetId": 1, "gen": 1,
         "isInput": False, "focused": False,
     }
     payload.update(overrides)
