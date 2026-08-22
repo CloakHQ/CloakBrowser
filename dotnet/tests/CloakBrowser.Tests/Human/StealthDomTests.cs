@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Text.Json;
 using CloakBrowser.Human;
 using Xunit;
@@ -177,20 +178,31 @@ console.log('HIDDEN',JSON.stringify({visible:h.visible,box:h.box}));
 
     private static string RunNode(string node, string script)
     {
-        var psi = new ProcessStartInfo(node)
+        // The script inlines the resolver once per builder call, so it is well over
+        // 100 KB. Linux caps a single argv entry at MAX_ARG_STRLEN (128 KB) and
+        // "node -e <script>" hits E2BIG there, so hand node a file instead.
+        string scriptPath = Path.Combine(Path.GetTempPath(),
+            "cloakbrowser-resolver-" + Guid.NewGuid().ToString("N") + ".js");
+        File.WriteAllText(scriptPath, script);
+        try
         {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        // ArgumentList passes each arg verbatim (no shell/quote parsing to corrupt the script).
-        psi.ArgumentList.Add("-e");
-        psi.ArgumentList.Add(script);
-        using var proc = Process.Start(psi)!;
-        string outp = proc.StandardOutput.ReadToEnd();
-        string err = proc.StandardError.ReadToEnd();
-        proc.WaitForExit(30000);
-        Assert.True(proc.ExitCode == 0, $"node failed:\n{outp}\n{err}");
-        return outp;
+            var psi = new ProcessStartInfo(node)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            psi.ArgumentList.Add(scriptPath);
+            using var proc = Process.Start(psi)!;
+            string outp = proc.StandardOutput.ReadToEnd();
+            string err = proc.StandardError.ReadToEnd();
+            proc.WaitForExit(30000);
+            Assert.True(proc.ExitCode == 0, $"node failed:\n{outp}\n{err}");
+            return outp;
+        }
+        finally
+        {
+            try { File.Delete(scriptPath); } catch (IOException) { }
+        }
     }
 }
