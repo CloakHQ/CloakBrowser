@@ -27,23 +27,26 @@ public class StealthDomTests
     public void ParseResult_strictly_validates_protocol_and_target_identity()
     {
         Assert.Equal(StealthStatus.Ok, StealthDom.ParseResult(
-            JsonSerializer.SerializeToElement(new { v = 1, r = "ok", targetId = 7 })).Status);
+            JsonSerializer.SerializeToElement(new { v = 2, r = "ok", targetId = 7, gen = 3 })).Status);
         Assert.Equal(StealthStatus.Stale, StealthDom.ParseResult(
-            JsonSerializer.SerializeToElement(new { v = 1, r = "stale", targetId = 8 })).Status);
+            JsonSerializer.SerializeToElement(new { v = 2, r = "stale", targetId = 8, gen = 3 })).Status);
         Assert.Equal(StealthStatus.NotFound, StealthDom.ParseResult(
-            JsonSerializer.SerializeToElement(new { v = 1, r = "not_found" })).Status);
+            JsonSerializer.SerializeToElement(new { v = 2, r = "not_found" })).Status);
         Assert.Equal(StealthStatus.Unsupported, StealthDom.ParseResult(
-            JsonSerializer.SerializeToElement(new { v = 1, r = "unsupported" })).Status);
+            JsonSerializer.SerializeToElement(new { v = 2, r = "unsupported" })).Status);
 
         JsonElement?[] malformed =
         {
             null,
             JsonSerializer.SerializeToElement(new { }),
+            JsonSerializer.SerializeToElement(new { v = 1, r = "ok", targetId = 1, gen = 3 }),
+            JsonSerializer.SerializeToElement(new { v = 2, r = "ok" }),
+            JsonSerializer.SerializeToElement(new { v = 2, r = "ok", targetId = 1.5, gen = 3 }),
+            JsonSerializer.SerializeToElement(new { v = 2, r = "stale", gen = 3 }),
+            JsonSerializer.SerializeToElement(new { v = 2, r = "unknown", targetId = 1, gen = 3 }),
+            // identity without the world generation is not trustworthy
             JsonSerializer.SerializeToElement(new { v = 2, r = "ok", targetId = 1 }),
-            JsonSerializer.SerializeToElement(new { v = 1, r = "ok" }),
-            JsonSerializer.SerializeToElement(new { v = 1, r = "ok", targetId = 1.5 }),
-            JsonSerializer.SerializeToElement(new { v = 1, r = "stale" }),
-            JsonSerializer.SerializeToElement(new { v = 1, r = "unknown", targetId = 1 }),
+            JsonSerializer.SerializeToElement(new { v = 2, r = "stale", targetId = 1 }),
         };
         foreach (var value in malformed)
             Assert.Equal(StealthStatus.EvaluationFailed, StealthDom.ParseResult(value).Status);

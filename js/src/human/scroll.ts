@@ -24,6 +24,7 @@ export interface ElementBounds {
 
 export interface SelectorBounds extends ElementBounds {
   targetId: number;
+  gen: number;
 }
 
 function isInViewport(
@@ -217,8 +218,8 @@ export async function getElementBox(
   }
 
   const { status, data } = result;
-  if (status === OK && data?.box && Number.isInteger(data.targetId)) {
-    return { ...data.box, targetId: data.targetId };
+  if (status === OK && data?.box && Number.isInteger(data.targetId) && Number.isInteger(data.gen)) {
+    return { ...data.box, targetId: data.targetId, gen: data.gen };
   }
   if (status === NOT_FOUND) return null;
   if (status === UNSUPPORTED) throw new UnsupportedHumanizeSelectorError(selector);

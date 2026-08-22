@@ -51,7 +51,7 @@ public class PageWrapperTests
                 ? new { width = 1280, height = 720 }
                 : new
                 {
-                    v = 1, r = "ok", targetId = 1, attached = true,
+                    v = 2, r = "ok", targetId = 1, gen = 3, attached = true,
                     visible = true, enabled = true, editable = true,
                     isInput = false, focused = false, @checked = false, hit = true,
                     box = new { x = 100, y = 200, width = 80, height = 30 },

@@ -306,37 +306,37 @@ public static class Actionability
         double x,
         double y,
         double timeoutMs = 5000,
-        IsolatedWorld? stealth = null,
-        bool force = false)
+        IsolatedWorld? stealth = null)
     {
         if (stealth == null)
             throw new StealthWorldUnavailableError();
 
         var (status, snapshot) = await StealthDom.SnapshotAsync(stealth, selector).ConfigureAwait(false);
-        int targetId = status switch
+        var resolved = status switch
         {
-            StealthStatus.Ok when snapshot != null => snapshot.Value.TargetId,
+            StealthStatus.Ok when snapshot != null => snapshot.Value,
             StealthStatus.NotFound => throw new ElementNotAttachedError(selector),
             StealthStatus.Unsupported => throw new UnsupportedHumanizeSelectorError(selector),
             _ => throw new StealthEvaluationError(selector),
         };
         await CheckPointerEventsAsync(
-            page, selector, targetId, x, y, timeoutMs, stealth, force).ConfigureAwait(false);
+            page, selector, resolved.TargetId, resolved.Gen, x, y, timeoutMs, stealth).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Revalidate exact selector identity and pointer coverage after mouse movement.
-    /// Force skips only coverage rejection; identity is always enforced.
+    /// Revalidate that the click point still hits the same resolved element.
+    /// Callers skip this entirely when force is set (matching Playwright, where
+    /// force bypasses all actionability checks).
     /// </summary>
     public static async Task CheckPointerEventsAsync(
         IPage page,
         string selector,
         int targetId,
+        int gen,
         double x,
         double y,
         double timeoutMs = 5000,
-        IsolatedWorld? stealth = null,
-        bool force = false)
+        IsolatedWorld? stealth = null)
     {
         if (stealth == null)
             throw new StealthWorldUnavailableError();
@@ -347,7 +347,7 @@ public static class Actionability
         while (true)
         {
             var (status, hit, covering, _) = await StealthDom.ValidateAsync(
-                stealth, selector, targetId, x, y).ConfigureAwait(false);
+                stealth, selector, targetId, gen, x, y).ConfigureAwait(false);
 
             if (status == StealthStatus.Unsupported)
                 throw new UnsupportedHumanizeSelectorError(selector);
@@ -360,7 +360,7 @@ public static class Actionability
                 if (NowMs() >= deadline)
                     throw new StealthEvaluationError(selector);
             }
-            else if (status == StealthStatus.Ok && (force || hit))
+            else if (status == StealthStatus.Ok && hit)
             {
                 return;
             }

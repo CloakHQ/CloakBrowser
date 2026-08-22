@@ -241,11 +241,11 @@ export async function checkPointerEvents(
   pageOrFrame: Page | Frame,
   selector: string,
   targetId: number,
+  gen: number,
   x: number,
   y: number,
   stealth?: StealthWorld | null,
   timeout: number = 5000,
-  force: boolean = false,
 ): Promise<void> {
   const deadline = Date.now() + timeout;
   let attempt = 0;
@@ -253,12 +253,12 @@ export async function checkPointerEvents(
   const world = stealth ?? getWorld(pageOrFrame);
 
   if (!world) throw new StealthWorldUnavailableError();
-  if (!Number.isInteger(targetId)) throw new StealthEvaluationError(selector);
+  if (!Number.isInteger(targetId) || !Number.isInteger(gen)) throw new StealthEvaluationError(selector);
 
   while (true) {
     const { status, data } = await evalParsed(
       world,
-      buildValidateJs(selector, targetId, x, y),
+      buildValidateJs(selector, targetId, gen, x, y),
     );
 
     if (status === UNSUPPORTED) throw new UnsupportedHumanizeSelectorError(selector);
@@ -266,7 +266,7 @@ export async function checkPointerEvents(
     if (status === NOT_FOUND) throw new ElementNotAttachedError(selector);
     if (status === EVALUATION_FAILED) {
       if (Date.now() >= deadline) throw new StealthEvaluationError(selector);
-    } else if (status === OK && data && (force || data.hit)) {
+    } else if (status === OK && data && data.hit) {
       return;
     } else if (status === OK && data) {
       lastMiss = data.covering ?? 'unknown';

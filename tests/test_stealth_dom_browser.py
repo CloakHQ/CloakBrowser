@@ -553,3 +553,109 @@ async def test_async_click_rejects_replacement_after_mouse_movement(monkeypatch)
         ) == "0"
     finally:
         await browser.close()
+
+
+@pytest.mark.slow
+def test_get_by_engines_match_playwright():
+    """The reimplemented ``internal:*`` engines must resolve the SAME element
+    Playwright's own locator resolves.
+
+    Under-matching yields a typed error; over-matching silently clicks the wrong
+    coordinates. Every case below is one where a plausible-but-wrong shortcut
+    diverges from Playwright:
+
+      * ``get_by_test_id`` is strict equality, so "submit" must NOT match
+        "submit-button", while ``get_by_placeholder``'s ``i`` flag is a
+        case-insensitive SUBSTRING, so "mail" MUST match "Your Email".
+      * attribute values are compared raw, so a padded ``title`` does not match
+        its trimmed form.
+      * ``internal:text`` exact compares the full normalized subtree text, unlike
+        the public ``text=`` engine which compares immediate fragments.
+      * ``<br>`` contributes nothing and shadow-root text is concatenated into
+        the host's text (both are ``__elementText`` parity fixes).
+      * label resolution order is aria-labelledby, aria-label, then ``.labels``,
+        with an unresolvable ``aria-labelledby`` falling through.
+    """
+    import re
+
+    from cloakbrowser import launch
+
+    browser = launch(headless=True, humanize=True, geoip=False)
+    try:
+        page = browser.new_page()
+        page.goto("https://example.com", wait_until="domcontentloaded")
+        page.evaluate(
+            """() => {
+                document.head.innerHTML = '';
+                document.body.innerHTML = `
+                    <button id="b1" data-testid="submit-button">Go</button>
+                    <button id="b2" data-testid="submit">Go Now</button>
+                    <input id="p1" placeholder="Your Email">
+                    <img id="a1" alt="Company Logo">
+                    <span id="t1" title="  Go  ">titled</span>
+                    <button id="b3">Hello<span>World</span></button>
+                    <div id="brdiv">a<br>b</div>
+                    <div id="gp">X<section><span id="deep">X</span></section></div>
+                    <label for="in1">Password</label><input id="in1">
+                    <label>Wrapped<input id="in2"></label>
+                    <input id="in3" aria-label="Aria Labelled">
+                    <span id="lbref">Referenced Label</span>
+                    <input id="in4" aria-labelledby="lbref">
+                    <input id="in5" aria-labelledby="missing-id" aria-label="Fallback Label">
+                    <div id="host"></div>`;
+                document.getElementById('host')
+                    .attachShadow({mode: 'open'}).innerHTML =
+                    '<button id="shadowbtn">DeepShadow</button>';
+            }"""
+        )
+
+        cases = [
+            (page.get_by_test_id("submit"), "b2"),
+            (page.get_by_test_id("submit-button"), "b1"),
+            (page.get_by_placeholder("mail"), "p1"),
+            (page.get_by_placeholder("Your Email", exact=True), "p1"),
+            (page.get_by_alt_text("Company Logo"), "a1"),
+            (page.get_by_title("Go"), "t1"),
+            (page.get_by_text("Go Now"), "b2"),
+            (page.get_by_text("HelloWorld", exact=True), "b3"),
+            (page.get_by_text("X", exact=True), "deep"),
+            (page.get_by_text("ab", exact=True), "brdiv"),
+            (page.get_by_text("DeepShadow"), "shadowbtn"),
+            (page.get_by_text(re.compile(r"^Go Now$")), "b2"),
+            (page.get_by_label("Password"), "in1"),
+            (page.get_by_label("Wrapped"), "in2"),
+            (page.get_by_label("Aria Labelled"), "in3"),
+            (page.get_by_label("Referenced Label"), "in4"),
+            (page.get_by_label("Fallback Label"), "in5"),
+        ]
+        for locator, expected_id in cases:
+            selector = locator._impl_obj._selector
+            playwright_identity = locator.first.evaluate(
+                "el => ({status: 'ok', id: el.id, tag: el.tagName})"
+            )
+            isolated_identity = page._stealth_world.evaluate(
+                _resolve_identity_js(selector)
+            )
+            assert playwright_identity["id"] == expected_id, selector
+            assert isolated_identity == playwright_identity, selector
+
+        # A strict test id must not match by prefix, and a raw attribute value is
+        # never trimmed -- both would be silent over-matches.
+        assert page.get_by_test_id("submit").count() == 1
+        assert page.get_by_title("Go", exact=True).count() == 0
+        assert page._stealth_world.evaluate(
+            _resolve_identity_js(
+                page.get_by_title("Go", exact=True)._impl_obj._selector
+            )
+        ) == {"status": "not_found"}
+
+        # End-to-end: a humanized click through a reimplemented engine.
+        page.get_by_test_id("submit").click()
+
+        # get_by_role is deliberately still unsupported.
+        role_selector = page.get_by_role("button", name="Go Now")._impl_obj._selector
+        assert page._stealth_world.evaluate(
+            _resolve_identity_js(role_selector)
+        ) == {"status": "unsupported"}
+    finally:
+        browser.close()

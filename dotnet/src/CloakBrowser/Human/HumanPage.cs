@@ -197,11 +197,13 @@ public sealed class HumanPage
     }
 
     private async Task CheckPointerEventsWorldAsync(
-        string selector, int targetId, double x, double y, double timeoutMs, bool force)
+        string selector, int targetId, int gen, double x, double y, double timeoutMs, bool force)
     {
+        if (force)
+            return;
         var world = await GetStealthRequiredAsync().ConfigureAwait(false);
         await Actionability.CheckPointerEventsAsync(
-            _page, selector, targetId, x, y, timeoutMs, world, force).ConfigureAwait(false);
+            _page, selector, targetId, gen, x, y, timeoutMs, world).ConfigureAwait(false);
     }
 
     // -----------------------------------------------------------------------
@@ -263,10 +265,8 @@ public sealed class HumanPage
             _rawMouse, _cursor.X, _cursor.Y, target.X, target.Y, callCfg).ConfigureAwait(false);
         _cursor.X = target.X;
         _cursor.Y = target.Y;
-        // Identity is always revalidated after movement and before mouse-down.
-        // force skips only coverage rejection, never exact-target validation.
         await CheckPointerEventsWorldAsync(
-            selector, snapshot.TargetId, target.X, target.Y,
+            selector, snapshot.TargetId, snapshot.Gen, target.X, target.Y,
             RemainingMs(deadline), force).ConfigureAwait(false);
         await HumanMouse.HumanClickAsync(_rawMouse, snapshot.IsInput, callCfg).ConfigureAwait(false);
     }
@@ -316,7 +316,7 @@ public sealed class HumanPage
         _cursor.X = target.X;
         _cursor.Y = target.Y;
         await CheckPointerEventsWorldAsync(
-            selector, snapshot.TargetId, target.X, target.Y,
+            selector, snapshot.TargetId, snapshot.Gen, target.X, target.Y,
             RemainingMs(deadline), force).ConfigureAwait(false);
         // Two presses for a double-click via Playwright IMouse click count.
         await _page.Mouse.DownAsync(new MouseDownOptions { ClickCount = 2 }).ConfigureAwait(false);
@@ -372,7 +372,7 @@ public sealed class HumanPage
         _cursor.X = target.X;
         _cursor.Y = target.Y;
         await CheckPointerEventsWorldAsync(
-            selector, snapshot.TargetId, target.X, target.Y,
+            selector, snapshot.TargetId, snapshot.Gen, target.X, target.Y,
             RemainingMs(deadline), force).ConfigureAwait(false);
     }
 

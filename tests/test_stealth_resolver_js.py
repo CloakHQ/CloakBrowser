@@ -96,9 +96,31 @@ eq('mixed shadow first', r.text, 'normal');
 r = run('button >> nth=1', [shadowHost, normalButton]);
 eq('mixed shadow second', r.text, 'shadow');
 
-// chaining and get_by_* engines are unsupported
+// chaining and the get_by_* engines we do NOT reimplement stay unsupported
 eq('chaining', run('a >> b', [el('A')]).cls, 'unsupported');
 eq('internal role', run('internal:role=button', []).cls, 'unsupported');
+for (const sel of ['internal:has-text="Go"i', 'internal:has="x"', 'internal:and="x"',
+                   'internal:or="x"', 'internal:chain="x"', 'internal:control=enter-frame'])
+  eq('unsupported ' + sel, run(sel, []).cls, 'unsupported');
+
+// Engines we DO reimplement route to their engine rather than bailing out.
+// (Semantics live in the browser/stub tiers; el() has no childNodes, so text
+// comparisons here cannot distinguish full-subtree from immediate fragments.)
+eq('internal text routes', run('internal:text="Submit"s', [el('BUTTON','Submit')]).cls, 'ok');
+eq('internal text lax routes', run('internal:text=submit', [el('BUTTON','Submit')]).cls, 'ok');
+eq('internal text no match', run('internal:text="Nope"s', [el('BUTTON','Submit')]).cls, 'not_found');
+// A single-quoted internal body reaches JSON.parse in Playwright and throws.
+eq('internal text single quotes', run("internal:text='Submit'", [el('BUTTON','Submit')]).cls, 'unsupported');
+// Malformed attribute bodies and unsupported operators are refused, not guessed.
+for (const sel of ['internal:attr=[placeholder]', 'internal:attr=[placeholder*="a"]',
+                   'internal:attr=[placeholder=a]', 'internal:attr=placeholder="a"'])
+  eq('bad attr body ' + sel, run(sel, []).cls, 'unsupported');
+// The '>>' guard runs first, so a quoted argument containing '>>' is refused
+// (a documented, deliberate under-match) while a trailing nth= still works.
+eq('internal text with >> in arg', run('internal:text="a >> b"i', []).cls, 'unsupported');
+eq('internal chained', run('internal:text="a"i >> internal:text="b"i', []).cls, 'unsupported');
+eq('internal text keeps nth', run('internal:text=submit >> nth=1',
+   [el('BUTTON','Submit'), el('BUTTON','Submit two')]).cls, 'ok');
 
 // xpath (explicit prefix and leading //)
 r = run('xpath=//button', [], [ el('BUTTON','x') ]); eq('xpath= cls', r.cls, 'ok'); eq('xpath= arg', r.calls.xpath, '//button');
@@ -135,6 +157,20 @@ eq('css= prefix', run('css=button', [ el('BUTTON','1') ]).cls, 'ok');
 r = run('button, a', [ el('A','first'), el('BUTTON','second') ]);
 eq('selector list cls', r.cls, 'ok'); eq('selector list DOM order', r.tag, 'A');
 eq('not found', run('button', []).cls, 'not_found');
+
+// The world generation must fit an Int32: the .NET wrapper carries it as one,
+// and an out-of-range value makes every .NET snapshot fail to parse (Snap()
+// uses TryGetInt32, so an overflowing gen breaks every humanized .NET action).
+const genOnce = new Function(RESOLVER + '\nreturn __state().gen;');
+for (let i = 0; i < 200; i++) {
+  delete globalThis['__cloakHumanDomV1'];
+  const g = genOnce();
+  if (!(Number.isInteger(g) && g >= 0 && g <= 2147483647)) {
+    fails++; console.log('FAIL gen out of Int32 range | got ' + g);
+    break;
+  }
+}
+delete globalThis['__cloakHumanDomV1'];
 
 if (fails) { console.log(fails + ' FAILED'); process.exit(1); }
 console.log('ALL PASS');

@@ -115,7 +115,7 @@ function buildMockCDP(overrides: Record<string, any> = {}): any {
       }
       if (method === "Runtime.evaluate") {
         return { result: { value: {
-          v: 1, r: "ok", targetId: 1, attached: true, visible: true,
+          v: 2, r: "ok", targetId: 1, gen: 1, attached: true, visible: true,
           enabled: true, editable: true, isInput: false, focused: false,
           checked: false, hit: true,
           box: { x: 100, y: 300, width: 200, height: 30 },
@@ -699,7 +699,7 @@ describe("isInputElement stealth integration via patchPage", () => {
         if (method === "Runtime.evaluate") {
           stealthEvaluateCalls.push(params.expression);
           return { result: { value: {
-            v: 1, r: "ok", targetId: 1, attached: true, visible: true,
+            v: 2, r: "ok", targetId: 1, gen: 1, attached: true, visible: true,
             enabled: true, editable: true, isInput: false, focused: false,
             checked: false, hit: true,
             box: { x: 100, y: 300, width: 200, height: 30 },
@@ -771,7 +771,7 @@ describe("isSelectorFocused stealth integration via patchPage", () => {
         if (method === "Runtime.evaluate") {
           stealthEvaluateCalls.push(params.expression);
           return { result: { value: {
-            v: 1, r: "ok", targetId: 1, attached: true, visible: true,
+            v: 2, r: "ok", targetId: 1, gen: 1, attached: true, visible: true,
             enabled: true, editable: true, isInput: true, focused: true,
             checked: false, hit: true,
             box: { x: 100, y: 300, width: 200, height: 30 },
