@@ -328,6 +328,7 @@ def launch(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     release_channel: str | None = None,
@@ -378,7 +379,7 @@ def launch(
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
 
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and not _suppress_maximize)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, gpu_accel=gpu_accel, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and not _suppress_maximize)
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
@@ -458,6 +459,7 @@ async def launch_async(  # noqa: C901
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     release_channel: str | None = None,
@@ -505,7 +507,7 @@ async def launch_async(  # noqa: C901
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and not _suppress_maximize)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, gpu_accel=gpu_accel, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and not _suppress_maximize)
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(chrome_args))
@@ -586,6 +588,7 @@ def launch_persistent_context(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     release_channel: str | None = None,
@@ -642,7 +645,7 @@ def launch_persistent_context(
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, gpu_accel=gpu_accel, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug(
@@ -746,6 +749,7 @@ async def launch_persistent_context_async(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     release_channel: str | None = None,
@@ -804,7 +808,7 @@ async def launch_persistent_context_async(
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, gpu_accel=gpu_accel, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug(
@@ -907,6 +911,7 @@ def launch_context(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     release_channel: str | None = None,
@@ -953,6 +958,7 @@ def launch_context(
     # locale and timezone are set via binary flags only — no CDP emulation.
     browser = launch(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
                      timezone=timezone, locale=locale, extension_paths=extension_paths,
+                     gpu_accel=gpu_accel,
                      license_key=license_key, browser_version=browser_version,
                      release_channel=release_channel,
                      # Caller chose a viewport geometry → don't also auto-maximize
@@ -1020,6 +1026,7 @@ async def launch_context_async(
     human_preset: HumanPreset = "default",
     human_config: HumanConfigOverrides | None = None,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     license_key: str | None = None,
     browser_version: str | None = None,
     release_channel: str | None = None,
@@ -1085,6 +1092,7 @@ async def launch_context_async(
     # locale and timezone are set via binary flags only — no CDP emulation.
     browser = await launch_async(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
                                  timezone=timezone, locale=locale, extension_paths=extension_paths,
+                                 gpu_accel=gpu_accel,
                                  license_key=license_key, browser_version=browser_version,
                                  release_channel=release_channel,
                                  # Caller chose a viewport geometry → don't also auto-maximize
@@ -1393,6 +1401,7 @@ def build_args(
     locale: str | None = None,
     headless: bool = True,
     extension_paths: list[str] | None = None,
+    gpu_accel: bool = False,
     start_maximized: bool = False,
 ) -> list[str]:
     """Combine stealth args with user-provided args and locale flags.
@@ -1415,6 +1424,18 @@ def build_args(
     import platform as _platform
     if not headless or _platform.system() == "Windows":
         seen["--ignore-gpu-blocklist"] = "--ignore-gpu-blocklist"
+
+    # Opt-in Docker GPU acceleration (gpu_accel=True / CLOAKBROWSER_GPU_ACCEL=1).
+    # ANGLE over native EGL (--use-angle=gl-egl) is what actually engages the GPU on
+    # modern Chromium; the legacy --use-gl=egl value was removed and silently
+    # disables WebGL. Needs the GLVND EGL loader present (Docker image ships it).
+    if gpu_accel or os.environ.get("CLOAKBROWSER_GPU_ACCEL"):
+        seen["--use-gl"] = "--use-gl=angle"
+        seen["--use-angle"] = "--use-angle=gl-egl"
+        seen["--enable-gpu-rasterization"] = "--enable-gpu-rasterization"
+        seen["--ignore-gpu-blocklist"] = "--ignore-gpu-blocklist"
+        if sys.platform.startswith("linux"):
+            seen["--enable-features"] = "--enable-features=VaapiVideoDecoder"
 
     if extra_args:
         for arg in extra_args:

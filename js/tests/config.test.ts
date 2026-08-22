@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import {
   CHROMIUM_VERSION,
   getArchiveExt,
@@ -14,6 +14,53 @@ import {
   binarySupportsMaximizedWindow,
 } from "../src/config.js";
 import { _buildArgsForTest, resolveTimezone } from "../src/playwright.js";
+
+describe("buildArgs GPU acceleration (issue #189)", () => {
+  const origPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const origEnv = process.env.CLOAKBROWSER_GPU_ACCEL;
+  const setPlatform = (p: NodeJS.Platform) =>
+    Object.defineProperty(process, "platform", { ...origPlatform, value: p });
+  afterEach(() => {
+    Object.defineProperty(process, "platform", origPlatform);
+    if (origEnv === undefined) delete process.env.CLOAKBROWSER_GPU_ACCEL;
+    else process.env.CLOAKBROWSER_GPU_ACCEL = origEnv;
+  });
+
+  it("leaves GPU flags off by default", () => {
+    delete process.env.CLOAKBROWSER_GPU_ACCEL;
+    const args = _buildArgsForTest({});
+    expect(args).not.toContain("--use-angle=gl-egl");
+    expect(args).not.toContain("--enable-gpu-rasterization");
+  });
+
+  it("CLOAKBROWSER_GPU_ACCEL adds ANGLE-over-EGL flags (not the removed use-gl=egl)", () => {
+    process.env.CLOAKBROWSER_GPU_ACCEL = "1";
+    setPlatform("linux");
+    const args = _buildArgsForTest({});
+    expect(args).toContain("--use-gl=angle");
+    expect(args).toContain("--use-angle=gl-egl");
+    expect(args).not.toContain("--use-gl=egl");
+    expect(args).toContain("--enable-gpu-rasterization");
+    expect(args).toContain("--ignore-gpu-blocklist");
+    expect(args).toContain("--enable-features=VaapiVideoDecoder");
+  });
+
+  it("skips VaapiVideoDecoder off Linux", () => {
+    process.env.CLOAKBROWSER_GPU_ACCEL = "1";
+    setPlatform("darwin");
+    const args = _buildArgsForTest({});
+    expect(args).toContain("--use-angle=gl-egl");
+    expect(args).not.toContain("--enable-features=VaapiVideoDecoder");
+  });
+
+  it("gpuAccel option works without the environment variable", () => {
+    delete process.env.CLOAKBROWSER_GPU_ACCEL;
+    setPlatform("linux");
+    const args = _buildArgsForTest({ gpuAccel: true });
+    expect(args).toContain("--use-angle=gl-egl");
+    expect(args).toContain("--enable-features=VaapiVideoDecoder");
+  });
+});
 
 describe("config", () => {
   it("CHROMIUM_VERSION matches expected format", () => {
