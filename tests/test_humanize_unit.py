@@ -1267,6 +1267,66 @@ class TestBrowserPatching:
         browser.close()
 
 
+class TestDisplayContentsActionability:
+    """Regression #560: a Bootstrap-style toggled dropdown-menu whose <li> options
+    are reset with `display: contents` must not read as not-visible in-world, even
+    though getBoundingClientRect() on such an element is always {0,0,0,0}."""
+
+    _HTML = """
+        <div class="daterangepicker dropdown-menu opensright" style="display: block;">
+          <div class="ranges">
+            <ul>
+              <li style="display:contents" class="active" onclick="window.__clicked=true">Hoy</li>
+              <li style="display:contents">Ultimos 7 Dias</li>
+            </ul>
+          </div>
+        </div>
+    """
+
+    @staticmethod
+    def _inject(page, html):
+        # innerHTML on the already-loaded blank page -- avoids depending on a
+        # fresh navigation's load event, which set_content()/goto() require.
+        page.evaluate("html => { document.body.innerHTML = html; }", html)
+
+    def test_click_succeeds_on_display_contents_li(self):
+        from cloakbrowser import launch
+        browser = launch(headless=True, humanize=True)
+        page = browser.new_page()
+        self._inject(page, self._HTML)
+        assert page.locator("text=Hoy").is_visible()  # ground truth from real Playwright
+        page.click("text=Hoy", timeout=3000)
+        assert page.evaluate("window.__clicked") is True
+        browser.close()
+
+    def test_ensure_actionable_and_box_agree_with_playwright(self):
+        from cloakbrowser import launch
+        from cloakbrowser.human.actionability import ensure_actionable, CHECKS_CLICK
+        from cloakbrowser.human.scroll import _get_element_box
+        browser = launch(headless=True, humanize=True)
+        page = browser.new_page()
+        self._inject(page, self._HTML)
+        ensure_actionable(page, "text=Hoy", CHECKS_CLICK, timeout=1000)
+        box = _get_element_box(page, "text=Hoy")
+        assert box is not None and box["width"] > 0 and box["height"] > 0
+        browser.close()
+
+    def test_async_click_succeeds_on_display_contents_li(self):
+        import asyncio
+        from cloakbrowser import launch_async
+
+        async def _run():
+            browser = await launch_async(headless=True, humanize=True)
+            page = await browser.new_page()
+            await page.evaluate("html => { document.body.innerHTML = html; }", self._HTML)
+            assert await page.locator("text=Hoy").is_visible()
+            await page.click("text=Hoy", timeout=3000)
+            assert await page.evaluate("window.__clicked") is True
+            await browser.close()
+
+        asyncio.run(_run())
+
+
 @pytest.mark.slow
 class TestBrowserBotDetection:
     PROXY = None
@@ -2596,6 +2656,38 @@ class TestEnsureActionableStealth:
         with pytest.raises(ElementNotVisibleError):
             ensure_actionable(page, "#x", CHECKS_CLICK, timeout=100)
 
+    def test_not_visible_with_no_box_raises_without_cross_check(self):
+        """No geometry to cross-check against -> raise directly, no Playwright call (#560)."""
+        from cloakbrowser.human.actionability import ensure_actionable, CHECKS_CLICK, ElementNotVisibleError
+        page = _no_locator_page(_FakeWorld({"r": "ok", "visible": False, "enabled": True, "editable": True, "box": None}))
+        with pytest.raises(ElementNotVisibleError):
+            ensure_actionable(page, "#x", CHECKS_CLICK, timeout=100)
+
+    def test_not_visible_with_box_but_playwright_agrees_raises(self):
+        """Non-empty box, but Playwright's own is_visible() also says hidden -> still raise."""
+        from cloakbrowser.human.actionability import ensure_actionable, CHECKS_CLICK, ElementNotVisibleError
+        world = _FakeWorld({"r": "ok", "visible": False, "enabled": True, "editable": True,
+                             "box": {"x": 0, "y": 0, "width": 10, "height": 10}})
+        page = MagicMock()
+        page._stealth_world = world
+        loc = MagicMock()
+        loc.is_visible = MagicMock(return_value=False)
+        page.locator = MagicMock(return_value=MagicMock(first=loc))
+        with pytest.raises(ElementNotVisibleError):
+            ensure_actionable(page, "#x", CHECKS_CLICK, timeout=100)
+
+    def test_not_visible_with_box_and_playwright_disagrees_passes(self):
+        """Non-empty box + Playwright's real is_visible() says visible -> trust it, don't raise (#560)."""
+        from cloakbrowser.human.actionability import ensure_actionable, CHECKS_CLICK
+        world = _FakeWorld({"r": "ok", "visible": False, "enabled": True, "editable": True,
+                             "box": {"x": 0, "y": 0, "width": 10, "height": 10}})
+        page = MagicMock()
+        page._stealth_world = world
+        loc = MagicMock()
+        loc.is_visible = MagicMock(return_value=True)
+        page.locator = MagicMock(return_value=MagicMock(first=loc))
+        ensure_actionable(page, "#x", CHECKS_CLICK, timeout=100)  # must not raise
+
     def test_disabled_raises(self):
         from cloakbrowser.human.actionability import ensure_actionable, CHECKS_CLICK, ElementNotEnabledError
         page = _no_locator_page(_FakeWorld({"r": "ok", "visible": True, "enabled": False, "editable": True}))
@@ -2700,6 +2792,20 @@ class TestStealthAsync:
         box = {"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0}
         page = _no_locator_page(_AsyncFakeWorld({"r": "ok", "box": box}))
         assert asyncio.run(_get_element_box_async(page, "#x")) == box
+
+    def test_async_not_visible_with_box_and_playwright_disagrees_passes(self):
+        """Async mirror of the sync cross-check test (#560)."""
+        from unittest.mock import AsyncMock
+        from cloakbrowser.human.actionability_async import async_ensure_actionable
+        from cloakbrowser.human.actionability import CHECKS_CLICK
+        world = _AsyncFakeWorld({"r": "ok", "visible": False, "enabled": True, "editable": True,
+                                  "box": {"x": 0, "y": 0, "width": 10, "height": 10}})
+        page = MagicMock()
+        page._stealth_world = world
+        loc = MagicMock()
+        loc.is_visible = AsyncMock(return_value=True)
+        page.locator = MagicMock(return_value=MagicMock(first=loc))
+        asyncio.run(async_ensure_actionable(page, "#x", CHECKS_CLICK, timeout=100))  # must not raise
 
 
 # =========================================================================

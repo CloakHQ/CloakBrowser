@@ -90,6 +90,20 @@ function backoffSleep(attempt: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, BACKOFF_MS[idx]));
 }
 
+function boxHasArea(box: { width?: number; height?: number } | null | undefined): boolean {
+  return !!box && ((box.width ?? 0) > 0 || (box.height ?? 0) > 0);
+}
+
+/** Cheap, non-waiting cross-check used before trusting an in-world 'not visible'
+ * verdict that disagrees with a non-empty box (defense-in-depth for #560). */
+async function playwrightSaysVisible(pageOrFrame: Page | Frame, selector: string): Promise<boolean> {
+  try {
+    return await pageOrFrame.locator(selector).first().isVisible();
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pre-scroll actionability
 // ---------------------------------------------------------------------------
@@ -115,7 +129,14 @@ async function stealthActionable(
     // loop backs off and re-reads in-world (mirrors waitFor({ state: 'attached' })).
     throw new ElementNotAttachedError(selector);
   }
-  if (checks.has('visible') && !data.visible) throw new ElementNotVisibleError(selector);
+  if (checks.has('visible') && !data.visible) {
+    // A non-empty box despite an in-world 'not visible' verdict means the two
+    // reads disagree; cross-check with Playwright's own isVisible() rather than
+    // trusting a possible false negative (#560) before throwing.
+    if (!(boxHasArea(data.box) && await playwrightSaysVisible(pageOrFrame, selector))) {
+      throw new ElementNotVisibleError(selector);
+    }
+  }
   if (checks.has('enabled') && !data.enabled) throw new ElementNotEnabledError(selector);
   if (checks.has('editable') && !data.editable) throw new ElementNotEditableError(selector);
   return true;

@@ -105,6 +105,14 @@ public static class Actionability
         return Task.Delay(BackoffMs[idx]);
     }
 
+    /// <summary>Cheap, non-waiting cross-check used before trusting an in-world "not visible"
+    /// verdict that disagrees with a non-empty box (defense-in-depth for #560).</summary>
+    private static async Task<bool> PlaywrightSaysVisibleAsync(IPage page, string selector)
+    {
+        try { return await page.Locator(selector).First.IsVisibleAsync().ConfigureAwait(false); }
+        catch { return false; }
+    }
+
     private static double NowMs() => Environment.TickCount64;
 
     /// <summary>
@@ -155,10 +163,18 @@ public static class Actionability
                 // predicates only for selector grammar the isolated world can't resolve.
                 if (stealth != null)
                 {
-                    var (st, vis, en, ed) = await StealthDom.ActionableAsync(stealth, selector).ConfigureAwait(false);
+                    var (st, vis, en, ed, box) = await StealthDom.ActionableAsync(stealth, selector).ConfigureAwait(false);
                     if (st == StealthStatus.Ok)
                     {
-                        if (checks.Contains("visible") && !vis) throw new ElementNotVisibleError(selector);
+                        if (checks.Contains("visible") && !vis)
+                        {
+                            // A non-empty box despite an in-world "not visible" verdict means the
+                            // two reads disagree; cross-check with Playwright's own IsVisibleAsync()
+                            // rather than trusting a possible false negative (#560) before throwing.
+                            bool boxHasArea = box is { Width: > 0 } or { Height: > 0 };
+                            if (!(boxHasArea && await PlaywrightSaysVisibleAsync(page, selector).ConfigureAwait(false)))
+                                throw new ElementNotVisibleError(selector);
+                        }
                         if (checks.Contains("enabled") && !en) throw new ElementNotEnabledError(selector);
                         if (checks.Contains("editable") && !ed) throw new ElementNotEditableError(selector);
                         return;

@@ -22,6 +22,7 @@ from .actionability import (
     ElementNotReceivingEventsError,
     _BACKOFF_MS,
     _boxes_differ,
+    _box_has_area,
     _POINTER_EVENTS_LOCATOR_JS,
     _POINTER_EVENTS_HANDLE_JS,
 )
@@ -40,6 +41,14 @@ async def _async_backoff_sleep(attempt: int) -> None:
 # Pre-scroll actionability
 # ---------------------------------------------------------------------------
 
+async def _async_playwright_says_visible(page: Any, selector: str) -> bool:
+    """Async mirror of ``_playwright_says_visible``."""
+    try:
+        return await page.locator(selector).first.is_visible()
+    except Exception:
+        return False
+
+
 async def _async_stealth_actionable(page: Any, selector: str, checks: FrozenSet[str]) -> bool:
     """Async mirror of ``_stealth_actionable`` — isolated-world actionability read.
 
@@ -55,7 +64,8 @@ async def _async_stealth_actionable(page: Any, selector: str, checks: FrozenSet[
     if status == NOT_FOUND:
         raise ElementNotAttachedError(selector)
     if "visible" in checks and not data.get("visible"):
-        raise ElementNotVisibleError(selector)
+        if not (_box_has_area(data.get("box")) and await _async_playwright_says_visible(page, selector)):
+            raise ElementNotVisibleError(selector)
     if "enabled" in checks and not data.get("enabled"):
         raise ElementNotEnabledError(selector)
     if "editable" in checks and not data.get("editable"):
