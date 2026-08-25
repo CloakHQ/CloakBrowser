@@ -6,6 +6,17 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [0.5.9] — 2026-08-25
+
+- **[wrapper]** Fix `humanize=True` selecting the wrong element, so humanized actions now resolve the same visible target Playwright would (#512). Text matching ignores non-rendered document content, open Shadow DOM matches are ordered exactly as Playwright orders them for broad `first`/`nth` selectors, and elements with no box of their own (`display: contents`) get actionable geometry derived from their rendered text and visible descendants. Python, JavaScript Playwright/Puppeteer, and .NET.
+- **[wrapper]** Restore `get_by_*` locators (test id, placeholder/alt/title, text, label) under `humanize=True`. They had stopped resolving after an earlier internal read path was closed off; the engines are reimplemented in the isolated world so the locators work again without reopening that path. `get_by_role` and `>>` chaining remain unsupported, and the error now names what is supported. Python, JavaScript, and .NET.
+- **[wrapper]** Preserve the exact target element across a delayed humanized interaction, and skip the pointer check entirely under `force=True` to match Playwright. Pointer events are no longer dispatched if the original target is detached or replaced while the cursor is moving. Python, JavaScript, and .NET.
+- **[wrapper]** `cloakbrowser info` now reports concurrent session seats as used out of the plan limit instead of a bare count, so you can tell whether you are at capacity, and names the real reason when the count is unavailable (server unreachable, timeout, invalid key, inactive license, rate limited, or reported unknown while degraded) (#513). Adds `SessionSeats` / `getSessionSeats`; `get_active_session_count` keeps its signature. Python, JavaScript, and .NET.
+- **[wrapper]** Fix the license session guard on `launch_persistent_context_async` not having its denial path available after installation. Python.
+- **[wrapper]** Declare the URW base35 fonts explicitly in the published Docker image so the Latin fallback for Verdana, Georgia, Trebuchet MS and Tahoma cannot be silently dropped by a future window-manager change. No runtime change.
+
+---
+
 ## [0.5.8] — 2026-08-18
 
 - **[wrapper]** Fix `humanize=True` actions (`fill`, `click`, `type`) failing with an element-not-attached error after a navigation driven by a click or form submission instead of `goto`. The pre-action element checks could stay bound to the previous document and never recover; they now refresh on every navigation. Regression from 0.5.6. Python, JavaScript Playwright/Puppeteer, and .NET.
