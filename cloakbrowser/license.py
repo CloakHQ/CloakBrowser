@@ -32,6 +32,29 @@ PRO_VERSION_CHECK_INTERVAL = 3600  # 1 hour
 
 
 @dataclass
+class SessionSeats:
+    """Result of a seat lookup: the count, the cap it counts against, and the reason
+    either is missing.
+
+    state:
+      "ok"          active is a real number (0 is a real answer, not an error)
+      "unreachable" never got an answer — DNS, refused, timeout, TLS
+      "denied"      the server refused; `reason` carries its error code
+      "unknown"     the server is up and the key is fine, but it cannot count
+                    right now (leaseless mode, or its seat store is unreachable)
+
+    limit is None whenever the server declined to state a cap: unlimited, an
+    unrecognised plan, or a server too old to send the field. Callers must fall back
+    to the bare count, never invent a denominator.
+    """
+
+    active: int | None = None
+    limit: int | None = None
+    state: str = "ok"
+    reason: str | None = None
+
+
+@dataclass
 class LicenseInfo:
     valid: bool
     plan: str
@@ -491,13 +514,16 @@ def get_pro_latest_version(release_channel: str | None = None) -> str | None:
     return release.version if release else None
 
 
-def get_active_session_count(license_key: str) -> int | None:
-    """How many concurrent sessions (seats) this license is holding right now.
+def get_session_seats(license_key: str) -> SessionSeats:
+    """Seats held right now, the cap they count against, and why either is missing.
 
-    Deliberately NOT cached: a cached seat count is a wrong seat count. Returns
-    None when the number is unknown — the server couldn't be reached, or it
-    reported the count as unavailable (it does that instead of a false 0 while
-    running in leaseless mode). Callers render None as "unavailable".
+    Deliberately NOT cached: a cached seat count is a wrong seat count.
+
+    Six different things can stop us answering — no route to the host, a timeout, a
+    403 for a dead key, a 429, the server reporting the count as unknown in leaseless
+    mode, and its seat store being unreachable. They used to collapse into one bare
+    None, so `info` printed the same "unavailable" for "your key is dead" and "our
+    backend is degraded, you are fine". `state` keeps them apart.
     """
     try:
         resp = httpx.post(
@@ -505,11 +531,51 @@ def get_active_session_count(license_key: str) -> int | None:
             json={"license_key": license_key},
             timeout=10.0,
         )
-        resp.raise_for_status()
-        return resp.json().get("active")
     except Exception as e:
-        logger.debug("Session count lookup failed: %s", e)
-        return None
+        # Never reached the server: DNS, refused, timed out, TLS.
+        logger.debug("Session count lookup unreachable: %s", e)
+        return SessionSeats(state="unreachable")
+
+    if resp.status_code >= 400:
+        # The server answered, and the answer was a refusal. Its `error` field is the
+        # actionable part (invalid_key / license_inactive / rate_limited); fall back to
+        # the status when the body is missing or not JSON.
+        reason = None
+        try:
+            reason = resp.json().get("error")
+        except Exception:
+            pass
+        reason = reason or f"HTTP {resp.status_code}"
+        logger.debug("Session count denied: %s", reason)
+        return SessionSeats(state="denied", reason=reason)
+
+    try:
+        body = resp.json()
+    except Exception as e:
+        logger.debug("Session count body unparseable: %s", e)
+        return SessionSeats(state="unknown")
+
+    active = body.get("active")
+    if not isinstance(active, int) or isinstance(active, bool):
+        # 200 with active=null is the server saying "up, your key is fine, but I
+        # genuinely cannot count right now" — deliberate, so it never reports a false 0.
+        return SessionSeats(state="unknown")
+
+    limit = body.get("limit")
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        # Absent (older server) or null (unlimited / unknown plan). Callers fall back
+        # to the bare count rather than printing a made-up denominator.
+        limit = None
+    return SessionSeats(active=active, limit=limit, state="ok")
+
+
+def get_active_session_count(license_key: str) -> int | None:
+    """How many concurrent sessions (seats) this license is holding right now.
+
+    Kept for callers outside `info` that only want the number. Prefer
+    get_session_seats(), which also carries the cap and the reason a lookup failed.
+    """
+    return get_session_seats(license_key).active
 
 
 def _read_cache(

@@ -10,6 +10,7 @@ import {
   getProLatestRelease,
   getProLatestVersion,
   getActiveSessionCount,
+  getSessionSeats,
   buildLaunchEnv,
   licenseErrorMessage,
   licenseErrorFrom,
@@ -909,5 +910,110 @@ describe("getActiveSessionCount", () => {
     await getActiveSessionCount("cb_key");
     await getActiveSessionCount("cb_key");
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── getSessionSeats ───────────────────────────────────
+
+describe("getSessionSeats", () => {
+  // The six failure paths that used to collapse into one bare null.
+  const ok = (payload: unknown) =>
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => payload,
+    } as Response);
+
+  const denied = (status: number, payload: unknown) =>
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status,
+      statusText: "Denied",
+      json: async () => payload,
+    } as Response);
+
+  it("reports the count and the limit", async () => {
+    ok({ valid: true, active: 8, limit: 2000 });
+    expect(await getSessionSeats("cb_key")).toEqual({
+      active: 8, limit: 2000, state: "ok", reason: null,
+    });
+  });
+
+  it("treats a missing limit as null, not an error", async () => {
+    // A server predating the field still yields a usable count.
+    ok({ valid: true, active: 8 });
+    const seats = await getSessionSeats("cb_key");
+    expect(seats.state).toBe("ok");
+    expect(seats.active).toBe(8);
+    expect(seats.limit).toBeNull();
+  });
+
+  it("treats an explicit null limit as null", async () => {
+    // Unlimited licence or unrecognised plan — the server says so explicitly.
+    ok({ valid: true, active: 3, limit: null });
+    expect((await getSessionSeats("cb_key")).limit).toBeNull();
+  });
+
+  it("keeps zero seats as a real answer", async () => {
+    ok({ valid: true, active: 0, limit: 5 });
+    const seats = await getSessionSeats("cb_key");
+    expect(seats.state).toBe("ok");
+    expect(seats.active).toBe(0);
+  });
+
+  it("reports a network failure as unreachable", async () => {
+    // info is a diagnostic — it degrades, it never throws out of the command.
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("timeout"));
+    const seats = await getSessionSeats("cb_key");
+    expect(seats.state).toBe("unreachable");
+    expect(seats.active).toBeNull();
+  });
+
+  it("carries the server's reason on a denial", async () => {
+    denied(403, { valid: false, error: "license_inactive" });
+    const seats = await getSessionSeats("cb_key");
+    expect(seats.state).toBe("denied");
+    expect(seats.reason).toBe("license_inactive");
+  });
+
+  it("treats a rate limit as a denial", async () => {
+    denied(429, { valid: false, error: "rate_limited" });
+    expect((await getSessionSeats("cb_key")).reason).toBe("rate_limited");
+  });
+
+  it("falls back to the status when a denial has no body", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Server Error",
+      json: async () => {
+        throw new Error("not json");
+      },
+    } as unknown as Response);
+    expect((await getSessionSeats("cb_key")).reason).toBe("HTTP 500");
+  });
+
+  it("reports a server-side unknown as unknown, not denied", async () => {
+    // Leaseless mode: 200, key is fine, the server just cannot count. This is the
+    // distinction the old single null destroyed.
+    ok({ valid: true, active: null, limit: null });
+    const seats = await getSessionSeats("cb_key");
+    expect(seats.state).toBe("unknown");
+    expect(seats.active).toBeNull();
+  });
+
+  it("reports an unparseable body as unknown", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => {
+        throw new Error("not json");
+      },
+    } as unknown as Response);
+    expect((await getSessionSeats("cb_key")).state).toBe("unknown");
+  });
+
+  it("keeps getActiveSessionCount returning the bare count", async () => {
+    // It is shipped public API — it must keep behaving.
+    ok({ valid: true, active: 4, limit: 20 });
+    expect(await getActiveSessionCount("cb_key")).toBe(4);
   });
 });

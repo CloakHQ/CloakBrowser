@@ -1528,9 +1528,12 @@ describe("Puppeteer: frame-level patching", () => {
     patchPage(page as any, cfg, cursor as any);
     await page.goto("https://example.com");
 
-    expect(page.on).toHaveBeenCalledTimes(1);
-    const [eventName, handler] = page.on.mock.calls[0];
-    expect(eventName).toBe("frameattached");
+    // Two listeners are wired once: frameattached (patch dynamic frames) and
+    // framenavigated (invalidate the isolated world — #507).
+    expect(page.on).toHaveBeenCalledTimes(2);
+    const attachedCall = page.on.mock.calls.find((c: any[]) => c[0] === "frameattached");
+    expect(attachedCall).toBeDefined();
+    const handler = attachedCall[1];
 
     const attachedFrame: any = {
       click: vi.fn(async () => {}),

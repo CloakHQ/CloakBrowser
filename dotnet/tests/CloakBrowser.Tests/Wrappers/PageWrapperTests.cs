@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Text.Json;
 using CloakBrowser.Human;
 using CloakBrowser.Wrappers;
 using Microsoft.Playwright;
@@ -34,7 +36,57 @@ public class PageWrapperTests
         InitialCursorY = (100, 100),
     };
 
-    /// <summary>Build a fake page whose Locator(...) returns an actionable fake locator.</summary>
+    private static IsolatedWorld BuildFakeWorld(IPage page)
+    {
+        var (cdp, cdpRec) = Fake.Of<ICDPSession>();
+        cdpRec.On("SendAsync", args =>
+        {
+            string method = (string)args[0]!;
+            if (method != "Runtime.evaluate")
+                return Task.FromResult<JsonElement?>(null);
+
+            var parameters = (IDictionary<string, object>)args[1]!;
+            string expression = (string)parameters["expression"];
+            object value = expression == StealthDom.ViewportJs
+                ? new { width = 1280, height = 720 }
+                : new
+                {
+                    v = 2, r = "ok", targetId = 1, gen = 3, attached = true,
+                    visible = true, enabled = true, editable = true,
+                    isInput = false, focused = false, @checked = false, hit = true,
+                    box = new { x = 100, y = 200, width = 80, height = 30 },
+                };
+            return Task.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(new
+            {
+                result = new { value },
+            }));
+        });
+
+        var world = new IsolatedWorld(page);
+        typeof(IsolatedWorld).GetField("_cdp", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(world, cdp);
+        typeof(IsolatedWorld).GetField("_contextId", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(world, 42);
+        return world;
+    }
+
+    private static void InjectWorld(HumanizedPage human, HumanCursor cursor, IsolatedWorld world)
+    {
+        typeof(HumanCursor).GetField("_stealth", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(cursor, world);
+        typeof(HumanCursor).GetField("_stealthInitialized", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(cursor, true);
+
+        var humanPage = (HumanPage)typeof(HumanizedPage)
+            .GetField("_human", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(human)!;
+        typeof(HumanPage).GetField("_stealth", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(humanPage, world);
+        typeof(HumanPage).GetField("_stealthInitialized", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(humanPage, true);
+    }
+
+    /// <summary>Build a fake page whose isolated world returns an actionable target.</summary>
     private static (HumanizedPage human, FakeProxy pageRec, FakeProxy mouseRec) BuildHumanizedPage()
     {
         var (mouse, mouseRec) = Fake.Of<IMouse>();
@@ -43,6 +95,8 @@ public class PageWrapperTests
 
         var (locator, locRec) = Fake.Of<ILocator>();
         locRec.On("First", locator);
+        locRec.On("Last", locator);
+        locRec.On("Nth", locator);
         locRec.On("BoundingBoxAsync", Task.FromResult<LocatorBoundingBoxResult?>(
             new LocatorBoundingBoxResult { X = 100, Y = 200, Width = 80, Height = 30 }));
         locRec.On("IsVisibleAsync", Task.FromResult(true));
@@ -61,6 +115,7 @@ public class PageWrapperTests
 
         var cursor = new HumanCursor(page);
         var human = new HumanizedPage(page, cursor, FastConfig());
+        InjectWorld(human, cursor, BuildFakeWorld(page));
         return (human, pageRec, mouseRec);
     }
 
@@ -95,6 +150,16 @@ public class PageWrapperTests
         var (human, _, _) = BuildHumanizedPage();
         var loc = Assert.IsType<HumanizedLocator>(human.Locator("button:has-text('X')"));
         Assert.Equal("button:has-text('X')", loc.Selector);
+        Assert.Equal("button:has-text('X') >> nth=0", Assert.IsType<HumanizedLocator>(loc.First).Selector);
+        Assert.Equal("button:has-text('X') >> nth=-1", Assert.IsType<HumanizedLocator>(loc.Last).Selector);
+        Assert.Equal("button:has-text('X') >> nth=3", Assert.IsType<HumanizedLocator>(loc.Nth(3)).Selector);
+        Assert.Null(Assert.IsType<HumanizedLocator>(loc.First.First).Selector);
+        Assert.Null(Assert.IsType<HumanizedLocator>(loc.Nth(1).Nth(0)).Selector);
+
+        var withOptions = Assert.IsType<HumanizedLocator>(human.Locator(
+            "button", new PageLocatorOptions { HasTextString = "X" }));
+        Assert.Null(withOptions.Selector);
+
         var byRole = Assert.IsType<HumanizedLocator>(human.GetByRole(AriaRole.Button));
         Assert.Null(byRole.Selector);
     }

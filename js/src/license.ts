@@ -26,6 +26,28 @@ export interface LicenseInfo {
   expires: string | null;
 }
 
+/**
+ * Result of a seat lookup: the count, the cap it counts against, and the reason
+ * either is missing.
+ *
+ * state:
+ *   "ok"          active is a real number (0 is a real answer, not an error)
+ *   "unreachable" never got an answer — DNS, refused, timeout, TLS
+ *   "denied"      the server refused; `reason` carries its error code
+ *   "unknown"     the server is up and the key is fine, but it cannot count
+ *                 right now (leaseless mode, or its seat store is unreachable)
+ *
+ * limit is null whenever the server declined to state a cap: unlimited, an
+ * unrecognised plan, or a server too old to send the field. Callers must fall back
+ * to the bare count, never invent a denominator.
+ */
+export interface SessionSeats {
+  active: number | null;
+  limit: number | null;
+  state: "ok" | "unreachable" | "denied" | "unknown";
+  reason: string | null;
+}
+
 export interface ProReleaseInfo {
   version: string;
   requestedChannel: "stable" | "preview";
@@ -630,31 +652,71 @@ export async function getProLatestVersion(releaseChannel?: string): Promise<stri
 }
 
 /**
- * How many concurrent sessions (seats) this license is holding right now.
+ * Seats held right now, the cap they count against, and why either is missing.
  *
- * Deliberately NOT cached: a cached seat count is a wrong seat count. Returns
- * null when the number is unknown — the server couldn't be reached, or it
- * reported the count as unavailable (it does that instead of a false 0 while
- * running in leaseless mode). Callers render null as "unavailable".
+ * Deliberately NOT cached: a cached seat count is a wrong seat count.
+ *
+ * Six different things can stop us answering — no route to the host, a timeout, a
+ * 403 for a dead key, a 429, the server reporting the count as unknown in leaseless
+ * mode, and its seat store being unreachable. They used to collapse into one bare
+ * null, so `info` printed the same "unavailable" for "your key is dead" and "our
+ * backend is degraded, you are fine". `state` keeps them apart.
  */
-export async function getActiveSessionCount(licenseKey: string): Promise<number | null> {
+export async function getSessionSeats(licenseKey: string): Promise<SessionSeats> {
+  let resp: Response;
   try {
-    const resp = await fetch(SESSION_COUNT_URL, {
+    resp = await fetch(SESSION_COUNT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ license_key: licenseKey }),
       signal: AbortSignal.timeout(10_000),
     });
-
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
-    }
-
-    const data = (await resp.json()) as Record<string, unknown>;
-    return typeof data.active === "number" ? data.active : null;
   } catch {
-    return null;
+    // Never reached the server: DNS, refused, timed out, TLS.
+    return { active: null, limit: null, state: "unreachable", reason: null };
   }
+
+  if (!resp.ok) {
+    // The server answered, and the answer was a refusal. Its `error` field is the
+    // actionable part (invalid_key / license_inactive / rate_limited); fall back to
+    // the status when the body is missing or not JSON.
+    let reason: string | null = null;
+    try {
+      const body = (await resp.json()) as Record<string, unknown>;
+      if (typeof body.error === "string") reason = body.error;
+    } catch {
+      // fall through to the status
+    }
+    return { active: null, limit: null, state: "denied", reason: reason ?? `HTTP ${resp.status}` };
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = (await resp.json()) as Record<string, unknown>;
+  } catch {
+    return { active: null, limit: null, state: "unknown", reason: null };
+  }
+
+  if (typeof data.active !== "number") {
+    // 200 with active=null is the server saying "up, your key is fine, but I
+    // genuinely cannot count right now" — deliberate, so it never reports a false 0.
+    return { active: null, limit: null, state: "unknown", reason: null };
+  }
+
+  // limit absent (older server) or null (unlimited / unknown plan): callers fall back
+  // to the bare count rather than printing a made-up denominator.
+  const limit = typeof data.limit === "number" ? data.limit : null;
+  return { active: data.active, limit, state: "ok", reason: null };
+}
+
+/**
+ * How many concurrent sessions (seats) this license is holding right now.
+ *
+ * Kept for callers outside `info` that only want the number. Prefer
+ * getSessionSeats(), which also carries the cap and the reason a lookup failed.
+ */
+export async function getActiveSessionCount(licenseKey: string): Promise<number | null> {
+  return (await getSessionSeats(licenseKey)).active;
 }
 
 // ---------------------------------------------------------------------------

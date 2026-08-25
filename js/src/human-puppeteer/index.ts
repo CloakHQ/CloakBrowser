@@ -861,6 +861,11 @@ function patchFrames(
         throw error;
       }
     });
+    // Invalidate the isolated world on any main-frame nav, not just goto, so
+    // click/form navigations don't leave it bound to a stale doc (#507).
+    page.on('framenavigated', (frame: Frame) => {
+      if (stealth && frame === page.mainFrame()) stealth.invalidate();
+    });
     (page as any)._humanFrameListenerAttached = true;
   }
 

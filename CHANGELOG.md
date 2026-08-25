@@ -6,7 +6,35 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
-## [Unreleased]
+## [0.5.9] — 2026-08-25
+
+- **[wrapper]** Fix `humanize=True` selecting the wrong element, so humanized actions now resolve the same visible target Playwright would (#512). Text matching ignores non-rendered document content, open Shadow DOM matches are ordered exactly as Playwright orders them for broad `first`/`nth` selectors, and elements with no box of their own (`display: contents`) get actionable geometry derived from their rendered text and visible descendants. Python, JavaScript Playwright/Puppeteer, and .NET.
+- **[wrapper]** Restore `get_by_*` locators (test id, placeholder/alt/title, text, label) under `humanize=True`. They had stopped resolving after an earlier internal read path was closed off; the engines are reimplemented in the isolated world so the locators work again without reopening that path. `get_by_role` and `>>` chaining remain unsupported, and the error now names what is supported. Python, JavaScript, and .NET.
+- **[wrapper]** Preserve the exact target element across a delayed humanized interaction, and skip the pointer check entirely under `force=True` to match Playwright. Pointer events are no longer dispatched if the original target is detached or replaced while the cursor is moving. Python, JavaScript, and .NET.
+- **[wrapper]** `cloakbrowser info` now reports concurrent session seats as used out of the plan limit instead of a bare count, so you can tell whether you are at capacity, and names the real reason when the count is unavailable (server unreachable, timeout, invalid key, inactive license, rate limited, or reported unknown while degraded) (#513). Adds `SessionSeats` / `getSessionSeats`; `get_active_session_count` keeps its signature. Python, JavaScript, and .NET.
+- **[wrapper]** Fix the license session guard on `launch_persistent_context_async` not having its denial path available after installation. Python.
+- **[wrapper]** Declare the URW base35 fonts explicitly in the published Docker image so the Latin fallback for Verdana, Georgia, Trebuchet MS and Tahoma cannot be silently dropped by a future window-manager change. No runtime change.
+
+---
+
+## [0.5.8] — 2026-08-18
+
+- **[wrapper]** Fix `humanize=True` actions (`fill`, `click`, `type`) failing with an element-not-attached error after a navigation driven by a click or form submission instead of `goto`. The pre-action element checks could stay bound to the previous document and never recover; they now refresh on every navigation. Regression from 0.5.6. Python, JavaScript Playwright/Puppeteer, and .NET.
+- **[wrapper]** Fix `humanize=True` `page.selectOption()` hanging until timeout instead of selecting. The saved original delegated back to the patched main-frame method and recursed indefinitely. JavaScript Playwright only; Python and .NET were unaffected.
+- **[wrapper]** Stop a humanized action from spending its full scroll budget (~7s) on an element that is already fully visible but off-center while the page is pinned at the top or bottom and cannot scroll any further toward the target zone. The scroll now bails immediately in that case instead of looping to no effect. Python, JavaScript, and .NET.
+- **[binary]** Chromium **150.0.7871.114.6** (Pro Stable, Linux x64 + arm64 and Windows x64) — 71 source-level patches. Linux advances from `150.0.7871.114.4`; Windows advances from `150.0.7871.114.3`. macOS remains on Stable `150.0.7871.114.3`.
+  - **Identity and hardware:** expanded the Windows hardware-profile pool and tightened alignment between graphics, CPU, memory, and display characteristics. Fixed seeds may resolve to a different complete hardware identity than on the previous Stable build.
+  - **Windows fidelity:** completed text measurements and font availability across a broader real-world font set, refined platform-specific path handling, improved headed window geometry, and expanded locale coverage including Greek.
+  - **Browser consistency:** aligned identity across top-level and nested frames under automation overrides, normalized storage reporting across contexts, improved deterministic rendering behavior, stabilized native Linux profiles across seeds, and unified the reported browser build number.
+  - **Network identity:** improved consistency for IPv4, IPv6, dual-stack, direct, proxied, and automatically located sessions, including automatic proxy fallback for licensing connectivity.
+  - **Runtime and compatibility:** improved extension and worker reliability under cross-platform profiles, strengthened interrupted-session cleanup and local license diagnostics, and improved host-font isolation for cross-platform personas.
+
+---
+
+## [0.5.7] — 2026-08-11
+
+- **[wrapper]** Preserve the caller-specified `delay` for humanized key press actions instead of replacing it with an immediate key-up or an internally generated hold time. Covers page, frame, locator, element-handle, and keyboard press paths across Python, JavaScript Playwright/Puppeteer, and .NET.
+- **[wrapper]** Apply `humanize=True` recursively to frames nested more than one level deep instead of patching only the main frame and its direct children. Python and JavaScript Playwright.
 
 ---
 

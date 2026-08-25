@@ -9,7 +9,11 @@ from typing import Any, Callable, Optional, Tuple
 
 from .config import HumanConfig, rand, rand_range, rand_int_range, sleep_ms
 from .mouse import RawMouse, human_move
-from .stealth_dom import build_box_js, eval_parsed, OK, NOT_FOUND, UNSUPPORTED, _VIEWPORT_JS
+from .stealth_dom import (
+    build_box_js, eval_parsed, EVALUATION_FAILED, NOT_FOUND, OK, UNSUPPORTED,
+    StealthEvaluationError, StealthWorldUnavailableError,
+    UnsupportedHumanizeSelectorError, _VIEWPORT_JS,
+)
 
 
 def _is_in_viewport(bounds: dict, viewport_height: int, cfg: HumanConfig) -> bool:
@@ -21,37 +25,45 @@ def _is_in_viewport(bounds: dict, viewport_height: int, cfg: HumanConfig) -> boo
 
 
 def _get_element_box(page: Any, selector: str, timeout: float = 30000) -> Optional[dict]:
-    """Locate ``selector`` and return its bounding box.
-
-    The ``timeout`` is forwarded to Playwright's ``boundingBox(timeout=...)``
-    so callers can extend it for slow-loading elements (#172).
-
-    Reads geometry through the isolated world when available; a not-found is
-    retried briefly in-world (SPA re-renders) and only an *unsupported* selector
-    reaches Playwright's ``bounding_box``.
-    """
+    """Locate ``selector`` and read geometry only in the isolated world."""
     world = getattr(page, "_stealth_world", None)
-    if world is not None:
+    if world is None:
+        raise StealthWorldUnavailableError()
+    deadline = time.monotonic() + max(0, timeout) / 1000.0
+    status, data = eval_parsed(world, build_box_js(selector))
+    while status in (NOT_FOUND, EVALUATION_FAILED) and time.monotonic() < deadline:
+        time.sleep(0.05)
         status, data = eval_parsed(world, build_box_js(selector))
-        if status == OK:
-            return data["box"]
-        if status == NOT_FOUND:
-            deadline = time.monotonic() + min(timeout, 2000) / 1000.0
-            while time.monotonic() < deadline:
-                time.sleep(0.05)
-                status, data = eval_parsed(world, build_box_js(selector))
-                if status == OK:
-                    return data["box"]
-                if status == UNSUPPORTED:
-                    break
-            if status != UNSUPPORTED:
-                return None
-        # UNSUPPORTED -> Playwright fallback below
-    try:
-        el = page.locator(selector).first
-        return el.bounding_box(timeout=max(1, timeout))
-    except Exception:
+    if status == OK:
+        box = dict(data["box"])
+        box["targetId"] = data["targetId"]
+        box["gen"] = data["gen"]
+        return box
+    if status == NOT_FOUND:
         return None
+    if status == UNSUPPORTED:
+        raise UnsupportedHumanizeSelectorError(selector)
+    raise StealthEvaluationError(selector)
+
+
+_SCROLL_JS = (
+    "(() => { const e = document.scrollingElement || document.documentElement;"
+    " return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight) }; })()"
+)
+
+
+def _read_scroll_state(page: Any) -> dict:
+    """Read vertical scroll state only through the isolated world."""
+    world = getattr(page, "_stealth_world", None)
+    if world is None:
+        raise StealthWorldUnavailableError()
+    try:
+        state = world.evaluate(_SCROLL_JS)
+    except Exception as exc:
+        raise StealthEvaluationError("<scroll-state>") from exc
+    if not isinstance(state, dict):
+        raise StealthEvaluationError("<scroll-state>")
+    return state
 
 
 def _smooth_wheel(raw: RawMouse, delta: int, cfg: HumanConfig) -> None:
@@ -91,15 +103,12 @@ def human_scroll_into_view(
         # window; page.viewport_size is then None. Read the live window dimensions
         # through the isolated world, consistent with the other geometry reads here.
         world = getattr(page, "_stealth_world", None)
-        if world is not None:
-            try:
-                viewport = world.evaluate(_VIEWPORT_JS)
-            except Exception:
-                viewport = None
-        if not viewport:
-            viewport = page.evaluate(
-                "() => ({ width: window.innerWidth, height: window.innerHeight })"
-            )
+        if world is None:
+            raise StealthWorldUnavailableError()
+        try:
+            viewport = world.evaluate(_VIEWPORT_JS)
+        except Exception as exc:
+            raise StealthEvaluationError("<viewport>") from exc
     if not viewport or not viewport.get("height"):
         raise RuntimeError("Viewport size not available")
 
@@ -112,6 +121,16 @@ def human_scroll_into_view(
 
     if _is_in_viewport(box, viewport_height, cfg):
         return box, cursor_x, cursor_y, False
+
+    # Already fully visible but off-center, with the page pinned at the boundary
+    # in the needed direction: scrolling can't help, so don't waste the budget.
+    fully_visible = box["y"] >= 0 and box["y"] + box["height"] <= viewport_height
+    if fully_visible:
+        zone_mid = viewport_height * (cfg.scroll_target_zone[0] + cfg.scroll_target_zone[1]) / 2
+        need_up = box["y"] + box["height"] / 2 < zone_mid
+        scroll = _read_scroll_state(page)
+        if (scroll["y"] <= 0) if need_up else (scroll["y"] >= scroll["maxY"]):
+            return box, cursor_x, cursor_y, False
 
     # Move cursor into scroll area
     scroll_area_x = round(viewport_width * rand(0.3, 0.7))
@@ -192,9 +211,8 @@ def scroll_to_element(
 ) -> Tuple[dict, float, float, bool]:
     """Selector-based humanized scroll.
 
-    ``timeout`` is forwarded to ``locator.bounding_box(timeout=...)`` so callers
-    such as ``page.click('#x', timeout=5000)`` can wait longer for slow elements
-    (#172). Default matches Playwright's 30000ms when not specified.
+    ``timeout`` bounds isolated-world geometry polling so callers such as
+    ``page.click('#x', timeout=5000)`` can wait for slow elements (#172).
 
     Returns ``(box, cursor_x, cursor_y, did_scroll)``.
     """

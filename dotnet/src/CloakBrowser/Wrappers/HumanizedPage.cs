@@ -35,6 +35,13 @@ public sealed partial class HumanizedPage : IPage
         _human = new HumanPage(inner, cfg);
         _mouse = new HumanizedMouse(inner.Mouse, cursor, cfg);
         _keyboard = new HumanizedKeyboard(inner.Keyboard, cursor, cfg);
+
+        // Invalidate the isolated world on any main-frame nav, not just goto, so
+        // click/form navigations don't leave it bound to a stale doc (#507).
+        _inner.FrameNavigated += (_, frame) =>
+        {
+            if (frame == _inner.MainFrame) _cursor.InvalidateStealth();
+        };
     }
 
     /// <summary>The original, un-humanized Playwright page (escape hatch for raw speed).</summary>
@@ -179,7 +186,10 @@ public sealed partial class HumanizedPage : IPage
     // Locator-returning members - re-wrap.
     // -----------------------------------------------------------------------
 
-    public ILocator Locator(string selector, PageLocatorOptions? options = null) => Wrap(_inner.Locator(selector, options), selector);
+    // Locator options can change which element Playwright resolves. Preserve raw
+    // selector metadata only when it completely describes the locator semantics.
+    public ILocator Locator(string selector, PageLocatorOptions? options = null) =>
+        Wrap(_inner.Locator(selector, options), options == null ? selector : null);
     public ILocator GetByAltText(string text, PageGetByAltTextOptions? options = null) => Wrap(_inner.GetByAltText(text, options));
     public ILocator GetByAltText(Regex text, PageGetByAltTextOptions? options = null) => Wrap(_inner.GetByAltText(text, options));
     public ILocator GetByLabel(string text, PageGetByLabelOptions? options = null) => Wrap(_inner.GetByLabel(text, options));

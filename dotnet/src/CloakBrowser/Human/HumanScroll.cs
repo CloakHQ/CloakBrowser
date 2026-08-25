@@ -17,6 +17,14 @@ public interface IRawScrollPage
     /// Returns null if the dimensions can't be read.
     /// </summary>
     Task<(int Width, int Height)?> GetLiveWindowSizeAsync();
+
+    /// <summary>
+    /// Current vertical scroll offset (<c>window.scrollY</c>) and the maximum
+    /// scrollable offset (<c>scrollHeight - clientHeight</c>). Used to detect when
+    /// the page is pinned at a boundary and further scrolling can't help. Returns
+    /// null if the values can't be read.
+    /// </summary>
+    Task<(double Y, double MaxY)?> GetScrollStateAsync();
 }
 
 /// <summary>Result of a humanized scroll-into-view operation.</summary>
@@ -107,6 +115,18 @@ public static class HumanScroll
 
         if (IsInViewport(box.Value, viewportHeight, cfg))
             return new ScrollResult(box.Value, cursorX, cursorY, false);
+
+        // Already fully visible but off-center, with the page pinned at the boundary
+        // in the needed direction: scrolling can't help, so don't waste the budget.
+        bool fullyVisible = box.Value.Y >= 0 && box.Value.Y + box.Value.Height <= viewportHeight;
+        if (fullyVisible)
+        {
+            double zoneMid = viewportHeight * (cfg.ScrollTargetZone.Min + cfg.ScrollTargetZone.Max) / 2;
+            bool needUp = box.Value.Y + box.Value.Height / 2 < zoneMid;
+            var scroll = await page.GetScrollStateAsync().ConfigureAwait(false);
+            if (scroll != null && (needUp ? scroll.Value.Y <= 0 : scroll.Value.Y >= scroll.Value.MaxY))
+                return new ScrollResult(box.Value, cursorX, cursorY, false);
+        }
 
         // Move cursor into scroll area.
         double scrollAreaX = Math.Round(viewportWidth * HumanRandom.Rand(0.3, 0.7));

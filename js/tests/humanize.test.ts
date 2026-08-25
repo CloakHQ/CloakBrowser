@@ -367,7 +367,8 @@ describe("patchPage press focus", () => {
 
     let downCount = 0;
     const page = buildMockPage({
-      evaluate: async () => true,
+      evaluate: vi.fn(async () => true),
+      snapshotFocused: true,
     });
     page.mouse.down = vi.fn(async () => { downCount++; });
 
@@ -378,6 +379,27 @@ describe("patchPage press focus", () => {
     try { await (page as any).press("input#field", "Enter", { timeout: 2000 }); } catch (error) { expect(error).toBeDefined(); }
 
     expect(downCount).toBe(0);
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+});
+
+describe("patchPage checked snapshot", () => {
+  it("does not call Playwright isChecked when isolated snapshot is already checked", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+    const originalIsChecked = vi.fn(async () => { throw new Error("must not run"); });
+    const page = buildMockPage({ isChecked: originalIsChecked, snapshotChecked: true });
+    const down = page.mouse.down;
+
+    patchPage(
+      page,
+      resolveConfig("default", { idle_between_actions: false }),
+      { x: 50, y: 50, initialized: true } as any,
+    );
+    await page.check("input#cb", { timeout: 2000 });
+
+    expect(originalIsChecked).not.toHaveBeenCalled();
+    expect(down).not.toHaveBeenCalled();
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });
 
@@ -465,9 +487,12 @@ describe("patchPage frame patching", () => {
     patchPage(page as any, cfg, cursor as any);
     await page.goto("https://example.com");
 
-    expect(page.on).toHaveBeenCalledTimes(1);
-    const [eventName, handler] = page.on.mock.calls[0];
-    expect(eventName).toBe("frameattached");
+    // Two listeners are wired once: frameattached (patch dynamic frames) and
+    // framenavigated (invalidate the isolated world — #507).
+    expect(page.on).toHaveBeenCalledTimes(2);
+    const attachedCall = page.on.mock.calls.find((c: any[]) => c[0] === "frameattached");
+    expect(attachedCall).toBeDefined();
+    const handler = attachedCall[1];
 
     const attachedFrame = buildMockFrame();
     const originalClick = attachedFrame.click;
@@ -478,6 +503,29 @@ describe("patchPage frame patching", () => {
     expect((attachedFrame as any)._humanPatched).toBe(true);
     expect(patchedClick).not.toBe(originalClick);
     expect(attachedFrame.click).toBe(patchedClick);
+  });
+
+  it("invalidates the isolated world on main-frame navigation, not subframes (#507)", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+
+    const mainFrame = { ...buildMockFrame(), childFrames: vi.fn(() => []) };
+    const page = buildMockPage({ mainFrameReturn: mainFrame });
+    const cfg = resolveConfig("default");
+    const cursor = { x: 0, y: 0, initialized: false };
+    patchPage(page as any, cfg, cursor as any);
+
+    const invalidateSpy = vi.spyOn((page as any)._stealth, "invalidate");
+    const navCall = page.on.mock.calls.find((c: any[]) => c[0] === "framenavigated");
+    expect(navCall).toBeDefined();
+    const handler = navCall[1];
+
+    // subframe navigation -> no invalidation
+    handler(buildMockFrame());
+    expect(invalidateSpy).not.toHaveBeenCalled();
+
+    // main-frame navigation -> invalidate
+    handler(page.mainFrame());
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
   });
 
   it("uses frame.locator for frame.click instead of page.click", async () => {
@@ -521,6 +569,31 @@ describe("patchPage frame patching", () => {
     // must NOT fall through to the frame-scoped locator (the pre-fix leak path)
     expect(mainFrame.locator).not.toHaveBeenCalled();
   });
+
+  it("selectOption does not infinitely recurse through the patched main frame (regression)", async () => {
+    // page.selectOption re-dispatches to the patched main frame; originals must
+    // bind to the frame's native method or humanSelectOptionFn loops forever.
+    const { patchPage } = await import("../src/human/index.js");
+
+    const nativeSelect = vi.fn(async () => ["b"]);
+    const mainFrame = { ...buildMockFrame(), childFrames: vi.fn(() => []), selectOption: nativeSelect };
+    const page = buildMockPage({ mainFrameReturn: mainFrame });
+
+    // Mimic Playwright: the page's own selectOption delegates to the main frame's,
+    // with a depth guard so a regression throws instead of hanging the test.
+    let depth = 0;
+    page.selectOption = (sel: string, val: any, opts: any) => {
+      if (++depth > 5) throw new Error("RECURSION: selectOption re-dispatched to itself");
+      return page.mainFrame().selectOption(sel, val, opts);
+    };
+
+    const cfg = resolveConfig("default", { mouse_min_steps: 1, mouse_max_steps: 1 });
+    patchPage(page as any, cfg, { x: 0, y: 0, initialized: true } as any);
+
+    await expect((page as any).selectOption("#s", "b", { timeout: 2000 })).resolves.toBeDefined();
+    expect(nativeSelect).toHaveBeenCalledTimes(1);
+    expect(depth).toBe(0); // the delegating page.selectOption was never re-entered
+  }, 30000);
 
   it.each([
     ["type", async (frame: any) => frame.type("input.email", "@")],
@@ -788,7 +861,24 @@ function buildMockPage(overrides: Record<string, any> = {}): any {
     context: vi.fn(() => ({
       pages: vi.fn(() => []),
       addInitScript: vi.fn(async () => { }),
-      newCDPSession: vi.fn(async () => { throw new Error('no cdp'); }),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async (method: string) => {
+          if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'F1' } } };
+          if (method === 'Page.createIsolatedWorld') return { executionContextId: 42 };
+          if (method === 'Runtime.evaluate') {
+            return { result: { value: {
+              v: 2, r: 'ok', targetId: 1, gen: 1, attached: true, visible: true,
+              enabled: true, editable: true, isInput: false,
+              focused: overrides.snapshotFocused ?? false,
+              checked: overrides.snapshotChecked ??
+                (overrides.isChecked ? await overrides.isChecked() : false),
+              hit: true,
+              box: { x: 100, y: 300, width: 200, height: 30 },
+            } } };
+          }
+          return {};
+        }),
+      })),
     })),
     url: vi.fn(() => "about:blank"),
     waitForTimeout: vi.fn(async () => { }),
@@ -1279,48 +1369,44 @@ describe("mergeConfig", () => {
 // Per-call timeout forwarding (issue #137)
 // =========================================================================
 describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
-  it("scrollToElement passes timeout to locator.boundingBox()", async () => {
+  it("polls isolated-world geometry until the selector appears", async () => {
     const { scrollToElement } = await import("../src/human/scroll.js");
     const cfg = resolveConfig("default");
-
-    const boundingBox = vi.fn(async () => ({ x: 100, y: 200, width: 50, height: 30 }));
+    let evaluations = 0;
     const page: any = {
       viewportSize: () => ({ width: 1280, height: 720 }),
-      locator: vi.fn(() => ({ first: () => ({ boundingBox }) })),
+      locator: vi.fn(),
+      _stealth: { evaluate: vi.fn(async () => {
+        evaluations++;
+        if (evaluations < 3) return { v: 2, r: "not_found" };
+        return {
+          v: 2, r: "ok", targetId: 7, gen: 1,
+          box: { x: 100, y: 200, width: 50, height: 30 },
+        };
+      }) },
     };
     const raw = {
-      move: vi.fn(async () => { }),
-      down: vi.fn(async () => { }),
-      up: vi.fn(async () => { }),
-      wheel: vi.fn(async () => { }),
+      move: vi.fn(async () => { }), down: vi.fn(async () => { }),
+      up: vi.fn(async () => { }), wheel: vi.fn(async () => { }),
     };
 
-    await scrollToElement(page, raw, "#x", 0, 0, cfg, 5000);
-    const forwarded = boundingBox.mock.calls[0][0].timeout;
-    expect(forwarded).toBeGreaterThan(4900);
-    expect(forwarded).toBeLessThanOrEqual(5000);
+    const result = await scrollToElement(page, raw, "#x", 0, 0, cfg, 5000);
+    expect(result.box.targetId).toBe(7);
+    expect(evaluations).toBe(3);
+    expect(page.locator).not.toHaveBeenCalled();
   });
 
-  it("default timeout matches Playwright's 30000ms when not specified", async () => {
-    const { scrollToElement } = await import("../src/human/scroll.js");
-    const cfg = resolveConfig("default");
-
-    const boundingBox = vi.fn(async () => ({ x: 100, y: 200, width: 50, height: 30 }));
+  it("honors a short isolated-world geometry timeout", async () => {
+    const { getElementBox } = await import("../src/human/scroll.js");
     const page: any = {
-      viewportSize: () => ({ width: 1280, height: 720 }),
-      locator: vi.fn(() => ({ first: () => ({ boundingBox }) })),
-    };
-    const raw = {
-      move: vi.fn(async () => { }),
-      down: vi.fn(async () => { }),
-      up: vi.fn(async () => { }),
-      wheel: vi.fn(async () => { }),
+      locator: vi.fn(),
+      _stealth: { evaluate: vi.fn(async () => ({ v: 2, r: "not_found" })) },
     };
 
-    await scrollToElement(page, raw, "#x", 0, 0, cfg);
-    const forwarded = boundingBox.mock.calls[0][0].timeout;
-    expect(forwarded).toBeGreaterThan(29900);
-    expect(forwarded).toBeLessThanOrEqual(30000);
+    const started = Date.now();
+    await expect(getElementBox(page, "#missing", 20)).resolves.toBeNull();
+    expect(Date.now() - started).toBeLessThan(250);
+    expect(page.locator).not.toHaveBeenCalled();
   });
 
   it("page.click({ timeout }) reaches scrollToElement", async () => {
@@ -1333,7 +1419,12 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
     const spy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
       async (_page, _raw, _sel, cx, cy, _cfg, timeout: any = -1) => {
         captured = remainingTimeout(timeoutBudget(timeout));
-        return { box: { x: 100, y: 100, width: 50, height: 30 }, cursorX: cx, cursorY: cy, didScroll: false };
+        return {
+          box: { x: 100, y: 100, width: 50, height: 30, targetId: 1, gen: 1 },
+          cursorX: cx,
+          cursorY: cy,
+          didScroll: false,
+        };
       },
     );
 
@@ -1442,12 +1533,20 @@ describe("Playwright timeout: 0 semantics", () => {
     expect(locator.boundingBox).toHaveBeenCalledWith({ timeout: 0 });
   });
 
-  it("passes zero rather than one into selector boundingBox", async () => {
+  it("keeps isolated-world geometry polling unbounded at timeout zero", async () => {
     const { scrollToElement } = await import("../src/human/scroll.js");
-    const boundingBox = vi.fn(async () => ({ x: 100, y: 200, width: 50, height: 30 }));
+    let evaluations = 0;
     const page: any = {
       viewportSize: () => ({ width: 1280, height: 720 }),
-      locator: vi.fn(() => ({ first: () => ({ boundingBox }) })),
+      locator: vi.fn(),
+      _stealth: { evaluate: vi.fn(async () => {
+        evaluations++;
+        if (evaluations < 3) return { v: 2, r: "not_found" };
+        return {
+          v: 2, r: "ok", targetId: 7, gen: 1,
+          box: { x: 100, y: 200, width: 50, height: 30 },
+        };
+      }) },
     };
     const raw = {
       move: vi.fn(async () => {}),
@@ -1456,9 +1555,11 @@ describe("Playwright timeout: 0 semantics", () => {
       wheel: vi.fn(async () => {}),
     };
 
-    await scrollToElement(page, raw, "#ready", 0, 0, fastConfig(), 0);
+    const result = await scrollToElement(page, raw, "#ready", 0, 0, fastConfig(), 0);
 
-    expect(boundingBox).toHaveBeenCalledWith({ timeout: 0 });
+    expect(result.box.targetId).toBe(7);
+    expect(evaluations).toBe(3);
+    expect(page.locator).not.toHaveBeenCalled();
   });
 });
 
@@ -1635,6 +1736,54 @@ describe("humanScrollIntoView", () => {
     await humanScrollIntoView(page, raw, getBox, 0, 0, cfg);
     expect(raw.wheel).toHaveBeenCalled();
   }, 15000);
+
+  it("bails without scrolling when a fully-visible element is above the zone and the page is at the top (regression)", async () => {
+    const { humanScrollIntoView } = await import("../src/human/scroll.js");
+    const cfg = resolveConfig("default");
+
+    // viewport 720 -> zone [144, 576]; element top=50 is above the zone but fully visible.
+    const page: any = {
+      viewportSize: () => ({ width: 1280, height: 720 }),
+      evaluate: vi.fn(),
+      _stealth: { evaluate: vi.fn(async () => ({ y: 0, maxY: 2000 })) },
+    };
+    const raw = {
+      move: vi.fn(async () => { }), down: vi.fn(async () => { }),
+      up: vi.fn(async () => { }), wheel: vi.fn(async () => { }),
+    };
+    const topBox = { x: 200, y: 50, width: 50, height: 30 };
+
+    const result = await humanScrollIntoView(page, raw, async () => topBox, 0, 0, cfg);
+
+    expect(result.didScroll).toBe(false);
+    expect(raw.wheel).not.toHaveBeenCalled();
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("still scrolls a fully-visible above-zone element when the page CAN scroll up (no over-bail)", async () => {
+    const { humanScrollIntoView } = await import("../src/human/scroll.js");
+    const cfg = resolveConfig("default", {
+      scroll_overshoot_chance: 0,
+      scroll_pre_move_delay: [0, 1], scroll_pause_fast: [0, 1],
+      scroll_pause_slow: [0, 1], scroll_settle_delay: [0, 1],
+    });
+
+    const page: any = {
+      viewportSize: () => ({ width: 1280, height: 720 }),
+      evaluate: vi.fn(),
+      _stealth: { evaluate: vi.fn(async () => ({ y: 500, maxY: 2000 })) },
+    };
+    const raw = {
+      move: vi.fn(async () => { }), down: vi.fn(async () => { }),
+      up: vi.fn(async () => { }), wheel: vi.fn(async () => { }),
+    };
+    const topBox = { x: 200, y: 50, width: 50, height: 30 };
+
+    await humanScrollIntoView(page, raw, async () => topBox, 0, 0, cfg);
+
+    expect(raw.wheel).toHaveBeenCalled();
+    expect(page.evaluate).not.toHaveBeenCalled();
+  }, 15000);
 });
 
 describe("el.scrollIntoViewIfNeeded humanization", () => {
@@ -1776,9 +1925,38 @@ describe("frame.click timeout budget (#307)", () => {
   });
 });
 
-describe("pointer-events check fail-open", () => {
-  // When the check itself cannot run (evaluate / boundingBox throws -> result
-  // null), proceed with the click instead of blocking it until the timeout.
+describe("selector reads stay isolated", () => {
+  it("ensureActionable rejects unsupported selectors without locator predicates", async () => {
+    const { ensureActionable, CHECKS_CLICK } = await import("../src/human/actionability.js");
+    const { UnsupportedHumanizeSelectorError } = await import("../src/human/stealthDom.js");
+    const page = {
+      _stealth: { evaluate: vi.fn().mockResolvedValue({ v: 2, r: "unsupported" }) },
+      locator: vi.fn(),
+    };
+
+    await expect(
+      ensureActionable(page as any, "internal:role=button", CHECKS_CLICK, 100),
+    ).rejects.toBeInstanceOf(UnsupportedHumanizeSelectorError);
+    expect(page.locator).not.toHaveBeenCalled();
+  });
+
+  it("getElementBox rejects unsupported selectors without boundingBox", async () => {
+    const { getElementBox } = await import("../src/human/scroll.js");
+    const { UnsupportedHumanizeSelectorError } = await import("../src/human/stealthDom.js");
+    const page = {
+      _stealth: { evaluate: vi.fn().mockResolvedValue({ v: 2, r: "unsupported" }) },
+      locator: vi.fn(),
+    };
+
+    await expect(getElementBox(page as any, "internal:role=button", 100))
+      .rejects.toBeInstanceOf(UnsupportedHumanizeSelectorError);
+    expect(page.locator).not.toHaveBeenCalled();
+  });
+});
+
+describe("pointer-events failure semantics", () => {
+  // Exact ElementHandle checks retain their legacy fail-open behavior. Selector
+  // checks fail explicitly and never fall back to Playwright DOM reads.
   it("checkPointerEventsHandle returns promptly when evaluate throws", async () => {
     const { checkPointerEventsHandle } = await import("../src/human/actionability.js");
     const el = {
@@ -1790,17 +1968,32 @@ describe("pointer-events check fail-open", () => {
     expect(Date.now() - start).toBeLessThan(500);
   });
 
-  it("checkPointerEvents returns promptly when evaluate throws", async () => {
+  it("checkPointerEvents fails explicitly without a Playwright fallback", async () => {
     const { checkPointerEvents } = await import("../src/human/actionability.js");
-    const loc = {
-      first: () => loc,
-      boundingBox: vi.fn().mockRejectedValue(new Error("no element")),
-      evaluate: vi.fn().mockRejectedValue(new Error("no element")),
+    const { StealthEvaluationError } = await import("../src/human/stealthDom.js");
+    const page = { locator: vi.fn() };
+    const world = { evaluate: vi.fn().mockRejectedValue(new Error("execution context destroyed")) };
+
+    await expect(
+      checkPointerEvents(page as any, "#x", 1, 1, 100, 100, world, 0),
+    ).rejects.toBeInstanceOf(StealthEvaluationError);
+    expect(page.locator).not.toHaveBeenCalled();
+  });
+
+  it("checkPointerEvents retries a transient evaluation failure within a finite budget", async () => {
+    const { checkPointerEvents } = await import("../src/human/actionability.js");
+    const page = { locator: vi.fn() };
+    const world = {
+      evaluate: vi.fn()
+        .mockRejectedValueOnce(new Error("execution context destroyed"))
+        .mockResolvedValueOnce({ v: 2, r: "ok", targetId: 1, gen: 1, hit: true }),
     };
-    const page = { locator: vi.fn().mockReturnValue(loc) };
-    const start = Date.now();
-    await checkPointerEvents(page as any, "#x", 100, 100, null, 2000); // must not throw
-    expect(Date.now() - start).toBeLessThan(500);
+
+    await expect(
+      checkPointerEvents(page as any, "#x", 1, 1, 100, 100, world, 1000),
+    ).resolves.toBeUndefined();
+    expect(world.evaluate).toHaveBeenCalledTimes(2);
+    expect(page.locator).not.toHaveBeenCalled();
   });
 
   it("checkPointerEventsHandle still throws when genuinely covered", async () => {

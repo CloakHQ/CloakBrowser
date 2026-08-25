@@ -877,6 +877,7 @@ async def launch_persistent_context_async(
     # the sync variant): guard those existing pages so a post-handshake denial on
     # pages[0] surfaces cleanly instead of as a bare TargetClosedError.
     if denial_path:
+        context._cloak_denial_path = denial_path
         _install_license_guard_async(context, denial_path)
         for _pg in context.pages:
             _install_license_guard_async(_pg, denial_path)
