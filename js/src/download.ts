@@ -127,9 +127,18 @@ export async function ensureBinary(
         );
       }
     } else if (info) {
-      console.log(`[cloakbrowser] License validation failed (plan=${info.plan}), using free tier`);
+      // Key supplied but rejected — abort, never downgrade to free.
+      throw new Error(
+        `CloakBrowser Pro: license key is invalid or expired (plan=${info.plan}). ` +
+          `Check CLOAKBROWSER_LICENSE_KEY, or unset it to use the free binary.`,
+      );
     } else {
-      console.log("[cloakbrowser] License validation unavailable, using free tier");
+      // Key supplied but unvalidatable (server down, no cache) — abort.
+      throw new Error(
+        "CloakBrowser Pro: license could not be validated (server unreachable " +
+          "and no cached validation). Retry in a moment, or unset " +
+          "CLOAKBROWSER_LICENSE_KEY to use the free binary.",
+      );
     }
   }
 

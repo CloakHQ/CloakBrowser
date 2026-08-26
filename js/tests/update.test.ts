@@ -547,6 +547,23 @@ describe("preview Pro selection", () => {
       errSpy.mock.calls.some((c) => String(c[0]).includes("no preview build is available")),
     ).toBe(false);
   });
+
+  it("aborts (never free) when the server rejects the key", async () => {
+    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ valid: false, plan: "solo", expires: null }),
+    } as Response);
+
+    await expect(ensureBinary("cb_bad")).rejects.toThrow(/invalid or expired/);
+  });
+
+  it("aborts (never free) when the key cannot be validated (server down, no cache)", async () => {
+    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
+
+    await expect(ensureBinary("cb_test")).rejects.toThrow(/could not be validated/);
+  });
 });
 
 describe("ensureBinary", () => {

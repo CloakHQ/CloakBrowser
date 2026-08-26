@@ -6,6 +6,12 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [Unreleased]
+
+- **[wrapper]** A license key the server rejects (invalid or expired), or one that cannot be validated at all (license server unreachable with no cached result), now raises a clear error instead of silently downloading the older free binary. Passing no key still uses the free binary as before. Python, JavaScript, and .NET.
+
+---
+
 ## [0.5.9] — 2026-08-25
 
 - **[wrapper]** Fix `humanize=True` selecting the wrong element, so humanized actions now resolve the same visible target Playwright would (#512). Text matching ignores non-rendered document content, open Shadow DOM matches are ordered exactly as Playwright orders them for broad `first`/`nth` selectors, and elements with no box of their own (`display: contents`) get actionable geometry derived from their rendered text and visible descendants. Python, JavaScript Playwright/Puppeteer, and .NET.

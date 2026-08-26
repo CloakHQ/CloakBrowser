@@ -209,6 +209,30 @@ public class LicenseTests : IDisposable
     }
 
     // =======================================================================
+    // EnsureBinary Pro routing - a supplied key that isn't valid aborts,
+    // never silently downgrades to the free binary.
+    // =======================================================================
+
+    [Fact]
+    public async Task InvalidKey_aborts_not_free()
+    {
+        License.ValidateLicenseOverride = key => new LicenseInfo(false, "solo", null);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Download.EnsureBinaryAsync("cb_bad"));
+        Assert.Contains("invalid or expired", ex.Message);
+    }
+
+    [Fact]
+    public async Task UnvalidatableKey_aborts_not_free()
+    {
+        // validate returns null (server unreachable, no cache) -> abort.
+        License.ValidateLicenseOverride = key => null;
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Download.EnsureBinaryAsync("cb_x"));
+        Assert.Contains("could not be validated", ex.Message);
+    }
+
+    // =======================================================================
     // GetProLatestVersion - rate limiting + marker
     // =======================================================================
 

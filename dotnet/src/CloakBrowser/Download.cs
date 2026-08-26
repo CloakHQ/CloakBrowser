@@ -251,11 +251,18 @@ public static class Download
             }
             else if (info != null)
             {
-                CloakLog.Warning("License validation failed (plan={0}), using free tier", info.Plan);
+                // Key supplied but rejected - abort, never downgrade to free.
+                throw new InvalidOperationException(
+                    $"CloakBrowser Pro: license key is invalid or expired (plan={info.Plan}). " +
+                    "Check CLOAKBROWSER_LICENSE_KEY, or unset it to use the free binary.");
             }
             else
             {
-                CloakLog.Warning("License validation unavailable, using free tier");
+                // Key supplied but unvalidatable (server down, no cache) - abort.
+                throw new InvalidOperationException(
+                    "CloakBrowser Pro: license could not be validated (server unreachable " +
+                    "and no cached validation). Retry in a moment, or unset " +
+                    "CLOAKBROWSER_LICENSE_KEY to use the free binary.");
             }
         }
 

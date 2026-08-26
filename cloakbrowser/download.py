@@ -193,7 +193,11 @@ def ensure_binary(
     requested_version = normalize_requested_version(browser_version)
 
     # Pro license key check (custom download URL overrides Pro path)
-    from .license import resolve_license_key, validate_license
+    from .license import (
+        CloakBrowserLicenseError,
+        resolve_license_key,
+        validate_license,
+    )
 
     key = resolve_license_key(license_key)
     if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
@@ -232,11 +236,19 @@ def ensure_binary(
                     f"CLOAKBROWSER_LICENSE_KEY."
                 ) from e
         elif info:
-            logger.warning(
-                "License validation failed (plan=%s), using free tier", info.plan
+            # Key supplied but rejected — abort, never downgrade to free.
+            raise CloakBrowserLicenseError(
+                f"CloakBrowser Pro: license key is invalid or expired "
+                f"(plan={info.plan}). Check CLOAKBROWSER_LICENSE_KEY, or unset it "
+                f"to use the free binary."
             )
         else:
-            logger.warning("License validation unavailable, using free tier")
+            # Key supplied but unvalidatable (server down, no cache) — abort.
+            raise CloakBrowserLicenseError(
+                "CloakBrowser Pro: license could not be validated (server "
+                "unreachable and no cached validation). Retry in a moment, or "
+                "unset CLOAKBROWSER_LICENSE_KEY to use the free binary."
+            )
 
     # Fail fast if no binary available for this platform
     check_platform_available()
