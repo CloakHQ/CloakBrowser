@@ -3,7 +3,13 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { COUNTRY_LOCALE_MAP, maybeResolveGeoip, resolveProxyGeo, resolveProxyIp } from "../src/geoip.js";
+import {
+  COUNTRY_LOCALE_MAP,
+  DEFAULT_GEOIP_TIMEOUT_MS,
+  maybeResolveGeoip,
+  resolveProxyGeo,
+  resolveProxyIp,
+} from "../src/geoip.js";
 import Stream from "node:stream";
 
 const tempDirs: string[] = [];
@@ -53,6 +59,10 @@ describe("resolveProxyIp", () => {
 });
 
 describe("maybeResolveGeoip", () => {
+  it("uses a 20-second default timeout", () => {
+    expect(DEFAULT_GEOIP_TIMEOUT_MS).toBe(20_000);
+  });
+
   it("forwards separate HTTP proxy credentials to CONNECT requests", async () => {
     const authorizationHeaders: Array<string | undefined> = [];
     const sockets = new Set<Stream.Duplex>();
@@ -109,11 +119,40 @@ describe("maybeResolveGeoip", () => {
       }),
     } as Response);
 
-    const result = await resolveProxyGeo("http://203.0.113.10:8080");
+    await expect(resolveProxyGeo("http://203.0.113.10:8080")).rejects.toThrow(
+      "GeoIP resolution",
+    );
 
-    expect(result).toEqual({ timezone: null, locale: null, exitIp: null });
     expect(fetchSpy).toHaveBeenCalledOnce();
     expect(fetchSpy.mock.calls[0][1]).toEqual({ redirect: "follow" });
+  });
+
+  it("throws when the GeoIP database is unavailable", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-db-failure-"));
+    tempDirs.push(cacheDir);
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+
+    vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new Error("database unavailable"))
+      .mockResolvedValue({ ok: true, text: async () => "5.6.7.8" } as Response);
+
+    await expect(resolveProxyGeo(null)).rejects.toThrow("database is unavailable");
+  });
+
+  it("throws when the GeoIP database lookup fails", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-lookup-failure-"));
+    tempDirs.push(cacheDir);
+    const geoipDir = path.join(cacheDir, "geoip");
+    fs.mkdirSync(geoipDir, { recursive: true });
+    fs.writeFileSync(path.join(geoipDir, "GeoLite2-City.mmdb"), "invalid database");
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      text: async () => "5.6.7.8",
+    } as Response);
+
+    await expect(resolveProxyGeo(null)).rejects.toThrow("GeoIP lookup failed");
   });
 
   it("downloads the database once under concurrent first-use launches (#458)", async () => {
@@ -144,10 +183,11 @@ describe("maybeResolveGeoip", () => {
         ),
     );
 
-    await Promise.all(
+    const results = await Promise.allSettled(
       Array.from({ length: 5 }, () => resolveProxyGeo("http://203.0.113.10:8080")),
     );
 
+    expect(results.every(result => result.status === "rejected")).toBe(true);
     // Only one launch actually fetched the shared ~70 MB file.
     expect(fetchSpy).toHaveBeenCalledOnce();
   });

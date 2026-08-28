@@ -1327,6 +1327,11 @@ def maybe_resolve_geoip(
         timezone = geo_tz
     if locale is None:
         locale = geo_locale
+    missing = [name for name, value in (("timezone", timezone), ("locale", locale)) if value is None]
+    if missing:
+        raise RuntimeError(
+            "GeoIP resolution failed: could not determine " + " and ".join(missing)
+        )
     return timezone, locale, exit_ip
 
 

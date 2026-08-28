@@ -22,7 +22,8 @@ const GEOIP_DB_URL =
   "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb";
 const GEOIP_DB_FILENAME = "GeoLite2-City.mmdb";
 const GEOIP_UPDATE_INTERVAL_MS = 30 * 86_400_000; // 30 days
-const DEFAULT_GEOIP_TIMEOUT_MS = 5_000;
+/** @internal Exported for parity testing. */
+export const DEFAULT_GEOIP_TIMEOUT_MS = 20_000;
 
 /** Country ISO code → BCP 47 locale (covers ~90% of proxy traffic). */
 export const COUNTRY_LOCALE_MAP: Record<string, string> = {
@@ -72,8 +73,8 @@ export interface GeoResult {
 
 /**
  * Resolve timezone and locale from a proxy's IP address.
- * Returns `{ timezone, locale }` — either may be null on failure.
- * Never throws.
+ * Returns `{ timezone, locale }`. Throws when the exit IP, database, or
+ * database lookup cannot be resolved.
  *
  * When `proxyUrl` is falsy, the machine's own public IP is used instead
  * (echo services queried directly, no proxy), so geoip works proxy-free.
@@ -108,13 +109,14 @@ export async function resolveProxyGeo(
   if (!ip && proxyUrl && !deadlineExpired(deadline)) ip = await resolveProxyIp(proxyUrl);
   if (!ip || deadlineExpired(deadline)) {
     if (deadlineExpired(deadline)) {
-      console.warn(`[cloakbrowser] GeoIP resolution timed out after ${timeoutMs}ms; continuing without GeoIP`);
+      throw new Error(`GeoIP resolution timed out after ${timeoutMs / 1000}s`);
     }
-    return { timezone: null, locale: null, exitIp: null };
+    throw new Error("GeoIP resolution failed: could not discover the egress IP");
   }
 
-  // DB only drives tz/locale; a missing/failed DB still returns the exit IP.
-  if (!dbPath) return { timezone: null, locale: null, exitIp: ip };
+  if (!dbPath) {
+    throw new Error("GeoIP resolution failed: GeoIP database is unavailable");
+  }
 
   try {
     const buf = fs.readFileSync(dbPath);
@@ -125,8 +127,9 @@ export async function resolveProxyGeo(
     const locale =
       countryCode ? (COUNTRY_LOCALE_MAP[countryCode] ?? null) : null;
     return { timezone, locale, exitIp: ip };
-  } catch {
-    return { timezone: null, locale: null, exitIp: ip };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`GeoIP lookup failed for ${ip}: ${detail}`, { cause: error });
   }
 }
 
@@ -471,11 +474,19 @@ export async function maybeResolveGeoip(
   }
 
   const { timezone: geoTz, locale: geoLocale, exitIp: geoExitIp } = await resolveProxyGeo(proxyUrl);
-  const exitIp = geoExitIp ?? undefined;
+  const resolvedTimezone = timezone ?? geoTz ?? undefined;
+  const resolvedLocale = locale ?? geoLocale ?? undefined;
+  const missing = [
+    resolvedTimezone ? null : "timezone",
+    resolvedLocale ? null : "locale",
+  ].filter((value): value is string => value !== null);
+  if (missing.length > 0) {
+    throw new Error(`GeoIP resolution failed: could not determine ${missing.join(" and ")}`);
+  }
   return {
-    timezone: timezone ?? geoTz ?? undefined,
-    locale: locale ?? geoLocale ?? undefined,
-    exitIp,
+    timezone: resolvedTimezone,
+    locale: resolvedLocale,
+    exitIp: geoExitIp ?? undefined,
   };
 }
 

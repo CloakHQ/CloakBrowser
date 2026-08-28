@@ -287,7 +287,15 @@ public static class CloakLauncher
         }
 
         var (geoTz, geoLocale, exitIp) = await GeoIp.ResolveProxyGeoWithIpAsync(proxyUrl).ConfigureAwait(false);
-        return (timezone ?? geoTz, locale ?? geoLocale, exitIp);
+        timezone ??= geoTz;
+        locale ??= geoLocale;
+        var missing = new List<string>();
+        if (timezone == null) missing.Add("timezone");
+        if (locale == null) missing.Add("locale");
+        if (missing.Count > 0)
+            throw new InvalidOperationException(
+                $"GeoIP resolution failed: could not determine {string.Join(" and ", missing)}");
+        return (timezone, locale, exitIp);
     }
 
     // -----------------------------------------------------------------------

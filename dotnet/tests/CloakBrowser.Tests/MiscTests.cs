@@ -30,6 +30,16 @@ public class GeoIpTests
     }
 
     [Fact]
+    public void DefaultGeoIpTimeout_IsTwentySeconds()
+    {
+        var field = typeof(GeoIp).GetField(
+            "DefaultGeoIpTimeoutSeconds",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(field);
+        Assert.Equal(20.0, field.GetRawConstantValue());
+    }
+
+    [Fact]
     public async Task MaybeResolveGeoIp_Disabled_ReturnsInputWithoutResolving()
     {
         var (tz, loc, ip) = await CloakLauncher.MaybeResolveGeoIpAsync(

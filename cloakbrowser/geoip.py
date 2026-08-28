@@ -29,7 +29,7 @@ GEOIP_DB_URL = (
 )
 GEOIP_DB_FILENAME = "GeoLite2-City.mmdb"
 GEOIP_UPDATE_INTERVAL = 30 * 86_400  # 30 days
-DEFAULT_GEOIP_TIMEOUT_SECONDS = 5.0
+DEFAULT_GEOIP_TIMEOUT_SECONDS = 20.0
 GEOIP_TIMEOUT_ENV = "CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS"
 
 # Serializes GeoIP DB downloads within a process so N concurrent launches
@@ -80,8 +80,8 @@ COUNTRY_LOCALE_MAP: dict[str, str] = {
 def resolve_proxy_geo(proxy_url: str | None) -> tuple[str | None, str | None]:
     """Resolve timezone and locale from a proxy's IP address.
 
-    Returns ``(timezone, locale)`` — either or both may be ``None`` on
-    failure (missing dep, DB download error, lookup miss).  Never raises.
+    Returns ``(timezone, locale)``. Raises when the exit IP, database, or
+    database lookup cannot be resolved.
 
     When *proxy_url* is falsy, the machine's own public IP is used instead
     (direct HTTP to the echo services, no proxy).
@@ -127,12 +127,11 @@ def resolve_proxy_geo_with_ip(
         ip = _resolve_proxy_ip(proxy_url)
     if ip is None or _deadline_expired(deadline):
         if deadline is not None and _deadline_expired(deadline):
-            logger.warning("GeoIP resolution timed out after %.1fs; continuing without GeoIP", timeout)
-        return None, None, None
+            raise RuntimeError(f"GeoIP resolution timed out after {timeout:.1f}s")
+        raise RuntimeError("GeoIP resolution failed: could not discover the egress IP")
 
-    # DB only drives tz/locale; a missing/failed DB still returns the exit IP.
     if db_path is None:
-        return None, None, ip
+        raise RuntimeError("GeoIP resolution failed: GeoIP database is unavailable")
 
     try:
         with geoip2.database.Reader(str(db_path)) as reader:
@@ -146,8 +145,7 @@ def resolve_proxy_geo_with_ip(
             )
             return timezone, locale, ip
     except Exception as exc:
-        logger.warning("GeoIP lookup failed for %s: %s", ip, exc)
-        return None, None, ip
+        raise RuntimeError(f"GeoIP lookup failed for {ip}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +245,7 @@ def resolve_proxy_exit_ip(proxy_url: str | None) -> str | None:
     deadline = _deadline_from_timeout(timeout)
     ip = _resolve_exit_ip(proxy_url, timeout=timeout)
     if ip is None and _deadline_expired(deadline):
-        logger.warning("GeoIP resolution timed out after %.1fs; continuing without GeoIP", timeout)
+        logger.warning("Proxy exit-IP resolution timed out after %.1fs", timeout)
     return ip
 
 
