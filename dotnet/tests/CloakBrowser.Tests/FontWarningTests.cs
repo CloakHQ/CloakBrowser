@@ -59,6 +59,45 @@ public class WelcomeCadenceTests
 }
 
 /// <summary>
+/// The welcome banner runs on the binary-download path. On a legacy Windows
+/// console a non-ASCII glyph can crash or mojibake the write (ticket 2354), so
+/// the banner must be pure ASCII. Mirrors the Python/JS welcome tests.
+/// Serialized: mutates CLOAKBROWSER_CACHE_DIR and Console.Error.
+/// </summary>
+[Collection("env-serial")]
+public class WelcomeBannerAsciiTests
+{
+    [Theory]
+    [InlineData("keyless")]
+    [InlineData("free")]
+    [InlineData("pro")]
+    public void Banner_is_ascii_only(string tier)
+    {
+        var prev = Environment.GetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR");
+        var tmp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tmp);
+        var origErr = Console.Error;
+        var buf = new StringWriter();
+        try
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", tmp);
+            Console.SetError(buf);
+            Download.ShowWelcome(tier); // marker absent -> shows
+            var outText = buf.ToString();
+            Assert.NotEqual("", outText);
+            foreach (var c in outText)
+                Assert.True(c <= 0x7F, $"non-ASCII U+{(int)c:X4} in {tier} banner");
+        }
+        finally
+        {
+            Console.SetError(origErr);
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", prev);
+            try { Directory.Delete(tmp, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+}
+
+/// <summary>
 /// Linux Windows-font mismatch warning. Platform detection and fc-list aren't
 /// mockable without a DI refactor, so these cover the deterministic paths: the
 /// non-windows short-circuit (returns before any probe on every OS) and the

@@ -1586,13 +1586,18 @@ def _maybe_warn_windows_fonts(chrome_args: list[str]) -> None:
         if present is None or present:
             return  # full set present, or can't determine — don't warn
         # Write straight to stderr (like the welcome banner and the JS/.NET
-        # wrappers) so an app's logging config can't silence it.
-        sys.stderr.write(
-            "[cloakbrowser] Incomplete Windows font set — installing the full "
-            "set is strongly advised for best results when spoofing Windows on "
-            "Linux. https://github.com/CloakHQ/cloakbrowser#font-setup-on-linux "
-            "(silence: CLOAKBROWSER_SUPPRESS_FONT_WARNING=1)\n"
-        )
+        # wrappers) so an app's logging config can't silence it. ASCII-only and
+        # swallow-everything: on a legacy Windows console stderr is cp1252/strict
+        # and this write is on the launch path (ticket 2354).
+        try:
+            sys.stderr.write(
+                "[cloakbrowser] Incomplete Windows font set - installing the full "
+                "set is strongly advised for best results when spoofing Windows on "
+                "Linux. https://github.com/CloakHQ/cloakbrowser#font-setup-on-linux "
+                "(silence: CLOAKBROWSER_SUPPRESS_FONT_WARNING=1)\n"
+            )
+        except Exception:
+            pass
         try:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text("")

@@ -221,7 +221,7 @@ async function resolveExitIp(proxyUrl: string | null | undefined, timeoutMs?: nu
     try {
       ({ SocksProxyAgent } = await import("socks-proxy-agent"));
     } catch {
-      console.warn("[cloakbrowser] socks-proxy-agent not installed — cannot resolve exit IP through SOCKS5 proxy. Install it: npm install socks-proxy-agent");
+      console.warn("[cloakbrowser] socks-proxy-agent not installed - cannot resolve exit IP through SOCKS5 proxy. Install it: npm install socks-proxy-agent");
       return null;
     }
     const { default: https } = await import("node:https");

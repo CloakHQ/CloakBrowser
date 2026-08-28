@@ -134,25 +134,28 @@ public static class Download
     ///   "free"    — a free GitHub key (latest binary, one concurrent session)
     ///   "keyless" — no key, running the older free binary (invite the free login)
     /// </summary>
-    private static void ShowWelcome(string tier = "keyless")
+    internal static void ShowWelcome(string tier = "keyless")
     {
         var marker = Path.Combine(Config.GetCacheDir(), ".welcome_shown");
         if (!WelcomeDue(marker, tier == "pro")) return;
 
+        // ASCII-only banner: on a legacy Windows console a non-ASCII glyph can
+        // crash or mojibake the write, and this runs on the binary-download
+        // path (ticket 2354). Keep the three wrappers byte-parallel.
         var sb = new System.Text.StringBuilder();
         sb.Append('\n');
-        sb.Append("  CloakBrowser — stealth Chromium for automation\n");
+        sb.Append("  CloakBrowser - stealth Chromium for automation\n");
         sb.Append("  https://github.com/CloakHQ/CloakBrowser\n");
         sb.Append('\n');
         if (tier == "pro")
         {
-            sb.Append($"  CloakBrowser Pro active (v{ProMajor}) — latest binary, newest patches.\n");
-            sb.Append("  Pro support → support@cloakbrowser.dev\n");
+            sb.Append($"  CloakBrowser Pro active (v{ProMajor}) - latest binary, newest patches.\n");
+            sb.Append("  Pro support -> support@cloakbrowser.dev\n");
         }
         else if (tier == "free")
         {
             sb.Append($"  CloakBrowser free (v{ProMajor}): the latest binary, 1 concurrent session.\n");
-            sb.Append("  For more than one concurrent session → https://cloakbrowser.dev\n");
+            sb.Append("  For more than one concurrent session -> https://cloakbrowser.dev\n");
         }
         else
         {
@@ -160,7 +163,7 @@ public static class Download
             sb.Append($"  Running the free binary (v{freeMajor}). " +
                       $"The latest binary (v{ProMajor}) is free too, with 1 concurrent session.\n");
             sb.Append("  Get your key: run  cloakbrowser login  or visit https://cloakbrowser.dev/free\n");
-            sb.Append("  For more than one concurrent session → https://cloakbrowser.dev\n");
+            sb.Append("  For more than one concurrent session -> https://cloakbrowser.dev\n");
         }
         sb.Append("  Star us if CloakBrowser helps your project!\n");
         sb.Append('\n');

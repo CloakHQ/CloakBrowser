@@ -568,7 +568,7 @@ public static class CloakLauncher
             var present = WindowsFontsPresent();
             if (present != false) return; // true (full set) or null (undeterminable)
             CloakLog.Warning(
-                "[cloakbrowser] Incomplete Windows font set — installing the full " +
+                "[cloakbrowser] Incomplete Windows font set - installing the full " +
                 "set is strongly advised for best results when spoofing Windows on " +
                 "Linux. https://github.com/CloakHQ/cloakbrowser#font-setup-on-linux " +
                 "(silence: CLOAKBROWSER_SUPPRESS_FONT_WARNING=1)");
