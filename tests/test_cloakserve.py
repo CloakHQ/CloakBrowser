@@ -472,6 +472,7 @@ class TestConnectionTracking:
     def _track_live_process(self, pool, seed="seed1"):
         pool._processes[seed] = SimpleNamespace(
             process=SimpleNamespace(poll=lambda: None),
+            cdp_port=5100,
         )
 
     def test_connect_increments(self):
@@ -570,6 +571,13 @@ class TestConnectionTracking:
         async def run():
             pool = self._make_pool(idle_timeout=1.0)
             self._track_live_process(pool)
+
+            # The reuse fast-path now also probes the CDP port; the tracked
+            # process is deliberately live, so keep the probe positive.
+            async def _always_alive(_port):
+                return True
+
+            pool._cdp_port_alive = _always_alive
 
             pool.connect("seed1")
             pool.disconnect("seed1")
@@ -676,3 +684,352 @@ class TestSafeRmtree:
         pool._safe_rmtree(traversal)
 
         assert victim.exists(), "Traversal path must not be deleted"
+
+
+# ---------------------------------------------------------------------------
+# Dead-CDP-port corpse eviction
+#
+# process.poll() reports a Chrome alive until the OS reaps it, but Chrome drops
+# its DevTools/CDP socket seconds before it exits (and a wedged Chrome keeps the
+# process alive with a dead port indefinitely). Reusing such a corpse hands back
+# a browser whose CDP port refuses connections, so the /json handlers used to
+# 502 without evicting it — every retry hit the same corpse. The pool now probes
+# the CDP port before reuse, and the handlers evict-and-retry once.
+# ---------------------------------------------------------------------------
+
+
+class TestCdpPortAlive:
+    """_cdp_port_alive: a real local TCP probe, not a poll() guess."""
+
+    def _make_pool(self):
+        return ChromePool(
+            binary="/fake/chrome",
+            global_args=[],
+            headless=True,
+            data_dir="/tmp/test-cloakserve",
+        )
+
+    def test_true_for_a_listening_port(self):
+        import socket as _socket
+
+        async def run():
+            listener = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            listener.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(16)
+            port = listener.getsockname()[1]
+            try:
+                assert await self._make_pool()._cdp_port_alive(port) is True
+            finally:
+                listener.close()
+
+        asyncio.run(run())
+
+    def test_false_for_a_closed_port(self):
+        import socket as _socket
+
+        async def run():
+            # Bind then immediately release a port so nothing is listening on it.
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+            s.close()
+
+            assert await self._make_pool()._cdp_port_alive(port, timeout=0.2) is False
+
+        asyncio.run(run())
+
+
+class TestPoolKeyForIdentity:
+    """_pool_key_for matches by object identity, never by re-deriving the seed key."""
+
+    def _make_pool(self):
+        return ChromePool(
+            binary="/fake/chrome",
+            global_args=[],
+            headless=True,
+            data_dir="/tmp/test-cloakserve",
+        )
+
+    def test_returns_key_of_the_pooled_object(self):
+        pool = self._make_pool()
+        cp = SimpleNamespace(cdp_port=5100)
+        pool._processes["seed1"] = cp
+        assert pool._pool_key_for(cp) == "seed1"
+
+    def test_returns_none_when_not_pooled(self):
+        pool = self._make_pool()
+        assert pool._pool_key_for(SimpleNamespace(cdp_port=5100)) is None
+
+    def test_ignores_an_equal_but_distinct_process_under_the_same_key(self):
+        # A concurrent relaunch on the same seed replaced the entry with a fresh
+        # object; the corpse is no longer pooled, so identity lookup finds
+        # nothing to evict — re-deriving "seed1" would have killed the fresh one.
+        pool = self._make_pool()
+        corpse = SimpleNamespace(cdp_port=5100)
+        fresh = SimpleNamespace(cdp_port=5101)
+        pool._processes["seed1"] = fresh
+        assert pool._pool_key_for(corpse) is None
+        assert pool._pool_key_for(fresh) == "seed1"
+
+
+class TestGetOrLaunchReuseGuard:
+    """get_or_launch reuses a pooled Chrome only when its CDP port is alive."""
+
+    def _make_pool(self):
+        return ChromePool(
+            binary="/fake/chrome",
+            global_args=[],
+            headless=True,
+            data_dir="/tmp/test-cloakserve",
+        )
+
+    def _stub_launch(self, pool, monkeypatch, cdp_port=6000):
+        """Neuter the real Chrome launch so a relaunch is observable, not spawned."""
+        state = {"launches": 0}
+
+        def _popen(*_args, **_kwargs):
+            state["launches"] += 1
+            return SimpleNamespace(poll=lambda: None, pid=4321, kill=lambda: None)
+
+        async def _wait_for_cdp(_port):
+            return True
+
+        monkeypatch.setattr(_mod.subprocess, "Popen", _popen)
+        monkeypatch.setattr(_mod.os, "makedirs", lambda *a, **k: None)
+        monkeypatch.setattr(_mod, "build_args", lambda **k: [])
+        monkeypatch.setattr(_mod, "_resolve_webrtc_args", lambda fp_extra, proxy: fp_extra)
+        monkeypatch.setattr(pool, "_allocate_port", lambda: cdp_port)
+        monkeypatch.setattr(pool, "_wait_for_cdp", _wait_for_cdp)
+        return state
+
+    def test_poll_alive_but_dead_port_is_evicted_and_relaunched(self, monkeypatch):
+        async def run():
+            pool = self._make_pool()
+            corpse = SimpleNamespace(
+                process=SimpleNamespace(poll=lambda: None),
+                cdp_port=5100,
+                user_data_dir="/tmp/test-cloakserve/seed1",
+            )
+            pool._processes["seed1"] = corpse
+
+            # poll() says alive, but the CDP port refuses connections.
+            async def _dead(_port):
+                return False
+
+            monkeypatch.setattr(pool, "_cdp_port_alive", _dead)
+
+            evicted = []
+
+            async def _cleanup(key):
+                evicted.append(key)
+                pool._processes.pop(key, None)
+
+            monkeypatch.setattr(pool, "_cleanup_process", _cleanup)
+            launch = self._stub_launch(pool, monkeypatch, cdp_port=6000)
+
+            cp = await pool.get_or_launch("seed1")
+
+            assert evicted == ["seed1"], "the corpse must be evicted"
+            assert cp is not corpse, "the corpse must not be reused"
+            assert cp.cdp_port == 6000, "a fresh browser must be launched"
+            assert launch["launches"] == 1
+            assert pool._processes["seed1"] is cp
+
+        asyncio.run(run())
+
+    def test_poll_alive_and_port_alive_is_reused_after_exactly_one_probe(self, monkeypatch):
+        async def run():
+            pool = self._make_pool()
+            live = SimpleNamespace(
+                process=SimpleNamespace(poll=lambda: None),
+                cdp_port=5100,
+            )
+            pool._processes["seed1"] = live
+
+            probes = []
+
+            async def _alive(port):
+                probes.append(port)
+                return True
+
+            monkeypatch.setattr(pool, "_cdp_port_alive", _alive)
+
+            def _no_launch(*_args, **_kwargs):
+                raise AssertionError("a live browser must be reused, never relaunched")
+
+            monkeypatch.setattr(_mod.subprocess, "Popen", _no_launch)
+
+            cp = await pool.get_or_launch("seed1")
+
+            assert cp is live, "the live browser must be reused"
+            assert probes == [5100], "the CDP port must be probed exactly once"
+
+        asyncio.run(run())
+
+
+class TestHandlerCorpseRecovery:
+    """handle_json_version / handle_json_list evict a dead corpse and retry once."""
+
+    def _make_request(self, pool, query_string="fingerprint=seed1"):
+        return SimpleNamespace(
+            app={"pool": pool, "port": 9222},
+            query_string=query_string,
+            headers={"Host": "cdp.example.com:9222"},
+            scheme="http",
+        )
+
+    class _FlakySession:
+        """aiohttp.ClientSession stand-in: fails the first ``fail_times`` fetches."""
+
+        def __init__(self, controller):
+            self._c = controller
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        def get(self, *_args, **_kwargs):
+            return TestHandlerCorpseRecovery._FlakyResponse(self._c)
+
+    class _FlakyResponse:
+        def __init__(self, controller):
+            self._c = controller
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def json(self):
+            self._c["calls"] += 1
+            if self._c["calls"] <= self._c["fail_times"]:
+                raise ConnectionRefusedError("CDP port refused")
+            return self._c["data"]
+
+    def _patch_session(self, monkeypatch, controller):
+        monkeypatch.setattr(
+            _mod.aiohttp,
+            "ClientSession",
+            lambda *_a, **_k: self._FlakySession(controller),
+        )
+
+    class _RecoveringPool:
+        """Hands back a fresh cp each launch; records evictions by identity."""
+
+        def __init__(self):
+            self.launches = 0
+            self.evicted = []
+            self._processes = {}
+
+        async def get_or_launch(self, **_kwargs):
+            self.launches += 1
+            cp = SimpleNamespace(cdp_port=5100 + self.launches)
+            self._processes["seed1"] = cp
+            return cp
+
+        def _pool_key_for(self, cp):
+            for key, pooled in self._processes.items():
+                if pooled is cp:
+                    return key
+            return None
+
+        async def _cleanup_process(self, key):
+            self.evicted.append(key)
+            self._processes.pop(key, None)
+
+    def test_json_version_recovers_from_a_dead_port_without_502(self, monkeypatch):
+        pool = self._RecoveringPool()
+        controller = {
+            "calls": 0,
+            "fail_times": 1,
+            "data": {"webSocketDebuggerUrl": "ws://127.0.0.1:5100/devtools/browser/guid"},
+        }
+        self._patch_session(monkeypatch, controller)
+
+        response = asyncio.run(_mod.handle_json_version(self._make_request(pool)))
+        payload = json.loads(response.text)
+
+        assert response.status == 200
+        assert pool.evicted == ["seed1"], "the dead corpse is evicted exactly once"
+        assert pool.launches == 2, "a fresh browser is launched for the retry"
+        assert payload["webSocketDebuggerUrl"] == (
+            "ws://cdp.example.com:9222/fingerprint/seed1/devtools/browser/guid"
+        )
+
+    def test_json_version_returns_502_only_after_both_attempts_fail(self, monkeypatch):
+        pool = self._RecoveringPool()
+        controller = {"calls": 0, "fail_times": 2, "data": {}}
+        self._patch_session(monkeypatch, controller)
+
+        response = asyncio.run(_mod.handle_json_version(self._make_request(pool)))
+
+        assert response.status == 502
+        assert json.loads(response.text) == {"error": "CDP endpoint unreachable"}
+        assert pool.evicted == ["seed1"], "eviction is attempted once, on the first failure"
+        assert pool.launches == 2, "both attempts run before giving up"
+
+    def test_json_list_recovers_from_a_dead_port_without_502(self, monkeypatch):
+        pool = self._RecoveringPool()
+        controller = {
+            "calls": 0,
+            "fail_times": 1,
+            "data": [{"webSocketDebuggerUrl": "ws://127.0.0.1:5100/devtools/page/guid"}],
+        }
+        self._patch_session(monkeypatch, controller)
+
+        response = asyncio.run(_mod.handle_json_list(self._make_request(pool)))
+        payload = json.loads(response.text)
+
+        assert response.status == 200
+        assert pool.evicted == ["seed1"]
+        assert pool.launches == 2
+        assert payload[0]["webSocketDebuggerUrl"] == (
+            "ws://cdp.example.com:9222/fingerprint/seed1/devtools/page/guid"
+        )
+
+    def test_eviction_by_identity_spares_a_concurrently_relaunched_process(self, monkeypatch):
+        # get_or_launch hands back a corpse on attempt 0, but by the time the
+        # handler goes to evict, a concurrent same-seed relaunch has already put
+        # a fresh process in the pool under "seed1". Identity-based lookup must
+        # find nothing to evict, so the fresh process survives and is reused.
+        corpse = SimpleNamespace(cdp_port=5100)
+        fresh = SimpleNamespace(cdp_port=5101)
+
+        class _RacePool:
+            def __init__(self):
+                self.launches = 0
+                self.evicted = []
+                # the concurrent relaunch already swapped the entry
+                self._processes = {"seed1": fresh}
+
+            async def get_or_launch(self, **_kwargs):
+                self.launches += 1
+                return corpse if self.launches == 1 else fresh
+
+            def _pool_key_for(self, cp):
+                for key, pooled in self._processes.items():
+                    if pooled is cp:
+                        return key
+                return None
+
+            async def _cleanup_process(self, key):
+                self.evicted.append(key)
+                self._processes.pop(key, None)
+
+        pool = _RacePool()
+        controller = {
+            "calls": 0,
+            "fail_times": 1,  # the corpse fetch fails, the fresh fetch succeeds
+            "data": {"webSocketDebuggerUrl": "ws://127.0.0.1:5101/devtools/browser/guid"},
+        }
+        self._patch_session(monkeypatch, controller)
+
+        response = asyncio.run(_mod.handle_json_version(self._make_request(pool)))
+
+        assert response.status == 200
+        assert pool.evicted == [], "the concurrently-relaunched process must not be evicted"
+        assert pool._processes["seed1"] is fresh, "the fresh process survives"
