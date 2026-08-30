@@ -6,8 +6,10 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
-## [Unreleased]
+## [0.5.10] — 2026-08-30
 
+- **[wrapper]** The first-launch welcome banner no longer aborts a launch on a legacy Windows console. On a non-UTF-8 (cp1252) console its arrow and dash characters raised `UnicodeEncodeError` on the binary-download path, which blocked license apply and profile launch (notably in CloakBrowser Manager). The banner is now ASCII and every write is guarded, so a cosmetic message can never stop a launch. Python, JavaScript, and .NET.
+- **[wrapper]** A requested GeoIP resolution that fails now aborts the launch instead of silently continuing on the container clock. Failure means the lookup times out, the database cannot be loaded, the lookup cannot complete, or timezone or locale stay unresolved; the default resolution timeout is raised from 5 to 20 seconds. Explicit timezone and locale overrides remain valid without an egress-IP result. Python, JavaScript, and .NET.
 - **[wrapper]** A license key the server rejects (invalid or expired), or one that cannot be validated at all (license server unreachable with no cached result), now raises a clear error instead of silently downloading the older free binary. Passing no key still uses the free binary as before. Python, JavaScript, and .NET.
 
 ---
