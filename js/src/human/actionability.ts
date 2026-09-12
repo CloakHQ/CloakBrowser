@@ -12,6 +12,7 @@ import {
   StealthEvaluationError, StealthWorldUnavailableError,
   UnsupportedHumanizeSelectorError, type StealthWorld,
 } from './stealthDom.js';
+import { remainingTimeout, timeoutBudget, type TimeoutInput } from './timeout.js';
 
 // ---------------------------------------------------------------------------
 // Error hierarchy
@@ -139,17 +140,17 @@ export async function ensureActionable(
   pageOrFrame: Page | Frame,
   selector: string,
   checks: ReadonlySet<CheckName>,
-  timeout: number = 30000,
+  timeout: TimeoutInput = 30000,
   force: boolean = false,
 ): Promise<void> {
   if (force) return;
 
-  const deadline = Date.now() + timeout;
+  const budget = timeoutBudget(timeout);
   let attempt = 0;
   let lastError: Error | null = null;
 
   while (true) {
-    const remainingMs = Math.max(0, deadline - Date.now());
+    const remainingMs = remainingTimeout(budget);
     if (remainingMs <= 0) {
       if (lastError) throw lastError;
       throw new ActionabilityError(selector, 'timeout', 'timeout expired before first check');
@@ -161,7 +162,13 @@ export async function ensureActionable(
     } catch (error) {
       if (error instanceof ActionabilityError || error instanceof StealthEvaluationError) {
         lastError = error;
-        if (Date.now() >= deadline) throw lastError;
+        if (
+          (error instanceof StealthEvaluationError &&
+            budget.deadline === Number.POSITIVE_INFINITY) ||
+          Date.now() >= budget.deadline
+        ) {
+          throw lastError;
+        }
         await backoffSleep(attempt++);
       } else {
         throw error;
@@ -189,13 +196,13 @@ function boxesDiffer(
 export async function ensureStable(
   pageOrFrame: Page | Frame,
   selector: string,
-  timeout: number = 5000,
+  timeout: TimeoutInput = 5000,
 ): Promise<void> {
-  const deadline = Date.now() + timeout;
+  const budget = timeoutBudget(timeout);
   let attempt = 0;
 
   while (true) {
-    const remainingMs = Math.max(0, deadline - Date.now());
+    const remainingMs = remainingTimeout(budget);
     if (remainingMs <= 0) throw new ElementNotStableError(selector);
 
     try {
@@ -209,14 +216,19 @@ export async function ensureStable(
       if (!boxesDiffer(box1, box2)) return;
     } catch (error) {
       if (error instanceof StealthEvaluationError) {
-        if (Date.now() >= deadline) throw error;
+        if (
+          budget.deadline === Number.POSITIVE_INFINITY ||
+          Date.now() >= budget.deadline
+        ) {
+          throw error;
+        }
         await backoffSleep(attempt++);
         continue;
       }
       throw error;
     }
 
-    if (Date.now() >= deadline) throw new ElementNotStableError(selector);
+    if (Date.now() >= budget.deadline) throw new ElementNotStableError(selector);
     await backoffSleep(attempt++);
   }
 }
@@ -245,9 +257,9 @@ export async function checkPointerEvents(
   x: number,
   y: number,
   stealth?: StealthWorld | null,
-  timeout: number = 5000,
+  timeout: TimeoutInput = 5000,
 ): Promise<void> {
-  const deadline = Date.now() + timeout;
+  const budget = timeoutBudget(timeout);
   let attempt = 0;
   let lastMiss: string | null = null;
   const world = stealth ?? getWorld(pageOrFrame);
@@ -265,12 +277,17 @@ export async function checkPointerEvents(
     if (status === STALE) throw new ElementTargetChangedError(selector);
     if (status === NOT_FOUND) throw new ElementNotAttachedError(selector);
     if (status === EVALUATION_FAILED) {
-      if (Date.now() >= deadline) throw new StealthEvaluationError(selector);
+      if (
+        budget.deadline === Number.POSITIVE_INFINITY ||
+        Date.now() >= budget.deadline
+      ) {
+        throw new StealthEvaluationError(selector);
+      }
     } else if (status === OK && data && data.hit) {
       return;
     } else if (status === OK && data) {
       lastMiss = data.covering ?? 'unknown';
-      if (Date.now() >= deadline) {
+      if (Date.now() >= budget.deadline) {
         throw new ElementNotReceivingEventsError(selector, lastMiss ?? 'unknown');
       }
     } else {
@@ -288,18 +305,18 @@ export async function checkPointerEvents(
 export async function ensureActionableHandle(
   el: ElementHandle,
   checks: ReadonlySet<CheckName>,
-  timeout: number = 30000,
+  timeout: TimeoutInput = 30000,
   force: boolean = false,
 ): Promise<void> {
   if (force) return;
 
-  const deadline = Date.now() + timeout;
+  const budget = timeoutBudget(timeout);
   let attempt = 0;
   let lastError: ActionabilityError | null = null;
   const label = '<ElementHandle>';
 
   while (true) {
-    const remainingMs = Math.max(0, deadline - Date.now());
+    const remainingMs = remainingTimeout(budget);
     if (remainingMs <= 0) {
       if (lastError) throw lastError;
       throw new ActionabilityError(label, 'timeout', 'timeout expired before first check');
@@ -331,7 +348,7 @@ export async function ensureActionableHandle(
     } catch (error) {
       if (error instanceof ActionabilityError) {
         lastError = error;
-        if (Date.now() >= deadline) throw lastError;
+        if (Date.now() >= budget.deadline) throw lastError;
         await backoffSleep(attempt++);
       } else {
         throw error;
@@ -344,9 +361,9 @@ export async function checkPointerEventsHandle(
   el: ElementHandle,
   x: number,
   y: number,
-  timeout: number = 5000,
+  timeout: TimeoutInput = 5000,
 ): Promise<void> {
-  const deadline = Date.now() + timeout;
+  const budget = timeoutBudget(timeout);
   let attempt = 0;
 
   while (true) {
@@ -361,7 +378,7 @@ export async function checkPointerEventsHandle(
     if (!result || result.hit) return;
 
     const covering = result?.covering ?? 'unknown';
-    if (Date.now() >= deadline) {
+    if (Date.now() >= budget.deadline) {
       throw new ElementNotReceivingEventsError('<ElementHandle>', covering);
     }
     await backoffSleep(attempt++);

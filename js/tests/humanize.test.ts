@@ -1412,13 +1412,19 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
   it("page.click({ timeout }) reaches scrollToElement", async () => {
     const scrollMod = await import("../src/human/scroll.js");
     const { patchPage } = await import("../src/human/index.js");
+    const { remainingTimeout, timeoutBudget } = await import("../src/human/timeout.js");
     const cfg = resolveConfig("default", { idle_between_actions: false });
 
     let captured = -1;
     const spy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
-      async (_page, _raw, _sel, cx, cy, _cfg, timeout?: number) => {
-        captured = timeout ?? -1;
-        return { box: { x: 100, y: 100, width: 50, height: 30, targetId: 1 }, cursorX: cx, cursorY: cy, didScroll: false };
+      async (_page, _raw, _sel, cx, cy, _cfg, timeout: any = -1) => {
+        captured = remainingTimeout(timeoutBudget(timeout));
+        return {
+          box: { x: 100, y: 100, width: 50, height: 30, targetId: 1, gen: 1 },
+          cursorX: cx,
+          cursorY: cy,
+          didScroll: false,
+        };
       },
     );
 
@@ -1434,6 +1440,126 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
       expect(captured).toBeLessThanOrEqual(2000);
     }
     spy.mockRestore();
+  });
+});
+
+describe("Playwright timeout: 0 semantics", () => {
+  const fastConfig = () => resolveConfig("default", {
+    idle_between_actions: false,
+    mouse_min_steps: 1,
+    mouse_max_steps: 1,
+    mouse_burst_pause: [0, 0],
+    click_aim_delay_input: [0, 0],
+    click_aim_delay_button: [0, 0],
+    click_hold_input: [0, 0],
+    click_hold_button: [0, 0],
+  });
+
+  it("keeps disabled budgets infinite internally and maps them back to zero", async () => {
+    const {
+      capTimeout, remainingTimeout, timeoutBudget, toPlaywrightTimeout,
+    } = await import("../src/human/timeout.js");
+    const budget = timeoutBudget(0);
+
+    expect(remainingTimeout(budget)).toBe(Number.POSITIVE_INFINITY);
+    expect(remainingTimeout(capTimeout(budget, 5000))).toBe(Number.POSITIVE_INFINITY);
+    expect(toPlaywrightTimeout(budget)).toBe(0);
+  });
+
+  it("does not revive an exhausted finite budget as a disabled timeout", async () => {
+    const { CHECKS_CLICK, ensureActionable } = await import("../src/human/actionability.js");
+    const {
+      capTimeout, remainingTimeout, timeoutBudget, toPlaywrightTimeout,
+    } = await import("../src/human/timeout.js");
+    const expired = { deadline: Date.now() - 1 };
+
+    expect(timeoutBudget(expired)).toBe(expired);
+    expect(remainingTimeout(capTimeout(expired, 5000))).toBe(0);
+    expect(toPlaywrightTimeout(expired)).toBe(1);
+    await expect(
+      ensureActionable(buildMockPage(), "#ready", CHECKS_CLICK, expired),
+    ).rejects.toThrow("timeout expired before first check");
+  });
+
+  it("keeps a ready humanized page action timeout-free", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+    const page = buildMockPage();
+    const cursor = { x: 100, y: 100, initialized: true };
+
+    patchPage(page as any, fastConfig(), cursor as any);
+
+    await expect((page as any).click("#ready", { timeout: 0 })).resolves.toBeUndefined();
+    expect(page.mouse.down).toHaveBeenCalledOnce();
+    expect(page.mouse.up).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a ready ElementHandle action timeout-free", async () => {
+    const { patchSingleElementHandle } = await import("../src/human/elementhandle.js");
+    const element = buildMockElementHandle();
+    const raw = {
+      move: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      wheel: vi.fn(async () => {}),
+    };
+
+    patchSingleElementHandle(
+      element,
+      buildMockPage(),
+      fastConfig(),
+      { x: 100, y: 100, initialized: true },
+      raw,
+      { down: vi.fn(), up: vi.fn(), type: vi.fn(), insertText: vi.fn() },
+      { keyboardPress: vi.fn(), keyboardDown: vi.fn(), keyboardUp: vi.fn() },
+      null,
+    );
+
+    await expect(element.click({ timeout: 0 })).resolves.toBeUndefined();
+    expect(raw.down).toHaveBeenCalledOnce();
+    expect(raw.up).toHaveBeenCalledOnce();
+  });
+
+  it("passes zero rather than Infinity into frame Playwright calls", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+    const childFrame = buildMockFrame();
+    const mainFrame = { ...buildMockFrame(), childFrames: vi.fn(() => [childFrame]) };
+    const page = buildMockPage({ mainFrameReturn: mainFrame });
+
+    patchPage(page, fastConfig(), { x: 100, y: 100, initialized: true });
+    await childFrame.click("#ready", { timeout: 0 });
+
+    const locator = childFrame.locator.mock.results.at(-1)?.value;
+    expect(locator.scrollIntoViewIfNeeded).toHaveBeenCalledWith({ timeout: 0 });
+    expect(locator.boundingBox).toHaveBeenCalledWith({ timeout: 0 });
+  });
+
+  it("keeps isolated-world geometry polling unbounded at timeout zero", async () => {
+    const { scrollToElement } = await import("../src/human/scroll.js");
+    let evaluations = 0;
+    const page: any = {
+      viewportSize: () => ({ width: 1280, height: 720 }),
+      locator: vi.fn(),
+      _stealth: { evaluate: vi.fn(async () => {
+        evaluations++;
+        if (evaluations < 3) return { v: 2, r: "not_found" };
+        return {
+          v: 2, r: "ok", targetId: 7, gen: 1,
+          box: { x: 100, y: 200, width: 50, height: 30 },
+        };
+      }) },
+    };
+    const raw = {
+      move: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      wheel: vi.fn(async () => {}),
+    };
+
+    const result = await scrollToElement(page, raw, "#ready", 0, 0, fastConfig(), 0);
+
+    expect(result.box.targetId).toBe(7);
+    expect(evaluations).toBe(3);
+    expect(page.locator).not.toHaveBeenCalled();
   });
 });
 
@@ -1851,6 +1977,22 @@ describe("pointer-events failure semantics", () => {
     await expect(
       checkPointerEvents(page as any, "#x", 1, 1, 100, 100, world, 0),
     ).rejects.toBeInstanceOf(StealthEvaluationError);
+    expect(page.locator).not.toHaveBeenCalled();
+  });
+
+  it("checkPointerEvents retries a transient evaluation failure within a finite budget", async () => {
+    const { checkPointerEvents } = await import("../src/human/actionability.js");
+    const page = { locator: vi.fn() };
+    const world = {
+      evaluate: vi.fn()
+        .mockRejectedValueOnce(new Error("execution context destroyed"))
+        .mockResolvedValueOnce({ v: 2, r: "ok", targetId: 1, gen: 1, hit: true }),
+    };
+
+    await expect(
+      checkPointerEvents(page as any, "#x", 1, 1, 100, 100, world, 1000),
+    ).resolves.toBeUndefined();
+    expect(world.evaluate).toHaveBeenCalledTimes(2);
     expect(page.locator).not.toHaveBeenCalled();
   });
 
