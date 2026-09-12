@@ -11,7 +11,7 @@ Usage:
     browser.close()
 """
 
-from .browser import launch, launch_async, launch_context, launch_context_async, launch_persistent_context, launch_persistent_context_async, ProxySettings, build_args, maybe_resolve_geoip
+from .browser import launch, launch_async, launch_context, launch_context_async, launch_persistent_context, launch_persistent_context_async, ProxySettings, build_args, maybe_resolve_geoip, maybe_resolve_geoip_async
 from .config import CHROMIUM_VERSION, get_default_stealth_args
 from .download import binary_info, check_for_update, clear_cache, ensure_binary
 from .license import CloakBrowserLicenseError, LicenseInfo, validate_license
@@ -44,6 +44,7 @@ __all__ = [
     "get_default_stealth_args",
     "build_args",
     "maybe_resolve_geoip",
+    "maybe_resolve_geoip_async",
     "ProxySettings",
     "validate_license",
     "LicenseInfo",
