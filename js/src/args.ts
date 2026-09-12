@@ -29,6 +29,18 @@ export function buildArgs(options: LaunchOptions): string[] {
   if (options.headless === false || process.platform === "win32") {
     seen.set("--ignore-gpu-blocklist", "--ignore-gpu-blocklist");
   }
+  // Opt-in Docker GPU acceleration (gpuAccel: true / CLOAKBROWSER_GPU_ACCEL=1).
+  // ANGLE over native EGL (--use-angle=gl-egl) engages the real GPU on modern
+  // Chromium; the legacy --use-gl=egl value was removed and silently disables WebGL.
+  if (options.gpuAccel || process.env.CLOAKBROWSER_GPU_ACCEL) {
+    seen.set("--use-gl", "--use-gl=angle");
+    seen.set("--use-angle", "--use-angle=gl-egl");
+    seen.set("--enable-gpu-rasterization", "--enable-gpu-rasterization");
+    seen.set("--ignore-gpu-blocklist", "--ignore-gpu-blocklist");
+    if (process.platform === "linux") {
+      seen.set("--enable-features", "--enable-features=VaapiVideoDecoder");
+    }
+  }
   if (options.args) {
     for (const arg of options.args) {
       const key = arg.split("=")[0];
