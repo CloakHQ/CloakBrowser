@@ -319,7 +319,7 @@ class ChromePool:
             # Check if already running (including default fast-path)
             if seed_key in self._processes:
                 proc = self._processes[seed_key]
-                if proc.process.poll() is None:
+                if proc.process.poll() is None and await self._cdp_port_alive(proc.cdp_port):
                     if seed_key in self._idle_tasks:
                         self._schedule_idle_cleanup(seed_key)
                     if any([extra_args, timezone, locale, proxy, geoip]):
@@ -408,6 +408,45 @@ class ChromePool:
 
             logger.info("Chrome ready (seed=%s, port=%d, pid=%d)", actual_seed, port, process.pid)
             return cp
+
+    async def _cdp_port_alive(self, port: int, timeout: float = 0.5) -> bool:
+        """Return True only if the CDP port is accepting TCP connections.
+
+        A poll()-alive process is not proof of a usable browser. Chrome tears
+        down its DevTools/CDP socket seconds before the OS process actually
+        exits, and a wedged Chrome can keep the process alive with a dead port
+        indefinitely. Handing such a corpse back is what turns retry bursts into
+        a wall of dead-port 502s. A cheap local TCP connect lets the reuse path
+        tell a live browser from a dying one. The caller short-circuits on
+        poll() first, so an already-exited process never reaches this probe.
+        """
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", port), timeout=timeout
+            )
+        except (OSError, asyncio.TimeoutError):
+            return False
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except (OSError, asyncio.TimeoutError):
+            pass
+        return True
+
+    def _pool_key_for(self, cp: ChromeProcess) -> str | None:
+        """Return the pool key whose value IS cp, or None if cp is not pooled.
+
+        Matches on object identity, never by recomputing the seed key: a
+        concurrent relaunch on the same seed may already have replaced the pool
+        entry with a fresh ChromeProcess, and re-deriving the key would evict
+        THAT healthy process. When cp is gone the caller must evict nothing.
+        Callers must not await between this lookup and the eviction so the entry
+        cannot be swapped underneath them.
+        """
+        for key, pooled in self._processes.items():
+            if pooled is cp:
+                return key
+        return None
 
     async def _cleanup_process(self, key: str) -> None:
         """Terminate a Chrome process and clean up."""
@@ -584,25 +623,37 @@ async def handle_json_version(request: web.Request) -> web.Response:
     pool: ChromePool = request.app["pool"]
     params = parse_connection_params(request.query_string)
 
-    cp = await pool.get_or_launch(
-        seed=params["seed"],
-        extra_args=params["extra_args"] or None,
-        timezone=params["timezone"],
-        locale=params["locale"],
-        proxy=params["proxy"],
-        geoip=params["geoip"],
-    )
+    data = None
+    for attempt in range(2):
+        cp = await pool.get_or_launch(
+            seed=params["seed"],
+            extra_args=params["extra_args"] or None,
+            timezone=params["timezone"],
+            locale=params["locale"],
+            proxy=params["proxy"],
+            geoip=params["geoip"],
+        )
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"http://127.0.0.1:{cp.cdp_port}/json/version",
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                data = await resp.json()
-    except Exception as exc:
-        logger.error("Failed to reach Chrome CDP (port %d): %s", cp.cdp_port, exc)
-        return web.json_response({"error": "CDP endpoint unreachable"}, status=502)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:{cp.cdp_port}/json/version",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    data = await resp.json()
+            break
+        except Exception as exc:
+            logger.error("Failed to reach Chrome CDP (port %d): %s", cp.cdp_port, exc)
+            if attempt == 0:
+                stale_key = pool._pool_key_for(cp)
+                if stale_key is not None:
+                    logger.warning(
+                        "Evicting dead pooled Chrome (seed_key=%s, port=%d) and retrying",
+                        stale_key, cp.cdp_port,
+                    )
+                    await pool._cleanup_process(stale_key)
+                continue
+            return web.json_response({"error": "CDP endpoint unreachable"}, status=502)
 
     # Rewrite webSocketDebuggerUrl to route through our multiplexer
     host = _external_host(request)
@@ -626,25 +677,37 @@ async def handle_json_list(request: web.Request) -> web.Response:
     pool: ChromePool = request.app["pool"]
     params = parse_connection_params(request.query_string)
 
-    cp = await pool.get_or_launch(
-        seed=params["seed"],
-        extra_args=params["extra_args"] or None,
-        timezone=params["timezone"],
-        locale=params["locale"],
-        proxy=params["proxy"],
-        geoip=params["geoip"],
-    )
+    data = None
+    for attempt in range(2):
+        cp = await pool.get_or_launch(
+            seed=params["seed"],
+            extra_args=params["extra_args"] or None,
+            timezone=params["timezone"],
+            locale=params["locale"],
+            proxy=params["proxy"],
+            geoip=params["geoip"],
+        )
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"http://127.0.0.1:{cp.cdp_port}/json/list",
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                data = await resp.json()
-    except Exception as exc:
-        logger.error("Failed to reach Chrome CDP (port %d): %s", cp.cdp_port, exc)
-        return web.json_response({"error": "CDP endpoint unreachable"}, status=502)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:{cp.cdp_port}/json/list",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    data = await resp.json()
+            break
+        except Exception as exc:
+            logger.error("Failed to reach Chrome CDP (port %d): %s", cp.cdp_port, exc)
+            if attempt == 0:
+                stale_key = pool._pool_key_for(cp)
+                if stale_key is not None:
+                    logger.warning(
+                        "Evicting dead pooled Chrome (seed_key=%s, port=%d) and retrying",
+                        stale_key, cp.cdp_port,
+                    )
+                    await pool._cleanup_process(stale_key)
+                continue
+            return web.json_response({"error": "CDP endpoint unreachable"}, status=502)
 
     host = _external_host(request)
     scheme = _ws_scheme(request)
