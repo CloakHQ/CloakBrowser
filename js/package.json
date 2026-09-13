@@ -83,11 +83,11 @@
   "devDependencies": {
     "@types/node": "^26.0.1",
     "mmdb-lib": "^3.0.2",
-    "playwright-core": "1.62",
+    "playwright-core": "1.63",
     "puppeteer-core": "^25.0.4",
     "socks-proxy-agent": "^10.0.0",
     "typescript": "^7.0.2",
-    "vitest": "^3.2.6"
+    "vitest": "^5.0.0"
   },
   "scripts": {
     "build": "tsc",
