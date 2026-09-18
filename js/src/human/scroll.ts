@@ -13,6 +13,7 @@ import {
   EVALUATION_FAILED, VIEWPORT_JS, StealthEvaluationError,
   StealthWorldUnavailableError, UnsupportedHumanizeSelectorError,
 } from './stealthDom.js';
+import { timeoutBudget, type TimeoutInput } from './timeout.js';
 
 export interface ElementBounds {
   x: number;
@@ -187,12 +188,13 @@ export async function scrollToElement(
   cursorX: number,
   cursorY: number,
   cfg: HumanConfig,
-  timeout: number = 30000,
+  timeout: TimeoutInput = 30000,
 ): Promise<{ box: SelectorBounds; cursorX: number; cursorY: number; didScroll: boolean }> {
+  const budget = timeoutBudget(timeout);
   return humanScrollIntoView(
     page,
     raw,
-    () => getElementBox(page, selector, timeout),
+    () => getElementBox(page, selector, budget),
     cursorX,
     cursorY,
     cfg,
@@ -202,16 +204,20 @@ export async function scrollToElement(
 export async function getElementBox(
   page: Page,
   selector: string,
-  timeout: number = 30000,
+  timeout: TimeoutInput = 30000,
 ): Promise<SelectorBounds | null> {
+  const budget = timeoutBudget(timeout);
   const world = getWorld(page);
   if (!world) throw new StealthWorldUnavailableError();
 
-  const deadline = Date.now() + Math.max(0, timeout);
   let result = await evalParsed(world, buildBoxJs(selector));
   while (
-    (result.status === NOT_FOUND || result.status === EVALUATION_FAILED) &&
-    Date.now() < deadline
+    (
+      result.status === NOT_FOUND ||
+      (result.status === EVALUATION_FAILED &&
+        budget.deadline !== Number.POSITIVE_INFINITY)
+    ) &&
+    Date.now() < budget.deadline
   ) {
     await sleep(50);
     result = await evalParsed(world, buildBoxJs(selector));
