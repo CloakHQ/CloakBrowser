@@ -5,7 +5,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { createHash, createPublicKey, verify as cryptoVerify } from "node:crypto";
+import { createHash, createPublicKey, randomUUID, verify as cryptoVerify } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createWriteStream } from "node:fs";
@@ -417,7 +417,7 @@ async function downloadAndExtract(version?: string): Promise<void> {
   // Download to temp file (atomic — no partial downloads in cache)
   const tmpPath = path.join(
     path.dirname(binaryDir),
-    `_download_${Date.now()}${getArchiveExt()}`
+    `_download_${randomUUID()}${getArchiveExt()}`
   );
 
   try {
@@ -926,7 +926,7 @@ export async function downloadProBinary(version: string, licenseKey: string): Pr
 
   const tmpPath = path.join(
     path.dirname(binaryDir),
-    `_download_${Date.now()}${getArchiveExt()}`
+    `_download_${randomUUID()}${getArchiveExt()}`
   );
 
   try {
@@ -1030,32 +1030,49 @@ async function extractArchive(
   binaryPath?: string
 ): Promise<void> {
   console.log(`[cloakbrowser] Extracting to ${destDir}`);
-
-  // Clean existing dir if partial download existed
-  if (fs.existsSync(destDir)) {
-    fs.rmSync(destDir, { recursive: true, force: true });
-  }
-  fs.mkdirSync(destDir, { recursive: true });
-
-  if (archivePath.endsWith(".zip")) {
-    await extractZip(archivePath, destDir);
-  } else {
-    // Signature-verified before extraction, so unpack as-is.
-    await tarExtract({ file: archivePath, cwd: destDir, strip: 0 });
-  }
-
-  // Flatten single subdirectory if needed
-  flattenSingleSubdir(destDir);
-
-  // Make binary executable (skip on Windows — no-op / AV lock risk)
   const bp = binaryPath || getBinaryPath();
-  if (process.platform !== "win32" && fs.existsSync(bp)) {
-    fs.chmodSync(bp, 0o755);
-  }
 
-  // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
-  if (process.platform === "darwin") {
-    removeQuarantine(destDir);
+  // Extract into a private sibling dir, then rename it into place. Concurrent
+  // first runs (in this process or others) each get their own staging dir, so
+  // none of them can see or delete another's half-written install.
+  const stagingDir = `${destDir}.partial-${randomUUID()}`;
+  fs.mkdirSync(stagingDir);
+  try {
+    if (archivePath.endsWith(".zip")) {
+      await extractZip(archivePath, stagingDir);
+    } else {
+      // Signature-verified before extraction, so unpack as-is.
+      await tarExtract({ file: archivePath, cwd: stagingDir, strip: 0 });
+    }
+
+    // Flatten single subdirectory if needed
+    flattenSingleSubdir(stagingDir);
+
+    // Make binary executable (skip on Windows: no-op / AV lock risk)
+    const stagedBinaryPath = path.join(stagingDir, path.relative(destDir, bp));
+    if (process.platform !== "win32" && fs.existsSync(stagedBinaryPath)) {
+      fs.chmodSync(stagedBinaryPath, 0o755);
+    }
+
+    // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
+    if (process.platform === "darwin") {
+      removeQuarantine(stagingDir);
+    }
+
+    try {
+      fs.renameSync(stagingDir, destDir);
+    } catch (err) {
+      if (!fs.existsSync(destDir)) throw err;
+      // destDir appeared first. Keep it if another caller finished a complete
+      // install; replace it if it is an incomplete leftover, such as an
+      // interrupted in-place extraction from an older release.
+      if (!(fs.existsSync(bp) && isExecutable(bp))) {
+        fs.rmSync(destDir, { recursive: true, force: true });
+        fs.renameSync(stagingDir, destDir);
+      }
+    }
+  } finally {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
   }
 
   if (fs.existsSync(bp)) {
