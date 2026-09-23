@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -898,35 +899,50 @@ def _extract_archive(
 ) -> None:
     """Extract tar.gz or zip archive to destination directory."""
     logger.info("Extracting to %s", dest_dir)
-
-    # Clean existing dir if partial download existed
-    if dest_dir.exists():
-        try:
-            shutil.rmtree(dest_dir)
-        except OSError:
-            logger.error("Failed to remove partial extraction directory: %s", dest_dir)
-            raise
-
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    if str(archive_path).endswith(".zip"):
-        _extract_zip(archive_path, dest_dir)
-    else:
-        _extract_tar(archive_path, dest_dir)
-
-    # If extracted into a single subdirectory, flatten it
-    # (e.g. fingerprint-chromium-142-custom-v2/chrome → chrome)
-    # But never flatten .app bundles — macOS needs the bundle structure intact
-    _flatten_single_subdir(dest_dir)
-
-    # Make binary executable
     bp = binary_path or get_binary_path()
-    if bp.exists():
-        _make_executable(bp)
 
-    # macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
-    if platform.system() == "Darwin":
-        _remove_quarantine(dest_dir)
+    # Extract into a private sibling dir, then rename it into place. Concurrent
+    # first runs (in this process or others) each get their own staging dir, so
+    # none of them can see or delete another's half-written install.
+    staging_dir = dest_dir.with_name(f"{dest_dir.name}.partial-{uuid.uuid4().hex}")
+    staging_dir.mkdir()
+    try:
+        if str(archive_path).endswith(".zip"):
+            _extract_zip(archive_path, staging_dir)
+        else:
+            _extract_tar(archive_path, staging_dir)
+
+        # If extracted into a single subdirectory, flatten it
+        # (e.g. fingerprint-chromium-142-custom-v2/chrome → chrome)
+        # But never flatten .app bundles: macOS needs the bundle structure intact
+        _flatten_single_subdir(staging_dir)
+
+        # Make binary executable
+        staged_binary_path = staging_dir / bp.relative_to(dest_dir)
+        if staged_binary_path.exists():
+            _make_executable(staged_binary_path)
+
+        # macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
+        if platform.system() == "Darwin":
+            _remove_quarantine(staging_dir)
+
+        try:
+            staging_dir.rename(dest_dir)
+        except OSError:
+            if not dest_dir.exists():
+                raise
+            # dest_dir appeared first. Keep it if another caller finished a complete
+            # install; replace it if it is an incomplete leftover, such as an
+            # interrupted in-place extraction from an older release.
+            if not (bp.exists() and _is_executable(bp)):
+                try:
+                    shutil.rmtree(dest_dir)
+                except OSError:
+                    logger.error("Failed to remove partial extraction directory: %s", dest_dir)
+                    raise
+                staging_dir.rename(dest_dir)
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
     if bp.exists():
         logger.info("Binary ready: %s", bp)
