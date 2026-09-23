@@ -962,28 +962,51 @@ public static class Download
     private static void ExtractArchive(string archivePath, string destDir, string? binaryPath)
     {
         CloakLog.Info("Extracting to {0}", destDir);
-
-        // Clean existing dir if partial download existed.
-        if (Directory.Exists(destDir))
-            Directory.Delete(destDir, recursive: true);
-
-        Directory.CreateDirectory(destDir);
-
-        if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-            ExtractZip(archivePath, destDir);
-        else
-            ExtractTar(archivePath, destDir);
-
-        // If extracted into a single subdirectory, flatten it (but never .app bundles).
-        FlattenSingleSubdir(destDir);
-
         var bp = binaryPath ?? Config.GetBinaryPath();
-        if (File.Exists(bp))
-            MakeExecutable(bp);
 
-        // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts.
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            RemoveQuarantine(destDir);
+        // Extract into a private sibling dir, then rename it into place. Concurrent
+        // first runs (in this process or others) each get their own staging dir, so
+        // none of them can see or delete another's half-written install.
+        var stagingDir = $"{destDir}.partial-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(stagingDir);
+        try
+        {
+            if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                ExtractZip(archivePath, stagingDir);
+            else
+                ExtractTar(archivePath, stagingDir);
+
+            // If extracted into a single subdirectory, flatten it (but never .app bundles).
+            FlattenSingleSubdir(stagingDir);
+
+            var stagedBinaryPath = Path.Combine(stagingDir, Path.GetRelativePath(destDir, bp));
+            if (File.Exists(stagedBinaryPath))
+                MakeExecutable(stagedBinaryPath);
+
+            // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts.
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                RemoveQuarantine(stagingDir);
+
+            try
+            {
+                Directory.Move(stagingDir, destDir);
+            }
+            catch (IOException) when (Directory.Exists(destDir))
+            {
+                // destDir appeared first. Keep it if another caller finished a complete
+                // install; replace it if it is an incomplete leftover, such as an
+                // interrupted in-place extraction from an older release.
+                if (!(File.Exists(bp) && IsExecutable(bp)))
+                {
+                    Directory.Delete(destDir, recursive: true);
+                    Directory.Move(stagingDir, destDir);
+                }
+            }
+        }
+        finally
+        {
+            try { if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, recursive: true); } catch (IOException) { }
+        }
 
         if (File.Exists(bp))
             CloakLog.Info("Binary ready: {0}", bp);
