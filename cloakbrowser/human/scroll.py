@@ -24,6 +24,10 @@ def _is_in_viewport(bounds: dict, viewport_height: int, cfg: HumanConfig) -> boo
     return top_edge >= zone_top and bottom_edge <= zone_bottom
 
 
+def _is_in_viewport_x(bounds: dict, viewport_width: int) -> bool:
+    return bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= viewport_width
+
+
 def _get_element_box(page: Any, selector: str, timeout: float = 30000) -> Optional[dict]:
     """Locate ``selector`` and read geometry only in the isolated world."""
     world = getattr(page, "_stealth_world", None)
@@ -48,12 +52,13 @@ def _get_element_box(page: Any, selector: str, timeout: float = 30000) -> Option
 
 _SCROLL_JS = (
     "(() => { const e = document.scrollingElement || document.documentElement;"
-    " return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight) }; })()"
+    " return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight),"
+    " x: window.scrollX, maxX: Math.max(0, e.scrollWidth - e.clientWidth) }; })()"
 )
 
 
 def _read_scroll_state(page: Any) -> dict:
-    """Read vertical scroll state only through the isolated world."""
+    """Read scroll state only through the isolated world."""
     world = getattr(page, "_stealth_world", None)
     if world is None:
         raise StealthWorldUnavailableError()
@@ -66,7 +71,7 @@ def _read_scroll_state(page: Any) -> dict:
     return state
 
 
-def _smooth_wheel(raw: RawMouse, delta: int, cfg: HumanConfig) -> None:
+def _smooth_wheel(raw: RawMouse, delta: int, cfg: HumanConfig, axis: str = "y") -> None:
     """Send one logical scroll as a burst of small wheel events (like real inertia)."""
     abs_d = abs(delta)
     sign = 1 if delta > 0 else -1
@@ -74,7 +79,11 @@ def _smooth_wheel(raw: RawMouse, delta: int, cfg: HumanConfig) -> None:
     while sent < abs_d:
         step_size = rand(20, 40)
         chunk = min(step_size, abs_d - sent)
-        raw.wheel(0, round(chunk) * sign)
+        step = round(chunk) * sign
+        if axis == "x":
+            raw.wheel(step, 0)
+        else:
+            raw.wheel(0, step)
         sent += chunk
         sleep_ms(rand(8, 20))
 
@@ -115,6 +124,24 @@ def human_scroll_into_view(
     viewport_height = viewport["height"]
     viewport_width = viewport["width"]
 
+    box, cursor_x, cursor_y, did_scroll_y = _scroll_y_into_view(
+        page, raw, get_box, viewport_width, viewport_height, cursor_x, cursor_y, cfg,
+    )
+    box, cursor_x, cursor_y, did_scroll_x = _scroll_x_into_view(
+        page, raw, get_box, box, viewport_width, viewport_height, cursor_x, cursor_y, cfg,
+    )
+    return box, cursor_x, cursor_y, did_scroll_y or did_scroll_x
+
+
+def _scroll_y_into_view(
+    page: Any,
+    raw: RawMouse,
+    get_box: Callable[[], Optional[dict]],
+    viewport_width: int, viewport_height: int,
+    cursor_x: float, cursor_y: float,
+    cfg: HumanConfig,
+) -> Tuple[dict, float, float, bool]:
+    """Vertical pass: bring the box into ``scroll_target_zone``."""
     box = get_box()
     if box is None:
         raise RuntimeError("Element not found while scrolling into view")
@@ -192,6 +219,47 @@ def human_scroll_into_view(
             sleep_ms(rand(100, 250))
 
     # Settle
+    sleep_ms(rand_range(cfg.scroll_settle_delay))
+
+    box = get_box()
+    if box is None:
+        raise RuntimeError("Element lost after scrolling into view")
+
+    return box, cursor_x, cursor_y, True
+
+
+def _scroll_x_into_view(
+    page: Any,
+    raw: RawMouse,
+    get_box: Callable[[], Optional[dict]],
+    box: dict,
+    viewport_width: int, viewport_height: int,
+    cursor_x: float, cursor_y: float,
+    cfg: HumanConfig,
+) -> Tuple[dict, float, float, bool]:
+    """Horizontal pass: bring the box inside the viewport width (#521).
+
+    Only containment is checked here, not ``scroll_target_zone``: the zone is
+    a vertical reading position, and horizontal overflow is the exception.
+    """
+    if _is_in_viewport_x(box, viewport_width):
+        return box, cursor_x, cursor_y, False
+
+    distance_to_scroll = box["x"] + box["width"] / 2 - viewport_width / 2
+
+    # Page pinned at the boundary in the needed direction: scrolling can't help.
+    scroll = _read_scroll_state(page)
+    if (scroll["x"] <= 0) if distance_to_scroll < 0 else (scroll["x"] >= scroll["maxX"]):
+        return box, cursor_x, cursor_y, False
+
+    scroll_area_x = round(viewport_width * rand(0.3, 0.7))
+    scroll_area_y = round(viewport_height * rand(0.3, 0.7))
+    human_move(raw, cursor_x, cursor_y, scroll_area_x, scroll_area_y, cfg)
+    cursor_x = scroll_area_x
+    cursor_y = scroll_area_y
+    sleep_ms(rand_range(cfg.scroll_pre_move_delay))
+
+    _smooth_wheel(raw, round(distance_to_scroll), cfg, axis="x")
     sleep_ms(rand_range(cfg.scroll_settle_delay))
 
     box = get_box()

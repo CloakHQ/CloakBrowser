@@ -108,17 +108,20 @@ internal sealed class PlaywrightScrollPage : IRawScrollPage
         return (resolvedWidth, resolvedHeight);
     }
 
-    public async Task<(double Y, double MaxY)?> GetScrollStateAsync()
+    public async Task<(double Y, double MaxY, double X, double MaxX)?> GetScrollStateAsync()
     {
         var world = await _getStealthAsync().ConfigureAwait(false);
         var value = await world.EvaluateAsync(
             "(() => { const e = document.scrollingElement || document.documentElement;" +
-            " return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight) }; })()")
+            " return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight)," +
+            " x: window.scrollX, maxX: Math.max(0, e.scrollWidth - e.clientWidth) }; })()")
             .ConfigureAwait(false);
         if (value == null || value.Value.ValueKind != System.Text.Json.JsonValueKind.Object
             || !value.Value.TryGetProperty("y", out var y)
-            || !value.Value.TryGetProperty("maxY", out var maxY))
+            || !value.Value.TryGetProperty("maxY", out var maxY)
+            || !value.Value.TryGetProperty("x", out var x)
+            || !value.Value.TryGetProperty("maxX", out var maxX))
             throw new StealthEvaluationError("<scroll-state>");
-        return (y.GetDouble(), maxY.GetDouble());
+        return (y.GetDouble(), maxY.GetDouble(), x.GetDouble(), maxX.GetDouble());
     }
 }

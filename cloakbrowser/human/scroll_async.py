@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable, Optional, Tuple
 
 from .config import HumanConfig, rand, rand_range, rand_int_range, async_sleep_ms
 from .mouse_async import AsyncRawMouse, async_human_move
-from .scroll import _is_in_viewport, _SCROLL_JS
+from .scroll import _is_in_viewport, _is_in_viewport_x, _SCROLL_JS
 from .stealth_dom import (
     build_box_js, async_eval_parsed, EVALUATION_FAILED, NOT_FOUND, OK, UNSUPPORTED,
     StealthEvaluationError, StealthWorldUnavailableError,
@@ -47,7 +47,7 @@ async def _get_element_box_async(
 
 
 async def _async_read_scroll_state(page: Any) -> dict:
-    """Read vertical scroll state only through the isolated world."""
+    """Read scroll state only through the isolated world."""
     world = getattr(page, "_stealth_world", None)
     if world is None:
         raise StealthWorldUnavailableError()
@@ -60,7 +60,9 @@ async def _async_read_scroll_state(page: Any) -> dict:
     return state
 
 
-async def _async_smooth_wheel(raw: AsyncRawMouse, delta: int, cfg: HumanConfig) -> None:
+async def _async_smooth_wheel(
+    raw: AsyncRawMouse, delta: int, cfg: HumanConfig, axis: str = "y",
+) -> None:
     """Send one logical scroll as a burst of small wheel events (like real inertia)."""
     abs_d = abs(delta)
     sign = 1 if delta > 0 else -1
@@ -68,7 +70,11 @@ async def _async_smooth_wheel(raw: AsyncRawMouse, delta: int, cfg: HumanConfig) 
     while sent < abs_d:
         step_size = rand(20, 40)
         chunk = min(step_size, abs_d - sent)
-        await raw.wheel(0, round(chunk) * sign)
+        step = round(chunk) * sign
+        if axis == "x":
+            await raw.wheel(step, 0)
+        else:
+            await raw.wheel(0, step)
         sent += chunk
         await async_sleep_ms(rand(8, 20))
 
@@ -108,6 +114,24 @@ async def async_human_scroll_into_view(
     viewport_height = viewport["height"]
     viewport_width = viewport["width"]
 
+    box, cursor_x, cursor_y, did_scroll_y = await _async_scroll_y_into_view(
+        page, raw, get_box, viewport_width, viewport_height, cursor_x, cursor_y, cfg,
+    )
+    box, cursor_x, cursor_y, did_scroll_x = await _async_scroll_x_into_view(
+        page, raw, get_box, box, viewport_width, viewport_height, cursor_x, cursor_y, cfg,
+    )
+    return box, cursor_x, cursor_y, did_scroll_y or did_scroll_x
+
+
+async def _async_scroll_y_into_view(
+    page: Any,
+    raw: AsyncRawMouse,
+    get_box: Callable[[], Awaitable[Optional[dict]]],
+    viewport_width: int, viewport_height: int,
+    cursor_x: float, cursor_y: float,
+    cfg: HumanConfig,
+) -> Tuple[dict, float, float, bool]:
+    """Vertical pass: bring the box into ``scroll_target_zone``."""
     box = await get_box()
     if box is None:
         raise RuntimeError("Element not found while scrolling into view")
@@ -185,6 +209,47 @@ async def async_human_scroll_into_view(
             await async_sleep_ms(rand(100, 250))
 
     # Settle
+    await async_sleep_ms(rand_range(cfg.scroll_settle_delay))
+
+    box = await get_box()
+    if box is None:
+        raise RuntimeError("Element lost after scrolling into view")
+
+    return box, cursor_x, cursor_y, True
+
+
+async def _async_scroll_x_into_view(
+    page: Any,
+    raw: AsyncRawMouse,
+    get_box: Callable[[], Awaitable[Optional[dict]]],
+    box: dict,
+    viewport_width: int, viewport_height: int,
+    cursor_x: float, cursor_y: float,
+    cfg: HumanConfig,
+) -> Tuple[dict, float, float, bool]:
+    """Horizontal pass: bring the box inside the viewport width (#521).
+
+    Only containment is checked here, not ``scroll_target_zone``: the zone is
+    a vertical reading position, and horizontal overflow is the exception.
+    """
+    if _is_in_viewport_x(box, viewport_width):
+        return box, cursor_x, cursor_y, False
+
+    distance_to_scroll = box["x"] + box["width"] / 2 - viewport_width / 2
+
+    # Page pinned at the boundary in the needed direction: scrolling can't help.
+    scroll = await _async_read_scroll_state(page)
+    if (scroll["x"] <= 0) if distance_to_scroll < 0 else (scroll["x"] >= scroll["maxX"]):
+        return box, cursor_x, cursor_y, False
+
+    scroll_area_x = round(viewport_width * rand(0.3, 0.7))
+    scroll_area_y = round(viewport_height * rand(0.3, 0.7))
+    await async_human_move(raw, cursor_x, cursor_y, scroll_area_x, scroll_area_y, cfg)
+    cursor_x = scroll_area_x
+    cursor_y = scroll_area_y
+    await async_sleep_ms(rand_range(cfg.scroll_pre_move_delay))
+
+    await _async_smooth_wheel(raw, round(distance_to_scroll), cfg, axis="x")
     await async_sleep_ms(rand_range(cfg.scroll_settle_delay))
 
     box = await get_box()

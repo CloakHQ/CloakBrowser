@@ -1619,7 +1619,7 @@ describe("humanScrollIntoView", () => {
     const page: any = {
       viewportSize: () => ({ width: 1280, height: 720 }),
       evaluate: vi.fn(),
-      _stealth: { evaluate: vi.fn(async () => ({ y: 0, maxY: 2000 })) },
+      _stealth: { evaluate: vi.fn(async () => ({ y: 0, maxY: 2000, x: 0, maxX: 0 })) },
     };
     const raw = {
       move: vi.fn(async () => { }), down: vi.fn(async () => { }),
@@ -1645,7 +1645,7 @@ describe("humanScrollIntoView", () => {
     const page: any = {
       viewportSize: () => ({ width: 1280, height: 720 }),
       evaluate: vi.fn(),
-      _stealth: { evaluate: vi.fn(async () => ({ y: 500, maxY: 2000 })) },
+      _stealth: { evaluate: vi.fn(async () => ({ y: 500, maxY: 2000, x: 0, maxX: 0 })) },
     };
     const raw = {
       move: vi.fn(async () => { }), down: vi.fn(async () => { }),
@@ -1658,6 +1658,61 @@ describe("humanScrollIntoView", () => {
     expect(raw.wheel).toHaveBeenCalled();
     expect(page.evaluate).not.toHaveBeenCalled();
   }, 15000);
+
+  it("scrolls the x axis for an element past the right edge (#521)", async () => {
+    const { humanScrollIntoView } = await import("../src/human/scroll.js");
+    const cfg = resolveConfig("default", {
+      scroll_pre_move_delay: [0, 1], scroll_settle_delay: [0, 1],
+    });
+
+    const page: any = {
+      viewportSize: () => ({ width: 1000, height: 700 }),
+      evaluate: vi.fn(),
+      _stealth: { evaluate: vi.fn(async () => ({ y: 0, maxY: 0, x: 0, maxX: 600 })) },
+    };
+    const raw = {
+      move: vi.fn(async () => { }), down: vi.fn(async () => { }),
+      up: vi.fn(async () => { }), wheel: vi.fn(async (_dx: number, _dy: number) => { }),
+    };
+    const boxes = [
+      { x: 800, y: 300, width: 800, height: 30 },
+      { x: 200, y: 300, width: 800, height: 30 },
+    ];
+    let i = 0;
+    const getBox = async () => boxes[i++];
+
+    const result = await humanScrollIntoView(page, raw, getBox, 0, 0, cfg);
+
+    expect(result.didScroll).toBe(true);
+    expect(result.box.x).toBe(200);
+    expect(raw.wheel).toHaveBeenCalled();
+    for (const [dx, dy] of raw.wheel.mock.calls) {
+      expect(dx).toBeGreaterThan(0);
+      expect(dy).toBe(0);
+    }
+    expect(page.evaluate).not.toHaveBeenCalled();
+  }, 15000);
+
+  it("skips the x axis when the page is already scrolled fully right", async () => {
+    const { humanScrollIntoView } = await import("../src/human/scroll.js");
+    const cfg = resolveConfig("default");
+
+    const page: any = {
+      viewportSize: () => ({ width: 1000, height: 700 }),
+      evaluate: vi.fn(),
+      _stealth: { evaluate: vi.fn(async () => ({ y: 0, maxY: 0, x: 600, maxX: 600 })) },
+    };
+    const raw = {
+      move: vi.fn(async () => { }), down: vi.fn(async () => { }),
+      up: vi.fn(async () => { }), wheel: vi.fn(async () => { }),
+    };
+    const clippedBox = { x: 900, y: 300, width: 200, height: 30 };
+
+    const result = await humanScrollIntoView(page, raw, async () => clippedBox, 0, 0, cfg);
+
+    expect(result.didScroll).toBe(false);
+    expect(raw.wheel).not.toHaveBeenCalled();
+  });
 });
 
 describe("el.scrollIntoViewIfNeeded humanization", () => {

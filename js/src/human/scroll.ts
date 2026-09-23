@@ -39,18 +39,26 @@ function isInViewport(
   return topEdge >= zoneTop && bottomEdge <= zoneBottom;
 }
 
+function isInViewportX(bounds: ElementBounds, viewportWidth: number): boolean {
+  return bounds.x >= 0 && bounds.x + bounds.width <= viewportWidth;
+}
+
 const SCROLL_JS =
   '(() => { const e = document.scrollingElement || document.documentElement;' +
-  ' return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight) }; })()';
+  ' return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight),' +
+  ' x: window.scrollX, maxX: Math.max(0, e.scrollWidth - e.clientWidth) }; })()';
 
-async function readScrollState(page: Page): Promise<{ y: number; maxY: number }> {
+async function readScrollState(
+  page: Page,
+): Promise<{ y: number; maxY: number; x: number; maxX: number }> {
   const world = getWorld(page);
   if (!world) throw new StealthWorldUnavailableError();
   try {
     const state = await world.evaluate(SCROLL_JS);
     if (
       !state || typeof state !== 'object' ||
-      typeof state.y !== 'number' || typeof state.maxY !== 'number'
+      typeof state.y !== 'number' || typeof state.maxY !== 'number' ||
+      typeof state.x !== 'number' || typeof state.maxX !== 'number'
     ) {
       throw new StealthEvaluationError('<scroll-state>');
     }
@@ -61,14 +69,24 @@ async function readScrollState(page: Page): Promise<{ y: number; maxY: number }>
   }
 }
 
-async function smoothWheel(raw: RawMouse, delta: number, cfg: HumanConfig): Promise<void> {
+async function smoothWheel(
+  raw: RawMouse,
+  delta: number,
+  cfg: HumanConfig,
+  axis: 'x' | 'y' = 'y',
+): Promise<void> {
   const absD = Math.abs(delta);
   const sign = delta > 0 ? 1 : -1;
   let sent = 0;
   while (sent < absD) {
     const stepSize = rand(20, 40);
     const chunk = Math.min(stepSize, absD - sent);
-    await raw.wheel(0, Math.round(chunk) * sign);
+    const d = Math.round(chunk) * sign;
+    if (axis === 'x') {
+      await raw.wheel(d, 0);
+    } else {
+      await raw.wheel(0, d);
+    }
     sent += chunk;
     await sleep(rand(8, 20));
   }
@@ -94,6 +112,23 @@ export async function humanScrollIntoView<T extends ElementBounds>(
   }
   if (!viewport || !viewport.height) throw new Error('Viewport size not available');
 
+  const yPass = await scrollYIntoView(page, raw, getBox, viewport, cursorX, cursorY, cfg);
+  const xPass = await scrollXIntoView(
+    page, raw, getBox, yPass.box, viewport, yPass.cursorX, yPass.cursorY, cfg,
+  );
+  return { ...xPass, didScroll: yPass.didScroll || xPass.didScroll };
+}
+
+/** Vertical pass: bring the box into ``scroll_target_zone``. */
+async function scrollYIntoView<T extends ElementBounds>(
+  page: Page,
+  raw: RawMouse,
+  getBox: () => Promise<T | null>,
+  viewport: { width: number; height: number },
+  cursorX: number,
+  cursorY: number,
+  cfg: HumanConfig,
+): Promise<{ box: T; cursorX: number; cursorY: number; didScroll: boolean }> {
   let box = await getBox();
   if (!box) throw new Error('Element not found while scrolling into view');
 
@@ -173,6 +208,49 @@ export async function humanScrollIntoView<T extends ElementBounds>(
     }
   }
 
+  await sleep(randRange(cfg.scroll_settle_delay));
+
+  const finalBox = await getBox();
+  if (!finalBox) throw new Error('Element lost after scrolling into view');
+  return { box: finalBox, cursorX, cursorY, didScroll: true };
+}
+
+/**
+ * Horizontal pass: bring the box inside the viewport width (#521).
+ *
+ * Only containment is checked here, not ``scroll_target_zone``: the zone is a
+ * vertical reading position, and horizontal overflow is the exception.
+ */
+async function scrollXIntoView<T extends ElementBounds>(
+  page: Page,
+  raw: RawMouse,
+  getBox: () => Promise<T | null>,
+  box: T,
+  viewport: { width: number; height: number },
+  cursorX: number,
+  cursorY: number,
+  cfg: HumanConfig,
+): Promise<{ box: T; cursorX: number; cursorY: number; didScroll: boolean }> {
+  if (isInViewportX(box, viewport.width)) {
+    return { box, cursorX, cursorY, didScroll: false };
+  }
+
+  const distanceToScroll = box.x + box.width / 2 - viewport.width / 2;
+
+  // Page pinned at the boundary in the needed direction: scrolling can't help.
+  const { x, maxX } = await readScrollState(page);
+  if (distanceToScroll < 0 ? x <= 0 : x >= maxX) {
+    return { box, cursorX, cursorY, didScroll: false };
+  }
+
+  const scrollAreaX = Math.round(viewport.width * rand(0.3, 0.7));
+  const scrollAreaY = Math.round(viewport.height * rand(0.3, 0.7));
+  await humanMove(raw, cursorX, cursorY, scrollAreaX, scrollAreaY, cfg);
+  cursorX = scrollAreaX;
+  cursorY = scrollAreaY;
+  await sleep(randRange(cfg.scroll_pre_move_delay));
+
+  await smoothWheel(raw, Math.round(distanceToScroll), cfg, 'x');
   await sleep(randRange(cfg.scroll_settle_delay));
 
   const finalBox = await getBox();

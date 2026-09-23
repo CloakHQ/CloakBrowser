@@ -1083,6 +1083,7 @@ import threading
 import http.server
 import socketserver
 import contextlib
+from urllib.parse import quote
 
 _IFRAME_PARENT = (
     b"<html><body><h1>parent</h1>"
@@ -1228,6 +1229,48 @@ class TestBrowserIframeHumanizeAsync:
                 assert await frame.locator("#btn").text_content() == "CLICKED"
             finally:
                 await browser.close()
+
+
+# page.set_content never settles in CloakBrowser, so the page is loaded as a data: URL.
+_WIDE_ROW_HTML = """
+<body style="margin:0">
+  <div style="display:flex">
+    <div style="min-width:800px">left</div>
+    <button id="target" style="min-width:800px"
+            onclick="this.textContent = 'CLICKED'">right</button>
+  </div>
+</body>
+"""
+
+
+@pytest.mark.slow
+class TestBrowserHorizontalScroll:
+    """Regression for #521: a target off the right edge of a horizontally
+    overflowing page must be scrolled into view on the x axis, not rejected
+    as "covered by <none>"."""
+
+    def test_humanized_click_scrolls_x_axis(self):
+        from cloakbrowser import launch
+        browser = launch(headless=True, humanize=True, geoip=False)
+        try:
+            page = browser.new_page(viewport={"width": 1000, "height": 700})
+            page.goto("data:text/html," + quote(_WIDE_ROW_HTML))
+            page.click("#target", timeout=5000)
+            assert page.locator("#target").text_content() == "CLICKED"
+        finally:
+            browser.close()
+
+    @pytest.mark.asyncio
+    async def test_async_humanized_click_scrolls_x_axis(self):
+        from cloakbrowser import launch_async
+        browser = await launch_async(headless=True, humanize=True, geoip=False)
+        try:
+            page = await browser.new_page(viewport={"width": 1000, "height": 700})
+            await page.goto("data:text/html," + quote(_WIDE_ROW_HTML))
+            await page.click("#target", timeout=5000)
+            assert await page.locator("#target").text_content() == "CLICKED"
+        finally:
+            await browser.close()
 
 
 @pytest.mark.slow
@@ -2285,6 +2328,54 @@ class TestScrollIntoViewIfNeeded:
 
         human_scroll_into_view(page, raw, get_box, 0, 0, cfg)
         assert raw.wheel.called, "Below-fold scroll should produce wheel events"
+
+    def test_human_scroll_into_view_scrolls_x_when_off_right_edge(self):
+        """#521: a box past the right edge gets horizontal wheel events only."""
+        from cloakbrowser.human.scroll import human_scroll_into_view
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", {
+            "scroll_pre_move_delay": (0, 1),
+            "scroll_settle_delay": (0, 1),
+        })
+        page = MagicMock()
+        page.viewport_size = {"width": 1000, "height": 700}
+        page._stealth_world.evaluate.return_value = {"y": 0, "maxY": 0, "x": 0, "maxX": 600}
+        raw = MagicMock()
+        boxes = iter([
+            {"x": 800, "y": 300, "width": 800, "height": 30},
+            {"x": 200, "y": 300, "width": 800, "height": 30},
+        ])
+
+        box, _, _, did_scroll = human_scroll_into_view(
+            page, raw, lambda: next(boxes), 0, 0, cfg,
+        )
+        assert did_scroll
+        assert box["x"] == 200
+        wheel_deltas = [c.args for c in raw.wheel.call_args_list]
+        assert wheel_deltas, "Off-screen-right element should trigger wheel events"
+        assert all(dx > 0 and dy == 0 for dx, dy in wheel_deltas)
+
+    def test_human_scroll_into_view_skips_x_when_pinned_right(self):
+        """Page already scrolled fully right: horizontal scrolling can't help."""
+        from cloakbrowser.human.scroll import human_scroll_into_view
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", None)
+        page = MagicMock()
+        page.viewport_size = {"width": 1000, "height": 700}
+        page._stealth_world.evaluate.return_value = {"y": 0, "maxY": 0, "x": 600, "maxX": 600}
+        raw = MagicMock()
+        clipped_box = {"x": 900, "y": 300, "width": 200, "height": 30}
+
+        box, _, _, did_scroll = human_scroll_into_view(
+            page, raw, lambda: clipped_box, 0, 0, cfg,
+        )
+        assert not did_scroll
+        assert box == clipped_box
+        assert not raw.wheel.called
 
     def test_element_handle_scroll_into_view_if_needed_humanized(self):
         """el.scroll_into_view_if_needed() routes through human_scroll_into_view."""
