@@ -241,6 +241,10 @@ async function scrollXIntoView<T extends ElementBounds>(
   }
 
   const distanceToScroll = box.x + box.width / 2 - viewport.width / 2;
+  // A box wider than the viewport is never contained; once centred, skip the near-zero wheel.
+  if (Math.abs(distanceToScroll) < 1) {
+    return { box, cursorX, cursorY, didScroll: false };
+  }
 
   // Page pinned at the boundary in the needed direction: scrolling can't help.
   const { x, minX, maxX } = await readScrollState(page);

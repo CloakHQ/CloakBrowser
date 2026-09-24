@@ -255,6 +255,9 @@ public static class HumanScroll
             return new ScrollResult(box, cursorX, cursorY, false);
 
         double distanceToScroll = box.X + box.Width / 2 - viewportWidth / 2.0;
+        // A box wider than the viewport is never contained; once centred, skip the near-zero wheel.
+        if (Math.Abs(distanceToScroll) < 1)
+            return new ScrollResult(box, cursorX, cursorY, false);
 
         // Page pinned at the boundary in the needed direction: scrolling can't help.
         var scroll = await page.GetScrollStateAsync().ConfigureAwait(false);

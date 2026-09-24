@@ -223,6 +223,12 @@ async function scrollXIntoView(
     return { box, cursorX, cursorY };
   }
 
+  const distanceToScroll = box.x + box.width / 2 - viewport.width / 2;
+  // A box wider than the viewport is never contained; once centred, skip the near-zero wheel.
+  if (Math.abs(distanceToScroll) < 1) {
+    return { box, cursorX, cursorY };
+  }
+
   const scrollAreaX = Math.round(viewport.width * rand(0.3, 0.7));
   const scrollAreaY = Math.round(viewport.height * rand(0.3, 0.7));
   await humanMove(raw, cursorX, cursorY, scrollAreaX, scrollAreaY, cfg);
@@ -230,7 +236,6 @@ async function scrollXIntoView(
   cursorY = scrollAreaY;
   await sleep(randRange(cfg.scroll_pre_move_delay));
 
-  const distanceToScroll = box.x + box.width / 2 - viewport.width / 2;
   await smoothWheel(raw, Math.round(distanceToScroll), cfg, 'x');
   await sleep(randRange(cfg.scroll_settle_delay));
 

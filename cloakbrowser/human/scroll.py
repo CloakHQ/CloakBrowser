@@ -250,6 +250,9 @@ def _scroll_x_into_view(
         return box, cursor_x, cursor_y, False
 
     distance_to_scroll = box["x"] + box["width"] / 2 - viewport_width / 2
+    # A box wider than the viewport is never contained; once centred, skip the near-zero wheel.
+    if abs(distance_to_scroll) < 1:
+        return box, cursor_x, cursor_y, False
 
     # Page pinned at the boundary in the needed direction: scrolling can't help.
     scroll = _read_scroll_state(page)
