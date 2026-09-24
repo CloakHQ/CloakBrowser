@@ -1305,7 +1305,7 @@ describeIfSlow("stealth browser: selector parity and target identity", () => {
   }, 60000);
 });
 
-// page.setContent never settles in CloakBrowser, so the page is loaded as a data: URL.
+// page.setContent timed out in local runs of this test, so the page is loaded as a data: URL.
 const WIDE_ROW_HTML = `
   <body style="margin:0">
     <div style="display:flex">

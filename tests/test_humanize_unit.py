@@ -1231,7 +1231,7 @@ class TestBrowserIframeHumanizeAsync:
                 await browser.close()
 
 
-# page.set_content never settles in CloakBrowser, so the page is loaded as a data: URL.
+# page.set_content timed out in local runs of this test, so the page is loaded as a data: URL.
 _WIDE_ROW_HTML = """
 <body style="margin:0">
   <div style="display:flex">
