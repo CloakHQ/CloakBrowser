@@ -52,6 +52,17 @@ public static class Download
     // replacing the same partial install (see ExtractArchive).
     private const int InstallRenameAttempts = 5;
 
+    // Retries for a directory rename that Windows transiently denies (see
+    // MoveDirectoryWithRetry): about 2.5 seconds in total.
+    private const int TransientRenameAttempts = 10;
+    private const int TransientRenameDelayMs = 250;
+
+    // HRESULTs of the IOException Directory.Move throws on Windows for
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
+    private const int AccessDeniedHResult = unchecked((int)0x80070005);
+    private const int SharingViolationHResult = unchecked((int)0x80070020);
+    private const int LockViolationHResult = unchecked((int)0x80070021);
+
     private static readonly HttpClient Http = CreateHttpClient();
 
     private static HttpClient CreateHttpClient()
@@ -996,10 +1007,10 @@ public static class Download
             {
                 try
                 {
-                    Directory.Move(stagingDir, destDir);
+                    MoveDirectoryWithRetry(stagingDir, destDir);
                     break;
                 }
-                catch (IOException)
+                catch (Exception err) when (err is IOException or UnauthorizedAccessException)
                 {
                     // destDir is in the way. Keep it if another caller finished a complete
                     // install; replace it if it is an incomplete leftover, such as an
@@ -1012,7 +1023,7 @@ public static class Download
                 var staleDir = $"{destDir}.stale-{Guid.NewGuid():N}";
                 try
                 {
-                    Directory.Move(destDir, staleDir);
+                    MoveDirectoryWithRetry(destDir, staleDir);
                 }
                 catch (DirectoryNotFoundException)
                 {
@@ -1023,10 +1034,11 @@ public static class Download
         }
         finally
         {
-            try { if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, recursive: true); } catch (IOException) { }
-            foreach (var staleDir in staleDirs)
+            // Best effort, so a cleanup failure never masks the exception being thrown.
+            foreach (var leftoverDir in staleDirs.Prepend(stagingDir))
             {
-                try { Directory.Delete(staleDir, recursive: true); } catch (IOException) { }
+                try { if (Directory.Exists(leftoverDir)) Directory.Delete(leftoverDir, recursive: true); }
+                catch (Exception err) when (err is IOException or UnauthorizedAccessException) { }
             }
         }
 
@@ -1041,6 +1053,32 @@ public static class Download
         using var fileStream = File.OpenRead(archivePath);
         using var gzip = new GZipStream(fileStream, CompressionMode.Decompress);
         TarFile.ExtractToDirectory(gzip, destDir, overwriteFiles: true);
+    }
+
+    /// <summary>Rename a directory, retrying while Windows reports it as in use.</summary>
+    private static void MoveDirectoryWithRetry(string source, string destination)
+    {
+        for (var attempt = 1; attempt <= TransientRenameAttempts; attempt++)
+        {
+            try
+            {
+                Directory.Move(source, destination);
+                return;
+            }
+            catch (Exception err) when (err is IOException or UnauthorizedAccessException)
+            {
+                // Windows antivirus briefly holds freshly written files open, which fails the
+                // move with access denied. An existing destination is not transient.
+                var accessDenied = err is UnauthorizedAccessException
+                    || err.HResult is AccessDeniedHResult or SharingViolationHResult or LockViolationHResult;
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                    || !accessDenied
+                    || attempt == TransientRenameAttempts
+                    || Directory.Exists(destination))
+                    throw;
+                Thread.Sleep(TransientRenameDelayMs);
+            }
+        }
     }
 
     private static void ExtractZip(string archivePath, string destDir)

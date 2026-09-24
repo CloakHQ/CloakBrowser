@@ -53,6 +53,10 @@ const PRO_MAJOR = "151";
 // Attempts to rename an extraction into place while concurrent callers are
 // replacing the same partial install (see extractArchive).
 const INSTALL_RENAME_ATTEMPTS = 5;
+// Retries for a directory rename that Windows transiently denies (see
+// renameDirWithRetry): about 2.5 seconds in total.
+const TRANSIENT_RENAME_ATTEMPTS = 10;
+const TRANSIENT_RENAME_DELAY_MS = 250;
 
 /**
  * A downloaded binary could not be authenticated (bad/missing signature,
@@ -1065,7 +1069,7 @@ async function extractArchive(
 
     for (let attempt = 1; attempt <= INSTALL_RENAME_ATTEMPTS; attempt++) {
       try {
-        fs.renameSync(stagingDir, destDir);
+        await renameDirWithRetry(stagingDir, destDir);
         break;
       } catch (err) {
         // destDir is in the way. Keep it if another caller finished a complete
@@ -1078,7 +1082,7 @@ async function extractArchive(
       // other callers renaming their extraction into destDir.
       const staleDir = `${destDir}.stale-${randomUUID()}`;
       try {
-        fs.renameSync(destDir, staleDir);
+        await renameDirWithRetry(destDir, staleDir);
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // another caller moved it aside first
         throw err;
@@ -1086,14 +1090,40 @@ async function extractArchive(
       staleDirs.push(staleDir);
     }
   } finally {
-    fs.rmSync(stagingDir, { recursive: true, force: true });
-    for (const staleDir of staleDirs) {
-      fs.rmSync(staleDir, { recursive: true, force: true });
+    for (const leftoverDir of [stagingDir, ...staleDirs]) {
+      try {
+        fs.rmSync(leftoverDir, { recursive: true, force: true });
+      } catch {
+        // Best effort, so a cleanup failure never masks the error being thrown.
+      }
     }
   }
 
   if (fs.existsSync(bp)) {
     console.log(`[cloakbrowser] Binary ready: ${bp}`);
+  }
+}
+
+/** Rename a directory, retrying while Windows reports it as in use. */
+async function renameDirWithRetry(source: string, destination: string): Promise<void> {
+  for (let attempt = 1; attempt <= TRANSIENT_RENAME_ATTEMPTS; attempt++) {
+    try {
+      fs.renameSync(source, destination);
+      return;
+    } catch (err) {
+      // Windows antivirus briefly holds freshly written files open, which fails the
+      // rename with EPERM/EACCES/EBUSY. An existing destination is not transient.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (
+        process.platform !== "win32" ||
+        !(code === "EPERM" || code === "EACCES" || code === "EBUSY") ||
+        attempt === TRANSIENT_RENAME_ATTEMPTS ||
+        fs.existsSync(destination)
+      ) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RENAME_DELAY_MS));
+    }
   }
 }
 

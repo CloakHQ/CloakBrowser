@@ -81,6 +81,11 @@ PRO_MAJOR = "151"
 # replacing the same partial install (see _extract_archive).
 INSTALL_RENAME_ATTEMPTS = 5
 
+# Retries for a directory rename that Windows transiently denies (see
+# _rename_dir_with_retry): about 2.5 seconds in total.
+TRANSIENT_RENAME_ATTEMPTS = 10
+TRANSIENT_RENAME_DELAY = 0.25
+
 
 def _welcome_due(marker: Path, pro: bool) -> bool:
     """Whether the welcome banner should be shown now.
@@ -933,7 +938,7 @@ def _extract_archive(
 
         for attempt in range(1, INSTALL_RENAME_ATTEMPTS + 1):
             try:
-                staging_dir.rename(dest_dir)
+                _rename_dir_with_retry(staging_dir, dest_dir)
                 break
             except OSError:
                 # dest_dir is in the way. Keep it if another caller finished a complete
@@ -947,7 +952,7 @@ def _extract_archive(
             # other callers renaming their extraction into dest_dir.
             stale_dir = dest_dir.with_name(f"{dest_dir.name}.stale-{uuid.uuid4().hex}")
             try:
-                dest_dir.rename(stale_dir)
+                _rename_dir_with_retry(dest_dir, stale_dir)
             except FileNotFoundError:
                 continue  # another caller moved it aside first
             stale_dirs.append(stale_dir)
@@ -958,6 +963,24 @@ def _extract_archive(
 
     if bp.exists():
         logger.info("Binary ready: %s", bp)
+
+
+def _rename_dir_with_retry(source: Path, destination: Path) -> None:
+    """Rename a directory, retrying while Windows reports it as in use."""
+    for attempt in range(1, TRANSIENT_RENAME_ATTEMPTS + 1):
+        try:
+            source.rename(destination)
+            return
+        except PermissionError:
+            # Windows antivirus briefly holds freshly written files open, which fails the
+            # rename with access denied. An existing destination is not transient.
+            if (
+                platform.system() != "Windows"
+                or attempt == TRANSIENT_RENAME_ATTEMPTS
+                or destination.exists()
+            ):
+                raise
+            time.sleep(TRANSIENT_RENAME_DELAY)
 
 
 def _extract_tar(archive_path: Path, dest_dir: Path) -> None:
