@@ -282,6 +282,58 @@ public class ConcurrentFirstRunTests
         }
     }
 
+    [Fact]
+    public async Task Concurrent_callers_replace_partial_install()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+
+        var previousEnv = IsolatedEnvNames.ToDictionary(name => name, Environment.GetEnvironmentVariable);
+        var cacheDir = Directory.CreateTempSubdirectory("cloakbrowser-concurrent-").FullName;
+        var mirrorPort = FindFreeTcpPort();
+        using var mirror = new HttpListener();
+        mirror.Prefixes.Add($"http://127.0.0.1:{mirrorPort}/");
+        mirror.Start();
+        try
+        {
+            UseLocalMirror(cacheDir, mirrorPort);
+            var archiveBytes = CreatePlatformArchive();
+
+            // Answer only once every caller is downloading, so all of them find the
+            // partial install in the way when they move their extraction into place.
+            _ = Task.Run(async () =>
+            {
+                var heldRequests = new List<HttpListenerContext>();
+                for (var i = 0; i < Callers; i++)
+                    heldRequests.Add(await mirror.GetContextAsync());
+                foreach (var heldRequest in heldRequests)
+                    _ = RespondWithArchiveAsync(heldRequest, archiveBytes);
+            });
+            Directory.CreateDirectory(Path.Combine(Config.GetBinaryDir(), "lib"));
+            for (var i = 0; i < FillerFiles; i++)
+                File.WriteAllText(Path.Combine(Config.GetBinaryDir(), "lib", $"part-{i}.bin"), "truncated");
+
+            var callers = Enumerable.Range(0, Callers).Select(_ => Download.EnsureBinaryAsync()).ToArray();
+            var outcomes = new List<string>();
+            foreach (var caller in callers)
+            {
+                try { outcomes.Add(await caller); }
+                catch (Exception err) { outcomes.Add($"{err.GetType().Name}: {err.Message}"); }
+            }
+
+            Assert.Equal(Enumerable.Repeat(Config.GetBinaryPath(), Callers), outcomes);
+            Assert.Equal("complete", InspectInstall());
+            Assert.Equal(
+                new[] { Path.GetFileName(Config.GetBinaryDir()) },
+                Directory.GetFileSystemEntries(cacheDir).Select(Path.GetFileName).Where(name => !name!.StartsWith('.')));
+        }
+        finally
+        {
+            mirror.Stop();
+            foreach (var (name, value) in previousEnv) Environment.SetEnvironmentVariable(name, value);
+            Directory.Delete(cacheDir, recursive: true);
+        }
+    }
+
     private static void UseLocalMirror(string cacheDir, int mirrorPort)
     {
         foreach (var name in IsolatedEnvNames) Environment.SetEnvironmentVariable(name, null);

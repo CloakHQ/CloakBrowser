@@ -48,6 +48,10 @@ public static class Download
     // once (see ShowWelcome).
     internal const long WelcomeFreeInterval = 24L * 3600;
 
+    // Attempts to rename an extraction into place while concurrent callers are
+    // replacing the same partial install (see ExtractArchive).
+    private const int InstallRenameAttempts = 5;
+
     private static readonly HttpClient Http = CreateHttpClient();
 
     private static HttpClient CreateHttpClient()
@@ -969,6 +973,7 @@ public static class Download
         // none of them can see or delete another's half-written install.
         var stagingDir = $"{destDir}.partial-{Guid.NewGuid():N}";
         Directory.CreateDirectory(stagingDir);
+        var staleDirs = new List<string>();
         try
         {
             if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
@@ -987,25 +992,42 @@ public static class Download
             if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
                 RemoveQuarantine(stagingDir);
 
-            try
+            for (var attempt = 1; attempt <= InstallRenameAttempts; attempt++)
             {
-                Directory.Move(stagingDir, destDir);
-            }
-            catch (IOException) when (Directory.Exists(destDir))
-            {
-                // destDir appeared first. Keep it if another caller finished a complete
-                // install; replace it if it is an incomplete leftover, such as an
-                // interrupted in-place extraction from an older release.
-                if (!(File.Exists(bp) && IsExecutable(bp)))
+                try
                 {
-                    Directory.Delete(destDir, recursive: true);
                     Directory.Move(stagingDir, destDir);
+                    break;
                 }
+                catch (IOException)
+                {
+                    // destDir is in the way. Keep it if another caller finished a complete
+                    // install; replace it if it is an incomplete leftover, such as an
+                    // interrupted in-place extraction from an older release.
+                    if (File.Exists(bp) && IsExecutable(bp)) break;
+                    if (attempt == InstallRenameAttempts) throw;
+                }
+                // Rename the leftover aside before deleting it. Deleting it in place races
+                // other callers renaming their extraction into destDir.
+                var staleDir = $"{destDir}.stale-{Guid.NewGuid():N}";
+                try
+                {
+                    Directory.Move(destDir, staleDir);
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    continue; // another caller moved it aside first
+                }
+                staleDirs.Add(staleDir);
             }
         }
         finally
         {
             try { if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, recursive: true); } catch (IOException) { }
+            foreach (var staleDir in staleDirs)
+            {
+                try { Directory.Delete(staleDir, recursive: true); } catch (IOException) { }
+            }
         }
 
         if (File.Exists(bp))

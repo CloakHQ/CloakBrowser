@@ -77,6 +77,10 @@ WELCOME_FREE_INTERVAL = 24 * 3600
 # version comes from the network, which we don't call just to print a banner).
 PRO_MAJOR = "151"
 
+# Attempts to rename an extraction into place while concurrent callers are
+# replacing the same partial install (see _extract_archive).
+INSTALL_RENAME_ATTEMPTS = 5
+
 
 def _welcome_due(marker: Path, pro: bool) -> bool:
     """Whether the welcome banner should be shown now.
@@ -906,6 +910,7 @@ def _extract_archive(
     # none of them can see or delete another's half-written install.
     staging_dir = dest_dir.with_name(f"{dest_dir.name}.partial-{uuid.uuid4().hex}")
     staging_dir.mkdir()
+    stale_dirs: list[Path] = []
     try:
         if str(archive_path).endswith(".zip"):
             _extract_zip(archive_path, staging_dir)
@@ -926,23 +931,30 @@ def _extract_archive(
         if platform.system() == "Darwin":
             _remove_quarantine(staging_dir)
 
-        try:
-            staging_dir.rename(dest_dir)
-        except OSError:
-            if not dest_dir.exists():
-                raise
-            # dest_dir appeared first. Keep it if another caller finished a complete
-            # install; replace it if it is an incomplete leftover, such as an
-            # interrupted in-place extraction from an older release.
-            if not (bp.exists() and _is_executable(bp)):
-                try:
-                    shutil.rmtree(dest_dir)
-                except OSError:
-                    logger.error("Failed to remove partial extraction directory: %s", dest_dir)
-                    raise
+        for attempt in range(1, INSTALL_RENAME_ATTEMPTS + 1):
+            try:
                 staging_dir.rename(dest_dir)
+                break
+            except OSError:
+                # dest_dir is in the way. Keep it if another caller finished a complete
+                # install; replace it if it is an incomplete leftover, such as an
+                # interrupted in-place extraction from an older release.
+                if bp.exists() and _is_executable(bp):
+                    break
+                if attempt == INSTALL_RENAME_ATTEMPTS:
+                    raise
+            # Rename the leftover aside before deleting it. Deleting it in place races
+            # other callers renaming their extraction into dest_dir.
+            stale_dir = dest_dir.with_name(f"{dest_dir.name}.stale-{uuid.uuid4().hex}")
+            try:
+                dest_dir.rename(stale_dir)
+            except FileNotFoundError:
+                continue  # another caller moved it aside first
+            stale_dirs.append(stale_dir)
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
+        for stale_dir in stale_dirs:
+            shutil.rmtree(stale_dir, ignore_errors=True)
 
     if bp.exists():
         logger.info("Binary ready: %s", bp)

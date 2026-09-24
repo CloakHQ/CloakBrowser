@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import * as http from "node:http";
+import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import {
   binarySupportsHeadlessNoViewport,
   binarySupportsHttpProxyInlineAuth,
@@ -664,6 +668,7 @@ describe("welcome banner cadence", () => {
 describe("concurrent first-run download", () => {
   const CALLERS = 4;
   const FILLER_FILES = 300;
+  const PARTIAL_INSTALL_FILES = 2000;
   const binaryBytes = Buffer.from("#!/bin/sh\necho fake-chrome\n");
   let cacheDir: string;
   let archiveBytes: Buffer;
@@ -771,6 +776,58 @@ describe("concurrent first-run download", () => {
 
       expect(await ensureBinary()).toBe(getBinaryPath());
       expect(inspectInstall()).toBe("complete");
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "concurrent processes replace a partial install left by an interrupted extraction",
+    async () => {
+      // Enough files that deleting the partial install overlaps other callers.
+      fs.mkdirSync(path.join(getBinaryDir(), "lib"), { recursive: true });
+      for (let i = 0; i < PARTIAL_INSTALL_FILES; i++) {
+        fs.writeFileSync(path.join(getBinaryDir(), "lib", `part-${i}.bin`), "truncated");
+      }
+
+      // Answer only once every caller is downloading, so all of them find the
+      // partial install in the way when they move their extraction into place.
+      const heldResponses: http.ServerResponse[] = [];
+      const mirror = http.createServer((_request, response) => {
+        heldResponses.push(response);
+        if (heldResponses.length === CALLERS) {
+          for (const heldResponse of heldResponses) heldResponse.end(archiveBytes);
+        }
+      });
+      await new Promise<void>((resolve) => mirror.listen(0, "127.0.0.1", resolve));
+      const mirrorUrl = `http://127.0.0.1:${(mirror.address() as AddressInfo).port}`;
+
+      // Callers in one process cannot interleave inside extractArchive's
+      // synchronous rename and cleanup, so each caller is a separate process
+      // running the built dist/ (npm run build first, as CI does).
+      const downloadModuleUrl = new URL("../dist/download.js", import.meta.url).href;
+      const callerScript =
+        `const { ensureBinary } = await import(${JSON.stringify(downloadModuleUrl)});` +
+        `console.log("BINARY_PATH=" + (await ensureBinary()));`;
+      try {
+        const callers = await Promise.allSettled(
+          Array.from({ length: CALLERS }, () =>
+            promisify(execFile)(process.execPath, ["--input-type=module", "-e", callerScript], {
+              env: { ...process.env, CLOAKBROWSER_DOWNLOAD_URL: mirrorUrl },
+            }),
+          ),
+        );
+        const outcomes = callers.map((caller) =>
+          caller.status === "fulfilled"
+            ? caller.value.stdout.trim().split("\n").at(-1)
+            : String(caller.reason),
+        );
+        expect(outcomes).toEqual(Array(CALLERS).fill(`BINARY_PATH=${getBinaryPath()}`));
+      } finally {
+        mirror.close();
+      }
+      expect(inspectInstall()).toBe("complete");
+      expect(fs.readdirSync(cacheDir).filter((name) => !name.startsWith("."))).toEqual([
+        path.basename(getBinaryDir()),
+      ]);
     },
   );
 });

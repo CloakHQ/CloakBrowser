@@ -284,3 +284,43 @@ class TestConcurrentFirstRun:
 
         assert download.ensure_binary() == str(get_binary_path())
         assert self._inspect_install() == "complete"
+
+    @pytest.mark.skipif(platform.system() == "Windows", reason="POSIX exec semantics")
+    def test_concurrent_callers_replace_partial_install(self, tmp_path, monkeypatch):
+        archive = self._create_platform_archive(tmp_path)
+        cache_dir = tmp_path / "cache"
+        self._use_local_mirror(cache_dir, monkeypatch)
+
+        # Every caller downloads at the same moment, so all of them find the
+        # partial install in the way when they move their extraction into place.
+        all_callers_downloading = threading.Barrier(self.CALLERS)
+
+        def fake_download_file(url, dest, headers=None):
+            all_callers_downloading.wait()
+            shutil.copyfile(archive, dest)
+
+        monkeypatch.setattr(download, "_download_file", fake_download_file)
+        (get_binary_dir() / "lib").mkdir(parents=True)
+        for i in range(self.FILLER_FILES):
+            (get_binary_dir() / "lib" / f"part-{i}.bin").write_bytes(b"truncated")
+
+        caller_outcomes: queue.Queue = queue.Queue()
+
+        def run_caller():
+            try:
+                caller_outcomes.put(("returned", download.ensure_binary()))
+            except Exception as err:
+                caller_outcomes.put(("raised", repr(err)))
+
+        callers = [threading.Thread(target=run_caller) for _ in range(self.CALLERS)]
+        for caller in callers:
+            caller.start()
+        for caller in callers:
+            caller.join(timeout=60)
+
+        outcomes = [caller_outcomes.get_nowait() for _ in range(caller_outcomes.qsize())]
+        assert outcomes == [("returned", str(get_binary_path()))] * self.CALLERS
+        assert self._inspect_install() == "complete"
+        assert [p.name for p in cache_dir.iterdir() if not p.name.startswith(".")] == [
+            get_binary_dir().name
+        ]

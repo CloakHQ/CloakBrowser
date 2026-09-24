@@ -50,6 +50,9 @@ export const WELCOME_FREE_INTERVAL_SEC = 1 * 24 * 60 * 60;
 // (no local constant to derive it from — the live Pro version comes from the
 // network, which we don't call just to print a banner). Mirrors download.py.
 const PRO_MAJOR = "151";
+// Attempts to rename an extraction into place while concurrent callers are
+// replacing the same partial install (see extractArchive).
+const INSTALL_RENAME_ATTEMPTS = 5;
 
 /**
  * A downloaded binary could not be authenticated (bad/missing signature,
@@ -1037,6 +1040,7 @@ async function extractArchive(
   // none of them can see or delete another's half-written install.
   const stagingDir = `${destDir}.partial-${randomUUID()}`;
   fs.mkdirSync(stagingDir);
+  const staleDirs: string[] = [];
   try {
     if (archivePath.endsWith(".zip")) {
       await extractZip(archivePath, stagingDir);
@@ -1059,20 +1063,33 @@ async function extractArchive(
       removeQuarantine(stagingDir);
     }
 
-    try {
-      fs.renameSync(stagingDir, destDir);
-    } catch (err) {
-      if (!fs.existsSync(destDir)) throw err;
-      // destDir appeared first. Keep it if another caller finished a complete
-      // install; replace it if it is an incomplete leftover, such as an
-      // interrupted in-place extraction from an older release.
-      if (!(fs.existsSync(bp) && isExecutable(bp))) {
-        fs.rmSync(destDir, { recursive: true, force: true });
+    for (let attempt = 1; attempt <= INSTALL_RENAME_ATTEMPTS; attempt++) {
+      try {
         fs.renameSync(stagingDir, destDir);
+        break;
+      } catch (err) {
+        // destDir is in the way. Keep it if another caller finished a complete
+        // install; replace it if it is an incomplete leftover, such as an
+        // interrupted in-place extraction from an older release.
+        if (fs.existsSync(bp) && isExecutable(bp)) break;
+        if (attempt === INSTALL_RENAME_ATTEMPTS) throw err;
       }
+      // Rename the leftover aside before deleting it. Deleting it in place races
+      // other callers renaming their extraction into destDir.
+      const staleDir = `${destDir}.stale-${randomUUID()}`;
+      try {
+        fs.renameSync(destDir, staleDir);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // another caller moved it aside first
+        throw err;
+      }
+      staleDirs.push(staleDir);
     }
   } finally {
     fs.rmSync(stagingDir, { recursive: true, force: true });
+    for (const staleDir of staleDirs) {
+      fs.rmSync(staleDir, { recursive: true, force: true });
+    }
   }
 
   if (fs.existsSync(bp)) {
