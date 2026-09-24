@@ -43,14 +43,18 @@ function isInViewportX(bounds: ElementBounds, viewportWidth: number): boolean {
   return bounds.x >= 0 && bounds.x + bounds.width <= viewportWidth;
 }
 
+// In RTL documents Chrome's scrollX runs from 0 down to -range, and the
+// viewport takes its direction from <body> when there is one.
 const SCROLL_JS =
   '(() => { const e = document.scrollingElement || document.documentElement;' +
+  ' const rangeX = Math.max(0, e.scrollWidth - e.clientWidth);' +
+  " const rtl = getComputedStyle(document.body || e).direction === 'rtl';" +
   ' return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight),' +
-  ' x: window.scrollX, maxX: Math.max(0, e.scrollWidth - e.clientWidth) }; })()';
+  ' x: window.scrollX, minX: rtl ? -rangeX : 0, maxX: rtl ? 0 : rangeX }; })()';
 
 async function readScrollState(
   page: Page,
-): Promise<{ y: number; maxY: number; x: number; maxX: number }> {
+): Promise<{ y: number; maxY: number; x: number; minX: number; maxX: number }> {
   const world = getWorld(page);
   if (!world) throw new StealthWorldUnavailableError();
   try {
@@ -58,7 +62,8 @@ async function readScrollState(
     if (
       !state || typeof state !== 'object' ||
       typeof state.y !== 'number' || typeof state.maxY !== 'number' ||
-      typeof state.x !== 'number' || typeof state.maxX !== 'number'
+      typeof state.x !== 'number' || typeof state.minX !== 'number' ||
+      typeof state.maxX !== 'number'
     ) {
       throw new StealthEvaluationError('<scroll-state>');
     }
@@ -238,8 +243,8 @@ async function scrollXIntoView<T extends ElementBounds>(
   const distanceToScroll = box.x + box.width / 2 - viewport.width / 2;
 
   // Page pinned at the boundary in the needed direction: scrolling can't help.
-  const { x, maxX } = await readScrollState(page);
-  if (distanceToScroll < 0 ? x <= 0 : x >= maxX) {
+  const { x, minX, maxX } = await readScrollState(page);
+  if (distanceToScroll < 0 ? x <= minX : x >= maxX) {
     return { box, cursorX, cursorY, didScroll: false };
   }
 

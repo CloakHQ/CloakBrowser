@@ -189,4 +189,32 @@ public class ScrollFallbackTests
         Assert.False(result.DidScroll);
         Assert.Equal(0, mouse.WheelCalls);
     }
+
+    [Fact]
+    public async Task Rtl_page_at_start_scrolls_x_axis_left()
+    {
+        // RTL page at its start: scrollX 0 with a range of -600..0. The element
+        // sits in the left overflow, so the page is not pinned in that direction.
+        var scroll = PlaywrightScrollPage.ParseScrollState(System.Text.Json.JsonDocument.Parse(
+            """{"y":0,"maxY":0,"x":0,"minX":-600,"maxX":0}""").RootElement);
+        var page = new ViewportPage((1000, 700), scroll);
+        var mouse = new CountingMouse();
+        var boxes = new Queue<BoundingBox?>(new BoundingBox?[]
+        {
+            new BoundingBox(-600, 300, 200, 30),
+            new BoundingBox(400, 300, 200, 30),
+        });
+        Func<Task<BoundingBox?>> getBox = () => Task.FromResult(boxes.Dequeue());
+
+        var result = await HumanScroll.HumanScrollIntoViewAsync(page, mouse, getBox, 0, 0, FastConfig());
+
+        Assert.True(result.DidScroll);
+        Assert.Equal(400, result.Box.X);
+        Assert.NotEmpty(mouse.Wheels);
+        Assert.All(mouse.Wheels, w =>
+        {
+            Assert.True(w.Dx < 0);
+            Assert.Equal(0, w.Dy);
+        });
+    }
 }

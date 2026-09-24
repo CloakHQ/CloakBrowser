@@ -50,10 +50,14 @@ def _get_element_box(page: Any, selector: str, timeout: float = 30000) -> Option
     raise StealthEvaluationError(selector)
 
 
+# In RTL documents Chrome's scrollX runs from 0 down to -range, and the
+# viewport takes its direction from <body> when there is one.
 _SCROLL_JS = (
     "(() => { const e = document.scrollingElement || document.documentElement;"
+    " const rangeX = Math.max(0, e.scrollWidth - e.clientWidth);"
+    " const rtl = getComputedStyle(document.body || e).direction === 'rtl';"
     " return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight),"
-    " x: window.scrollX, maxX: Math.max(0, e.scrollWidth - e.clientWidth) }; })()"
+    " x: window.scrollX, minX: rtl ? -rangeX : 0, maxX: rtl ? 0 : rangeX }; })()"
 )
 
 
@@ -249,7 +253,7 @@ def _scroll_x_into_view(
 
     # Page pinned at the boundary in the needed direction: scrolling can't help.
     scroll = _read_scroll_state(page)
-    if (scroll["x"] <= 0) if distance_to_scroll < 0 else (scroll["x"] >= scroll["maxX"]):
+    if (scroll["x"] <= scroll["minX"]) if distance_to_scroll < 0 else (scroll["x"] >= scroll["maxX"]):
         return box, cursor_x, cursor_y, False
 
     scroll_area_x = round(viewport_width * rand(0.3, 0.7))

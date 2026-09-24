@@ -2341,7 +2341,7 @@ class TestScrollIntoViewIfNeeded:
         })
         page = MagicMock()
         page.viewport_size = {"width": 1000, "height": 700}
-        page._stealth_world.evaluate.return_value = {"y": 0, "maxY": 0, "x": 0, "maxX": 600}
+        page._stealth_world.evaluate.return_value = {"y": 0, "maxY": 0, "x": 0, "minX": 0, "maxX": 600}
         raw = MagicMock()
         boxes = iter([
             {"x": 800, "y": 300, "width": 800, "height": 30},
@@ -2366,7 +2366,7 @@ class TestScrollIntoViewIfNeeded:
         cfg = resolve_config("default", None)
         page = MagicMock()
         page.viewport_size = {"width": 1000, "height": 700}
-        page._stealth_world.evaluate.return_value = {"y": 0, "maxY": 0, "x": 600, "maxX": 600}
+        page._stealth_world.evaluate.return_value = {"y": 0, "maxY": 0, "x": 600, "minX": 0, "maxX": 600}
         raw = MagicMock()
         clipped_box = {"x": 900, "y": 300, "width": 200, "height": 30}
 
@@ -2376,6 +2376,72 @@ class TestScrollIntoViewIfNeeded:
         assert not did_scroll
         assert box == clipped_box
         assert not raw.wheel.called
+
+    def test_human_scroll_into_view_scrolls_x_left_on_rtl_page(self):
+        """RTL page at its start (scrollX 0, range -600..0): a box in the left
+        overflow gets negative horizontal wheel events."""
+        from cloakbrowser.human.scroll import human_scroll_into_view
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import MagicMock
+
+        cfg = resolve_config("default", {
+            "scroll_pre_move_delay": (0, 1),
+            "scroll_settle_delay": (0, 1),
+        })
+        page = MagicMock()
+        page.viewport_size = {"width": 1000, "height": 700}
+        page._stealth_world.evaluate.return_value = {
+            "y": 0, "maxY": 0, "x": 0, "minX": -600, "maxX": 0,
+        }
+        raw = MagicMock()
+        boxes = iter([
+            {"x": -600, "y": 300, "width": 200, "height": 30},
+            {"x": 400, "y": 300, "width": 200, "height": 30},
+        ])
+
+        box, _, _, did_scroll = human_scroll_into_view(
+            page, raw, lambda: next(boxes), 0, 0, cfg,
+        )
+        assert did_scroll
+        assert box["x"] == 400
+        wheel_deltas = [c.args for c in raw.wheel.call_args_list]
+        assert wheel_deltas, "Off-screen-left element on an RTL page should trigger wheel events"
+        assert all(dx < 0 and dy == 0 for dx, dy in wheel_deltas)
+
+    async def test_async_human_scroll_into_view_scrolls_x_left_on_rtl_page(self):
+        """Async twin of the RTL case above."""
+        from cloakbrowser.human.scroll_async import async_human_scroll_into_view
+        from cloakbrowser.human.config import resolve_config
+        from unittest.mock import AsyncMock, MagicMock
+
+        cfg = resolve_config("default", {
+            "scroll_pre_move_delay": (0, 1),
+            "scroll_settle_delay": (0, 1),
+        })
+        page = MagicMock()
+        page.viewport_size = {"width": 1000, "height": 700}
+        page._stealth_world.evaluate = AsyncMock(return_value={
+            "y": 0, "maxY": 0, "x": 0, "minX": -600, "maxX": 0,
+        })
+        raw = MagicMock()
+        raw.move = AsyncMock()
+        raw.wheel = AsyncMock()
+        boxes = iter([
+            {"x": -600, "y": 300, "width": 200, "height": 30},
+            {"x": 400, "y": 300, "width": 200, "height": 30},
+        ])
+
+        async def get_box():
+            return next(boxes)
+
+        box, _, _, did_scroll = await async_human_scroll_into_view(
+            page, raw, get_box, 0, 0, cfg,
+        )
+        assert did_scroll
+        assert box["x"] == 400
+        wheel_deltas = [c.args for c in raw.wheel.call_args_list]
+        assert wheel_deltas, "Off-screen-left element on an RTL page should trigger wheel events"
+        assert all(dx < 0 and dy == 0 for dx, dy in wheel_deltas)
 
     def test_element_handle_scroll_into_view_if_needed_humanized(self):
         """el.scroll_into_view_if_needed() routes through human_scroll_into_view."""

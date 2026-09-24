@@ -21,9 +21,10 @@ public interface IRawScrollPage
     /// <summary>
     /// Current scroll offsets (<c>window.scrollY</c>, <c>window.scrollX</c>) and the
     /// maximum scrollable offsets (<c>scrollHeight - clientHeight</c>,
-    /// <c>scrollWidth - clientWidth</c>). Used to detect when the page is pinned at a
-    /// boundary and further scrolling can't help. Returns null if the values can't
-    /// be read.
+    /// <c>scrollWidth - clientWidth</c>). X is measured from the leftmost scroll
+    /// position, so it runs 0..MaxX in RTL documents too. Used to detect when the
+    /// page is pinned at a boundary and further scrolling can't help. Returns null
+    /// if the values can't be read.
     /// </summary>
     Task<(double Y, double MaxY, double X, double MaxX)?> GetScrollStateAsync();
 }

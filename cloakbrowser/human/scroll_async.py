@@ -239,7 +239,7 @@ async def _async_scroll_x_into_view(
 
     # Page pinned at the boundary in the needed direction: scrolling can't help.
     scroll = await _async_read_scroll_state(page)
-    if (scroll["x"] <= 0) if distance_to_scroll < 0 else (scroll["x"] >= scroll["maxX"]):
+    if (scroll["x"] <= scroll["minX"]) if distance_to_scroll < 0 else (scroll["x"] >= scroll["maxX"]):
         return box, cursor_x, cursor_y, False
 
     scroll_area_x = round(viewport_width * rand(0.3, 0.7))

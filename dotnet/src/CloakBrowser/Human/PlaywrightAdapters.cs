@@ -111,17 +111,28 @@ internal sealed class PlaywrightScrollPage : IRawScrollPage
     public async Task<(double Y, double MaxY, double X, double MaxX)?> GetScrollStateAsync()
     {
         var world = await _getStealthAsync().ConfigureAwait(false);
+        // In RTL documents Chrome's scrollX runs from 0 down to -range, and the
+        // viewport takes its direction from <body> when there is one.
         var value = await world.EvaluateAsync(
             "(() => { const e = document.scrollingElement || document.documentElement;" +
+            " const rangeX = Math.max(0, e.scrollWidth - e.clientWidth);" +
+            " const rtl = getComputedStyle(document.body || e).direction === 'rtl';" +
             " return { y: window.scrollY, maxY: Math.max(0, e.scrollHeight - e.clientHeight)," +
-            " x: window.scrollX, maxX: Math.max(0, e.scrollWidth - e.clientWidth) }; })()")
+            " x: window.scrollX, minX: rtl ? -rangeX : 0, maxX: rtl ? 0 : rangeX }; })()")
             .ConfigureAwait(false);
+        return ParseScrollState(value);
+    }
+
+    /// <summary>Shifts X and MaxX by minX so X runs from 0 at the leftmost position in LTR and RTL alike.</summary>
+    internal static (double Y, double MaxY, double X, double MaxX) ParseScrollState(System.Text.Json.JsonElement? value)
+    {
         if (value == null || value.Value.ValueKind != System.Text.Json.JsonValueKind.Object
             || !value.Value.TryGetProperty("y", out var y)
             || !value.Value.TryGetProperty("maxY", out var maxY)
             || !value.Value.TryGetProperty("x", out var x)
+            || !value.Value.TryGetProperty("minX", out var minX)
             || !value.Value.TryGetProperty("maxX", out var maxX))
             throw new StealthEvaluationError("<scroll-state>");
-        return (y.GetDouble(), maxY.GetDouble(), x.GetDouble(), maxX.GetDouble());
+        return (y.GetDouble(), maxY.GetDouble(), x.GetDouble() - minX.GetDouble(), maxX.GetDouble() - minX.GetDouble());
     }
 }
