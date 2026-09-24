@@ -10,6 +10,7 @@ Downloads GeoLite2-City.mmdb (~70 MB) on first use, caches in
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import math
@@ -133,6 +134,48 @@ def resolve_proxy_geo_with_ip(
     if db_path is None:
         raise RuntimeError("GeoIP resolution failed: GeoIP database is unavailable")
 
+    timezone, locale = _lookup_geo(db_path, ip)
+
+    return timezone, locale, ip
+
+
+async def resolve_proxy_geo_with_ip_async(
+    proxy_url: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Async version of :func:`resolve_proxy_geo_with_ip`"""
+    try:
+        import geoip2.database  # noqa: F811
+    except ImportError:
+        raise ImportError(
+            "geoip2 is required for geoip=True. Install it with:\n"
+            "  pip install 'cloakbrowser[geoip]'"
+        ) from None
+
+    db_path = await asyncio.to_thread(_ensure_geoip_db)
+
+    timeout = _get_geoip_timeout_seconds()
+    deadline = _deadline_from_timeout(timeout)
+
+    ip = await _resolve_exit_ip_async(proxy_url, timeout=_remaining_seconds(deadline))
+    if ip is None and proxy_url and not _deadline_expired(deadline):
+        ip = await asyncio.to_thread(_resolve_proxy_ip, proxy_url)
+    if ip is None or _deadline_expired(deadline):
+        if deadline is not None and _deadline_expired(deadline):
+            raise RuntimeError(f"GeoIP resolution timed out after {timeout:.1f}s")
+        raise RuntimeError("GeoIP resolution failed: could not discover the egress IP")
+
+    if db_path is None:
+        raise RuntimeError("GeoIP resolution failed: GeoIP database is unavailable")
+
+    timezone, locale = await asyncio.to_thread(_lookup_geo, db_path, ip)
+
+    return timezone, locale, ip
+
+
+def _lookup_geo(db_path: Path, ip: str) -> tuple[str | None, str | None]:
+    """Look up timezone/locale for *ip* in the GeoIP database at *db_path*."""
+    import geoip2.database
+
     try:
         with geoip2.database.Reader(str(db_path)) as reader:
             resp = reader.city(ip)
@@ -143,7 +186,7 @@ def resolve_proxy_geo_with_ip(
                 "GeoIP: %s → tz=%s, country=%s, locale=%s",
                 ip, timezone, country, locale,
             )
-            return timezone, locale, ip
+            return timezone, locale
     except Exception as exc:
         raise RuntimeError(f"GeoIP lookup failed for {ip}: {exc}") from exc
 
@@ -249,6 +292,17 @@ def resolve_proxy_exit_ip(proxy_url: str | None) -> str | None:
     return ip
 
 
+async def resolve_proxy_exit_ip_async(proxy_url: str | None) -> str | None:
+    """Async version of :func:`resolve_proxy_exit_ip`"""
+    timeout = _get_geoip_timeout_seconds()
+    deadline = _deadline_from_timeout(timeout)
+
+    ip = await _resolve_exit_ip_async(proxy_url, timeout=timeout)
+    if ip is None and _deadline_expired(deadline):
+        logger.warning("Proxy exit-IP resolution timed out after %.1fs", timeout)
+    return ip
+
+
 def _resolve_exit_ip(proxy_url: str | None, timeout: float | None = None) -> str | None:
     """Discover the egress IP via the echo services.
 
@@ -279,6 +333,37 @@ def _resolve_exit_ip(proxy_url: str | None, timeout: float | None = None) -> str
             return None
         except Exception:
             continue
+    logger.warning("Failed to discover exit IP through proxy")
+    return None
+
+
+async def _resolve_exit_ip_async(proxy_url: str | None, timeout: float | None = None) -> str | None:
+    """Async version of :func:`_resolve_exit_ip`"""
+    import httpx
+
+    deadline = _deadline_from_timeout(timeout or 0)
+
+    async with httpx.AsyncClient(proxy=proxy_url or None) as client:
+        for url in _IP_ECHO_URLS:
+            try:
+                remaining = _remaining_seconds(deadline)
+                if remaining is not None and remaining <= 0:
+                    return None
+                request_timeout = min(10.0, remaining) if remaining is not None else 10.0
+                resp = await client.get(url, timeout=request_timeout)
+                resp.raise_for_status()
+                ip = resp.text.strip()
+                # Validate it looks like an IP
+                ipaddress.ip_address(ip)
+                logger.debug("Exit IP via %s: %s", url, ip)
+                return ip
+            except httpx.UnsupportedProtocol:
+                logger.warning(
+                    "SOCKS5 proxy requires socksio: pip install 'cloakbrowser[geoip]'"
+                )
+                return None
+            except Exception:
+                continue
     logger.warning("Failed to discover exit IP through proxy")
     return None
 

@@ -201,6 +201,50 @@ def test_resolve_webrtc_args_no_flag():
     assert result == ["--no-sandbox"]
 
 
+async def test_resolve_webrtc_args_async_auto():
+    """--fingerprint-webrtc-ip=auto should be resolved to an IP (async)."""
+    from cloakbrowser.browser import _resolve_webrtc_args_async
+    from unittest.mock import patch
+
+    with patch("cloakbrowser.geoip.resolve_proxy_exit_ip_async", return_value="5.6.7.8"):
+        result = await _resolve_webrtc_args_async(["--fingerprint-webrtc-ip=auto"], "http://proxy:8080")
+    assert result == ["--fingerprint-webrtc-ip=5.6.7.8"]
+
+
+async def test_resolve_webrtc_args_async_explicit_ip_unchanged():
+    """Explicit IP in args should not be touched (async)."""
+    from cloakbrowser.browser import _resolve_webrtc_args_async
+
+    result = await _resolve_webrtc_args_async(["--fingerprint-webrtc-ip=9.9.9.9"], "http://proxy:8080")
+    assert result == ["--fingerprint-webrtc-ip=9.9.9.9"]
+
+
+async def test_resolve_webrtc_args_async_no_flag():
+    """No webrtc flag in args should return args unchanged (async)."""
+    from cloakbrowser.browser import _resolve_webrtc_args_async
+
+    result = await _resolve_webrtc_args_async(["--no-sandbox"], "http://proxy:8080")
+    assert result == ["--no-sandbox"]
+
+
+async def test_resolve_webrtc_args_async_no_proxy_removes_flag():
+    """auto flag with no proxy should be dropped (async)."""
+    from cloakbrowser.browser import _resolve_webrtc_args_async
+
+    result = await _resolve_webrtc_args_async(["--fingerprint-webrtc-ip=auto"], None)
+    assert result == []
+
+
+async def test_resolve_webrtc_args_async_resolution_failure_removes_flag():
+    """A failed exit-IP resolution should drop the auto flag rather than crash (async)."""
+    from cloakbrowser.browser import _resolve_webrtc_args_async
+    from unittest.mock import patch
+
+    with patch("cloakbrowser.geoip.resolve_proxy_exit_ip_async", side_effect=Exception("boom")):
+        result = await _resolve_webrtc_args_async(["--fingerprint-webrtc-ip=auto"], "http://proxy:8080")
+    assert result == []
+
+
 def test_start_maximized_injected_when_gated():
     """start_maximized=True adds the flag."""
     args = build_args(stealth_args=True, extra_args=None, start_maximized=True)
