@@ -150,11 +150,11 @@ page.goto("https://example.com")
 
 ---
 
-## Latest: v0.5.10 — 87 source-level stealth patches (Chromium 151.0.7922.108.6)
+## Latest: v0.5.10 — 87 source-level stealth patches (Chromium 152.0.7977.82.1)
 
-- **CloakBrowser Pro Stable** — Chromium `151.0.7922.108.6` on Linux x64, Linux ARM64, and Windows x64; macOS on `151.0.7922.108.3`. Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest Stable build for your platform automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
+- **CloakBrowser Pro Stable** — Chromium `152.0.7977.82.1` on Linux x64, Linux ARM64, and Windows x64; macOS on `151.0.7922.108.3`. Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest Stable build for your platform automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
 - **.NET 8 / C# client** — CloakBrowser now ships as a NuGet package (`CloakBrowser`), mirroring the Python and JS wrappers.
-- **Chromium 151 upgrade** — rebased the full patch set onto Chromium 151 (Linux, Windows, and macOS), re-validated against reference data
+- **Chromium 152 upgrade** — rebased the full patch set onto Chromium 152 for Linux and Windows; macOS stays on Chromium 151
 - **87 fingerprint patches** — rendering consistency improvements across Linux and Windows, corrected GPU/display/graphics parameters to match stock Chrome profiles
 - **Windows native GPU passthrough** — real hardware values pass through directly instead of being spoofed, matching real browser behavior
 - **HTTP proxy inline credentials** — new network-layer support for proxies with inline authentication
@@ -890,11 +890,11 @@ browser = await launch_async(args=["--remote-debugging-port=9242"])
 
 | Platform | Free | Pro | Status |
 |---|---|---|---|
-| Linux x86_64 | Chromium 146 (58 patches) | Chromium 151 (87 patches) | ✅ |
-| Linux arm64 (RPi, Graviton) | Chromium 146 (58 patches) | Chromium 151 (87 patches) | ✅ |
+| Linux x86_64 | Chromium 146 (58 patches) | Chromium 152 (87 patches) | ✅ |
+| Linux arm64 (RPi, Graviton) | Chromium 146 (58 patches) | Chromium 152 (87 patches) | ✅ |
 | macOS arm64 (Apple Silicon) | Chromium 145 (26 patches) | Chromium 151 (87 patches) | ✅ |
 | macOS x86_64 (Intel) | Chromium 145 (26 patches) | Chromium 151 (87 patches) | ✅ |
-| Windows x86_64 | Chromium 146 (58 patches) | Chromium 151 (87 patches) | ✅ |
+| Windows x86_64 | Chromium 146 (58 patches) | Chromium 152 (87 patches) | ✅ |
 
 The wrapper auto-downloads the correct binary for your platform.
 

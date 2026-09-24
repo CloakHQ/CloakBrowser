@@ -49,7 +49,7 @@ export const WELCOME_FREE_INTERVAL_SEC = 1 * 24 * 60 * 60;
 // Pro Chromium major shown in the welcome banner. Bump at each Pro major release
 // (no local constant to derive it from — the live Pro version comes from the
 // network, which we don't call just to print a banner). Mirrors download.py.
-const PRO_MAJOR = "151";
+const PRO_MAJOR = "152";
 // Attempts to rename an extraction into place while concurrent callers are
 // replacing the same partial install (see extractArchive).
 const INSTALL_RENAME_ATTEMPTS = 5;

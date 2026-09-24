@@ -75,7 +75,7 @@ WELCOME_FREE_INTERVAL = 24 * 3600
 # Pro Chromium major shown in the free-tier welcome banner. Bump at each Pro
 # major release (there is no local constant to derive it from — the live Pro
 # version comes from the network, which we don't call just to print a banner).
-PRO_MAJOR = "151"
+PRO_MAJOR = "152"
 
 # Attempts to rename an extraction into place while concurrent callers are
 # replacing the same partial install (see _extract_archive).
