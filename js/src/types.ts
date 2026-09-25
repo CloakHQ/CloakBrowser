@@ -27,6 +27,8 @@ export interface LaunchOptions {
   locale?: string;
   /** Auto-detect timezone/locale from proxy IP (requires: npm install mmdb-lib). */
   geoip?: boolean;
+  /** Opt-in Docker GPU acceleration flags. Also reads CLOAKBROWSER_GPU_ACCEL=1. */
+  gpuAccel?: boolean;
   /** Pro license key. Also reads from CLOAKBROWSER_LICENSE_KEY env var. */
   licenseKey?: string;
   /** Exact Chromium version pin. Also reads from CLOAKBROWSER_VERSION env var. */
