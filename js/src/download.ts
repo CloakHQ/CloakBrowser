@@ -5,7 +5,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { createHash, createPublicKey, verify as cryptoVerify } from "node:crypto";
+import { createHash, createPublicKey, randomUUID, verify as cryptoVerify } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createWriteStream } from "node:fs";
@@ -50,6 +50,13 @@ export const WELCOME_FREE_INTERVAL_SEC = 1 * 24 * 60 * 60;
 // (no local constant to derive it from — the live Pro version comes from the
 // network, which we don't call just to print a banner). Mirrors download.py.
 const PRO_MAJOR = "152";
+// Attempts to rename an extraction into place while concurrent callers are
+// replacing the same partial install (see extractArchive).
+const INSTALL_RENAME_ATTEMPTS = 5;
+// Retries for a directory rename that Windows transiently denies (see
+// renameDirWithRetry): about 2.5 seconds in total.
+const TRANSIENT_RENAME_ATTEMPTS = 10;
+const TRANSIENT_RENAME_DELAY_MS = 250;
 
 /**
  * A downloaded binary could not be authenticated (bad/missing signature,
@@ -417,7 +424,7 @@ async function downloadAndExtract(version?: string): Promise<void> {
   // Download to temp file (atomic — no partial downloads in cache)
   const tmpPath = path.join(
     path.dirname(binaryDir),
-    `_download_${Date.now()}${getArchiveExt()}`
+    `_download_${randomUUID()}${getArchiveExt()}`
   );
 
   try {
@@ -926,7 +933,7 @@ export async function downloadProBinary(version: string, licenseKey: string): Pr
 
   const tmpPath = path.join(
     path.dirname(binaryDir),
-    `_download_${Date.now()}${getArchiveExt()}`
+    `_download_${randomUUID()}${getArchiveExt()}`
   );
 
   try {
@@ -1030,36 +1037,93 @@ async function extractArchive(
   binaryPath?: string
 ): Promise<void> {
   console.log(`[cloakbrowser] Extracting to ${destDir}`);
-
-  // Clean existing dir if partial download existed
-  if (fs.existsSync(destDir)) {
-    fs.rmSync(destDir, { recursive: true, force: true });
-  }
-  fs.mkdirSync(destDir, { recursive: true });
-
-  if (archivePath.endsWith(".zip")) {
-    await extractZip(archivePath, destDir);
-  } else {
-    // Signature-verified before extraction, so unpack as-is.
-    await tarExtract({ file: archivePath, cwd: destDir, strip: 0 });
-  }
-
-  // Flatten single subdirectory if needed
-  flattenSingleSubdir(destDir);
-
-  // Make binary executable (skip on Windows — no-op / AV lock risk)
   const bp = binaryPath || getBinaryPath();
-  if (process.platform !== "win32" && fs.existsSync(bp)) {
-    fs.chmodSync(bp, 0o755);
-  }
 
-  // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
-  if (process.platform === "darwin") {
-    removeQuarantine(destDir);
+  // Extract into a private sibling dir, then rename it into place. Concurrent
+  // first runs (in this process or others) each get their own staging dir, so
+  // none of them can see or delete another's half-written install.
+  const stagingDir = `${destDir}.partial-${randomUUID()}`;
+  fs.mkdirSync(stagingDir);
+  const staleDirs: string[] = [];
+  try {
+    if (archivePath.endsWith(".zip")) {
+      await extractZip(archivePath, stagingDir);
+    } else {
+      // Signature-verified before extraction, so unpack as-is.
+      await tarExtract({ file: archivePath, cwd: stagingDir, strip: 0 });
+    }
+
+    // Flatten single subdirectory if needed
+    flattenSingleSubdir(stagingDir);
+
+    // Make binary executable (skip on Windows: no-op / AV lock risk)
+    const stagedBinaryPath = path.join(stagingDir, path.relative(destDir, bp));
+    if (process.platform !== "win32" && fs.existsSync(stagedBinaryPath)) {
+      fs.chmodSync(stagedBinaryPath, 0o755);
+    }
+
+    // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
+    if (process.platform === "darwin") {
+      removeQuarantine(stagingDir);
+    }
+
+    for (let attempt = 1; attempt <= INSTALL_RENAME_ATTEMPTS; attempt++) {
+      try {
+        await renameDirWithRetry(stagingDir, destDir);
+        break;
+      } catch (err) {
+        // destDir is in the way. Keep it if another caller finished a complete
+        // install; replace it if it is an incomplete leftover, such as an
+        // interrupted in-place extraction from an older release.
+        if (fs.existsSync(bp) && isExecutable(bp)) break;
+        if (attempt === INSTALL_RENAME_ATTEMPTS) throw err;
+      }
+      // Rename the leftover aside before deleting it. Deleting it in place races
+      // other callers renaming their extraction into destDir.
+      const staleDir = `${destDir}.stale-${randomUUID()}`;
+      try {
+        await renameDirWithRetry(destDir, staleDir);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // another caller moved it aside first
+        throw err;
+      }
+      staleDirs.push(staleDir);
+    }
+  } finally {
+    for (const leftoverDir of [stagingDir, ...staleDirs]) {
+      try {
+        fs.rmSync(leftoverDir, { recursive: true, force: true });
+      } catch {
+        // Best effort, so a cleanup failure never masks the error being thrown.
+      }
+    }
   }
 
   if (fs.existsSync(bp)) {
     console.log(`[cloakbrowser] Binary ready: ${bp}`);
+  }
+}
+
+/** Rename a directory, retrying while Windows reports it as in use. */
+async function renameDirWithRetry(source: string, destination: string): Promise<void> {
+  for (let attempt = 1; attempt <= TRANSIENT_RENAME_ATTEMPTS; attempt++) {
+    try {
+      fs.renameSync(source, destination);
+      return;
+    } catch (err) {
+      // Windows antivirus briefly holds freshly written files open, which fails the
+      // rename with EPERM/EACCES/EBUSY. An existing destination is not transient.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (
+        process.platform !== "win32" ||
+        !(code === "EPERM" || code === "EACCES" || code === "EBUSY") ||
+        attempt === TRANSIENT_RENAME_ATTEMPTS ||
+        fs.existsSync(destination)
+      ) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RENAME_DELAY_MS));
+    }
   }
 }
 
