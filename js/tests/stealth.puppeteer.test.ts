@@ -954,6 +954,36 @@ describe("Puppeteer: mouse.wheel() smooth scroll", () => {
 // =========================================================================
 // mouse.dragAndDrop() — Bézier drag between coordinates
 // =========================================================================
+describe("Puppeteer: humanScrollIntoView x axis (#521)", () => {
+  it("scrolls the x axis for an element past the right edge", async () => {
+    const { humanScrollIntoView } = await import("../src/human-puppeteer/scroll.js");
+    const cfg = resolveConfig("default", {
+      scroll_pre_move_delay: [0, 1], scroll_settle_delay: [0, 1],
+    });
+
+    const page: any = { viewport: () => ({ width: 1000, height: 700 }) };
+    const raw = {
+      move: vi.fn(async () => {}), down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}), wheel: vi.fn(async (_dx: number, _dy: number) => {}),
+    };
+    const boxes = [
+      { x: 800, y: 300, width: 800, height: 30 },
+      { x: 200, y: 300, width: 800, height: 30 },
+    ];
+    let i = 0;
+    const getBox = async () => boxes[i++];
+
+    const result = await humanScrollIntoView(page, raw as any, getBox, 0, 0, cfg);
+
+    expect(result.box.x).toBe(200);
+    expect(raw.wheel).toHaveBeenCalled();
+    for (const [dx, dy] of raw.wheel.mock.calls) {
+      expect(dx).toBeGreaterThan(0);
+      expect(dy).toBe(0);
+    }
+  }, 15000);
+});
+
 describe("Puppeteer: mouse.dragAndDrop() humanization", () => {
   it("mouse.dragAndDrop is patched after patchPage", async () => {
     const { patchPage } = await import("../src/human-puppeteer/index.js");
@@ -2191,6 +2221,32 @@ describeIfSlow("Puppeteer stealth browser: focus() uses click", () => {
 
     await browser.close();
   }, 30000);
+});
+
+const WIDE_ROW_HTML = `
+  <body style="margin:0">
+    <div style="display:flex">
+      <div style="min-width:800px">left</div>
+      <button id="target" style="min-width:800px"
+              onclick="this.textContent = 'CLICKED'">right</button>
+    </div>
+  </body>`;
+
+describeIfSlow("Puppeteer stealth browser: horizontal scroll into view (#521)", () => {
+  it("clicks a target past the right edge of a horizontally overflowing page", async () => {
+    const { launch } = await import("../src/puppeteer.js");
+    const browser = await launch({ humanize: true, headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1000, height: 700 });
+      await page.setContent(WIDE_ROW_HTML);
+      await page.click("#target");
+      await sleep(500);
+      expect(await page.$eval("#target", (el) => el.textContent)).toBe("CLICKED");
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
 });
 
 describeIfSlow("Puppeteer stealth browser: mouse.wheel smooth scroll", () => {

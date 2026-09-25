@@ -19,12 +19,14 @@ public interface IRawScrollPage
     Task<(int Width, int Height)?> GetLiveWindowSizeAsync();
 
     /// <summary>
-    /// Current vertical scroll offset (<c>window.scrollY</c>) and the maximum
-    /// scrollable offset (<c>scrollHeight - clientHeight</c>). Used to detect when
-    /// the page is pinned at a boundary and further scrolling can't help. Returns
-    /// null if the values can't be read.
+    /// Current scroll offsets (<c>window.scrollY</c>, <c>window.scrollX</c>) and the
+    /// maximum scrollable offsets (<c>scrollHeight - clientHeight</c>,
+    /// <c>scrollWidth - clientWidth</c>). X is measured from the leftmost scroll
+    /// position, so it runs 0..MaxX in RTL documents too. Used to detect when the
+    /// page is pinned at a boundary and further scrolling can't help. Returns null
+    /// if the values can't be read.
     /// </summary>
-    Task<(double Y, double MaxY)?> GetScrollStateAsync();
+    Task<(double Y, double MaxY, double X, double MaxX)?> GetScrollStateAsync();
 }
 
 /// <summary>Result of a humanized scroll-into-view operation.</summary>
@@ -49,8 +51,13 @@ public static class HumanScroll
         return topEdge >= zoneTop && bottomEdge <= zoneBottom;
     }
 
+    private static bool IsInViewportX(BoundingBox bounds, int viewportWidth)
+    {
+        return bounds.X >= 0 && bounds.X + bounds.Width <= viewportWidth;
+    }
+
     /// <summary>Send one logical scroll as a burst of small wheel events (like real inertia).</summary>
-    private static async Task SmoothWheelAsync(IRawMouse raw, int delta, HumanConfig cfg)
+    private static async Task SmoothWheelAsync(IRawMouse raw, int delta, HumanConfig cfg, bool horizontal = false)
     {
         double absD = Math.Abs(delta);
         int sign = delta > 0 ? 1 : -1;
@@ -59,7 +66,11 @@ public static class HumanScroll
         {
             double stepSize = HumanRandom.Rand(20, 40);
             double chunk = Math.Min(stepSize, absD - sent);
-            await raw.WheelAsync(0, Math.Round(chunk) * sign).ConfigureAwait(false);
+            double step = Math.Round(chunk) * sign;
+            if (horizontal)
+                await raw.WheelAsync(step, 0).ConfigureAwait(false);
+            else
+                await raw.WheelAsync(0, step).ConfigureAwait(false);
             sent += chunk;
             await HumanRandom.SleepMsAsync(HumanRandom.Rand(8, 20)).ConfigureAwait(false);
         }
@@ -109,6 +120,20 @@ public static class HumanScroll
         int viewportHeight = viewport.Value.Height;
         int viewportWidth = viewport.Value.Width;
 
+        var yPass = await ScrollYIntoViewAsync(page, raw, getBox, viewportWidth, viewportHeight, cursorX, cursorY, cfg).ConfigureAwait(false);
+        var xPass = await ScrollXIntoViewAsync(page, raw, getBox, yPass.Box, viewportWidth, viewportHeight, yPass.CursorX, yPass.CursorY, cfg).ConfigureAwait(false);
+        return xPass with { DidScroll = yPass.DidScroll || xPass.DidScroll };
+    }
+
+    /// <summary>Vertical pass: bring the box into <c>ScrollTargetZone</c>.</summary>
+    private static async Task<ScrollResult> ScrollYIntoViewAsync(
+        IRawScrollPage page,
+        IRawMouse raw,
+        Func<Task<BoundingBox?>> getBox,
+        int viewportWidth, int viewportHeight,
+        double cursorX, double cursorY,
+        HumanConfig cfg)
+    {
         var box = await getBox().ConfigureAwait(false);
         if (box == null)
             throw new InvalidOperationException("Element not found while scrolling into view");
@@ -210,5 +235,49 @@ public static class HumanScroll
             throw new InvalidOperationException("Element lost after scrolling into view");
 
         return new ScrollResult(box.Value, cursorX, cursorY, true);
+    }
+
+    /// <summary>
+    /// Horizontal pass: bring the box inside the viewport width (#521). Only
+    /// containment is checked here, not <c>ScrollTargetZone</c>: the zone is a
+    /// vertical reading position, and horizontal overflow is the exception.
+    /// </summary>
+    private static async Task<ScrollResult> ScrollXIntoViewAsync(
+        IRawScrollPage page,
+        IRawMouse raw,
+        Func<Task<BoundingBox?>> getBox,
+        BoundingBox box,
+        int viewportWidth, int viewportHeight,
+        double cursorX, double cursorY,
+        HumanConfig cfg)
+    {
+        if (IsInViewportX(box, viewportWidth))
+            return new ScrollResult(box, cursorX, cursorY, false);
+
+        double distanceToScroll = box.X + box.Width / 2 - viewportWidth / 2.0;
+        // A box wider than the viewport is never contained; once centred, skip the near-zero wheel.
+        if (Math.Abs(distanceToScroll) < 1)
+            return new ScrollResult(box, cursorX, cursorY, false);
+
+        // Page pinned at the boundary in the needed direction: scrolling can't help.
+        var scroll = await page.GetScrollStateAsync().ConfigureAwait(false);
+        if (scroll != null && (distanceToScroll < 0 ? scroll.Value.X <= 0 : scroll.Value.X >= scroll.Value.MaxX))
+            return new ScrollResult(box, cursorX, cursorY, false);
+
+        double scrollAreaX = Math.Round(viewportWidth * HumanRandom.Rand(0.3, 0.7));
+        double scrollAreaY = Math.Round(viewportHeight * HumanRandom.Rand(0.3, 0.7));
+        await HumanMouse.HumanMoveAsync(raw, cursorX, cursorY, scrollAreaX, scrollAreaY, cfg).ConfigureAwait(false);
+        cursorX = scrollAreaX;
+        cursorY = scrollAreaY;
+        await HumanRandom.SleepMsAsync(HumanRandom.RandRange(cfg.ScrollPreMoveDelay)).ConfigureAwait(false);
+
+        await SmoothWheelAsync(raw, (int)Math.Round(distanceToScroll), cfg, horizontal: true).ConfigureAwait(false);
+        await HumanRandom.SleepMsAsync(HumanRandom.RandRange(cfg.ScrollSettleDelay)).ConfigureAwait(false);
+
+        var finalBox = await getBox().ConfigureAwait(false);
+        if (finalBox == null)
+            throw new InvalidOperationException("Element lost after scrolling into view");
+
+        return new ScrollResult(finalBox.Value, cursorX, cursorY, true);
     }
 }

@@ -1305,6 +1305,31 @@ describeIfSlow("stealth browser: selector parity and target identity", () => {
   }, 60000);
 });
 
+// page.setContent timed out in local runs of this test, so the page is loaded as a data: URL.
+const WIDE_ROW_HTML = `
+  <body style="margin:0">
+    <div style="display:flex">
+      <div style="min-width:800px">left</div>
+      <button id="target" style="min-width:800px"
+              onclick="this.textContent = 'CLICKED'">right</button>
+    </div>
+  </body>`;
+
+describeIfSlow("stealth browser: horizontal scroll into view (#521)", () => {
+  it("clicks a target past the right edge of a horizontally overflowing page", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+      await page.goto("data:text/html," + encodeURIComponent(WIDE_ROW_HTML));
+      await page.click("#target", { timeout: 5000 });
+      expect(await page.locator("#target").textContent()).toBe("CLICKED");
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+});
+
 describeIfSlow("stealth browser: full form no evaluate leak", () => {
   it("form with shift symbols has zero evaluate leaks and zero untrusted events", async () => {
     const { launch } = await import("../src/index.js");
