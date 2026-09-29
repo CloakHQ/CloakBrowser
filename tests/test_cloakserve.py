@@ -676,3 +676,57 @@ class TestSafeRmtree:
         pool._safe_rmtree(traversal)
 
         assert victim.exists(), "Traversal path must not be deleted"
+
+
+# ---------------------------------------------------------------------------
+# Persist mode (--persist-profile / CLOAKSERVE_PERSIST_PROFILE)
+# ---------------------------------------------------------------------------
+
+
+class TestPersistProfile:
+    def _make_pool(self, data_dir: str, persist: bool):
+        return ChromePool(
+            binary="/fake/chrome",
+            global_args=[],
+            headless=True,
+            data_dir=data_dir,
+            persist_profile=persist,
+        )
+
+    def test_default_off(self, monkeypatch):
+        monkeypatch.delenv("CLOAKSERVE_PERSIST_PROFILE", raising=False)
+        config, passthrough = parse_cli_args([])
+        assert config["persist_profile"] is False
+        assert passthrough == []
+
+    def test_flag_enables_and_is_not_passed_through(self, monkeypatch):
+        monkeypatch.delenv("CLOAKSERVE_PERSIST_PROFILE", raising=False)
+        config, passthrough = parse_cli_args(["--persist-profile", "--no-sandbox"])
+        assert config["persist_profile"] is True
+        assert passthrough == ["--no-sandbox"]
+
+    def test_env_enables_and_flag_value_overrides(self, monkeypatch):
+        monkeypatch.setenv("CLOAKSERVE_PERSIST_PROFILE", "1")
+        assert parse_cli_args([])[0]["persist_profile"] is True
+        assert parse_cli_args(["--persist-profile=false"])[0]["persist_profile"] is False
+
+    def test_persist_keeps_profile_dir(self, tmp_path):
+        profile = tmp_path / "profiles" / "seed-1"
+        profile.mkdir(parents=True)
+        (profile / "Cookies").touch()
+        self._make_pool(str(tmp_path / "profiles"), True)._discard_profile(str(profile))
+        assert (profile / "Cookies").exists()
+
+    def test_ephemeral_still_deletes_profile_dir(self, tmp_path):
+        profile = tmp_path / "profiles" / "seed-1"
+        profile.mkdir(parents=True)
+        (profile / "Cookies").touch()
+        self._make_pool(str(tmp_path / "profiles"), False)._discard_profile(str(profile))
+        assert not profile.exists()
+
+    def test_ephemeral_guard_still_refuses_outside_path(self, tmp_path):
+        (tmp_path / "profiles").mkdir()
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        self._make_pool(str(tmp_path / "profiles"), False)._discard_profile(str(victim))
+        assert victim.exists()
