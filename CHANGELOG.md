@@ -6,6 +6,12 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [Unreleased]
+
+- **[wrapper]** `cloakserve`: the wait for a new Chrome to answer `/json/version` is now 60s by default (was 10s) and configurable via `CLOAKSERVE_CDP_TIMEOUT`, so slow or loaded hosts no longer get `502` on launch.
+
+---
+
 ## [0.5.11] — 2026-09-24
 
 - **[wrapper]** The first-launch Pro banner now names the current Pro major (v152) instead of v151. Python, JavaScript, and .NET.

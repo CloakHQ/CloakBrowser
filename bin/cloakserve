@@ -152,6 +152,22 @@ def _reject_untrusted_origin(request: web.Request) -> web.Response | None:
     return web.Response(status=403, text="Forbidden: untrusted WebSocket origin\n")
 
 
+DEFAULT_CDP_TIMEOUT = 60.0
+
+
+def _cdp_timeout() -> float:
+    """Seconds to wait for a new Chrome to answer /json/version.
+
+    Override with CLOAKSERVE_CDP_TIMEOUT; invalid or non-positive values fall
+    back to the default.
+    """
+    try:
+        value = float(os.environ.get("CLOAKSERVE_CDP_TIMEOUT", DEFAULT_CDP_TIMEOUT))
+    except ValueError:
+        return DEFAULT_CDP_TIMEOUT
+    return value if value > 0 else DEFAULT_CDP_TIMEOUT
+
+
 # ---------------------------------------------------------------------------
 # ChromeProcess — one running Chrome instance
 # ---------------------------------------------------------------------------
@@ -457,8 +473,10 @@ class ChromePool:
         logger.info("All Chrome processes terminated")
 
     @staticmethod
-    async def _wait_for_cdp(port: int, timeout: float = 10.0) -> bool:
-        """Poll Chrome's /json/version until ready."""
+    async def _wait_for_cdp(port: int, timeout: float | None = None) -> bool:
+        """Poll Chrome's /json/version until ready (default: CLOAKSERVE_CDP_TIMEOUT, 60s)."""
+        if timeout is None:
+            timeout = _cdp_timeout()
         deadline = time.monotonic() + timeout
         delay = 0.1
         session = aiohttp.ClientSession(
