@@ -676,3 +676,28 @@ class TestSafeRmtree:
         pool._safe_rmtree(traversal)
 
         assert victim.exists(), "Traversal path must not be deleted"
+
+
+# ---------------------------------------------------------------------------
+# CDP wait timeout (CLOAKSERVE_CDP_TIMEOUT)
+# ---------------------------------------------------------------------------
+
+
+class TestCdpTimeout:
+    def test_default(self, monkeypatch):
+        monkeypatch.delenv("CLOAKSERVE_CDP_TIMEOUT", raising=False)
+        assert _mod._cdp_timeout() == 60.0
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("CLOAKSERVE_CDP_TIMEOUT", "90")
+        assert _mod._cdp_timeout() == 90.0
+
+    @pytest.mark.parametrize("value", ["abc", "0", "-5", ""])
+    def test_invalid_falls_back(self, monkeypatch, value):
+        monkeypatch.setenv("CLOAKSERVE_CDP_TIMEOUT", value)
+        assert _mod._cdp_timeout() == 60.0
+
+    def test_wait_for_cdp_uses_env_when_no_arg(self, monkeypatch):
+        monkeypatch.setenv("CLOAKSERVE_CDP_TIMEOUT", "0.3")
+        # Nothing listens on port 1: should give up after ~0.3s, not 60s.
+        assert asyncio.run(ChromePool._wait_for_cdp(1)) is False
