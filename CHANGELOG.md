@@ -6,6 +6,12 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [Unreleased]
+
+- **[wrapper]** `cloakserve`: new opt-in `--persist-profile` flag / `CLOAKSERVE_PERSIST_PROFILE=1` keeps per-seed user-data-dirs on stop and after a failed launch, so a profile on a `--data-dir` volume survives. Off by default; the path-containment guard in `_safe_rmtree` is unchanged.
+
+---
+
 ## [0.5.11] — 2026-09-24
 
 - **[wrapper]** The first-launch Pro banner now names the current Pro major (v152) instead of v151. Python, JavaScript, and .NET.
