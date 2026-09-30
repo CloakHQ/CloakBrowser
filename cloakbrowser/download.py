@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -75,6 +76,15 @@ WELCOME_FREE_INTERVAL = 24 * 3600
 # major release (there is no local constant to derive it from — the live Pro
 # version comes from the network, which we don't call just to print a banner).
 PRO_MAJOR = "152"
+
+# Attempts to rename an extraction into place while concurrent callers are
+# replacing the same partial install (see _extract_archive).
+INSTALL_RENAME_ATTEMPTS = 5
+
+# Retries for a directory rename that Windows transiently denies (see
+# _rename_dir_with_retry): about 2.5 seconds in total.
+TRANSIENT_RENAME_ATTEMPTS = 10
+TRANSIENT_RENAME_DELAY = 0.25
 
 
 def _welcome_due(marker: Path, pro: bool) -> bool:
@@ -898,38 +908,79 @@ def _extract_archive(
 ) -> None:
     """Extract tar.gz or zip archive to destination directory."""
     logger.info("Extracting to %s", dest_dir)
-
-    # Clean existing dir if partial download existed
-    if dest_dir.exists():
-        try:
-            shutil.rmtree(dest_dir)
-        except OSError:
-            logger.error("Failed to remove partial extraction directory: %s", dest_dir)
-            raise
-
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    if str(archive_path).endswith(".zip"):
-        _extract_zip(archive_path, dest_dir)
-    else:
-        _extract_tar(archive_path, dest_dir)
-
-    # If extracted into a single subdirectory, flatten it
-    # (e.g. fingerprint-chromium-142-custom-v2/chrome → chrome)
-    # But never flatten .app bundles — macOS needs the bundle structure intact
-    _flatten_single_subdir(dest_dir)
-
-    # Make binary executable
     bp = binary_path or get_binary_path()
-    if bp.exists():
-        _make_executable(bp)
 
-    # macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
-    if platform.system() == "Darwin":
-        _remove_quarantine(dest_dir)
+    # Extract into a private sibling dir, then rename it into place. Concurrent
+    # first runs (in this process or others) each get their own staging dir, so
+    # none of them can see or delete another's half-written install.
+    staging_dir = dest_dir.with_name(f"{dest_dir.name}.partial-{uuid.uuid4().hex}")
+    staging_dir.mkdir()
+    stale_dirs: list[Path] = []
+    try:
+        if str(archive_path).endswith(".zip"):
+            _extract_zip(archive_path, staging_dir)
+        else:
+            _extract_tar(archive_path, staging_dir)
+
+        # If extracted into a single subdirectory, flatten it
+        # (e.g. fingerprint-chromium-142-custom-v2/chrome → chrome)
+        # But never flatten .app bundles: macOS needs the bundle structure intact
+        _flatten_single_subdir(staging_dir)
+
+        # Make binary executable
+        staged_binary_path = staging_dir / bp.relative_to(dest_dir)
+        if staged_binary_path.exists():
+            _make_executable(staged_binary_path)
+
+        # macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
+        if platform.system() == "Darwin":
+            _remove_quarantine(staging_dir)
+
+        for attempt in range(1, INSTALL_RENAME_ATTEMPTS + 1):
+            try:
+                _rename_dir_with_retry(staging_dir, dest_dir)
+                break
+            except OSError:
+                # dest_dir is in the way. Keep it if another caller finished a complete
+                # install; replace it if it is an incomplete leftover, such as an
+                # interrupted in-place extraction from an older release.
+                if bp.exists() and _is_executable(bp):
+                    break
+                if attempt == INSTALL_RENAME_ATTEMPTS:
+                    raise
+            # Rename the leftover aside before deleting it. Deleting it in place races
+            # other callers renaming their extraction into dest_dir.
+            stale_dir = dest_dir.with_name(f"{dest_dir.name}.stale-{uuid.uuid4().hex}")
+            try:
+                _rename_dir_with_retry(dest_dir, stale_dir)
+            except FileNotFoundError:
+                continue  # another caller moved it aside first
+            stale_dirs.append(stale_dir)
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        for stale_dir in stale_dirs:
+            shutil.rmtree(stale_dir, ignore_errors=True)
 
     if bp.exists():
         logger.info("Binary ready: %s", bp)
+
+
+def _rename_dir_with_retry(source: Path, destination: Path) -> None:
+    """Rename a directory, retrying while Windows reports it as in use."""
+    for attempt in range(1, TRANSIENT_RENAME_ATTEMPTS + 1):
+        try:
+            source.rename(destination)
+            return
+        except PermissionError:
+            # Windows antivirus briefly holds freshly written files open, which fails the
+            # rename with access denied. An existing destination is not transient.
+            if (
+                platform.system() != "Windows"
+                or attempt == TRANSIENT_RENAME_ATTEMPTS
+                or destination.exists()
+            ):
+                raise
+            time.sleep(TRANSIENT_RENAME_DELAY)
 
 
 def _extract_tar(archive_path: Path, dest_dir: Path) -> None:

@@ -48,6 +48,21 @@ public static class Download
     // once (see ShowWelcome).
     internal const long WelcomeFreeInterval = 24L * 3600;
 
+    // Attempts to rename an extraction into place while concurrent callers are
+    // replacing the same partial install (see ExtractArchive).
+    private const int InstallRenameAttempts = 5;
+
+    // Retries for a directory rename that Windows transiently denies (see
+    // MoveDirectoryWithRetry): about 2.5 seconds in total.
+    private const int TransientRenameAttempts = 10;
+    private const int TransientRenameDelayMs = 250;
+
+    // HRESULTs of the IOException Directory.Move throws on Windows for
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
+    private const int AccessDeniedHResult = unchecked((int)0x80070005);
+    private const int SharingViolationHResult = unchecked((int)0x80070020);
+    private const int LockViolationHResult = unchecked((int)0x80070021);
+
     private static readonly HttpClient Http = CreateHttpClient();
 
     private static HttpClient CreateHttpClient()
@@ -962,28 +977,70 @@ public static class Download
     private static void ExtractArchive(string archivePath, string destDir, string? binaryPath)
     {
         CloakLog.Info("Extracting to {0}", destDir);
-
-        // Clean existing dir if partial download existed.
-        if (Directory.Exists(destDir))
-            Directory.Delete(destDir, recursive: true);
-
-        Directory.CreateDirectory(destDir);
-
-        if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-            ExtractZip(archivePath, destDir);
-        else
-            ExtractTar(archivePath, destDir);
-
-        // If extracted into a single subdirectory, flatten it (but never .app bundles).
-        FlattenSingleSubdir(destDir);
-
         var bp = binaryPath ?? Config.GetBinaryPath();
-        if (File.Exists(bp))
-            MakeExecutable(bp);
 
-        // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts.
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            RemoveQuarantine(destDir);
+        // Extract into a private sibling dir, then rename it into place. Concurrent
+        // first runs (in this process or others) each get their own staging dir, so
+        // none of them can see or delete another's half-written install.
+        var stagingDir = $"{destDir}.partial-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(stagingDir);
+        var staleDirs = new List<string>();
+        try
+        {
+            if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                ExtractZip(archivePath, stagingDir);
+            else
+                ExtractTar(archivePath, stagingDir);
+
+            // If extracted into a single subdirectory, flatten it (but never .app bundles).
+            FlattenSingleSubdir(stagingDir);
+
+            var stagedBinaryPath = Path.Combine(stagingDir, Path.GetRelativePath(destDir, bp));
+            if (File.Exists(stagedBinaryPath))
+                MakeExecutable(stagedBinaryPath);
+
+            // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts.
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                RemoveQuarantine(stagingDir);
+
+            for (var attempt = 1; attempt <= InstallRenameAttempts; attempt++)
+            {
+                try
+                {
+                    MoveDirectoryWithRetry(stagingDir, destDir);
+                    break;
+                }
+                catch (Exception err) when (err is IOException or UnauthorizedAccessException)
+                {
+                    // destDir is in the way. Keep it if another caller finished a complete
+                    // install; replace it if it is an incomplete leftover, such as an
+                    // interrupted in-place extraction from an older release.
+                    if (File.Exists(bp) && IsExecutable(bp)) break;
+                    if (attempt == InstallRenameAttempts) throw;
+                }
+                // Rename the leftover aside before deleting it. Deleting it in place races
+                // other callers renaming their extraction into destDir.
+                var staleDir = $"{destDir}.stale-{Guid.NewGuid():N}";
+                try
+                {
+                    MoveDirectoryWithRetry(destDir, staleDir);
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    continue; // another caller moved it aside first
+                }
+                staleDirs.Add(staleDir);
+            }
+        }
+        finally
+        {
+            // Best effort, so a cleanup failure never masks the exception being thrown.
+            foreach (var leftoverDir in staleDirs.Prepend(stagingDir))
+            {
+                try { if (Directory.Exists(leftoverDir)) Directory.Delete(leftoverDir, recursive: true); }
+                catch (Exception err) when (err is IOException or UnauthorizedAccessException) { }
+            }
+        }
 
         if (File.Exists(bp))
             CloakLog.Info("Binary ready: {0}", bp);
@@ -996,6 +1053,32 @@ public static class Download
         using var fileStream = File.OpenRead(archivePath);
         using var gzip = new GZipStream(fileStream, CompressionMode.Decompress);
         TarFile.ExtractToDirectory(gzip, destDir, overwriteFiles: true);
+    }
+
+    /// <summary>Rename a directory, retrying while Windows reports it as in use.</summary>
+    private static void MoveDirectoryWithRetry(string source, string destination)
+    {
+        for (var attempt = 1; attempt <= TransientRenameAttempts; attempt++)
+        {
+            try
+            {
+                Directory.Move(source, destination);
+                return;
+            }
+            catch (Exception err) when (err is IOException or UnauthorizedAccessException)
+            {
+                // Windows antivirus briefly holds freshly written files open, which fails the
+                // move with access denied. An existing destination is not transient.
+                var accessDenied = err is UnauthorizedAccessException
+                    || err.HResult is AccessDeniedHResult or SharingViolationHResult or LockViolationHResult;
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                    || !accessDenied
+                    || attempt == TransientRenameAttempts
+                    || Directory.Exists(destination))
+                    throw;
+                Thread.Sleep(TransientRenameDelayMs);
+            }
+        }
     }
 
     private static void ExtractZip(string archivePath, string destDir)

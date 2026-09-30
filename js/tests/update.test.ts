@@ -1,12 +1,17 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import * as http from "node:http";
+import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import {
   binarySupportsHeadlessNoViewport,
   binarySupportsHttpProxyInlineAuth,
   binarySupportsMaximizedWindow,
   getChromiumVersion,
+  getBinaryDir,
   getBinaryPath,
   getDownloadUrl,
   getEffectiveVersion,
@@ -658,4 +663,171 @@ describe("welcome banner cadence", () => {
     expect(welcomeDue(marker, false)).toBe(true); // unparseable -> free re-shows
     expect(welcomeDue(marker, true)).toBe(false); // pro: existence = already shown
   });
+});
+
+describe("concurrent first-run download", () => {
+  const CALLERS = 4;
+  const FILLER_FILES = 300;
+  const PARTIAL_INSTALL_FILES = 2000;
+  const binaryBytes = Buffer.from("#!/bin/sh\necho fake-chrome\n");
+  let cacheDir: string;
+  let archiveBytes: Buffer;
+  let originalCacheDir: string | undefined;
+
+  beforeEach(async () => {
+    const { create: tarCreate } = await import("tar");
+    originalCacheDir = process.env.CLOAKBROWSER_CACHE_DIR;
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloakbrowser-concurrent-"));
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+    process.env.CLOAKBROWSER_DOWNLOAD_URL = "https://mirror.invalid";
+    process.env.CLOAKBROWSER_SKIP_CHECKSUM = "true";
+    delete process.env.CLOAKBROWSER_BINARY_PATH;
+    delete process.env.CLOAKBROWSER_VERSION;
+
+    // A small archive with the platform's binary layout plus enough filler
+    // files that concurrent extractions overlap in time.
+    const staging = fs.mkdtempSync(path.join(os.tmpdir(), "cloakbrowser-archive-"));
+    const binaryRelPath = path.relative(getBinaryDir(), getBinaryPath());
+    fs.mkdirSync(path.join(staging, path.dirname(binaryRelPath)), { recursive: true });
+    fs.writeFileSync(path.join(staging, binaryRelPath), binaryBytes, { mode: 0o755 });
+    fs.mkdirSync(path.join(staging, "lib"));
+    for (let i = 0; i < FILLER_FILES; i++) {
+      fs.writeFileSync(path.join(staging, "lib", `part-${i}.bin`), Buffer.alloc(16 * 1024, i));
+    }
+    const archivePath = path.join(staging, "..", `${path.basename(staging)}.tar.gz`);
+    await tarCreate({ gzip: true, file: archivePath, cwd: staging }, fs.readdirSync(staging));
+    archiveBytes = fs.readFileSync(archivePath);
+    fs.rmSync(staging, { recursive: true, force: true });
+    fs.rmSync(archivePath, { force: true });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+    if (originalCacheDir === undefined) delete process.env.CLOAKBROWSER_CACHE_DIR;
+    else process.env.CLOAKBROWSER_CACHE_DIR = originalCacheDir;
+    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
+    delete process.env.CLOAKBROWSER_SKIP_CHECKSUM;
+  });
+
+  // Reads the install the way a launch would. Returns what is wrong with it, or "complete".
+  function inspectInstall(): string {
+    try {
+      const binaryPath = getBinaryPath();
+      if (!fs.readFileSync(binaryPath).equals(binaryBytes)) return "binary content differs";
+      if ((fs.statSync(binaryPath).mode & 0o111) === 0) return "binary not executable";
+      const fillerCount = fs.readdirSync(path.join(getBinaryDir(), "lib")).length;
+      return fillerCount === FILLER_FILES ? "complete" : `lib has ${fillerCount} files`;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code ?? String(err);
+    }
+  }
+
+  it.skipIf(process.platform === "win32")(
+    "an install stays complete while other first-run callers finish",
+    async () => {
+      // Caller 0 downloads at once. The others have already seen an empty
+      // cache but their downloads are held until caller 0 has returned, which
+      // is the state a batch of simultaneous cold launches ends up in.
+      let releaseHeldDownloads!: () => void;
+      const heldDownloads = new Promise<void>((resolve) => (releaseHeldDownloads = resolve));
+      let fetchCount = 0;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        if (fetchCount++ > 0) await heldDownloads;
+        return new Response(archiveBytes);
+      });
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const callers = Array.from({ length: CALLERS }, () => ensureBinary());
+      const firstBinaryPath = await callers[0];
+      expect(firstBinaryPath).toBe(getBinaryPath());
+
+      // Caller 0 would now exec its binary. Keep reading the install while
+      // the held callers download and extract.
+      releaseHeldDownloads();
+      const observedStates = new Set<string>([inspectInstall()]);
+      const otherCallers = Promise.allSettled(callers.slice(1));
+      let otherCallersDone = false;
+      otherCallers.then(() => (otherCallersDone = true));
+      while (!otherCallersDone) {
+        observedStates.add(inspectInstall());
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      observedStates.add(inspectInstall());
+
+      for (const outcome of await otherCallers) {
+        expect(outcome).toEqual({ status: "fulfilled", value: getBinaryPath() });
+      }
+      expect([...observedStates]).toEqual(["complete"]);
+      expect(fs.readdirSync(cacheDir).filter((name) => !name.startsWith("."))).toEqual([
+        path.basename(getBinaryDir()),
+      ]);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "replaces a partial install left by an interrupted extraction",
+    async () => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(archiveBytes));
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      fs.mkdirSync(path.join(getBinaryDir(), "lib"), { recursive: true });
+      fs.writeFileSync(path.join(getBinaryDir(), "lib", "part-0.bin"), "truncated");
+
+      expect(await ensureBinary()).toBe(getBinaryPath());
+      expect(inspectInstall()).toBe("complete");
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "concurrent processes replace a partial install left by an interrupted extraction",
+    async () => {
+      // Enough files that deleting the partial install overlaps other callers.
+      fs.mkdirSync(path.join(getBinaryDir(), "lib"), { recursive: true });
+      for (let i = 0; i < PARTIAL_INSTALL_FILES; i++) {
+        fs.writeFileSync(path.join(getBinaryDir(), "lib", `part-${i}.bin`), "truncated");
+      }
+
+      // Answer only once every caller is downloading, so all of them find the
+      // partial install in the way when they move their extraction into place.
+      const heldResponses: http.ServerResponse[] = [];
+      const mirror = http.createServer((_request, response) => {
+        heldResponses.push(response);
+        if (heldResponses.length === CALLERS) {
+          for (const heldResponse of heldResponses) heldResponse.end(archiveBytes);
+        }
+      });
+      await new Promise<void>((resolve) => mirror.listen(0, "127.0.0.1", resolve));
+      const mirrorUrl = `http://127.0.0.1:${(mirror.address() as AddressInfo).port}`;
+
+      // Callers in one process cannot interleave inside extractArchive's
+      // synchronous rename and cleanup, so each caller is a separate process
+      // running the built dist/ (npm run build first, as CI does).
+      const downloadModuleUrl = new URL("../dist/download.js", import.meta.url).href;
+      const callerScript =
+        `const { ensureBinary } = await import(${JSON.stringify(downloadModuleUrl)});` +
+        `console.log("BINARY_PATH=" + (await ensureBinary()));`;
+      try {
+        const callers = await Promise.allSettled(
+          Array.from({ length: CALLERS }, () =>
+            promisify(execFile)(process.execPath, ["--input-type=module", "-e", callerScript], {
+              env: { ...process.env, CLOAKBROWSER_DOWNLOAD_URL: mirrorUrl },
+            }),
+          ),
+        );
+        const outcomes = callers.map((caller) =>
+          caller.status === "fulfilled"
+            ? caller.value.stdout.trim().split("\n").at(-1)
+            : String(caller.reason),
+        );
+        expect(outcomes).toEqual(Array(CALLERS).fill(`BINARY_PATH=${getBinaryPath()}`));
+      } finally {
+        mirror.close();
+      }
+      expect(inspectInstall()).toBe("complete");
+      expect(fs.readdirSync(cacheDir).filter((name) => !name.startsWith("."))).toEqual([
+        path.basename(getBinaryDir()),
+      ]);
+    },
+  );
 });
