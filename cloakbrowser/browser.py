@@ -501,9 +501,9 @@ async def launch_async(  # noqa: C901
     from playwright.async_api import async_playwright
 
     binary_path = ensure_binary(license_key=license_key, browser_version=browser_version, release_channel=release_channel)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
+    timezone, locale, exit_ip = await maybe_resolve_geoip_async(geoip, proxy, timezone, locale, args)
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
-    args = _resolve_webrtc_args(args, proxy)
+    args = await _resolve_webrtc_args_async(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
     chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and not _suppress_maximize)
     _maybe_warn_windows_fonts(chrome_args)
@@ -1335,6 +1335,48 @@ def maybe_resolve_geoip(
     return timezone, locale, exit_ip
 
 
+async def maybe_resolve_geoip_async(
+    geoip: bool,
+    proxy: str | ProxySettings | None,
+    timezone: str | None,
+    locale: str | None,
+    args: list[str] | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Async version of :func:`maybe_resolve_geoip` — see there for behavior."""
+    if not geoip:
+        return timezone, locale, None
+
+    # Promote raw flags to explicit params so geoip doesn't clobber them.
+    if timezone is None:
+        timezone = _get_flag_value(args, "--fingerprint-timezone")
+    if locale is None:
+        locale = _get_flag_value(args, "--lang", "--fingerprint-locale")
+
+    from .geoip import resolve_proxy_exit_ip_async, resolve_proxy_geo_with_ip_async
+
+    # None when no proxy → echo services resolve the machine's own public IP
+    proxy_url = _extract_proxy_url(proxy) if proxy else None
+
+    # When both tz/locale are explicit, resolve the exit IP for WebRTC — but only
+    # with a proxy. With no proxy the WebRTC IP would just be the real connection
+    # IP the site already sees (a no-op), so skip the third-party echo call.
+    if timezone is not None and locale is not None:
+        exit_ip = await resolve_proxy_exit_ip_async(proxy_url) if proxy_url else None
+        return timezone, locale, exit_ip
+
+    geo_tz, geo_locale, exit_ip = await resolve_proxy_geo_with_ip_async(proxy_url)
+    if timezone is None:
+        timezone = geo_tz
+    if locale is None:
+        locale = geo_locale
+    missing = [name for name, value in (("timezone", timezone), ("locale", locale)) if value is None]
+    if missing:
+        raise RuntimeError(
+            "GeoIP resolution failed: could not determine " + " and ".join(missing)
+        )
+    return timezone, locale, exit_ip
+
+
 def _resolve_webrtc_args(
     args: list[str] | None,
     proxy: str | ProxySettings | None,
@@ -1361,6 +1403,44 @@ def _resolve_webrtc_args(
     try:
         from .geoip import resolve_proxy_exit_ip
         exit_ip = resolve_proxy_exit_ip(proxy_url)
+    except Exception:
+        logger.warning("Failed to resolve proxy exit IP for WebRTC spoofing; removing --fingerprint-webrtc-ip=auto")
+        args = list(args)
+        del args[idx]
+        return args
+    if exit_ip:
+        args = list(args)
+        args[idx] = f"--fingerprint-webrtc-ip={exit_ip}"
+    else:
+        logger.warning("Could not resolve proxy exit IP for WebRTC spoofing; removing --fingerprint-webrtc-ip=auto")
+        args = list(args)
+        del args[idx]
+    return args
+
+
+async def _resolve_webrtc_args_async(
+    args: list[str] | None,
+    proxy: str | ProxySettings | None,
+) -> list[str] | None:
+    """Async version of :func:`_resolve_webrtc_args` — see there for behavior."""
+    if not args:
+        return args
+    idx = None
+    for i, a in enumerate(args):
+        if a == "--fingerprint-webrtc-ip=auto":
+            idx = i
+            break
+    if idx is None:
+        return args
+    proxy_url = _extract_proxy_url(proxy)
+    if not proxy_url:
+        logger.warning("--fingerprint-webrtc-ip=auto requires a proxy; removing flag")
+        args = list(args)
+        del args[idx]
+        return args
+    try:
+        from .geoip import resolve_proxy_exit_ip_async
+        exit_ip = await resolve_proxy_exit_ip_async(proxy_url)
     except Exception:
         logger.warning("Failed to resolve proxy exit IP for WebRTC spoofing; removing --fingerprint-webrtc-ip=auto")
         args = list(args)
