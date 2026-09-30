@@ -1,0 +1,34 @@
+# Opt-in GPU acceleration for CloakBrowser in Docker. Requires the NVIDIA
+# Container Toolkit on the host so the container can see the GPU.
+#
+# CLOAKBROWSER_GPU_ACCEL=1 adds the ANGLE/EGL + GPU-rasterization + VA-API flags.
+# GPU acceleration engages for HEADLESS Chrome launched via the library API
+# (Python launch(gpu_accel=True) / JS launch({ gpuAccel: true })), which uses a
+# surfaceless EGL context — verify with chrome://gpu or CDP SystemInfo.getInfo
+# (expect your GPU's renderer, e.g. "ANGLE (NVIDIA ... OpenGL ES ...)", not
+# SwiftShader/llvmpipe). Point `command` at your own headless workload; the
+# cloakserve line below is only a long-running placeholder for the healthcheck.
+services:
+  cloakbrowser:
+    image: cloakhq/cloakbrowser
+    command: cloakserve
+    restart: unless-stopped
+    environment:
+      CLOAKBROWSER_GPU_ACCEL: "1"
+      # Expose the graphics + video driver libs to the container (not just compute).
+      NVIDIA_DRIVER_CAPABILITIES: all
+    ports:
+      - "127.0.0.1:9222:9222"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9222/json/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
