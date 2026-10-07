@@ -6,6 +6,33 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
+## [Unreleased]
+
+- **[wrapper]** The first-launch Pro banner now names the current Pro major (v154) instead of v152. Python, JavaScript, and .NET.
+- **[binary]** CloakBrowser Pro Stable is now Chromium `154.0.8037.57.1` on every platform: Linux x64/ARM64, Windows x64, and macOS (Apple Silicon and Intel). macOS moves up from Chromium 151.
+- **[binary]** Linux preview channel (x64/ARM64) is now `154.0.8037.57.2`: much lower CPU in headed mode on GPU-less Linux, safer proxy handling, a more patient license connection with a new `--license-route=auto|direct|proxy` flag, and the Windows persona's system and code fonts now match real Windows by default.
+- **[wrapper]** `cloakserve`: a browser launched through `/json/version` or `/json/list` with no WebSocket client attaching now gets idle cleanup, instead of running forever when `--idle-timeout` is set (thanks [@dstosch](https://github.com/dstosch), #558)
+
+---
+
+## [0.5.12] — 2026-10-04
+
+- **[wrapper]** Fix `humanize=True` clicks on targets past the right edge of a horizontally overflowing page (#521). Scroll-into-view now also scrolls the x axis, so the click no longer times out with "element is covered by <none>". Python, JavaScript Playwright/Puppeteer, and .NET.
+- **[wrapper]** Scroll-into-view no longer sends a needless upward scroll on an unscrolled page when layout reports a sub-pixel negative top edge. Python, JavaScript, and .NET.
+- **[wrapper]** Fix `humanize=True` typing into `<input type="number">`: a simulated typo on a digit is now always another digit, so the correcting Backspace no longer deletes a real digit (`1999` → `999`) (#573). Python, JavaScript Playwright/Puppeteer, and .NET.
+- **[wrapper]** Dev tooling: vitest 5, playwright-core 1.63 for the JS test suite; CI runs on Node 22. No runtime dependency changes.
+
+---
+
+## [0.5.11] — 2026-09-24
+
+- **[wrapper]** The first-launch Pro banner now names the current Pro major (v152) instead of v151. Python, JavaScript, and .NET.
+- **[wrapper]** `cloakbrowser info` now reports macOS persona font completeness (a `Mac fonts:` line with the count found) next to the existing Windows font check, with a hint when the set is incomplete. Python, JavaScript, and .NET.
+- **[wrapper]** Downloaded binary archives are unpacked directly once their signature and checksum verify, dropping a redundant per-entry pass. Python, JavaScript, and .NET.
+- **[wrapper]** .NET: fix a `NullReferenceException` under `humanize` when a humanized locator (e.g. from `GetByText`) is passed to `AddLocatorHandlerAsync`, `RemoveLocatorHandlerAsync`, `Locator.Filter` (`Has`/`HasNot`), or `ScreenshotAsync` (`Mask`) (#549). Adds a public `Humanize.Unwrap(ILocator)` helper.
+
+---
+
 ## [0.5.10] — 2026-08-30
 
 - **[wrapper]** The first-launch welcome banner no longer aborts a launch on a legacy Windows console. On a non-UTF-8 (cp1252) console its arrow and dash characters raised `UnicodeEncodeError` on the binary-download path, which blocked license apply and profile launch (notably in CloakBrowser Manager). The banner is now ASCII and every write is guarded, so a cosmetic message can never stop a launch. Python, JavaScript, and .NET.

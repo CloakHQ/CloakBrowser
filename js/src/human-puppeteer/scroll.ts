@@ -32,6 +32,10 @@ function isInViewport(
   return topEdge >= zoneTop && bottomEdge <= zoneBottom;
 }
 
+function isInViewportX(bounds: ElementBounds, viewportWidth: number): boolean {
+  return bounds.x >= 0 && bounds.x + bounds.width <= viewportWidth;
+}
+
 export async function smoothWheel(
   raw: RawMouse,
   delta: number,
@@ -104,6 +108,19 @@ export async function humanScrollIntoView(
   }
   if (!viewport || !viewport.height) throw new Error('Viewport size not available');
 
+  const yPass = await scrollYIntoView(raw, getBox, viewport, cursorX, cursorY, cfg);
+  return scrollXIntoView(raw, getBox, yPass.box, viewport, yPass.cursorX, yPass.cursorY, cfg);
+}
+
+/** Vertical pass: bring the box into ``scroll_target_zone``. */
+async function scrollYIntoView(
+  raw: RawMouse,
+  getBox: () => Promise<ElementBounds | null>,
+  viewport: { width: number; height: number },
+  cursorX: number,
+  cursorY: number,
+  cfg: HumanConfig,
+): Promise<{ box: ElementBounds; cursorX: number; cursorY: number }> {
   let box = await getBox();
   if (!box) throw new Error('Element not found while scrolling into view');
 
@@ -185,6 +202,46 @@ export async function humanScrollIntoView(
   if (!box) throw new Error('Element lost after scrolling into view');
 
   return { box, cursorX, cursorY };
+}
+
+/**
+ * Horizontal pass: bring the box inside the viewport width (#521).
+ *
+ * Only containment is checked here, not ``scroll_target_zone``: the zone is a
+ * vertical reading position, and horizontal overflow is the exception.
+ */
+async function scrollXIntoView(
+  raw: RawMouse,
+  getBox: () => Promise<ElementBounds | null>,
+  box: ElementBounds,
+  viewport: { width: number; height: number },
+  cursorX: number,
+  cursorY: number,
+  cfg: HumanConfig,
+): Promise<{ box: ElementBounds; cursorX: number; cursorY: number }> {
+  if (isInViewportX(box, viewport.width)) {
+    return { box, cursorX, cursorY };
+  }
+
+  const distanceToScroll = box.x + box.width / 2 - viewport.width / 2;
+  // A box wider than the viewport is never contained; once centred, skip the near-zero wheel.
+  if (Math.abs(distanceToScroll) < 1) {
+    return { box, cursorX, cursorY };
+  }
+
+  const scrollAreaX = Math.round(viewport.width * rand(0.3, 0.7));
+  const scrollAreaY = Math.round(viewport.height * rand(0.3, 0.7));
+  await humanMove(raw, cursorX, cursorY, scrollAreaX, scrollAreaY, cfg);
+  cursorX = scrollAreaX;
+  cursorY = scrollAreaY;
+  await sleep(randRange(cfg.scroll_pre_move_delay));
+
+  await smoothWheel(raw, Math.round(distanceToScroll), cfg, 'x');
+  await sleep(randRange(cfg.scroll_settle_delay));
+
+  const finalBox = await getBox();
+  if (!finalBox) throw new Error('Element lost after scrolling into view');
+  return { box: finalBox, cursorX, cursorY };
 }
 
 /**

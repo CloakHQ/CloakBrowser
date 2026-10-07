@@ -150,11 +150,11 @@ page.goto("https://example.com")
 
 ---
 
-## Latest: v0.5.10 — 87 source-level stealth patches (Chromium 152.0.7977.82.1)
+## Latest: v0.5.12 — 87 source-level stealth patches (Chromium 154.0.8037.57.1)
 
-- **CloakBrowser Pro Stable** — Chromium `152.0.7977.82.1` on Linux x64, Linux ARM64, and Windows x64; macOS on `151.0.7922.108.3`. Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest Stable build for your platform automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
+- **CloakBrowser Pro Stable** — Chromium `154.0.8037.57.1` on Linux x64, Linux ARM64, Windows x64, and macOS (Apple Silicon and Intel). Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest Stable build for your platform automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
 - **.NET 8 / C# client** — CloakBrowser now ships as a NuGet package (`CloakBrowser`), mirroring the Python and JS wrappers.
-- **Chromium 152 upgrade** — rebased the full patch set onto Chromium 152 for Linux and Windows; macOS stays on Chromium 151
+- **Chromium 154 upgrade** — rebased the full patch set onto Chromium 154 on every platform; macOS moves up from Chromium 151
 - **87 fingerprint patches** — rendering consistency improvements across Linux and Windows, corrected GPU/display/graphics parameters to match stock Chrome profiles
 - **Windows native GPU passthrough** — real hardware values pass through directly instead of being spoofed, matching real browser behavior
 - **HTTP proxy inline credentials** — new network-layer support for proxies with inline authentication
@@ -187,7 +187,7 @@ CloakBrowser doesn't solve CAPTCHAs — it prevents them from appearing. No CAPT
 
 Anti-bot systems change every week and an older binary quietly degrades. The latest build is the one that keeps passing. **Try it free, then upgrade when you're running for real.**
 
-- **Free, latest build (Chromium 151)** — the newest binary, the exact one that stays [green against live detection](#test-results). Free with a GitHub sign-in, one concurrent session. [Grab your key](https://cloakbrowser.dev/free) or run `cloakbrowser login`, then throw it at your hardest target.
+- **Free, latest build (Chromium 154)** — the newest binary, the exact one that stays [green against live detection](#test-results). Free with a GitHub sign-in, one concurrent session. [Grab your key](https://cloakbrowser.dev/free) or run `cloakbrowser login`, then throw it at your hardest target.
 - **Pro** — when it's part of production scraping, QA, monitoring, or automation: scale to **5, 20, 200, 2,000, or more concurrent sessions**, always first on the newest patches, with hands-on support. Linux, Windows, macOS. **[See plans and pricing →](https://cloakbrowser.dev)**
 - **v146** — the older build stays free on [GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases). A quick first look, but it ages fast as detection evolves.
 
@@ -217,7 +217,7 @@ It's also the fastest way to try the browser without writing any code: download,
 
 ## Test Results
 
-All tests verified against live detection services. Results below are for the latest Pro/current build unless noted. Last tested: Aug 2026 (Chromium 151).
+All tests verified against live detection services. Results below are for the latest Pro/current build unless noted. Last tested: Oct 2026 (Chromium 154).
 
 | Detection Service | Stock Playwright | CloakBrowser | Notes |
 |---|---|---|---|
@@ -685,7 +685,7 @@ Access the original un-patched Playwright page at `page._original` if you need r
 | `CLOAKBROWSER_WIDEVINE_CDM` | — | Path to a sideloaded `WidevineCdm` directory (overrides auto-detection next to the binary). See [Widevine / DRM](#widevine--drm) |
 | `CLOAKBROWSER_WIDEVINE` | `1` | Set to `0` to disable automatic Widevine hint-file seeding for persistent contexts |
 | `CLOAKBROWSER_FETCH_WIDEVINE` | `0` | Docker only: set to `1` to auto-fetch the Widevine CDM on container start (Linux x86-64 only). See [Widevine / DRM](#widevine--drm) |
-| `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `148.0.7778.215.2`). Works with Free and Pro binaries |
+| `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `154.0.8037.57.1`). Works with Free and Pro binaries |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | `stable` | Set to `preview` to opt into the Preview binary channel |
 
 ## Fingerprint Management
@@ -890,11 +890,11 @@ browser = await launch_async(args=["--remote-debugging-port=9242"])
 
 | Platform | Free | Pro | Status |
 |---|---|---|---|
-| Linux x86_64 | Chromium 146 (58 patches) | Chromium 152 (87 patches) | ✅ |
-| Linux arm64 (RPi, Graviton) | Chromium 146 (58 patches) | Chromium 152 (87 patches) | ✅ |
-| macOS arm64 (Apple Silicon) | Chromium 145 (26 patches) | Chromium 151 (87 patches) | ✅ |
-| macOS x86_64 (Intel) | Chromium 145 (26 patches) | Chromium 151 (87 patches) | ✅ |
-| Windows x86_64 | Chromium 146 (58 patches) | Chromium 152 (87 patches) | ✅ |
+| Linux x86_64 | Chromium 146 (58 patches) | Chromium 154 (87 patches) | ✅ |
+| Linux arm64 (RPi, Graviton) | Chromium 146 (58 patches) | Chromium 154 (87 patches) | ✅ |
+| macOS arm64 (Apple Silicon) | Chromium 145 (26 patches) | Chromium 154 (87 patches) | ✅ |
+| macOS x86_64 (Intel) | Chromium 145 (26 patches) | Chromium 154 (87 patches) | ✅ |
+| Windows x86_64 | Chromium 146 (58 patches) | Chromium 154 (87 patches) | ✅ |
 
 The wrapper auto-downloads the correct binary for your platform.
 
@@ -1298,8 +1298,8 @@ Two ways to go back to a working version:
 # Free — pin a public release
 browser = launch(browser_version="146.0.7680.177.5")
 
-# Pro — pin a previous Pro version
-browser = launch(license_key="cb_xxxxxxxx", browser_version="148.0.7778.215.2")
+# Pro — pin a specific Pro version
+browser = launch(license_key="cb_xxxxxxxx", browser_version="154.0.8037.57.1")
 ```
 
 ```bash
@@ -1479,6 +1479,8 @@ Issues and PRs welcome. If something isn't working, [open an issue](https://gith
 - [@Kumario1](https://github.com/Kumario1) — cloakserve idle cleanup for seeded profiles
 - [@0xlally](https://github.com/0xlally) — security reports (cloakserve path traversal, WebSocket origin bypass)
 - [@ishiko732](https://github.com/ishiko732) — HTTP proxy credentials in GeoIP resolution
+- [@Shub3am](https://github.com/Shub3am) — horizontal scroll-into-view for humanized clicks
+- [@dstosch](https://github.com/dstosch) — cloakserve idle cleanup for browsers launched over HTTP
 
 ## Star History
 

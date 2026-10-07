@@ -164,6 +164,15 @@ public class KeyboardTests
         Assert.Equal("sqwz", HumanKeyboard.NearbyKeys['a']);
         Assert.Equal("ol", HumanKeyboard.NearbyKeys['p']);
     }
+
+    [Fact]
+    public void NearbyKeys_DigitNeighborsAreDigits()
+    {
+        // #573: a letter typo is rejected by <input type=number>, so the
+        // correcting Backspace would delete the previous real digit.
+        foreach (char d in "0123456789")
+            Assert.True(HumanKeyboard.NearbyKeys[d].All(char.IsDigit), $"'{d}' -> {HumanKeyboard.NearbyKeys[d]}");
+    }
 }
 
 public class ActionabilityTests

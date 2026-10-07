@@ -36,8 +36,10 @@ const NEARBY_KEYS: Record<string, string> = {
   p: 'ol', q: 'wa', r: 'edft', s: 'awedxz', t: 'rfgy',
   u: 'yhji', v: 'cfgb', w: 'qase', x: 'zsdc', y: 'tghu',
   z: 'asx',
-  '1': '2q', '2': '13qw', '3': '24we', '4': '35er', '5': '46rt',
-  '6': '57ty', '7': '68yu', '8': '79ui', '9': '80io', '0': '9p',
+  // Digits stay digits: a letter typo is rejected by <input type=number>,
+  // so the correcting Backspace would delete the previous real digit (#573).
+  '1': '2', '2': '13', '3': '24', '4': '35', '5': '46',
+  '6': '57', '7': '68', '8': '79', '9': '80', '0': '9',
 };
 
 /**

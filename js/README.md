@@ -246,11 +246,11 @@ const page = await browser.newPage();
 
 | Platform | Free | Pro | Status |
 |---|---|---|---|
-| Linux x86_64 | Chromium 146 (58 patches) | Chromium 151 (87 patches) | ✅ |
-| Linux arm64 (RPi, Graviton) | Chromium 146 (58 patches) | Chromium 151 (87 patches) | ✅ |
-| macOS arm64 (Apple Silicon) | Chromium 145 (26 patches) | Chromium 151 (87 patches) | ✅ |
-| macOS x86_64 (Intel) | Chromium 145 (26 patches) | Chromium 151 (87 patches) | ✅ |
-| Windows x86_64 | Chromium 146 (58 patches) | Chromium 151 (87 patches) | ✅ |
+| Linux x86_64 | Chromium 146 (58 patches) | Chromium 154 (87 patches) | ✅ |
+| Linux arm64 (RPi, Graviton) | Chromium 146 (58 patches) | Chromium 154 (87 patches) | ✅ |
+| macOS arm64 (Apple Silicon) | Chromium 145 (26 patches) | Chromium 154 (87 patches) | ✅ |
+| macOS x86_64 (Intel) | Chromium 145 (26 patches) | Chromium 154 (87 patches) | ✅ |
+| Windows x86_64 | Chromium 146 (58 patches) | Chromium 154 (87 patches) | ✅ |
 
 ## CloakBrowser Pro
 
@@ -258,7 +258,7 @@ The wrappers (Python, JS, .NET) are MIT, free forever. The latest binary is **fr
 
 Anti-bot systems change every week and an older binary quietly degrades. The latest build is the one that keeps passing. **Try it free, then upgrade when you're running for real.**
 
-- **Free, latest build (Chromium 151)** — the newest binary, the exact one that stays [green against live detection](#test-results). Free with a GitHub sign-in, one concurrent session. [Grab your key](https://cloakbrowser.dev/free) or run `cloakbrowser login`, then point it at the site that's been blocking you.
+- **Free, latest build (Chromium 154)** — the newest binary, the exact one that stays [green against live detection](#test-results). Free with a GitHub sign-in, one concurrent session. [Grab your key](https://cloakbrowser.dev/free) or run `cloakbrowser login`, then point it at the site that's been blocking you.
 - **Pro** — when it's part of production scraping, QA, monitoring, or automation: scale to **5, 20, 200, 2,000, or more concurrent sessions**, always first on the newest patches, with hands-on support. Linux, Windows, macOS. **[See plans and pricing →](https://cloakbrowser.dev)**
 - **v146** — the older build stays free on [GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases). A quick first look, but it ages fast as detection evolves.
 

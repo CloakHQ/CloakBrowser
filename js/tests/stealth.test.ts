@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { resolveConfig, rand, randRange, sleep } from "../src/human/config.js";
 import { humanType } from "../src/human/keyboard.js";
+import { humanType as puppeteerHumanType } from "../src/human-puppeteer/keyboard.js";
 import { humanMove, humanClick, clickTarget, humanIdle } from "../src/human/mouse.js";
 
 // =========================================================================
@@ -138,6 +139,28 @@ function buildRawKeyboard() {
   };
   return { raw, downKeys, upKeys, insertedChars };
 }
+
+
+// =========================================================================
+// Mistype on digits (#573): a letter typo is rejected by <input type=number>,
+// so the correcting Backspace would eat the previous real digit.
+// =========================================================================
+describe("digit mistypes stay digits", () => {
+  it.each([
+    ["playwright", humanType],
+    ["puppeteer", puppeteerHumanType],
+  ])("%s humanType only types digits for numeric text", async (_name, typeFn) => {
+    const cfg = resolveConfig("default", {
+      mistype_chance: 1, typing_delay: 0, typing_delay_spread: 0, typing_pause_chance: 0,
+      key_hold: [0, 0], mistype_delay_notice: [0, 0], mistype_delay_correct: [0, 0],
+    });
+    for (let i = 0; i < 20; i++) {
+      const { raw, downKeys } = buildRawKeyboard();
+      await (typeFn as any)(buildMockPage(), raw, "0123456789", cfg, null);
+      expect(downKeys.filter((k) => k !== "Backspace").every((k) => /^[0-9]$/.test(k))).toBe(true);
+    }
+  });
+});
 
 
 // =========================================================================
@@ -424,7 +447,15 @@ describe("humanType mixed text with CDP", () => {
   });
 
   it("password-like text 'SecurePass!123' uses CDP for '!'", async () => {
-    const cfg = resolveConfig("default", { mistype_chance: 0, typing_delay: 0 });
+    // Zero every random sleep: thinking pauses alone can push 14 chars past the 5s test timeout on CI
+    const cfg = resolveConfig("default", {
+      mistype_chance: 0,
+      typing_delay: 0,
+      typing_pause_chance: 0,
+      shift_down_delay: [0, 0],
+      shift_up_delay: [0, 0],
+      key_hold: [0, 0],
+    });
     const { raw } = buildRawKeyboard();
     const page = buildMockPage();
     const cdpCalls: Array<[string, any]> = [];
@@ -1299,6 +1330,31 @@ describeIfSlow("stealth browser: selector parity and target identity", () => {
         target: (window as any).__targetClicks,
         cover: (window as any).__coverClicks,
       }))).toEqual({ target: 0, cover: 1 });
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+});
+
+// page.setContent timed out in local runs of this test, so the page is loaded as a data: URL.
+const WIDE_ROW_HTML = `
+  <body style="margin:0">
+    <div style="display:flex">
+      <div style="min-width:800px">left</div>
+      <button id="target" style="min-width:800px"
+              onclick="this.textContent = 'CLICKED'">right</button>
+    </div>
+  </body>`;
+
+describeIfSlow("stealth browser: horizontal scroll into view (#521)", () => {
+  it("clicks a target past the right edge of a horizontally overflowing page", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+      await page.goto("data:text/html," + encodeURIComponent(WIDE_ROW_HTML));
+      await page.click("#target", { timeout: 5000 });
+      expect(await page.locator("#target").textContent()).toBe("CLICKED");
     } finally {
       await browser.close();
     }

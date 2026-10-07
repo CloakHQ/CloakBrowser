@@ -354,14 +354,14 @@ var page = await ctx.NewPageAsync();
 | `NoViewport` | `bool` | `false` | disable viewport emulation (track the real window) |
 | `ColorScheme` | `string` | - | `light` / `dark` |
 | `LicenseKey` | `string` | `null` | CloakBrowser Pro key (or `CLOAKBROWSER_LICENSE_KEY` env / `~/.cloakbrowser/license.key`) |
-| `BrowserVersion` | `string` | `null` | Pin an exact Chromium version (e.g. `"148.0.7778.215.2"`). Also reads from `CLOAKBROWSER_VERSION` env var. Works with Free and Pro. |
+| `BrowserVersion` | `string` | `null` | Pin an exact Chromium version (e.g. `"154.0.8037.57.1"`). Also reads from `CLOAKBROWSER_VERSION` env var. Works with Free and Pro. |
 | `ReleaseChannel` | `string` | `null` (`stable`) | Set to `"preview"` to opt into the Pro Preview binary channel. Also reads from `CLOAKBROWSER_RELEASE_CHANNEL`. |
 
 ### CloakBrowser Pro
 
 The wrappers are MIT, free forever. The latest binary is **free to try**:
 
-- **Free, latest build (Chromium 150)** — the newest binary. Free with a GitHub sign-in, one concurrent session. Run `cloakbrowser login` or [grab your key](https://cloakbrowser.dev/free).
+- **Free, latest build (Chromium 154)** — the newest binary. Free with a GitHub sign-in, one concurrent session. Run `cloakbrowser login` or [grab your key](https://cloakbrowser.dev/free).
 - **Pro** — scale to **5, 20, 200, 2,000, or more concurrent sessions**, always first on the newest patches, with hands-on support. Linux, Windows, macOS. **[See plans and pricing →](https://cloakbrowser.dev)**
 - **v146** — the older build stays free on [GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases). A quick first look, but it ages fast as detection evolves.
 
@@ -409,11 +409,11 @@ await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
     BrowserVersion = "146.0.7680.177.5",
 });
 
-// Pro — pin a previous Pro version
+// Pro — pin a specific Pro version
 await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 {
     LicenseKey = "cb_xxxxxxxx",
-    BrowserVersion = "148.0.7778.215.2",
+    BrowserVersion = "154.0.8037.57.1",
 });
 ```
 
@@ -622,7 +622,7 @@ Same set as the Python wrapper:
 | `CLOAKBROWSER_DOWNLOAD_URL` | Override the download URL |
 | `CLOAKBROWSER_AUTO_UPDATE` | Enable/disable background auto-update |
 | `CLOAKBROWSER_SKIP_CHECKSUM` | Skip SHA-256 verification |
-| `CLOAKBROWSER_VERSION` | Pin to an exact Chromium version for rollback (e.g. `148.0.7778.215.2`). Works with Free and Pro binaries |
+| `CLOAKBROWSER_VERSION` | Pin to an exact Chromium version for rollback (e.g. `154.0.8037.57.1`). Works with Free and Pro binaries |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | Set to `preview` to opt into the Pro Preview binary channel (default: `stable`) |
 | `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | GeoIP HTTP timeout |
 | `CLOAKBROWSER_WIDEVINE_CDM` / `CLOAKBROWSER_WIDEVINE` | Widevine seeding control |
