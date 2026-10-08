@@ -33,6 +33,25 @@ jobs:
       - name: Run tests
         run: cd js && npm test
 
+  javascript-browser:
+    # Humanize engine + Puppeteer tests against the real CloakBrowser binary.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 22
+      - name: Install and build
+        run: cd js && npm install && npm run build
+      - name: Download the binary
+        run: |
+          cd js
+          echo "CLOAKBROWSER_BINARY_PATH=$(node -e "import('./dist/index.js').then(async m => console.log(await m.ensureBinary()))" | tail -1)" >> "$GITHUB_ENV"
+      - name: Install browser system deps
+        run: cd js && npx playwright-core install-deps chromium
+      - name: Run real-browser tests
+        run: cd js && xvfb-run -a npx vitest run tests/humanizeEngine.test.ts tests/humanizePuppeteer.test.ts
+
   dotnet:
     runs-on: ubuntu-latest
     steps:

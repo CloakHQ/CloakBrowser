@@ -87,6 +87,9 @@ public static class Humanize
     internal static ILocator WrapLocator(ILocator locator, HumanCursor cursor, HumanConfig cfg, string? selector = null) =>
         locator is HumanizedLocator ? locator : new HumanizedLocator(locator, cursor, cfg, selector);
 
+    internal static IFrameLocator WrapFrameLocator(IFrameLocator frameLocator, HumanCursor cursor, HumanConfig cfg) =>
+        frameLocator is HumanizedFrameLocator ? frameLocator : new HumanizedFrameLocator(frameLocator, cursor, cfg);
+
     internal static IFrame WrapFrame(IFrame frame, HumanCursor cursor, HumanConfig cfg) =>
         frame is HumanizedFrame ? frame : new HumanizedFrame(frame, cursor, cfg);
 
@@ -101,6 +104,10 @@ public static class Humanize
 
     /// <summary>Per-page cursor cache so pages from a context/browser share state across re-wraps.</summary>
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IPage, HumanCursor> CursorCache = new();
+
+    /// <summary>The shared humanize state of an already-humanized raw page, if any.</summary>
+    internal static bool TryGetCursor(IPage page, out HumanCursor cursor) =>
+        CursorCache.TryGetValue(page, out cursor!);
 
     internal static async Task<IPage> WrapPageAsync(IPage page, HumanConfig cfg)
     {

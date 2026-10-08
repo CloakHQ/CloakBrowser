@@ -254,6 +254,22 @@ async function isInputElementHandle(
 // Page-level patching
 // ============================================================================
 
+type PressOptions = { button?: 'left' | 'right' | 'middle' | 'back' | 'forward'; clickCount?: number; count?: number; delay?: number };
+
+/** Press like a person with Puppeteer's click options: the chosen button, a real
+ *  click-count sequence (detail 1, 2, ...) and `delay` as the hold time. */
+async function humanPress(raw: RawMouse, isInput: boolean, cfg: HumanConfig, options?: PressOptions): Promise<void> {
+  const button = options?.button ?? 'left';
+  const count = Math.max(1, options?.count ?? options?.clickCount ?? 1);
+  await sleep(randRange(isInput ? cfg.click_aim_delay_input : cfg.click_aim_delay_button));
+  for (let n = 1; n <= count; n++) {
+    await raw.down({ button, clickCount: n });
+    await sleep(options?.delay ?? randRange(isInput ? cfg.click_hold_input : cfg.click_hold_button));
+    await raw.up({ button, clickCount: n });
+    if (n < count) await sleep(rand(60, 140));
+  }
+}
+
 function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   const originals = {
     click: page.click.bind(page),
@@ -356,16 +372,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     cursor.x = target.x;
     cursor.y = target.y;
 
-    const clickCount = options?.clickCount ?? options?.count ?? 1;
-    if (clickCount >= 2) {
-      await humanClick(raw, isInput, callCfg);
-      await sleep(rand(40, 90));
-      await raw.down({ clickCount: 2 });
-      await sleep(rand(30, 60));
-      await raw.up({ clickCount: 2 });
-    } else {
-      await humanClick(raw, isInput, callCfg);
-    }
+    await humanPress(raw, isInput, callCfg, options);
   };
 
   // ==== hover ====
@@ -447,16 +454,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     cursor.x = x;
     cursor.y = y;
 
-    const clickCount = options?.clickCount ?? options?.count ?? 1;
-    if (clickCount >= 2) {
-      await humanClick(raw, false, cfg);
-      await sleep(rand(40, 90));
-      await raw.down({ clickCount: 2 });
-      await sleep(rand(30, 60));
-      await raw.up({ clickCount: 2 });
-    } else {
-      await humanClick(raw, false, cfg);
-    }
+    await humanPress(raw, false, cfg, options);
   };
 
   if (originals.mouseWheel) {
@@ -680,16 +678,7 @@ function patchSingleElementHandle(
     const info = await moveToElement(callCfg);
     if (!info) return origElClick(options);
 
-    const clickCount = options?.clickCount ?? options?.count ?? 1;
-    if (clickCount >= 2) {
-      await humanClick(raw, info.isInp, callCfg);
-      await sleep(rand(40, 90));
-      await raw.down({ clickCount: 2 });
-      await sleep(rand(30, 60));
-      await raw.up({ clickCount: 2 });
-    } else {
-      await humanClick(raw, info.isInp, callCfg);
-    }
+    await humanPress(raw, info.isInp, callCfg, options);
   };
 
   // --- el.hover() ---
@@ -886,38 +875,67 @@ function patchSingleFrame(
 ): void {
   const origFrameSelect = frame.select.bind(frame);
 
-  (frame as any).click = async (selector: string, options?: HumanActionOptions & {
-    button?: 'left' | 'right' | 'middle' | 'back' | 'forward';
-    clickCount?: number;
-    count?: number;
-    delay?: number;
-  }) => {
-    await (page as any).click(selector, options);
+  // Frame actions resolve the selector inside *this* frame (stock Puppeteer
+  // semantics, #184), then run the humanized ElementHandle action; the handle's
+  // boundingBox() is in page coordinates, so the cursor travels correctly into
+  // the iframe. Waiting honours `timeout` like Puppeteer's own frame.click.
+  if (frame === page.mainFrame()) {
+    // The main frame is the page: use the page-level humanized actions.
+    (frame as any).click = (selector: string, options?: any) => (page as any).click(selector, options);
+    (frame as any).hover = (selector: string, options?: any) => (page as any).hover(selector, options);
+    (frame as any).type = (selector: string, text: string, options?: any) => (page as any).type(selector, text, options);
+    (frame as any).select = (selector: string, ...values: string[]) => (page as any).select(selector, ...values);
+    (frame as any).focus = (selector: string) => (page as any).focus(selector);
+    (frame as any).tap = (selector: string, options?: any) => (page as any).tap(selector, options);
+  } else {
+    patchChildFrameActions();
+  }
+
+  function patchChildFrameActions(): void {
+  const inFrame = async (selector: string, timeout?: number): Promise<ElementHandle> => {
+    const el = await origFrameWaitForSelectorRaw(selector, { timeout });
+    if (!el) throw new Error(`No element found for selector: ${selector}`);
+    patchSingleElementHandle(el, page, cfg, cursor, raw, rawKb, originals, stealth);
+    return el;
+  };
+  const origFrameWaitForSelectorRaw = frame.waitForSelector.bind(frame);
+
+  (frame as any).click = async (selector: string, options?: HumanActionOptions & PressOptions) => {
+    const el = await inFrame(selector, options?.timeout);
+    try { await (el as any).click(options); } finally { await el.dispose().catch(() => {}); }
   };
 
   (frame as any).hover = async (selector: string, options?: HumanActionOptions) => {
-    await (page as any).hover(selector, options);
+    const el = await inFrame(selector, options?.timeout);
+    try { await (el as any).hover(); } finally { await el.dispose().catch(() => {}); }
   };
 
   (frame as any).type = async (selector: string, text: string, options?: HumanActionOptions & {
     delay?: number;
   }) => {
-    await (page as any).type(selector, text, options);
+    const el = await inFrame(selector, options?.timeout);
+    try { await (el as any).type(text, options); } finally { await el.dispose().catch(() => {}); }
   };
 
   (frame as any).select = async (selector: string, ...values: string[]) => {
-    await (page as any).hover(selector);
-    await sleep(rand(100, 300));
-    return origFrameSelect(selector, ...values);
+    const el = await inFrame(selector);
+    try {
+      await (el as any).hover();
+      await sleep(rand(100, 300));
+      return await origFrameSelect(selector, ...values);
+    } finally { await el.dispose().catch(() => {}); }
   };
 
   (frame as any).focus = async (selector: string) => {
-    await (page as any).focus(selector);
+    const el = await inFrame(selector);
+    try { await (el as any).focus(); } finally { await el.dispose().catch(() => {}); }
   };
 
   (frame as any).tap = async (selector: string, options?: HumanActionOptions) => {
-    await (page as any).click(selector, options);
+    const el = await inFrame(selector, options?.timeout);
+    try { await (el as any).click(options); } finally { await el.dispose().catch(() => {}); }
   };
+  }
 
   // Patch frame.$() to return patched ElementHandles
   const origFrame$ = frame.$.bind(frame);

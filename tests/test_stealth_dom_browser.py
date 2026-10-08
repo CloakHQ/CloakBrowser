@@ -1,25 +1,26 @@
-"""Real-browser parity tests for isolated-world humanize DOM reads."""
-
-import json
+"""Real-browser parity tests: humanized actions land on the element Playwright resolves."""
 
 import pytest
 
-from cloakbrowser.human.stealth_dom import _RESOLVER_BODY
+
+_RECORD_CLICKS = """() => {
+    window.__clicked = [];
+    document.addEventListener('click', (e) => {
+        // The innermost element with an id (a click on a button's <span> is the button's).
+        const el = e.composedPath().find((n) => n.id);
+        window.__clicked.push(el ? el.id : null);
+    }, true);
+}"""
 
 
-def _resolve_identity_js(selector: str) -> str:
-    """Resolve with the shipped isolated-world resolver and return its identity."""
-    return (
-        "(() => {\n"
-        + _RESOLVER_BODY
-        + "\nconst el = __resolve("
-        + json.dumps(selector)
-        + ");\n"
-        + "if (el === 'UNSUPPORTED') return {status: 'unsupported'};\n"
-        + "if (!el) return {status: 'not_found'};\n"
-        + "return {status: 'ok', id: el.id, tag: el.tagName};\n"
-        + "})()"
-    )
+def _clicked_id(page, selector_or_locator):
+    """Click humanized and return the id of the element that received it."""
+    page.evaluate("window.__clicked = []")
+    if isinstance(selector_or_locator, str):
+        page.click(selector_or_locator, timeout=3000)
+    else:
+        selector_or_locator.click(timeout=3000)
+    return page.evaluate("window.__clicked")[-1]
 
 
 @pytest.mark.slow
@@ -57,12 +58,7 @@ def test_text_selector_ignores_hidden_head_script_and_clicks_visible_target():
         playwright_identity = page.locator(selector).first.evaluate(
             "el => ({status: 'ok', id: el.id, tag: el.tagName})"
         )
-        isolated_identity = page._stealth_world.evaluate(
-            _resolve_identity_js(selector)
-        )
-
         assert playwright_identity == expected
-        assert isolated_identity == expected
 
         page.click(selector, timeout=3000)
         assert page.evaluate("window.targetClicks") == 1
@@ -74,7 +70,6 @@ def test_text_selector_ignores_hidden_head_script_and_clicks_visible_target():
 def test_display_contents_uses_rendered_content_geometry():
     """A boxless display:contents target uses its rendered text/child union."""
     from cloakbrowser import launch
-    from cloakbrowser.human.stealth_dom import build_snapshot_js
 
     browser = launch(headless=False, humanize=True, release_channel="preview")
     try:
@@ -114,35 +109,6 @@ def test_display_contents_uses_rendered_content_geometry():
         )
         assert own_rect == {"width": 0, "height": 0}
 
-        target = page._stealth_world.evaluate(build_snapshot_js("text=Hoy"))
-        assert target["visible"] is True
-        assert target["box"]["width"] > 0
-        assert target["box"]["height"] > 0
-
-        union = page._stealth_world.evaluate(build_snapshot_js("#union"))
-        assert union["visible"] is True
-        rects = page.evaluate(
-            """() => Object.fromEntries(
-                ['left', 'right', 'nested-child', 'hidden'].map(id => {
-                    const r = document.querySelector('#' + id).getBoundingClientRect();
-                    return [id, {x: r.x, y: r.y, width: r.width, height: r.height}];
-                })
-            )"""
-        )
-        union_right = union["box"]["x"] + union["box"]["width"]
-        union_bottom = union["box"]["y"] + union["box"]["height"]
-        for child_id in ("left", "right", "nested-child"):
-            child = rects[child_id]
-            assert union["box"]["x"] <= child["x"]
-            assert union["box"]["y"] <= child["y"]
-            assert union_right >= child["x"] + child["width"]
-            assert union_bottom >= child["y"] + child["height"]
-        assert union_right < rects["hidden"]["x"]
-
-        hidden_text = page._stealth_world.evaluate(build_snapshot_js("#hidden-text"))
-        assert hidden_text["visible"] is False
-        assert hidden_text["box"] is None
-
         page.click("text=Hoy", timeout=3000)
         page.click("#nested", timeout=3000)
         assert page.evaluate("window.targetClicks") == 1
@@ -177,15 +143,10 @@ def test_text_selector_semantics_match_playwright():
             ("text=Submit Me", "value-target"),
             ("text=foobar", "normalized-target"),
         ]
+        page.evaluate(_RECORD_CLICKS)
         for selector, expected_id in cases:
-            playwright_identity = page.locator(selector).first.evaluate(
-                "el => ({status: 'ok', id: el.id, tag: el.tagName})"
-            )
-            isolated_identity = page._stealth_world.evaluate(
-                _resolve_identity_js(selector)
-            )
-            assert playwright_identity["id"] == expected_id
-            assert isolated_identity == playwright_identity
+            assert page.locator(selector).first.evaluate("el => el.id") == expected_id
+            assert _clicked_id(page, selector) == expected_id, selector
     finally:
         browser.close()
 
@@ -194,7 +155,6 @@ def test_text_selector_semantics_match_playwright():
 def test_structural_has_text_and_open_shadow_dom_match_playwright():
     """Custom text pseudos keep their compound position and pierce open shadows."""
     from cloakbrowser import launch
-    from cloakbrowser.human.stealth_dom import build_snapshot_js
 
     browser = launch(headless=False, humanize=True, release_channel="preview")
     try:
@@ -231,17 +191,10 @@ def test_structural_has_text_and_open_shadow_dom_match_playwright():
             ('article:has-text("Wanted") > button', "correct"),
             ("#shadow-target", "shadow-target"),
         ]
+        page.evaluate(_RECORD_CLICKS)
         for selector, expected_id in cases:
-            playwright_identity = page.locator(selector).first.evaluate(
-                "el => ({status: 'ok', id: el.id, tag: el.tagName})"
-            )
-            isolated_identity = page._stealth_world.evaluate(
-                _resolve_identity_js(selector)
-            )
-            assert playwright_identity["id"] == expected_id
-            assert isolated_identity == playwright_identity
-
-        page.click("#shadow-target", timeout=3000)
+            assert page.locator(selector).first.evaluate("el => el.id") == expected_id
+            assert _clicked_id(page, selector) == expected_id, selector
         assert page._stealth_world.evaluate(
             "document.body.dataset.shadowClicks"
         ) == "1"
@@ -253,8 +206,9 @@ def test_structural_has_text_and_open_shadow_dom_match_playwright():
         ) == "2"
 
         page.locator("#shadow-input").focus()
-        focused = page._stealth_world.evaluate(build_snapshot_js("#shadow-input"))
-        assert focused["focused"] is True
+        assert page._stealth_world.evaluate(
+            "document.querySelector('#shadow-host').shadowRoot.activeElement.id"
+        ) == "shadow-input"
     finally:
         browser.close()
 
@@ -292,10 +246,9 @@ def test_mixed_light_and_nested_shadow_order_matches_playwright():
         playwright_ids = page.locator("button").evaluate_all(
             "elements => elements.map(element => element.id)"
         )
+        page.evaluate(_RECORD_CLICKS)
         isolated_ids = [
-            page._stealth_world.evaluate(
-                _resolve_identity_js(f"button >> nth={index}")
-            )["id"]
+            _clicked_id(page, f"button >> nth={index}")
             for index in range(len(playwright_ids))
         ]
 
@@ -312,7 +265,7 @@ def test_mixed_light_and_nested_shadow_order_matches_playwright():
 def test_actionability_state_matches_playwright():
     """Visibility, native disabled, and ARIA readonly semantics stay in parity."""
     from cloakbrowser import launch
-    from cloakbrowser.human.stealth_dom import build_snapshot_js
+    from playwright.sync_api import TimeoutError as PwTimeout
 
     browser = launch(headless=False, humanize=True, release_channel="preview")
     try:
@@ -342,29 +295,13 @@ def test_actionability_state_matches_playwright():
             }"""
         )
 
-        cases = [
-            ("#fieldset-input", ("visible", "enabled", "editable")),
-            ("#aria-button", ("visible", "enabled")),
-            ("#aria-readonly", ("visible", "enabled", "editable")),
-            ("#disabled-option", ("visible", "enabled")),
-            ("#display-contents", ("visible",)),
-            ("#content-hidden", ("visible",)),
-            ("#zero-width", ("visible",)),
-        ]
-        method_for = {
-            "visible": "is_visible",
-            "enabled": "is_enabled",
-            "editable": "is_editable",
-        }
-        for selector, fields in cases:
-            locator = page.locator(selector).first
-            isolated = page._stealth_world.evaluate(build_snapshot_js(selector))
-            assert isolated["r"] == "ok"
-            for field in fields:
-                expected = getattr(locator, method_for[field])()
-                assert isolated[field] is expected, (
-                    selector, field, expected, isolated[field]
-                )
+        # Humanized actions wait for the same states Playwright does.
+        for selector in ("#fieldset-input", "#aria-button", "#content-hidden"):
+            with pytest.raises(PwTimeout):
+                page.click(selector, timeout=500)
+        with pytest.raises(PwTimeout):
+            page.fill("#aria-readonly", "x", timeout=500)
+        page.click("#display-contents", timeout=3000)
 
         # Selector check state must come from the same isolated snapshot, not
         # Playwright's page.is_checked DOM read.
@@ -372,8 +309,9 @@ def test_actionability_state_matches_playwright():
             AssertionError("page.is_checked must not be called")
         )
         page.check("#check-target", timeout=3000)
-        checked = page._stealth_world.evaluate(build_snapshot_js("#check-target"))
-        assert checked["checked"] is True
+        assert page._stealth_world.evaluate(
+            "document.querySelector('#check-target').checked"
+        ) is True
 
         checkbox = page.locator("#check-target")
         checkbox.is_checked = lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -381,12 +319,12 @@ def test_actionability_state_matches_playwright():
         )
         checkbox.uncheck(timeout=3000)
         assert page._stealth_world.evaluate(
-            build_snapshot_js("#check-target")
-        )["checked"] is False
+            "document.querySelector('#check-target').checked"
+        ) is False
         checkbox.set_checked(True, timeout=3000)
         assert page._stealth_world.evaluate(
-            build_snapshot_js("#check-target")
-        )["checked"] is True
+            "document.querySelector('#check-target').checked"
+        ) is True
     finally:
         browser.close()
 
@@ -441,68 +379,54 @@ def test_force_click_keeps_identity_but_skips_coverage_rejection():
 def test_click_rejects_target_mutation_after_mouse_movement(
     monkeypatch, force, mutation,
 ):
-    """Never dispatch to an underlying/replacement target after movement."""
-    from cloakbrowser import launch
-    import cloakbrowser.human as human
-    from cloakbrowser.human.actionability import (
-        ElementNotAttachedError, ElementTargetChangedError,
-    )
+    """Never dispatch to an underlying/stale target after movement.
 
-    browser = launch(headless=False, humanize=True, release_channel="preview")
+    The page swaps the target while the cursor travels. The press must not
+    land on what is under the cursor now: a removed target times out; a
+    replaced target is re-resolved and reached with a fresh move, exactly
+    like Playwright re-resolves locators.
+    """
+    from cloakbrowser import launch
+    from cloakbrowser.human.engine import Human
+    from playwright.sync_api import TimeoutError as PwTimeout
+
+    browser = launch(headless=True, humanize=True)
     try:
         page = browser.new_page()
-        page.goto("https://example.com", wait_until="domcontentloaded")
-        page.evaluate(
-            """() => {
-                document.body.innerHTML = `
-                    <button id="underlying" style="position:absolute;left:20px;top:20px">
-                        Underlying
-                    </button>
-                    <button id="target" style="position:absolute;left:20px;top:20px">
-                        Original
-                    </button>`;
-                document.body.dataset.underlyingClicks = '0';
-                document.body.dataset.replacementClicks = '0';
-                document.querySelector('#underlying').addEventListener('click', () => {
-                    document.body.dataset.underlyingClicks = String(
-                        Number(document.body.dataset.underlyingClicks) + 1
-                    );
-                });
-            }"""
-        )
+        page.evaluate("""() => {
+            document.body.innerHTML = `
+              <button id="underlying" style="position:absolute;left:20px;top:20px">Underlying</button>
+              <button id="target" style="position:absolute;left:20px;top:20px">Original</button>`;
+            window.counts = {underlying: 0, replacement: 0};
+            document.querySelector('#underlying').onclick = () => counts.underlying++;
+        }""")
+        real_move = Human.move_to
+        state = {"mutated": False}
 
-        def mutate_during_move(raw, start_x, start_y, end_x, end_y, cfg):
-            page._stealth_world.evaluate(
-                """((mutation) => {
-                    const old = document.querySelector('#target');
-                    if (mutation === 'remove') {
-                        old.remove();
-                        return;
-                    }
-                    const replacement = document.createElement('button');
-                    replacement.id = 'target';
-                    replacement.textContent = 'Replacement';
-                    replacement.style.cssText = old.style.cssText;
-                    replacement.addEventListener('click', () => {
-                        document.body.dataset.replacementClicks = String(
-                            Number(document.body.dataset.replacementClicks) + 1
-                        );
-                    });
-                    old.replaceWith(replacement);
-                })""" + "(" + json.dumps(mutation) + ")"
-            )
+        async def mutate_during_move(self, x, y, cfg):
+            await real_move(self, x, y, cfg)
+            if state["mutated"]:
+                return
+            state["mutated"] = True
+            # Mutate from the page's own world, like a real page script would.
+            await self.page.main_frame.evaluate("""(mutation) => {
+                const old = document.querySelector('#target');
+                if (mutation === 'remove') { old.remove(); return; }
+                const r = document.createElement('button');
+                r.id = 'target'; r.textContent = 'Replacement'; r.style.cssText = old.style.cssText;
+                r.onclick = () => counts.replacement++;
+                old.replaceWith(r);
+            }""", mutation)
 
-        monkeypatch.setattr(human, "human_move", mutate_during_move)
-        with pytest.raises((ElementNotAttachedError, ElementTargetChangedError)):
-            page.click("#target", force=force, timeout=1000)
-
-        click_counts = page._stealth_world.evaluate(
-            """(() => ({
-                underlying: document.body.dataset.underlyingClicks,
-                replacement: document.body.dataset.replacementClicks,
-            }))()"""
-        )
-        assert click_counts == {"underlying": "0", "replacement": "0"}
+        monkeypatch.setattr(Human, "move_to", mutate_during_move)
+        if mutation == "remove":
+            with pytest.raises(PwTimeout):
+                page.click("#target", force=force, timeout=1500)
+        else:
+            page.click("#target", force=force, timeout=3000)
+        counts = page.evaluate("counts")
+        assert counts["underlying"] == 0
+        assert counts["replacement"] == (1 if mutation == "replace" else 0)
     finally:
         browser.close()
 
@@ -510,47 +434,34 @@ def test_click_rejects_target_mutation_after_mouse_movement(
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_async_click_rejects_replacement_after_mouse_movement(monkeypatch):
-    """Async humanized clicks enforce the same exact-target invariant."""
+    """Async: an ElementHandle whose element is replaced mid-move must fail
+    (handles are not re-resolved), and nothing is clicked."""
     from cloakbrowser import launch_async
-    import cloakbrowser.human as human
-    from cloakbrowser.human.actionability import ElementTargetChangedError
+    from cloakbrowser.human.engine import Human
+    from playwright.async_api import Error as PwError
 
-    browser = await launch_async(
-        headless=False, humanize=True, release_channel="preview"
-    )
+    browser = await launch_async(headless=True, humanize=True)
     try:
         page = await browser.new_page()
-        await page.goto("https://example.com", wait_until="domcontentloaded")
-        await page.evaluate(
-            """() => {
-                document.body.innerHTML = '<button id="target">Original</button>';
-                document.body.dataset.replacementClicks = '0';
-            }"""
-        )
+        await page.evaluate("""() => {
+            document.body.innerHTML = '<button id="target">Original</button>';
+            window.clicks = 0; document.addEventListener('click', () => clicks++, true);
+        }""")
+        handle = await page.query_selector("#target")
+        real_move = Human.move_to
 
-        async def replace_during_move(raw, start_x, start_y, end_x, end_y, cfg):
-            await page._stealth_world.evaluate(
-                """(() => {
-                    const old = document.querySelector('#target');
-                    const replacement = document.createElement('button');
-                    replacement.id = 'target';
-                    replacement.textContent = 'Replacement';
-                    replacement.addEventListener('click', () => {
-                        document.body.dataset.replacementClicks = String(
-                            Number(document.body.dataset.replacementClicks) + 1
-                        );
-                    });
-                    old.replaceWith(replacement);
-                })()"""
-            )
+        async def replace_during_move(self, x, y, cfg):
+            await real_move(self, x, y, cfg)
+            await self.worlds.evaluate(self.page.main_frame, """(() => {
+                const old = document.querySelector('#target');
+                const r = document.createElement('button'); r.id = 'target'; r.textContent = 'Replacement';
+                old.replaceWith(r);
+            })()""")
 
-        monkeypatch.setattr(human, "async_human_move", replace_during_move)
-        with pytest.raises(ElementTargetChangedError):
-            await page.click("#target", force=True, timeout=1000)
-
-        assert await page._stealth_world.evaluate(
-            "document.body.dataset.replacementClicks"
-        ) == "0"
+        monkeypatch.setattr(Human, "move_to", replace_during_move)
+        with pytest.raises(PwError, match="not attached"):
+            await handle.click(force=True, timeout=1000)
+        assert await page.evaluate("clicks") == 0
     finally:
         await browser.close()
 
@@ -628,34 +539,18 @@ def test_get_by_engines_match_playwright():
             (page.get_by_label("Referenced Label"), "in4"),
             (page.get_by_label("Fallback Label"), "in5"),
         ]
+        page.evaluate(_RECORD_CLICKS)
         for locator, expected_id in cases:
             selector = locator._impl_obj._selector
-            playwright_identity = locator.first.evaluate(
-                "el => ({status: 'ok', id: el.id, tag: el.tagName})"
-            )
-            isolated_identity = page._stealth_world.evaluate(
-                _resolve_identity_js(selector)
-            )
-            assert playwright_identity["id"] == expected_id, selector
-            assert isolated_identity == playwright_identity, selector
+            assert locator.first.evaluate("el => el.id") == expected_id, selector
+            assert _clicked_id(page, locator.first) == expected_id, selector
 
         # A strict test id must not match by prefix, and a raw attribute value is
         # never trimmed -- both would be silent over-matches.
         assert page.get_by_test_id("submit").count() == 1
         assert page.get_by_title("Go", exact=True).count() == 0
-        assert page._stealth_world.evaluate(
-            _resolve_identity_js(
-                page.get_by_title("Go", exact=True)._impl_obj._selector
-            )
-        ) == {"status": "not_found"}
 
-        # End-to-end: a humanized click through a reimplemented engine.
-        page.get_by_test_id("submit").click()
-
-        # get_by_role is deliberately still unsupported.
-        role_selector = page.get_by_role("button", name="Go Now")._impl_obj._selector
-        assert page._stealth_world.evaluate(
-            _resolve_identity_js(role_selector)
-        ) == {"status": "unsupported"}
+        # get_by_role resolves through Playwright's own engine as well.
+        assert _clicked_id(page, page.get_by_role("button", name="Go Now")) == "b2"
     finally:
         browser.close()

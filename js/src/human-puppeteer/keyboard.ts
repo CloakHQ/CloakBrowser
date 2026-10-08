@@ -92,7 +92,10 @@ export async function humanType(
     // Mistype
     if (Math.random() < cfg.mistype_chance && /^[a-zA-Z0-9]$/.test(ch)) {
       const wrong = getNearbyKey(ch);
-      await typeNormalChar(raw, wrong, cfg);
+      // A typo next to an uppercase letter is typed with Shift held, like the
+      // letter itself (a bare keydown of "A" reports shiftKey=false).
+      if (isUpperCase(wrong)) await typeShiftedChar(raw, wrong, cfg);
+      else await typeNormalChar(raw, wrong, cfg);
       await sleep(randRange(cfg.mistype_delay_notice));
       await raw.down('Backspace');
       await sleep(randRange(cfg.key_hold));

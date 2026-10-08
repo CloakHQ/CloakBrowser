@@ -47,7 +47,10 @@ export async function smoothWheel(
   let sent = 0;
   while (sent < absD) {
     const stepSize = rand(20, 40);
-    const chunk = Math.min(stepSize, absD - sent);
+    let chunk = Math.min(stepSize, absD - sent);
+    // Fold a sub-pixel tail into this step: on its own it would round to a
+    // (0, 0) wheel event, which no real wheel sends.
+    if (absD - sent - chunk < 0.5) chunk = absD - sent;
     const d = Math.round(chunk) * sign;
     if (axis === 'x') {
       await raw.wheel(d, 0);

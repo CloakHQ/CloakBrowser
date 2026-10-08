@@ -25,7 +25,7 @@ public interface IRawMouse
 public static class HumanMouse
 {
     /// <summary>Cubic ease-in-out, matching the Python implementation.</summary>
-    private static double EaseInOut(double t)
+    internal static double EaseInOut(double t)
     {
         if (t < 0.5)
             return 4 * t * t * t;
@@ -33,7 +33,7 @@ public static class HumanMouse
     }
 
     /// <summary>Cubic Bezier interpolation between four control points.</summary>
-    private static Point Bezier(Point p0, Point p1, Point p2, Point p3, double t)
+    internal static Point Bezier(Point p0, Point p1, Point p2, Point p3, double t)
     {
         double u = 1 - t;
         double uu = u * u;
@@ -46,7 +46,7 @@ public static class HumanMouse
     }
 
     /// <summary>Generate two random control points biased perpendicular to the path.</summary>
-    private static (Point, Point) RandomControlPoints(Point start, Point end)
+    internal static (Point, Point) RandomControlPoints(Point start, Point end)
     {
         double dx = end.X - start.X;
         double dy = end.Y - start.Y;

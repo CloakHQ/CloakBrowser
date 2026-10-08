@@ -6,9 +6,10 @@ namespace CloakBrowser.Wrappers;
 /// <summary>
 /// Transparent humanizing decorator over Playwright's <see cref="IMouse"/>.
 ///
-/// Intercepted (humanized): <c>MoveAsync</c>, <c>ClickAsync</c>, <c>DblClickAsync</c>,
-/// <c>DownAsync</c>, <c>UpAsync</c>, <c>WheelAsync</c>. Everything else is delegated
-/// to the inner mouse by the source generator.
+/// Intercepted (humanized): <c>MoveAsync</c> (Bezier path; <c>Steps</c> is honoured as a
+/// straight Playwright move), <c>ClickAsync</c> / <c>DblClickAsync</c> (curve + real
+/// press sequence, <c>Button</c> / <c>ClickCount</c> / <c>Delay</c> honoured). Down/Up/Wheel
+/// are deliberate low-level primitives and are delegated unchanged by the generator.
 /// </summary>
 [GenerateInterfaceDelegation(typeof(IMouse))]
 public sealed partial class HumanizedMouse : IMouse
@@ -30,45 +31,13 @@ public sealed partial class HumanizedMouse : IMouse
     /// <summary>Alias of <see cref="Original"/>.</summary>
     public IMouse Inner => _inner;
 
-    public async Task MoveAsync(float x, float y, MouseMoveOptions? options = null)
-    {
-        await _cursor.EnsureInitializedAsync(_cfg).ConfigureAwait(false);
-        await HumanMouse.HumanMoveAsync(_cursor.RawMouse, _cursor.X, _cursor.Y, x, y, _cfg).ConfigureAwait(false);
-        _cursor.Set(x, y);
-    }
+    private HumanEngine E => _cursor.EngineFor(_cfg);
 
-    public async Task ClickAsync(float x, float y, MouseClickOptions? options = null)
-    {
-        await _cursor.EnsureInitializedAsync(_cfg).ConfigureAwait(false);
-        await HumanMouse.HumanMoveAsync(_cursor.RawMouse, _cursor.X, _cursor.Y, x, y, _cfg).ConfigureAwait(false);
-        _cursor.Set(x, y);
-        await HumanMouse.HumanClickAsync(_cursor.RawMouse, isInput: false, _cfg).ConfigureAwait(false);
-    }
+    public Task MoveAsync(float x, float y, MouseMoveOptions? options = null) => E.MouseMoveAsync(x, y, options?.Steps);
 
-    public async Task DblClickAsync(float x, float y, MouseDblClickOptions? options = null)
-    {
-        await _cursor.EnsureInitializedAsync(_cfg).ConfigureAwait(false);
-        await HumanMouse.HumanMoveAsync(_cursor.RawMouse, _cursor.X, _cursor.Y, x, y, _cfg).ConfigureAwait(false);
-        _cursor.Set(x, y);
-        await _cursor.RawMouseDownAsync(2).ConfigureAwait(false);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(30, 60)).ConfigureAwait(false);
-        await _cursor.RawMouseUpAsync(2).ConfigureAwait(false);
-    }
+    public Task ClickAsync(float x, float y, MouseClickOptions? options = null) =>
+        E.MouseClickAsync(x, y, options?.Delay, options?.Button, options?.ClickCount);
 
-    public async Task DownAsync(MouseDownOptions? options = null)
-    {
-        await HumanRandom.SleepMsAsync(HumanRandom.RandRange(_cfg.ClickHoldButton)).ConfigureAwait(false);
-        await _inner.DownAsync(options).ConfigureAwait(false);
-    }
-
-    public async Task UpAsync(MouseUpOptions? options = null)
-    {
-        await HumanRandom.SleepMsAsync(HumanRandom.RandRange(_cfg.ClickHoldButton)).ConfigureAwait(false);
-        await _inner.UpAsync(options).ConfigureAwait(false);
-    }
-
-    public async Task WheelAsync(float deltaX, float deltaY)
-    {
-        await HumanScroll.SmoothWheelAsync(_cursor.RawMouse, deltaX, deltaY, _cfg).ConfigureAwait(false);
-    }
+    public Task DblClickAsync(float x, float y, MouseDblClickOptions? options = null) =>
+        E.MouseClickAsync(x, y, options?.Delay, options?.Button, 2);
 }

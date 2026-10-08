@@ -7,10 +7,11 @@ namespace CloakBrowser.Wrappers;
 /// <summary>
 /// Transparent humanizing decorator over Playwright's <see cref="IFrame"/>.
 ///
-/// Frames have no Mouse/Keyboard of their own (those belong to the page), so the
-/// selector actions are humanized by resolving <c>frame.Locator(selector)</c> and
-/// running the shared locator humanizer with the page's cursor. Locator/frame
-/// returning members are re-wrapped; everything else is delegated by the generator.
+/// Frames have no Mouse/Keyboard of their own (those belong to the page): selector
+/// actions run through the page's <see cref="HumanEngine"/>, resolved in this frame's
+/// own isolated world, with wheel scrolling and hit-tests through every ancestor
+/// iframe. Locator/frame returning members are re-wrapped; everything else is
+/// delegated by the generator.
 /// </summary>
 [GenerateInterfaceDelegation(typeof(IFrame))]
 public sealed partial class HumanizedFrame : IFrame
@@ -35,149 +36,51 @@ public sealed partial class HumanizedFrame : IFrame
     private ILocator Wrap(ILocator l) => Humanize.WrapLocator(l, _cursor, _cfg);
     private ILocator Wrap(ILocator l, string? selector) => Humanize.WrapLocator(l, _cursor, _cfg, selector);
     private IFrame Wrap(IFrame f) => Humanize.WrapFrame(f, _cursor, _cfg);
-    private ILocator Loc(string selector) => _inner.Locator(selector);
 
     // -----------------------------------------------------------------------
-    // Humanized selector actions (routed through the locator humanizer).
+    // Humanized selector actions: resolved in THIS frame's isolated world.
     // -----------------------------------------------------------------------
 
-    public Task ClickAsync(string selector, FrameClickOptions? options = null) =>
-        LocatorHumanizer.ClickAsync(Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options));
+    private HumanEngine E => _cursor.EngineFor(_cfg);
+    private static ActOpts Opt(object? options) => ActOpts.From(options);
+    private Target T(string selector, object? options) => new(_inner, selector, ActOpts.From(options).Strict);
 
-    public Task DblClickAsync(string selector, FrameDblClickOptions? options = null) =>
-        LocatorHumanizer.DblClickAsync(Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options));
+    public Task ClickAsync(string selector, FrameClickOptions? options = null) => E.ClickAsync(T(selector, options), Opt(options), "Frame.ClickAsync");
+    public Task DblClickAsync(string selector, FrameDblClickOptions? options = null) => E.ClickAsync(T(selector, options), Opt(options), "Frame.DblClickAsync", 2);
+    public Task HoverAsync(string selector, FrameHoverOptions? options = null) => E.HoverAsync(T(selector, options), Opt(options), "Frame.HoverAsync");
+    public Task TapAsync(string selector, FrameTapOptions? options = null) => E.TapAsync(T(selector, options), Opt(options), "Frame.TapAsync");
+    public Task FillAsync(string selector, string value, FrameFillOptions? options = null) => E.FillAsync(T(selector, options), value, Opt(options), "Frame.FillAsync");
+    public Task TypeAsync(string selector, string text, FrameTypeOptions? options = null) => E.TypeAsync(T(selector, options), text, Opt(options), "Frame.TypeAsync");
+    public Task PressAsync(string selector, string key, FramePressOptions? options = null) => E.PressAsync(T(selector, options), key, Opt(options), "Frame.PressAsync");
+    public Task CheckAsync(string selector, FrameCheckOptions? options = null) => E.SetCheckedAsync(T(selector, options), true, Opt(options), "Frame.CheckAsync");
+    public Task UncheckAsync(string selector, FrameUncheckOptions? options = null) => E.SetCheckedAsync(T(selector, options), false, Opt(options), "Frame.UncheckAsync");
+    public Task SetCheckedAsync(string selector, bool checkedState, FrameSetCheckedOptions? options = null) =>
+        E.SetCheckedAsync(T(selector, options), checkedState, Opt(options), "Frame.SetCheckedAsync");
+    public Task FocusAsync(string selector, FrameFocusOptions? options = null) => E.FocusAsync(T(selector, options), Opt(options), "Frame.FocusAsync");
+    public Task DragAndDropAsync(string source, string target, FrameDragAndDropOptions? options = null) =>
+        E.DragAsync(T(source, options), T(target, options), Opt(options), "Frame.DragAndDropAsync");
 
-    public Task HoverAsync(string selector, FrameHoverOptions? options = null) =>
-        LocatorHumanizer.HoverAsync(Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options));
+    private Task<IReadOnlyList<string>> Select(string selector, SelectValues v, FrameSelectOptionOptions? options) =>
+        E.SelectOptionAsync(T(selector, options), v.Options, v.Handles, Opt(options), "Frame.SelectOptionAsync");
 
-    public Task TapAsync(string selector, FrameTapOptions? options = null) =>
-        LocatorHumanizer.TapAsync(Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options));
-
-    public Task FillAsync(string selector, string value, FrameFillOptions? options = null) =>
-        LocatorHumanizer.FillAsync(Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options), value);
-
-    public Task TypeAsync(string selector, string text, FrameTypeOptions? options = null) =>
-        LocatorHumanizer.TypeAsync(Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options), text);
-
-    public Task PressAsync(string selector, string key, FramePressOptions? options = null) =>
-        LocatorHumanizer.PressAsync(
-            Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options),
-            key, OptionReader.Delay(options));
-
-    public async Task CheckAsync(string selector, FrameCheckOptions? options = null)
-    {
-        if (!await _inner.IsCheckedAsync(selector).ConfigureAwait(false))
-            await LocatorHumanizer.ClickAsync(Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options)).ConfigureAwait(false);
-    }
-
-    public async Task UncheckAsync(string selector, FrameUncheckOptions? options = null)
-    {
-        if (await _inner.IsCheckedAsync(selector).ConfigureAwait(false))
-            await LocatorHumanizer.ClickAsync(Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options)).ConfigureAwait(false);
-    }
-
-    public async Task SetCheckedAsync(string selector, bool checkedState, FrameSetCheckedOptions? options = null)
-    {
-        bool current;
-        try { current = await _inner.IsCheckedAsync(selector).ConfigureAwait(false); }
-        catch (System.Exception) { current = !checkedState; }
-        if (current != checkedState)
-            await LocatorHumanizer.ClickAsync(Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options)).ConfigureAwait(false);
-    }
-
-    // -----------------------------------------------------------------------
-    // SelectOptionAsync (all 6 IFrame overloads) - humanized pre-roll.
-    // Mirrors Python _frame_select_option: hover the <select> (curved move) +
-    // pause, then delegate the real select (native popups can't be mouse-driven).
-    // Unwrap any HumanizedElementHandle args so Playwright sees raw handles.
-    // -----------------------------------------------------------------------
-
-    private static IElementHandle Unwrap(IElementHandle h) => h is HumanizedElementHandle w ? w.Original : h;
-
-    private Task SelectPrologueAsync(string selector, FrameSelectOptionOptions? options) =>
-        LocatorHumanizer.SelectOptionPrologueAsync(Loc(selector), _cursor, _cfg, OptionReader.Timeout(options), OptionReader.Force(options));
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string selector, string values, FrameSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(selector, options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(selector, values, options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IElementHandle values, FrameSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(selector, options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(selector, Unwrap(values), options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<string> values, FrameSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(selector, options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(selector, values, options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string selector, SelectOptionValue values, FrameSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(selector, options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(selector, values, options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<IElementHandle> values, FrameSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(selector, options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(selector, values.Select(Unwrap), options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<SelectOptionValue> values, FrameSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(selector, options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(selector, values, options).ConfigureAwait(false);
-    }
-
-    // -----------------------------------------------------------------------
-    // DragAndDropAsync - humanized drag. Mirrors Python _frame_drag_and_drop:
-    // resolve source/target boxes via frame locators; if both present, drive a
-    // curved press-move-release with the page cursor; else delegate raw.
-    // -----------------------------------------------------------------------
-
-    public async Task DragAndDropAsync(string source, string target, FrameDragAndDropOptions? options = null)
-    {
-        LocatorBoundingBoxResult? srcBox, tgtBox;
-        try
-        {
-            srcBox = await _inner.Locator(source).BoundingBoxAsync().ConfigureAwait(false);
-            tgtBox = await _inner.Locator(target).BoundingBoxAsync().ConfigureAwait(false);
-        }
-        catch (System.Exception)
-        {
-            srcBox = tgtBox = null;
-        }
-
-        if (srcBox == null || tgtBox == null)
-        {
-            await _inner.DragAndDropAsync(source, target, options).ConfigureAwait(false);
-            return;
-        }
-
-        await _cursor.EnsureInitializedAsync(_cfg).ConfigureAwait(false);
-        double sx = srcBox.X + srcBox.Width / 2, sy = srcBox.Y + srcBox.Height / 2;
-        double tx = tgtBox.X + tgtBox.Width / 2, ty = tgtBox.Y + tgtBox.Height / 2;
-        await HumanMouse.HumanMoveAsync(_cursor.RawMouse, _cursor.X, _cursor.Y, sx, sy, _cfg).ConfigureAwait(false);
-        _cursor.Set(sx, sy);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(100, 200)).ConfigureAwait(false);
-        await _cursor.RawMouseDownAsync().ConfigureAwait(false);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(80, 150)).ConfigureAwait(false);
-        await HumanMouse.HumanMoveAsync(_cursor.RawMouse, _cursor.X, _cursor.Y, tx, ty, _cfg).ConfigureAwait(false);
-        _cursor.Set(tx, ty);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(80, 150)).ConfigureAwait(false);
-        await _cursor.RawMouseUpAsync().ConfigureAwait(false);
-    }
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, string values, FrameSelectOptionOptions? options = null) =>
+        Select(selector, SelectValues.Of(new[] { values }), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IElementHandle values, FrameSelectOptionOptions? options = null) =>
+        Select(selector, SelectValues.Of(new[] { values }), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<string> values, FrameSelectOptionOptions? options = null) =>
+        Select(selector, SelectValues.Of(values), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, SelectOptionValue values, FrameSelectOptionOptions? options = null) =>
+        Select(selector, SelectValues.Of(new[] { values }), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<IElementHandle> values, FrameSelectOptionOptions? options = null) =>
+        Select(selector, SelectValues.Of(values), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<SelectOptionValue> values, FrameSelectOptionOptions? options = null) =>
+        Select(selector, SelectValues.Of(values), options);
 
     // -----------------------------------------------------------------------
     // Locator-returning members - re-wrap.
     // -----------------------------------------------------------------------
 
-    // Frame selectors belong to that frame's document; the cursor's isolated world is
-    // main-frame-only, so frame locators deliberately retain the legacy locator path.
+    public IFrameLocator FrameLocator(string selector) => Humanize.WrapFrameLocator(_inner.FrameLocator(selector), _cursor, _cfg);
     public ILocator Locator(string selector, FrameLocatorOptions? options = null) => Wrap(_inner.Locator(selector, options));
     public ILocator GetByAltText(string text, FrameGetByAltTextOptions? options = null) => Wrap(_inner.GetByAltText(text, options));
     public ILocator GetByAltText(Regex text, FrameGetByAltTextOptions? options = null) => Wrap(_inner.GetByAltText(text, options));
@@ -199,4 +102,22 @@ public sealed partial class HumanizedFrame : IFrame
 
     public IReadOnlyList<IFrame> ChildFrames => Humanize.WrapFrames(_inner.ChildFrames, _cursor, _cfg);
     public IFrame? ParentFrame { get { var f = _inner.ParentFrame; return f == null ? null : Wrap(f); } }
+
+    // -----------------------------------------------------------------------
+    // Handle-returning members - re-wrap so handle actions stay humanized.
+    // -----------------------------------------------------------------------
+
+    private IElementHandle? H(IElementHandle? h) => h == null ? null : Humanize.WrapElementHandle(h, _cursor, _cfg);
+
+    public async Task<IElementHandle?> QuerySelectorAsync(string selector, FrameQuerySelectorOptions? options = null) =>
+        H(await _inner.QuerySelectorAsync(selector, options).ConfigureAwait(false));
+
+    public async Task<IReadOnlyList<IElementHandle>> QuerySelectorAllAsync(string selector) =>
+        Humanize.WrapHandles(await _inner.QuerySelectorAllAsync(selector).ConfigureAwait(false), _cursor, _cfg);
+
+    public async Task<IElementHandle?> WaitForSelectorAsync(string selector, FrameWaitForSelectorOptions? options = null) =>
+        H(await _inner.WaitForSelectorAsync(selector, options).ConfigureAwait(false));
+
+    public async Task<IElementHandle> FrameElementAsync() =>
+        H(await _inner.FrameElementAsync().ConfigureAwait(false))!;
 }

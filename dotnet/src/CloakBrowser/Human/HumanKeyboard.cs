@@ -88,6 +88,10 @@ public static class HumanKeyboard
         ['~'] = 192,
     };
 
+    /// <summary>CDP <c>code</c> and Windows virtual key code of a shift symbol's physical key.</summary>
+    internal static (string Code, int KeyCode) ShiftSymbolKey(char ch) =>
+        (ShiftSymbolCodes.TryGetValue(ch, out var c) ? c : "", ShiftSymbolKeyCodes.TryGetValue(ch, out var k) ? k : 0);
+
     private static bool IsAscii(char c) => c <= 0x7F;
     private static bool IsAlnum(char c) => char.IsLetterOrDigit(c) && IsAscii(c);
 

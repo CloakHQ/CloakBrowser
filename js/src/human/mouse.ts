@@ -26,7 +26,7 @@ export interface RawKeyboard {
 // Easing
 // ---------------------------------------------------------------------------
 
-function easeInOut(t: number): number {
+export function easeInOut(t: number): number {
   return t < 0.5
     ? 4 * t * t * t
     : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -36,12 +36,12 @@ function easeInOut(t: number): number {
 // Bezier
 // ---------------------------------------------------------------------------
 
-interface Point {
+export interface Point {
   x: number;
   y: number;
 }
 
-function bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
+export function bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
   const u = 1 - t;
   const uu = u * u;
   const uuu = uu * u;
@@ -53,7 +53,7 @@ function bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
   };
 }
 
-function randomControlPoints(start: Point, end: Point): [Point, Point] {
+export function randomControlPoints(start: Point, end: Point): [Point, Point] {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const dist = Math.hypot(dx, dy);

@@ -178,19 +178,6 @@ public class KeyboardTests
 public class ActionabilityTests
 {
     [Fact]
-    public void CheckSets_Match_Python()
-    {
-        Assert.Equal(new HashSet<string> { "attached", "visible", "enabled", "pointer_events" },
-            new HashSet<string>(Actionability.ChecksClick));
-        Assert.Equal(new HashSet<string> { "attached", "visible", "pointer_events" },
-            new HashSet<string>(Actionability.ChecksHover));
-        Assert.Equal(new HashSet<string> { "attached", "visible", "enabled", "editable", "pointer_events" },
-            new HashSet<string>(Actionability.ChecksInput));
-        Assert.Equal(new HashSet<string> { "attached", "visible", "enabled" },
-            new HashSet<string>(Actionability.ChecksFocus));
-    }
-
-    [Fact]
     public void ErrorHierarchy_AllSubclassActionabilityError()
     {
         Assert.IsAssignableFrom<ActionabilityError>(new ElementNotAttachedError("#x"));

@@ -32,9 +32,8 @@ paths match the Python and JavaScript clients exactly.
   - [Human typing & the CDP stealth path](#human-typing--the-cdp-stealth-path)
   - [Non-ASCII input](#non-ascii-input)
   - [Scrolling](#scrolling)
-  - [Actionability checks](#actionability-checks)
-  - [Shared timeout budget (#307)](#shared-timeout-budget-307)
-  - [Focus-aware press / clear](#focus-aware-press--clear)
+  - [Actionability, errors and timeouts](#actionability-errors-and-timeouts)
+  - [Fields: focus, caret, value inputs](#fields-focus-caret-value-inputs)
 - [Proxy, GeoIP & WebRTC](#proxy-geoip--webrtc)
 - [CLI](#cli)
 - [Environment variables](#environment-variables)
@@ -126,16 +125,21 @@ dotnet/
 │   │   │   ├── HumanConfig.cs           #   <- human/config.py  (HumanConfig + merge)
 │   │   │   ├── HumanRandom.cs           #   <- human/config.py  (rand/sleep helpers)
 │   │   │   ├── HumanMouse.cs            #   <- human/mouse.py    (Bezier engine)
-│   │   │   ├── HumanKeyboard.cs         #   <- human/keyboard.py (typing + CDP stealth)
-│   │   │   ├── HumanScroll.cs           #   <- human/scroll.py
-│   │   │   ├── Actionability.cs         #   <- human/actionability.py
-│   │   │   ├── IsolatedWorld.cs         #   <- _AsyncIsolatedWorld
-│   │   │   ├── PlaywrightAdapters.cs    #   IMouse/IKeyboard/ICDPSession -> raw protocols
-│   │   │   └── HumanPage.cs             #   <- patch_page flows (explicit engine)
+│   │   │   ├── HumanKeyboard.cs         #   <- human/keyboard.py (key tables, typo neighbours)
+│   │   │   ├── HumanEngine.cs           #   <- human/engine.py  (resolve, wait, scroll, move, hit-test)
+│   │   │   ├── HumanEngine.Actions.cs   #   <- human/engine.py  (click/fill/type/check/select/drag/...)
+│   │   │   ├── HumanWorld.cs            #   <- human/world.py   (per-frame CDP isolated worlds)
+│   │   │   ├── WorldHelpers.cs          #   <- human/world.py   (__cloakH helpers, byte-identical)
+│   │   │   ├── InjectedSource.cs        #   <- human/injected.py (Playwright's InjectedScript)
+│   │   │   ├── Fields.cs                #   <- human/fields.py  (fill classification, date parts)
+│   │   │   ├── Actionability.cs         #   error classes + standalone checks (public, on the engine)
+│   │   │   ├── HumanScroll.cs           #   standalone wheel scroll helper (public, kept for compatibility)
+│   │   │   ├── IsolatedWorld.cs         #   single-world CDP evaluator (public, kept for compatibility)
+│   │   │   └── HumanPage.cs             #   explicit API over the engine
 │   │   └── Wrappers/                    # transparent humanize decorators (Humanize=true)
 │   │       ├── Humanize.cs              #   wrap entry points + helpers (idempotent)
-│   │       ├── HumanCursor.cs           #   shared per-page cursor / CDP stealth state
-│   │       ├── LocatorHumanizer.cs      #   locator-based humanize engine
+│   │       ├── HumanCursor.cs           #   per-page engine host (cursor, worlds)
+│   │       ├── HumanizedFrameLocator.cs #   IFrameLocator   decorator
 │   │       ├── HumanizedBrowser.cs      #   IBrowser        decorator
 │   │       ├── HumanizedBrowserContext.cs # IBrowserContext decorator
 │   │       ├── HumanizedPage.cs         #   IPage           decorator
@@ -194,7 +198,7 @@ await page.GotoAsync("https://example.com/login");
 await page.FillAsync("#username", "alice");   // per-character human typing
 await page.FillAsync("#password", "s3cr3t!"); // (variable delays, thinking pauses, typos+fixes)
 await page.ClickAsync("button[type=submit]"); // Bezier mouse curve to a realistic aim point
-await page.Mouse.WheelAsync(0, 600);          // accelerate -> cruise -> decelerate scroll
+await page.ClickAsync("#footer-link");         // wheel-scrolls it into view first, like a person
 ```
 
 The wrapping is **complete and transitive** - anything you reach through the page
@@ -212,23 +216,24 @@ foreach (var frame in page.Frames) { /* wrapped IFrame */ }
 
 | Member | `Humanize = false` (default) | `Humanize = true` |
 | --- | --- | --- |
-| `IPage` / `ILocator` `ClickAsync`, `DblClickAsync`, `HoverAsync`, `TapAsync` | direct Playwright dispatch | Bezier-curve mouse move to a randomized in-element aim point, then click |
-| `IPage` / `ILocator` `FillAsync`, `TypeAsync` / `PressSequentiallyAsync` | instant value set / fast type | per-character typing with variable delays, thinking pauses, occasional typos that self-correct |
-| `IPage` / `ILocator` `PressAsync` | direct | human key timing; clicks to focus first only if not already focused |
-| `ILocator` `CheckAsync`, `UncheckAsync`, `SetCheckedAsync`, `DragToAsync` | direct | humanized click / curved drag |
-| `ILocator` `SelectOptionAsync` (all overloads) | instant native select | curved hover to the `<select>` + pause, then native select |
-| `ILocator` `ClearAsync` | instant value reset | focus (humanized click if needed) + select-all + Backspace |
-| `IMouse` `MoveAsync`, `ClickAsync`, `DblClickAsync`, `DownAsync`, `UpAsync` | direct | curved, eased motion with overshoot |
-| `IMouse` `WheelAsync` | single event | accelerate-cruise-decelerate microsteps |
-| `IKeyboard` `TypeAsync`, `PressAsync`, `InsertTextAsync` | direct | human-timed CDP key events |
-| `page.Mouse`, `page.Keyboard`, `page.Locator(...)`, `page.GetBy*`, `page.Frames`, `QuerySelectorAsync`, `IBrowser.NewPageAsync/NewContextAsync`, `IBrowserContext.NewPageAsync` | raw Playwright objects | the same call returns a **wrapped** object so humanization stays transitive |
+| `ClickAsync`, `DblClickAsync`, `HoverAsync`, `TapAsync` on `IPage` / `IFrame` / `ILocator` / `IElementHandle` | direct Playwright dispatch | wheel-scroll into view, Bezier move to an in-element aim point, hit-test, press; `Button`, `ClickCount`, `Modifiers`, `Position`, `Delay`, `Trial`, `Force` honoured |
+| `FillAsync`, `TypeAsync` / `PressSequentiallyAsync`, `ClearAsync` | instant value set / fast type | click into the field, select-all (persona-aware), per-character typing with variable delays, pauses and self-corrected typos; text continues at the end |
+| `FillAsync` on date/time/range, `SelectOptionAsync` | programmatic value | operated like a person with trusted events (segments typed, slider clicked + arrow keys, dropdown opened + arrows + Enter); `type=color` throws |
+| `PressAsync` | direct | clicks to focus first if needed, human key timing, `Delay` honoured |
+| `CheckAsync`, `UncheckAsync`, `SetCheckedAsync`, `DragToAsync` / `DragAndDropAsync`, `FocusAsync`, `ScrollIntoViewIfNeededAsync` | direct | humanized click / curved drag / wheel scroll |
+| `IMouse` `MoveAsync`, `ClickAsync`, `DblClickAsync` | direct | curved, eased motion (`Steps` = exact raw steps), real `detail=1,2` sequence |
+| `IMouse` `DownAsync`, `UpAsync`, `WheelAsync`; `IKeyboard` `DownAsync`, `UpAsync`, `PressAsync`, `InsertTextAsync` | direct | passed through 1:1 (they already are single human inputs) |
+| `IKeyboard` `TypeAsync` | fast type | human typing into the focused element |
+| `page.Mouse`, `page.Keyboard`, `Locator(...)`, `GetBy*`, `FrameLocator(...)`, `ContentFrame`, `Frames`, `QuerySelector(All)Async`, `WaitForSelectorAsync`, `ElementHandle(s)Async`, `IBrowser.NewPageAsync/NewContextAsync` | raw Playwright objects | the same call returns a **wrapped** object so humanization stays transitive |
 | every **other** member (navigation, waits, evaluation, screenshots, network, etc.) | - | **delegated verbatim** to Playwright (identical signatures, return types, exceptions, and `CancellationToken` support) |
-| escape hatch | n/a | `((HumanizedPage)page).Original` (also `.Inner`) returns the raw, un-wrapped object; `browser.RawBrowser` on the handle |
+| escape hatch | n/a | `Humanize.Unwrap(page)` / `((HumanizedPage)page).Original` returns the raw object; `browser.RawBrowser` on the handle |
 
-Per-call overrides are honored - e.g.
-`await page.ClickAsync("#x", new() { Force = true })` still works and is
-humanized. `ElementHandle` interactions are humanized too, but prefer `ILocator`
-(Playwright's recommendation) for the most reliable aiming.
+Every locator shape works: CSS, `text=`, `xpath=`, `GetByRole`, `GetBy*`, `>>`
+chains, `Filter(...)`, `:visible`, `Nth`, `FrameLocator(...)`. Locators are
+**strict** like Playwright: an ambiguous `Locator(".dup").ClickAsync()` throws
+`strict mode violation` (use `.First` / `.Nth()`). Element handles are humanized
+too; prefer `ILocator` (Playwright's recommendation): a handle is matched by its exact
+bounding box, and an action raises when two elements share that box.
 
 ### Calling the original Playwright methods (escape hatch)
 
@@ -274,7 +279,9 @@ await human.FillAsync("#username", "alice");
 await human.ClickAsync("button[type=submit]");
 ```
 
-`HumanPage` methods (all take an optional `HumanActionOptions { Timeout, Force }`):
+`HumanPage` runs on the same engine as the transparent layer (selectors resolve
+in the main frame, non-strict like `page.ClickAsync`). All methods take an optional
+`HumanActionOptions { Timeout, Force, Delay, HumanConfig }` (`Timeout = 0` = no limit):
 
 | Method | Description |
 | --- | --- |
@@ -283,15 +290,15 @@ await human.ClickAsync("button[type=submit]");
 | `DblClickAsync(selector)` | move + double click |
 | `HoverAsync(selector)` | curved move, no click |
 | `TapAsync(selector)` | same motion as click |
-| `TypeAsync(selector, text)` | focus + per-character typing |
-| `FillAsync(selector, value)` | click + select-all + clear + type |
+| `TypeAsync(selector, text)` | focus + per-character typing at the end of the text |
+| `FillAsync(selector, value)` | click + select-all + clear + type (value inputs like a person) |
 | `PressAsync(selector, key)` | focus-aware single key press |
-| `PressSequentiallyAsync(selector, text)` | focus + per-character typing |
+| `PressSequentiallyAsync(selector, text)` | same as `TypeAsync` |
 | `ClearAsync(selector)` | focus + select-all + Backspace |
 | `CheckAsync` / `UncheckAsync` / `SetCheckedAsync(selector, state)` | humanized toggle via click |
-| `SelectOptionAsync(selector, values)` | curved hover + native select |
-| `FocusAsync(selector)` | curved move + **programmatic** focus (no click side-effects) |
-| `ScrollIntoViewIfNeededAsync(selector)` | humanized accelerate->cruise->decelerate->overshoot scroll |
+| `SelectOptionAsync(selector, values)` | dropdown: click + arrow keys + Enter; list box: option clicks |
+| `FocusAsync(selector)` | curved move + focus without a click (like Playwright's `FocusAsync`) |
+| `ScrollIntoViewIfNeededAsync(selector)` | wheel scroll; returns true when the element moved |
 | `DragAndDropAsync(src, dst)` | curved press-drag-release |
 | `MouseMoveAsync(x, y)` / `MouseClickAsync(x, y)` | low-level curved motion |
 | `KeyboardTypeAsync(text)` | low-level human typing at the focused element |
@@ -498,16 +505,15 @@ and wide Y band; buttons get a centered cluster.
 
 ### Human typing & the CDP stealth path
 
-`HumanKeyboard.HumanTypeAsync` types one character at a time with variable delays
-and occasional "thinking" pauses. ASCII alphanumeric characters can trigger a
-**fat-finger typo** (a nearby QWERTY key) that is then noticed and corrected with
-Backspace.
+Typing goes one character at a time with variable delays and occasional
+"thinking" pauses. ASCII letters/digits can trigger a **fat-finger typo** (a nearby
+QWERTY key, a digit for digits) that is noticed and corrected with Backspace;
+uppercase letters and typos are typed with Shift. Typos are skipped in
+number/email/password/tel/url fields, and a typo the page rejected (input masks)
+is not "corrected" by deleting a real character.
 
-Shift symbols (`@ # ! $ ...`) are the tricky case for stealth. When a **CDP
-session** is available, they are dispatched through
-`Input.dispatchKeyEvent` - producing `isTrusted = true` events with **no
-`evaluate` stack trace** for detectors to find. Without CDP, it falls back to a
-(detectable) `page.evaluate` path.
+Shift symbols (`@ # ! $ ...`) are dispatched through CDP `Input.dispatchKeyEvent`,
+producing `isTrusted = true` events with no script on the page.
 
 ### Non-ASCII input
 
@@ -523,52 +529,48 @@ mixed string like `"Hi Мир"`:
 
 ### Scrolling
 
-`HumanScroll` performs an **accelerate -> cruise -> decelerate** wheel sequence in
-microsteps, with an optional overshoot-and-settle, landing the element in a
-natural viewport band (`ScrollTargetZone`).
+Targets are brought on screen with **mouse-wheel bursts** (accelerate -> cruise ->
+decelerate, optional overshoot), scrolling the page, scrollable containers and
+iframes (also below an iframe's own fold), and settling the element in a natural
+band (`ScrollTargetZone`). The cursor first moves into the area being scrolled.
 
-### Actionability checks
+### Actionability, errors and timeouts
 
-Before interacting, the humanize layer runs Playwright-style **actionability
-checks** (`Actionability.cs`), with a retry/backoff loop `[100, 250, 500, 1000]`
-ms:
+Like Playwright, an action waits until its element is attached, visible,
+enabled, editable (for input) and stable, then checks that the aim point really
+hits it, through every ancestor `<iframe>`. Retries back off 0/20/100/100/500 ms.
+There are **no silent fallbacks** to Playwright's own actions:
+failures throw `PlaywrightException`, and timeouts throw `System.TimeoutException`
+with a call log, e.g. `<div id="over"> intercepts pointer events` or
+`element is outside of the viewport`.
 
-| Check | Meaning | Error on failure |
-| --- | --- | --- |
-| `attached` | element exists in the DOM | `ElementNotAttachedError` |
-| `visible` | element is visible | `ElementNotVisibleError` |
-| `stable` | bounding box stopped moving (post-scroll) | `ElementNotStableError` |
-| `enabled` | element is enabled | `ElementNotEnabledError` |
-| `editable` | element is editable | `ElementNotEditableError` |
-| `pointer_events` | the click point actually hits the element | `ElementNotReceivingEventsError` |
+All steps of one action share **one deadline** (#307). The timeout is the
+option's `Timeout`, else the page/context default (`SetDefaultTimeout`), else
+30 s; `Timeout = 0` means no limit. A target removed or replaced while the cursor
+travels is never pressed (locators re-resolve).
 
-Action presets: `ChecksClick`, `ChecksHover`, `ChecksInput`, `ChecksFocus`,
-`ChecksCheck`.
+The checks are also callable on their own, with the pre-engine signatures:
+`Actionability.EnsureActionableAsync(page, selector, Actionability.ChecksClick)`,
+`EnsureStableAsync`, `CheckPointerEventsAsync(page, selector, x, y)` and the
+`…HandleAsync` variants. They run on the same engine (any Playwright selector) and
+throw the typed `ElementNotVisibleError`,
+`ElementNotEnabledError`, `ElementNotEditableError`, `ElementNotAttachedError`,
+`ElementNotStableError` and `ElementNotReceivingEventsError`. `HumanScroll`
+(`HumanScrollIntoViewAsync`, `SmoothWheelAsync`) and `IsolatedWorld` stay public as
+standalone helpers; humanized actions do not use them.
 
-**Fail-open pointer check.** The `pointer_events` probe uses
-`document.elementFromPoint`. If it *cannot run* (stale handle, execution context
-destroyed - `EvaluateAsync` throws), the check **fails open** and returns
-promptly rather than blocking until timeout - failing closed would wrongly block
-legitimate clicks. But an explicit `{ hit: false }` (the element is genuinely
-*covered*) still raises `ElementNotReceivingEventsError`.
+### Fields: focus, caret, value inputs
 
-### Shared timeout budget (#307)
-
-All sequential steps of one action share a **single deadline** rather than each
-restarting the full timeout. The helper
-`Actionability.RemainingMs(deadline)` returns the milliseconds left (clamped at
-zero, never negative). Because every step subtracts from the *same* budget, the
-total wall-clock time can never multiply across steps - the bug fixed in
-upstream issue **#307**.
-
-### Focus-aware press / clear
-
-`PressAsync` and `ClearAsync` first probe focus with
-`EvaluateAsync<bool>("el => el === document.activeElement")`. If the element is
-**already focused**, they **skip the humanized click** entirely (the cursor does
-not move) and go straight to the keystrokes; otherwise they perform a humanized
-focus-click first. This avoids pointless mouse motion on an already-focused
-field.
+There is **no programmatic focus**: a field is focused by scrolling to it and
+clicking; one that can never be brought on screen fails with
+`element is outside of the viewport`. `TypeAsync` / `PressSequentiallyAsync`
+continue at the end of existing text. Select-all and `ControlOrMeta` follow the
+browser persona (`--fingerprint-platform=macos` uses Meta), not the host OS.
+Date/time inputs are typed segment by segment in the locale's order, sliders are
+clicked near the value and nudged with arrow keys, `<select>` is driven with
+clicks and arrow keys. `<input type=color>` opens a native dialog that cannot be
+driven, so `FillAsync` on it throws; use `Humanize.Unwrap(page).FillAsync` if a
+programmatic value is acceptable.
 
 ---
 
@@ -649,24 +651,24 @@ dotnet run --project examples/CloakBrowser.Examples -- proxy-geoip
 
 ### Test suite map
 
-All tests are **browser-free**: production wrappers are exercised through
-`DispatchProxy`-backed Playwright fakes (`Wrappers/FakeProxy.cs`,
-`Fake.Of<T>()`), and `InternalsVisibleTo` lets the tests reach internal types.
-A handful of genuinely browser-dependent timing tests are marked
-`[Fact(Skip = "requires browser")]` rather than faked.
+Unit tests run without a browser (`DispatchProxy`-backed Playwright fakes,
+`Wrappers/FakeProxy.cs`). Real-browser tests run when `CLOAKBROWSER_BINARY_PATH`
+points at a CloakBrowser binary, against a local test page served by
+`HumanEngine/SiteServer.cs` (the same page as the Python and JS tests). Real-browser
+classes share one serial xunit collection (`RealBrowser`).
 
 | Area | File(s) | What it proves |
 | --- | --- | --- |
 | Version / download | `ConfigTests.cs`, `DownloadConfigTests.cs` | version compare, archive names, checksum parsing, **zip-slip** path guard |
 | Launch args | `BuildArgsTests.cs`, `MiscTests.cs` | stealth args, `build_args` dedup |
 | Proxy | `ProxyResolverTests.cs` | URL resolution / encoding |
-| Bezier math | `BezierMathTests.cs` | curve produces many points, ends near target, no big jumps, deviates from a straight line |
-| Humanize config | `HumanConfigTests.cs` | presets, snake/Pascal overrides, range coercion, **merge never mutates base**, null/empty/unknown-key handling |
-| Transparent layer | `Wrappers/*.cs` | non-intercepted members delegate verbatim; intercepted members humanize; nested objects come back wrapped; exceptions & `CancellationToken`s propagate |
-| Non-ASCII keyboard | `Human/NonAsciiKeyboardTests.cs` | Cyrillic/CJK go via `InsertText`; ASCII via key presses; mixed strings route per-character |
-| Pointer-events fail-open | `Human/PointerEventsFailOpenTests.cs` | throwing probe returns fast (`< 500ms`); explicit "covered" raises `ElementNotReceivingEventsError` |
-| Timeout budget (#307) | `Human/TimeoutBudgetTests.cs` | `RemainingMs` never negative, decreases over time, shared (not multiplied) |
-| Focus check | `Wrappers/FocusCheckTests.cs` | focused element -> no humanized click (cursor doesn't move); non-focused -> click happens |
+| Bezier math | `BezierMathTests.cs` | curve shape and end point |
+| Humanize config | `HumanConfigTests.cs` | presets, snake/Pascal overrides, merge never mutates base |
+| Transparent layer | `Wrappers/*.cs` | delegation, re-wrapping of every handle/frame/locator-returning member, exceptions & `CancellationToken`s propagate |
+| Engine (real browser) | `HumanEngine/HumanEngineBrowserTests.cs`, `HumanEngine/WorldSmokeTests.cs` | options, strict mode, timeouts, locators, fields, frames, handles, mouse, persona select-all |
+| Standalone checks (real browser) | `HumanEngine/ActionabilityApiTests.cs`, `ScrollFallbackTests.cs` | public `Actionability` checks throw the typed errors; `HumanScroll` / `IsolatedWorld` keep working |
+| Selector parity (real browser) | `Human/SelectorParityBrowserTests.cs`, `tests/test_resolver_sources_match.py` | actions land on the element Playwright resolves; Python/JS/.NET helper copies stay byte-identical |
+| Timeout budget (#307) | `Human/TimeoutBudgetTests.cs` | one shared deadline, `0` = no limit |
 
 ---
 
@@ -682,9 +684,11 @@ A handful of genuinely browser-dependent timing tests are marked
 | `Human/HumanConfig.cs` | `cloakbrowser/human/config.py` |
 | `Human/HumanMouse.cs` | `cloakbrowser/human/mouse.py` |
 | `Human/HumanKeyboard.cs` | `cloakbrowser/human/keyboard.py` |
-| `Human/HumanScroll.cs` | `cloakbrowser/human/scroll.py` |
-| `Human/Actionability.cs` | `cloakbrowser/human/actionability.py` |
-| `Human/HumanPage.cs` | `cloakbrowser/human/__init__.py` (`patch_page`) |
+| `Human/HumanEngine*.cs` | `cloakbrowser/human/engine.py` |
+| `Human/HumanWorld.cs`, `Human/WorldHelpers.cs` | `cloakbrowser/human/world.py` |
+| `Human/InjectedSource.cs` | `cloakbrowser/human/injected.py` |
+| `Human/Fields.cs` | `cloakbrowser/human/fields.py` |
+| `Wrappers/*.cs` | `cloakbrowser/human/patch.py` |
 | `CloakBrowser.Cli/` | `cloakbrowser/__main__.py` |
 
 ---

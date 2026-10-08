@@ -192,6 +192,26 @@ public class ScrollFallbackTests
     }
 
     [Fact]
+    public async Task Smooth_wheel_never_sends_a_zero_step()
+    {
+        // A smooth wheel is split into 20-40px chunks and the last one is the
+        // remainder. A remainder under 0.5px used to round to a (0, 0) wheel event,
+        // which made Box_past_right_edge_scrolls_x_axis_only flaky (~1 run in 60).
+        // A 21-40px delta is one or two chunks and leaves such a remainder a few
+        // percent of the time, so 300 calls hit it with near certainty.
+        var mouse = new CountingMouse();
+        double total = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            int delta = 21 + i % 20;
+            total += delta;
+            await HumanScroll.SmoothWheelAsync(mouse, 0, delta, FastConfig());
+        }
+        Assert.DoesNotContain(mouse.Wheels, w => w.Dx == 0 && w.Dy == 0);
+        Assert.Equal(total, mouse.Wheels.Sum(w => w.Dy));
+    }
+
+    [Fact]
     public async Task Box_past_right_edge_with_page_pinned_right_bails_without_scrolling()
     {
         var page = new ViewportPage((1000, 700), scroll: (0, 0, 600, 600));
@@ -207,10 +227,10 @@ public class ScrollFallbackTests
     [Fact]
     public async Task Rtl_page_at_start_scrolls_x_axis_left()
     {
-        // RTL page at its start: scrollX 0 with a range of -600..0. The element
-        // sits in the left overflow, so the page is not pinned in that direction.
-        var scroll = PlaywrightScrollPage.ParseScrollState(System.Text.Json.JsonDocument.Parse(
-            """{"y":0,"maxY":0,"x":0,"minX":-600,"maxX":0}""").RootElement);
+        // RTL page at its start: scrollX 0 with a range of -600..0, which an
+        // IRawScrollPage reports measured from the leftmost position (X = 600 of 0..600).
+        // The element sits in the left overflow, so the page is not pinned that way.
+        (double, double, double, double) scroll = (0, 0, 600, 600);
         var page = new ViewportPage((1000, 700), scroll);
         var mouse = new CountingMouse();
         var boxes = new Queue<BoundingBox?>(new BoundingBox?[]
