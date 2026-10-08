@@ -6,9 +6,9 @@ namespace CloakBrowser.Wrappers;
 /// <summary>
 /// Transparent humanizing decorator over Playwright's <see cref="IKeyboard"/>.
 ///
-/// Intercepted (humanized): <c>TypeAsync</c>, <c>PressAsync</c>, <c>InsertTextAsync</c>.
-/// Low-level <c>DownAsync</c>/<c>UpAsync</c> are delegated to the inner keyboard by the
-/// source generator (they are deliberate single key transitions, not "typing").
+/// Intercepted (humanized): <c>TypeAsync</c> (per-key timing, safe mistypes, Shift for
+/// uppercase and symbols). <c>PressAsync</c>, <c>InsertTextAsync</c>, <c>DownAsync</c> and
+/// <c>UpAsync</c> are deliberate primitives and are delegated unchanged by the generator.
 /// </summary>
 [GenerateInterfaceDelegation(typeof(IKeyboard))]
 public sealed partial class HumanizedKeyboard : IKeyboard
@@ -31,17 +31,5 @@ public sealed partial class HumanizedKeyboard : IKeyboard
     public IKeyboard Inner => _inner;
 
     public Task TypeAsync(string text, KeyboardTypeOptions? options = null) =>
-        _cursor.HumanTypeAsync(text, _cfg);
-
-    public async Task PressAsync(string key, KeyboardPressOptions? options = null)
-    {
-        // A single human key press: brief aim delay, then the inner press (which
-        // already presses down + up). Mirrors the press timing used elsewhere.
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(50, 150)).ConfigureAwait(false);
-        await _inner.PressAsync(key, options).ConfigureAwait(false);
-    }
-
-    public Task InsertTextAsync(string text) =>
-        // InsertText is an atomic IME-style insertion; humanize it as paced typing.
-        _cursor.HumanTypeAsync(text, _cfg);
+        _cursor.EngineFor(_cfg).KeyboardTypeAsync(text, options?.Delay);
 }

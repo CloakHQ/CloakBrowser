@@ -66,6 +66,10 @@ public static class HumanScroll
         {
             double stepSize = HumanRandom.Rand(20, 40);
             double chunk = Math.Min(stepSize, absD - sent);
+            // Fold a sub-pixel tail into this step: on its own it would round to a
+            // (0, 0) wheel event, which no real wheel sends.
+            if (absD - sent - chunk < 0.5)
+                chunk = absD - sent;
             double step = Math.Round(chunk) * sign;
             if (horizontal)
                 await raw.WheelAsync(step, 0).ConfigureAwait(false);

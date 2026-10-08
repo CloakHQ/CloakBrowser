@@ -8,7 +8,7 @@ namespace CloakBrowser.Wrappers;
 /// Transparent humanizing decorator over Playwright's <see cref="IPage"/>.
 ///
 /// Selector-based interaction methods (Click/Fill/Type/Hover/Press/Tap/Check/...) are
-/// routed through the selector-driven <see cref="HumanPage"/> engine. <c>Mouse</c> and
+/// routed through the unified <see cref="HumanEngine"/>. <c>Mouse</c> and
 /// <c>Keyboard</c> return humanized wrappers; <c>Locator</c>/<c>GetBy*</c>/frames return
 /// re-wrapped objects so the whole chain stays humanized. Everything else is delegated
 /// to the inner page by the source generator.
@@ -19,7 +19,7 @@ public sealed partial class HumanizedPage : IPage
     private readonly IPage _inner;
     private readonly HumanCursor _cursor;
     private readonly HumanConfig _cfg;
-    private readonly HumanPage _human;
+    private readonly HumanEngine _engine;
     private readonly HumanizedMouse _mouse;
     private readonly HumanizedKeyboard _keyboard;
     private readonly object _frameEventLock = new();
@@ -32,16 +32,12 @@ public sealed partial class HumanizedPage : IPage
         _inner = inner;
         _cursor = cursor;
         _cfg = cfg;
-        _human = new HumanPage(inner, cfg);
+        _engine = cursor.EngineFor(cfg);
         _mouse = new HumanizedMouse(inner.Mouse, cursor, cfg);
         _keyboard = new HumanizedKeyboard(inner.Keyboard, cursor, cfg);
 
-        // Invalidate the isolated world on any main-frame nav, not just goto, so
-        // click/form navigations don't leave it bound to a stale doc (#507).
-        _inner.FrameNavigated += (_, frame) =>
-        {
-            if (frame == _inner.MainFrame) _cursor.InvalidateStealth();
-        };
+        // Isolated worlds are dropped per frame on navigation / detach by HumanWorld
+        // itself, so click/form navigations never leave a stale document (#507).
     }
 
     /// <summary>The original, un-humanized Playwright page (escape hatch for raw speed).</summary>
@@ -50,12 +46,9 @@ public sealed partial class HumanizedPage : IPage
     /// <summary>Alias of <see cref="Original"/>.</summary>
     public IPage Inner => _inner;
 
-    private HumanActionOptions Opt(object? options) => new()
-    {
-        Timeout = OptionReader.Timeout(options),
-        Force = OptionReader.Force(options),
-        Delay = OptionReader.Delay(options),
-    };
+    private static ActOpts Opt(object? options) => ActOpts.From(options);
+    private Target T(string selector, object? options) =>
+        new(_inner.MainFrame, selector, ActOpts.From(options).Strict);
 
     private ILocator Wrap(ILocator l) => Humanize.WrapLocator(l, _cursor, _cfg);
     private ILocator Wrap(ILocator l, string? selector) => Humanize.WrapLocator(l, _cursor, _cfg, selector);
@@ -113,72 +106,56 @@ public sealed partial class HumanizedPage : IPage
     // -----------------------------------------------------------------------
 
     public Task ClickAsync(string selector, PageClickOptions? options = null) =>
-        _human.ClickAsync(selector, Opt(options));
+        _engine.ClickAsync(T(selector, options), Opt(options), "Page.ClickAsync");
 
     public Task DblClickAsync(string selector, PageDblClickOptions? options = null) =>
-        _human.DblClickAsync(selector, Opt(options));
+        _engine.ClickAsync(T(selector, options), Opt(options), "Page.DblClickAsync", 2);
 
     public Task HoverAsync(string selector, PageHoverOptions? options = null) =>
-        _human.HoverAsync(selector, Opt(options));
+        _engine.HoverAsync(T(selector, options), Opt(options), "Page.HoverAsync");
 
     public Task TapAsync(string selector, PageTapOptions? options = null) =>
-        _human.TapAsync(selector, Opt(options));
+        _engine.TapAsync(T(selector, options), Opt(options), "Page.TapAsync");
 
     public Task FillAsync(string selector, string value, PageFillOptions? options = null) =>
-        _human.FillAsync(selector, value, Opt(options));
+        _engine.FillAsync(T(selector, options), value, Opt(options), "Page.FillAsync");
 
     public Task TypeAsync(string selector, string text, PageTypeOptions? options = null) =>
-        _human.TypeAsync(selector, text, Opt(options));
+        _engine.TypeAsync(T(selector, options), text, Opt(options), "Page.TypeAsync");
 
     public Task PressAsync(string selector, string key, PagePressOptions? options = null) =>
-        _human.PressAsync(selector, key, Opt(options));
+        _engine.PressAsync(T(selector, options), key, Opt(options), "Page.PressAsync");
 
     public Task CheckAsync(string selector, PageCheckOptions? options = null) =>
-        _human.CheckAsync(selector, Opt(options));
+        _engine.SetCheckedAsync(T(selector, options), true, Opt(options), "Page.CheckAsync");
 
     public Task UncheckAsync(string selector, PageUncheckOptions? options = null) =>
-        _human.UncheckAsync(selector, Opt(options));
+        _engine.SetCheckedAsync(T(selector, options), false, Opt(options), "Page.UncheckAsync");
 
     public Task SetCheckedAsync(string selector, bool checkedState, PageSetCheckedOptions? options = null) =>
-        _human.SetCheckedAsync(selector, checkedState, Opt(options));
+        _engine.SetCheckedAsync(T(selector, options), checkedState, Opt(options), "Page.SetCheckedAsync");
 
     public Task FocusAsync(string selector, PageFocusOptions? options = null) =>
-        _human.FocusAsync(selector, Opt(options));
+        _engine.FocusAsync(T(selector, options), Opt(options), "Page.FocusAsync");
 
     public Task DragAndDropAsync(string source, string target, PageDragAndDropOptions? options = null) =>
-        _human.DragAndDropAsync(source, target, Opt(options));
+        _engine.DragAsync(T(source, options), T(target, options), Opt(options), "Page.DragAndDropAsync");
+
+    private Task<IReadOnlyList<string>> Select(string selector, SelectValues v, PageSelectOptionOptions? options) =>
+        _engine.SelectOptionAsync(T(selector, options), v.Options, v.Handles, Opt(options), "Page.SelectOptionAsync");
 
     public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, string values, PageSelectOptionOptions? options = null) =>
-        _human.SelectOptionAsync(selector, new[] { values }, Opt(options));
-
+        Select(selector, SelectValues.Of(new[] { values }), options);
     public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<string> values, PageSelectOptionOptions? options = null) =>
-        _human.SelectOptionAsync(selector, values.ToArray(), Opt(options));
-
-    // SelectOption overloads taking handles / SelectOptionValue have no humanized
-    // analogue; hover then delegate so the dropdown still gets a human approach.
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IElementHandle values, PageSelectOptionOptions? options = null)
-    {
-        await _human.HoverAsync(selector, Opt(options)).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(selector, Unwrap(values), options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<IElementHandle> values, PageSelectOptionOptions? options = null)
-    {
-        await _human.HoverAsync(selector, Opt(options)).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(selector, values.Select(Unwrap), options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string selector, SelectOptionValue values, PageSelectOptionOptions? options = null)
-    {
-        await _human.HoverAsync(selector, Opt(options)).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(selector, values, options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<SelectOptionValue> values, PageSelectOptionOptions? options = null)
-    {
-        await _human.HoverAsync(selector, Opt(options)).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(selector, values, options).ConfigureAwait(false);
-    }
+        Select(selector, SelectValues.Of(values), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IElementHandle values, PageSelectOptionOptions? options = null) =>
+        Select(selector, SelectValues.Of(new[] { values }), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<IElementHandle> values, PageSelectOptionOptions? options = null) =>
+        Select(selector, SelectValues.Of(values), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, SelectOptionValue values, PageSelectOptionOptions? options = null) =>
+        Select(selector, SelectValues.Of(new[] { values }), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<SelectOptionValue> values, PageSelectOptionOptions? options = null) =>
+        Select(selector, SelectValues.Of(values), options);
 
     private static IElementHandle Unwrap(IElementHandle h) => h is HumanizedElementHandle hh ? hh.Original : h;
     private static ILocator Unwrap(ILocator l) => l is HumanizedLocator hl ? hl.Original : l;
@@ -208,6 +185,7 @@ public sealed partial class HumanizedPage : IPage
 
     // Locator options can change which element Playwright resolves. Preserve raw
     // selector metadata only when it completely describes the locator semantics.
+    public IFrameLocator FrameLocator(string selector) => Humanize.WrapFrameLocator(_inner.FrameLocator(selector), _cursor, _cfg);
     public ILocator Locator(string selector, PageLocatorOptions? options = null) =>
         Wrap(_inner.Locator(selector, options), options == null ? selector : null);
     public ILocator GetByAltText(string text, PageGetByAltTextOptions? options = null) => Wrap(_inner.GetByAltText(text, options));
@@ -257,13 +235,17 @@ public sealed partial class HumanizedPage : IPage
     public IFrame? FrameByUrl(System.Func<string, bool> url) { var f = _inner.FrameByUrl(url); return f == null ? null : Wrap(f); }
 
     // -----------------------------------------------------------------------
-    // Navigation - invalidate the isolated world after a navigation.
+    // Handle-returning members - re-wrap so handle actions stay humanized.
     // -----------------------------------------------------------------------
 
-    public async Task<IResponse?> GotoAsync(string url, PageGotoOptions? options = null)
-    {
-        var resp = await _inner.GotoAsync(url, options).ConfigureAwait(false);
-        _cursor.InvalidateStealth();
-        return resp;
-    }
+    private IElementHandle? H(IElementHandle? h) => h == null ? null : Humanize.WrapElementHandle(h, _cursor, _cfg);
+
+    public async Task<IElementHandle?> QuerySelectorAsync(string selector, PageQuerySelectorOptions? options = null) =>
+        H(await _inner.QuerySelectorAsync(selector, options).ConfigureAwait(false));
+
+    public async Task<IReadOnlyList<IElementHandle>> QuerySelectorAllAsync(string selector) =>
+        Humanize.WrapHandles(await _inner.QuerySelectorAllAsync(selector).ConfigureAwait(false), _cursor, _cfg);
+
+    public async Task<IElementHandle?> WaitForSelectorAsync(string selector, PageWaitForSelectorOptions? options = null) =>
+        H(await _inner.WaitForSelectorAsync(selector, options).ConfigureAwait(false));
 }

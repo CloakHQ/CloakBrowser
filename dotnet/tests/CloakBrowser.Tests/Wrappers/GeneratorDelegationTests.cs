@@ -200,14 +200,62 @@ public class GeneratorDelegationTests
         new object[] { typeof(HumanizedMouse), "MoveAsync" },
         new object[] { typeof(HumanizedMouse), "ClickAsync" },
         new object[] { typeof(HumanizedMouse), "DblClickAsync" },
-        new object[] { typeof(HumanizedMouse), "DownAsync" },
-        new object[] { typeof(HumanizedMouse), "UpAsync" },
-        new object[] { typeof(HumanizedMouse), "WheelAsync" },
         // HumanizedKeyboard
         new object[] { typeof(HumanizedKeyboard), "TypeAsync" },
-        new object[] { typeof(HumanizedKeyboard), "PressAsync" },
-        new object[] { typeof(HumanizedKeyboard), "InsertTextAsync" },
     };
+
+    /// <summary>Every member that hands out an element handle, frame or frame locator
+    /// re-wraps it; otherwise actions on the result would run stock Playwright (visible to
+    /// the page through its InjectedScript events).</summary>
+    [Theory]
+    [InlineData(typeof(HumanizedPage), "QuerySelectorAsync")]
+    [InlineData(typeof(HumanizedPage), "QuerySelectorAllAsync")]
+    [InlineData(typeof(HumanizedPage), "WaitForSelectorAsync")]
+    [InlineData(typeof(HumanizedPage), "FrameLocator")]
+    [InlineData(typeof(HumanizedFrame), "QuerySelectorAsync")]
+    [InlineData(typeof(HumanizedFrame), "QuerySelectorAllAsync")]
+    [InlineData(typeof(HumanizedFrame), "WaitForSelectorAsync")]
+    [InlineData(typeof(HumanizedFrame), "FrameElementAsync")]
+    [InlineData(typeof(HumanizedFrame), "FrameLocator")]
+    [InlineData(typeof(HumanizedLocator), "ElementHandleAsync")]
+    [InlineData(typeof(HumanizedLocator), "ElementHandlesAsync")]
+    [InlineData(typeof(HumanizedLocator), "FrameLocator")]
+    [InlineData(typeof(HumanizedElementHandle), "QuerySelectorAsync")]
+    [InlineData(typeof(HumanizedElementHandle), "ContentFrameAsync")]
+    [InlineData(typeof(HumanizedElementHandle), "OwnerFrameAsync")]
+    public void Handle_and_frame_returning_member_rewraps(System.Type wrapper, string methodName)
+    {
+        var methods = wrapper.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Where(m => m.Name == methodName).ToList();
+        Assert.NotEmpty(methods);
+        Assert.All(methods, m => Assert.False(IsGenerated(m), $"{wrapper.Name}.{methodName} must re-wrap its result"));
+    }
+
+    [Theory]
+    [InlineData(typeof(HumanizedLocator), "ContentFrame")]
+    public void Frame_locator_property_rewraps(System.Type wrapper, string propertyName)
+    {
+        var getter = wrapper.GetProperty(propertyName)!.GetGetMethod()!;
+        Assert.False(IsGenerated(getter), $"{wrapper.Name}.{propertyName} must re-wrap its result");
+    }
+
+    /// <summary>Raw primitives stay raw, like the Python / JS wrappers: a person's
+    /// mouse down / up / wheel and key down / up / press / insertText map 1:1 to input.</summary>
+    [Theory]
+    [InlineData(typeof(HumanizedMouse), "DownAsync")]
+    [InlineData(typeof(HumanizedMouse), "UpAsync")]
+    [InlineData(typeof(HumanizedMouse), "WheelAsync")]
+    [InlineData(typeof(HumanizedKeyboard), "DownAsync")]
+    [InlineData(typeof(HumanizedKeyboard), "UpAsync")]
+    [InlineData(typeof(HumanizedKeyboard), "PressAsync")]
+    [InlineData(typeof(HumanizedKeyboard), "InsertTextAsync")]
+    public void Raw_input_primitive_is_delegated(System.Type wrapper, string methodName)
+    {
+        var methods = wrapper.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Where(m => m.Name == methodName).ToList();
+        Assert.NotEmpty(methods);
+        Assert.All(methods, m => Assert.True(IsGenerated(m), $"{wrapper.Name}.{methodName} should be delegated"));
+    }
 
     [Theory]
     [MemberData(nameof(InteractionMethodsByWrapper))]

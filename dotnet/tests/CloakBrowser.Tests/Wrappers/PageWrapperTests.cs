@@ -36,57 +36,7 @@ public class PageWrapperTests
         InitialCursorY = (100, 100),
     };
 
-    private static IsolatedWorld BuildFakeWorld(IPage page)
-    {
-        var (cdp, cdpRec) = Fake.Of<ICDPSession>();
-        cdpRec.On("SendAsync", args =>
-        {
-            string method = (string)args[0]!;
-            if (method != "Runtime.evaluate")
-                return Task.FromResult<JsonElement?>(null);
-
-            var parameters = (IDictionary<string, object>)args[1]!;
-            string expression = (string)parameters["expression"];
-            object value = expression == StealthDom.ViewportJs
-                ? new { width = 1280, height = 720 }
-                : new
-                {
-                    v = 2, r = "ok", targetId = 1, gen = 3, attached = true,
-                    visible = true, enabled = true, editable = true,
-                    isInput = false, focused = false, @checked = false, hit = true,
-                    box = new { x = 100, y = 200, width = 80, height = 30 },
-                };
-            return Task.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(new
-            {
-                result = new { value },
-            }));
-        });
-
-        var world = new IsolatedWorld(page);
-        typeof(IsolatedWorld).GetField("_cdp", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(world, cdp);
-        typeof(IsolatedWorld).GetField("_contextId", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(world, 42);
-        return world;
-    }
-
-    private static void InjectWorld(HumanizedPage human, HumanCursor cursor, IsolatedWorld world)
-    {
-        typeof(HumanCursor).GetField("_stealth", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(cursor, world);
-        typeof(HumanCursor).GetField("_stealthInitialized", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(cursor, true);
-
-        var humanPage = (HumanPage)typeof(HumanizedPage)
-            .GetField("_human", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .GetValue(human)!;
-        typeof(HumanPage).GetField("_stealth", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(humanPage, world);
-        typeof(HumanPage).GetField("_stealthInitialized", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(humanPage, true);
-    }
-
-    /// <summary>Build a fake page whose isolated world returns an actionable target.</summary>
+    /// <summary>Build a fake page (wrapping / delegation only; actions are browser-tested).</summary>
     private static (HumanizedPage human, FakeProxy pageRec, FakeProxy mouseRec) BuildHumanizedPage()
     {
         var (mouse, mouseRec) = Fake.Of<IMouse>();
@@ -115,7 +65,6 @@ public class PageWrapperTests
 
         var cursor = new HumanCursor(page);
         var human = new HumanizedPage(page, cursor, FastConfig());
-        InjectWorld(human, cursor, BuildFakeWorld(page));
         return (human, pageRec, mouseRec);
     }
 
@@ -139,29 +88,6 @@ public class PageWrapperTests
         Assert.IsType<HumanizedLocator>(human.GetByTestId("t"));
         Assert.IsType<HumanizedLocator>(human.GetByText("x"));
         Assert.IsType<HumanizedLocator>(human.GetByRole(AriaRole.Button));
-    }
-
-    [Fact]
-    public void Locator_threads_selector_for_isolated_world_reads()
-    {
-        // Regression guard: page.Locator(sel) must carry the selector into the
-        // HumanizedLocator so its pre-click reads can resolve in the isolated world.
-        // GetBy*/chained locators have no CSS selector -> null -> Playwright fallback.
-        var (human, _, _) = BuildHumanizedPage();
-        var loc = Assert.IsType<HumanizedLocator>(human.Locator("button:has-text('X')"));
-        Assert.Equal("button:has-text('X')", loc.Selector);
-        Assert.Equal("button:has-text('X') >> nth=0", Assert.IsType<HumanizedLocator>(loc.First).Selector);
-        Assert.Equal("button:has-text('X') >> nth=-1", Assert.IsType<HumanizedLocator>(loc.Last).Selector);
-        Assert.Equal("button:has-text('X') >> nth=3", Assert.IsType<HumanizedLocator>(loc.Nth(3)).Selector);
-        Assert.Null(Assert.IsType<HumanizedLocator>(loc.First.First).Selector);
-        Assert.Null(Assert.IsType<HumanizedLocator>(loc.Nth(1).Nth(0)).Selector);
-
-        var withOptions = Assert.IsType<HumanizedLocator>(human.Locator(
-            "button", new PageLocatorOptions { HasTextString = "X" }));
-        Assert.Null(withOptions.Selector);
-
-        var byRole = Assert.IsType<HumanizedLocator>(human.GetByRole(AriaRole.Button));
-        Assert.Null(byRole.Selector);
     }
 
     [Fact]
@@ -232,34 +158,6 @@ public class PageWrapperTests
 
     // -----------------------------------------------------------------------
     // Selector action interception drives the humanize engine.
-    // -----------------------------------------------------------------------
-
-    [Fact]
-    public async Task ClickAsync_selector_runs_humanized_motion()
-    {
-        var (human, _, mouseRec) = BuildHumanizedPage();
-
-        await human.ClickAsync("#submit");
-
-        Assert.True(mouseRec.CountOf("MoveAsync") >= 1);
-        Assert.Equal(1, mouseRec.CountOf("DownAsync"));
-        Assert.Equal(1, mouseRec.CountOf("UpAsync"));
-    }
-
-    [Fact]
-    public async Task PressAsync_selector_forwards_delay()
-    {
-        var (human, _, _) = BuildHumanizedPage();
-        var keyboard = (FakeProxy)(object)human.Original.Keyboard;
-
-        await human.PressAsync("#field", "Control+V", new PagePressOptions { Delay = 300 });
-
-        var options = Assert.IsType<KeyboardPressOptions>(keyboard.Last("PressAsync")!.Args[1]);
-        Assert.Equal(300, options.Delay);
-    }
-
-    // -----------------------------------------------------------------------
-    // Delegation: non-interaction members forward to the inner page.
     // -----------------------------------------------------------------------
 
     [Fact]

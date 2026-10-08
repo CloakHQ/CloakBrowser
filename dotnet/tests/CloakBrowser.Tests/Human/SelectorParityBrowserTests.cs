@@ -7,11 +7,8 @@ using Xunit;
 namespace CloakBrowser.Tests.Human;
 
 [Collection("env-serial")]
-public class StealthDomBrowserTests
+public class SelectorParityBrowserTests
 {
-    private static bool BrowserAvailable =>
-        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH"));
-
     private static LaunchOptions FastLaunchOptions() => new()
     {
         Headless = true,
@@ -28,10 +25,9 @@ public class StealthDomBrowserTests
         },
     };
 
-    [Fact]
+    [BrowserFact]
     public async Task Hidden_script_text_and_shadow_order_match_direct_locators()
     {
-        if (!BrowserAvailable) return;
 
         await using var browser = await CloakLauncher.LaunchAsync(FastLaunchOptions());
         var page = await browser.NewPageAsync();
@@ -77,10 +73,9 @@ public class StealthDomBrowserTests
         Assert.Equal(expected, await page.EvaluateAsync<string[]>("() => window.__order"));
     }
 
-    [Fact]
+    [BrowserFact]
     public async Task Display_contents_text_and_nested_geometry_are_clickable()
     {
-        if (!BrowserAvailable) return;
 
         await using var browser = await CloakLauncher.LaunchAsync(FastLaunchOptions());
         var page = await browser.NewPageAsync();
@@ -106,10 +101,9 @@ public class StealthDomBrowserTests
         Assert.Equal(1, await page.EvaluateAsync<int>("() => window.__nestedClicks"));
     }
 
-    [Fact]
+    [BrowserFact]
     public async Task Text_css_and_actionability_state_match_direct_selector_behavior()
     {
-        if (!BrowserAvailable) return;
 
         await using var browser = await CloakLauncher.LaunchAsync(FastLaunchOptions());
         var page = await browser.NewPageAsync();
@@ -136,22 +130,6 @@ public class StealthDomBrowserTests
             }
         }");
 
-        // Exercise the source-compatible pointer overload against a real isolated
-        // world; it must snapshot a target ID and delegate to exact validation.
-        object unguardedPage = page is IGuardedProxy guarded ? guarded.GuardTarget : page;
-        var humanizedPage = Assert.IsType<HumanizedPage>(unguardedPage);
-        var cursor = Assert.IsType<HumanCursor>(typeof(HumanizedPage)
-            .GetField("_cursor", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .GetValue(humanizedPage));
-        var world = await cursor.GetStealthAsync();
-        Assert.NotNull(world);
-        var boxRead = await StealthDom.BoxAsync(world!, "#regex-target");
-        Assert.Equal(StealthStatus.Ok, boxRead.Status);
-        var probeBox = boxRead.Target!.Value.Box;
-        await Actionability.CheckPointerEventsAsync(
-            page, "#regex-target", probeBox.X + probeBox.Width / 2,
-            probeBox.Y + probeBox.Height / 2, 3000, world);
-
         string[] selectors =
         {
             "text=/^Alpha\\d+$/",
@@ -170,14 +148,21 @@ public class StealthDomBrowserTests
             "structural-target", "adjacent-target",
         }, await page.EvaluateAsync<string[]>("() => window.__clickedIds"));
 
-        await Assert.ThrowsAsync<ElementNotEnabledError>(() =>
-            page.ClickAsync("#disabled-target", new PageClickOptions { Timeout = 300 }));
-        await Assert.ThrowsAsync<ElementNotEnabledError>(() =>
-            page.ClickAsync("#aria-disabled", new PageClickOptions { Timeout = 300 }));
-        await Assert.ThrowsAsync<ElementNotEditableError>(() =>
-            page.FillAsync("#readonly-target", "x", new PageFillOptions { Timeout = 300 }));
-        await Assert.ThrowsAsync<UnsupportedHumanizeSelectorError>(() =>
-            page.ClickAsync("internal:role=button", new PageClickOptions { Timeout = 300 }));
+        // Playwright semantics and messages: a disabled / readonly target waits and times
+        // out with the reason; standard selectors (internal:role) are supported.
+        var disabled = await Assert.ThrowsAsync<TimeoutException>(() =>
+            page.ClickAsync("#disabled-target", new PageClickOptions { Timeout = 500 }));
+        Assert.Contains("not enabled", disabled.Message);
+        Assert.Contains("not enabled", (await Assert.ThrowsAsync<TimeoutException>(() =>
+            page.ClickAsync("#aria-disabled", new PageClickOptions { Timeout = 500 }))).Message);
+        // aria-readonly is version-dependent in Playwright's own InjectedScript (ignored by
+        // Microsoft.Playwright 1.49, honoured by newer drivers); match the stock answer.
+        bool stockEditable = await page.Locator("#readonly-target").IsEditableAsync();
+        var readonlyErr = await Record.ExceptionAsync(() =>
+            page.FillAsync("#readonly-target", "x", new PageFillOptions { Timeout = 500 }));
+        if (stockEditable) Assert.Null(readonlyErr);
+        else Assert.Contains("not editable", Assert.IsType<TimeoutException>(readonlyErr).Message);
+        await page.ClickAsync("internal:role=button[name=\"adjacent\"i]", new PageClickOptions { Timeout = 3000 });
 
         await page.CheckAsync("#check-target", new PageCheckOptions { Timeout = 3000 });
         Assert.True(await page.Locator("#check-target").IsCheckedAsync());
@@ -185,7 +170,7 @@ public class StealthDomBrowserTests
         Assert.False(await page.Locator("#check-target").IsCheckedAsync());
     }
 
-    [Theory]
+    [BrowserTheory]
     [InlineData(false, "remove")]
     [InlineData(true, "remove")]
     [InlineData(false, "replace")]
@@ -193,7 +178,6 @@ public class StealthDomBrowserTests
     public async Task Target_mutation_after_movement_never_clicks_underneath_or_replacement(
         bool force, string mutation)
     {
-        if (!BrowserAvailable) return;
 
         await using var browser = await CloakLauncher.LaunchAsync(FastLaunchOptions());
         var page = await browser.NewPageAsync();
@@ -220,27 +204,27 @@ public class StealthDomBrowserTests
             }, {once: true});
         }", mutation);
 
+        // A removed target times out (never presses on what is under the cursor now);
+        // a replaced target is re-resolved and reached with a fresh move, like Playwright.
         var error = await Record.ExceptionAsync(() => page.ClickAsync("#target", new PageClickOptions
         {
             Force = force,
-            Timeout = 3000,
+            Timeout = mutation == "remove" ? 1500 : 15000,
         }));
-        Assert.NotNull(error);
-        if (mutation == "remove") Assert.IsType<ElementNotAttachedError>(error);
-        else Assert.IsType<ElementTargetChangedError>(error);
+        if (mutation == "remove") Assert.IsType<TimeoutException>(error);
+        else Assert.Null(error);
 
         var counts = await page.EvaluateAsync<ClickCounts>(@"() => ({
             underlying: window.__underlyingClicks,
             replacement: window.__replacementClicks,
         })");
         Assert.Equal(0, counts.Underlying);
-        Assert.Equal(0, counts.Replacement);
+        Assert.Equal(mutation == "replace" ? 1 : 0, counts.Replacement);
     }
 
-    [Fact]
+    [BrowserFact]
     public async Task Frame_options_and_repeated_position_locators_stay_legacy_compatible()
     {
-        if (!BrowserAvailable) return;
 
         await using var browser = await CloakLauncher.LaunchAsync(FastLaunchOptions());
         var page = await browser.NewPageAsync();
@@ -285,10 +269,9 @@ public class StealthDomBrowserTests
         Assert.Equal(new[] { "first" }, await page.EvaluateAsync<string[]>("() => window.__nestedClicks"));
     }
 
-    [Fact]
+    [BrowserFact]
     public async Task Direct_locator_uses_canonical_scroll_and_rescroll_after_reflow()
     {
-        if (!BrowserAvailable) return;
 
         await using var browser = await CloakLauncher.LaunchAsync(FastLaunchOptions());
         var page = await browser.NewPageAsync();
@@ -315,10 +298,9 @@ public class StealthDomBrowserTests
         Assert.Equal(1, await page.EvaluateAsync<int>("() => window.__belowClicks"));
     }
 
-    [Fact]
+    [BrowserFact]
     public async Task Force_skips_coverage_rejection_but_preserves_target_identity()
     {
-        if (!BrowserAvailable) return;
 
         await using var browser = await CloakLauncher.LaunchAsync(FastLaunchOptions());
         var page = await browser.NewPageAsync();

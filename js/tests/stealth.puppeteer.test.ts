@@ -915,6 +915,23 @@ describe("Puppeteer: mouse.wheel() smooth scroll", () => {
     expect(wheelCalls.length).toBeGreaterThan(1);
   });
 
+  it("smoothWheel never sends a zero step (sub-pixel tail folded in)", async () => {
+    const { smoothWheel } = await import("../src/human-puppeteer/scroll.js");
+    const calls: [number, number][] = [];
+    const raw: any = { wheel: async (dx: number, dy: number) => { calls.push([dx, dy]); } };
+    const cfg = resolveConfig("default");
+    let total = 0;
+    // A 21-40px delta is one or two chunks; a remainder under 0.5px used to
+    // round to a (0, 0) wheel event a few percent of the time.
+    for (let i = 0; i < 300; i++) {
+      const delta = 21 + (i % 20);
+      total += delta;
+      await smoothWheel(raw, delta, cfg);
+    }
+    expect(calls.some(([dx, dy]) => dx === 0 && dy === 0)).toBe(false);
+    expect(calls.reduce((a, [, dy]) => a + dy, 0)).toBe(total);
+  }, 30_000);
+
   it("mouse.wheel({deltaX: 200}) smooths horizontal scroll too", async () => {
     const { patchPage } = await import("../src/human-puppeteer/index.js");
 

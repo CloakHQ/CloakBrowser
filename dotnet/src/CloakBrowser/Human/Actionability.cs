@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.Playwright;
 
 namespace CloakBrowser.Human;
@@ -72,15 +73,47 @@ public sealed class ElementTargetChangedError : ActionabilityError
         : base(selector, "target_identity", "selector resolved to a different element before input dispatch") { }
 }
 
+// Raised by the previous humanize layer; the engine no longer throws them.
+
+/// <summary>Base for isolated-world DOM helper failures.</summary>
+public class StealthDomError : Exception
+{
+    public StealthDomError(string message) : base(message) { }
+}
+
+public sealed class UnsupportedHumanizeSelectorError : StealthDomError
+{
+    public UnsupportedHumanizeSelectorError(string selector)
+        : base($"Humanized selector '{selector}' is not supported") { }
+}
+
+public sealed class StealthWorldUnavailableError : StealthDomError
+{
+    public StealthWorldUnavailableError() : base("Humanized DOM read requires an active isolated world") { }
+}
+
+public sealed class StealthEvaluationError : StealthDomError
+{
+    public StealthEvaluationError(string selector)
+        : base($"Isolated-world DOM evaluation failed for '{selector}'") { }
+}
+
 // ---------------------------------------------------------------------------
-// Checks
+// Checks (public compatibility facade over the humanize engine)
 // ---------------------------------------------------------------------------
 
 /// <summary>
-/// Playwright-style actionability checks for the humanize layer.
-/// Direct port of Python <c>cloakbrowser/human/actionability.py</c>.
-/// Checks: attached, visible, stable, enabled, editable, receives pointer events.
-/// Retry loop with backoff matching Playwright internals: [100, 250, 500, 1000]ms.
+/// Playwright-style actionability checks, callable on their own.
+///
+/// Kept with the pre-engine signatures so existing callers keep compiling and
+/// working. Humanized actions no longer call this class: they run the same checks
+/// inside <c>HumanEngine</c> and raise Playwright errors. Here the checks run on that
+/// engine too, so they accept every Playwright selector (<c>GetByRole</c>,
+/// <c>&gt;&gt;</c> chains, filters, frame locators). Failures raise the
+/// typed <see cref="ActionabilityError"/> subclasses, as before.
+///
+/// The optional <see cref="IsolatedWorld"/> arguments are accepted for source
+/// compatibility and ignored: the engine manages its own per-frame worlds.
 /// </summary>
 public static class Actionability
 {
@@ -104,34 +137,91 @@ public static class Actionability
     public static readonly IReadOnlySet<string> ChecksCheck =
         new HashSet<string> { "attached", "visible", "enabled", "pointer_events" };
 
+    private const string HandleLabel = "<ElementHandle>";
     private static readonly int[] BackoffMs = { 100, 250, 500, 1000 };
-
-    private static Task BackoffSleepAsync(int attempt)
-    {
-        int idx = Math.Min(attempt, BackoffMs.Length - 1);
-        return Task.Delay(BackoffMs[idx]);
-    }
+    private static readonly string[] StateChecks = { "visible", "enabled", "editable" };
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IPage, HumanEngine> Engines = new();
 
     private static double NowMs() => Environment.TickCount64;
 
     /// <summary>
     /// Milliseconds left until <paramref name="deadline"/> (an <see cref="Environment.TickCount64"/>
-    /// timestamp), clamped at zero. Sequential operations share one deadline so the total
-    /// timeout budget is never multiplied (issue #307). Never returns a negative value.
+    /// timestamp), clamped at zero (issue #307).
     /// </summary>
     internal static double RemainingMs(double deadline) => Math.Max(0, deadline - NowMs());
 
+    private static Task BackoffAsync(int attempt, double deadline) =>
+        Task.Delay(TimeSpan.FromMilliseconds(Math.Min(BackoffMs[Math.Min(attempt, BackoffMs.Length - 1)],
+            Math.Max(1, RemainingMs(deadline)))));
+
+    /// <summary>The engine of a page: the humanized page's own one (shared cursor and
+    /// worlds), or a private one for a page that was never humanized.</summary>
+    private static HumanEngine EngineOf(IPage page)
+    {
+        var raw = page is CloakBrowser.Wrappers.HumanizedPage hp ? hp.Original : page;
+        if (CloakBrowser.Wrappers.Humanize.TryGetCursor(raw, out var cursor)) return cursor.Engine;
+        return Engines.GetValue(raw, p => new HumanEngine(p, new HumanConfig(), new CursorPosition()));
+    }
+
+    private static (HumanEngine Engine, Target Target) ForSelector(IPage page, string selector)
+    {
+        var engine = EngineOf(page);
+        return (engine, new Target(engine.Page.MainFrame, selector));
+    }
+
+    private static (HumanEngine Engine, Target Target) ForHandle(IElementHandle el)
+    {
+        var raw = el is CloakBrowser.Wrappers.HumanizedElementHandle h ? h.Original : el;
+        var frame = PlaywrightInternals.HandleFrame(raw);
+        return (EngineOf(frame.Page), new Target(frame, null, handle: raw));
+    }
+
+    /// <summary>Map the engine's last retry reason to the typed error of this API.</summary>
+    private static ActionabilityError Typed(string label, string? reason) => reason switch
+    {
+        null => new ActionabilityError(label, "timeout", "timeout expired before first check"),
+        _ when reason.StartsWith("waiting for", StringComparison.Ordinal) => new ElementNotAttachedError(label),
+        _ when reason.Contains("detached", StringComparison.Ordinal) => new ElementNotAttachedError(label),
+        "element is not visible" => new ElementNotVisibleError(label),
+        "element is not enabled" => new ElementNotEnabledError(label),
+        "element is not editable" => new ElementNotEditableError(label),
+        "element is not attached" => new ElementNotAttachedError(label),
+        _ => new ActionabilityError(label, "timeout", reason),
+    };
+
+    /// <summary>Run <paramref name="attempt"/> until it succeeds or the budget is spent
+    /// (at least once). Retryable failures surface as <paramref name="fail"/>(last reason).</summary>
+    private static async Task<T> RetryAsync<T>(double timeoutMs, Func<Task<T>> attempt, Func<string?, Exception> fail)
+    {
+        double deadline = NowMs() + Math.Max(0, timeoutMs);
+        string? reason = null;
+        for (int n = 0; ; n++)
+        {
+            try
+            {
+                return await attempt().ConfigureAwait(false);
+            }
+            catch (RetryException r) { reason = r.Message; }
+            catch (StaleElementException) { reason = "element was detached from the DOM"; }
+            if (NowMs() >= deadline) throw fail(reason);
+            await BackoffAsync(n, deadline).ConfigureAwait(false);
+        }
+    }
+
+    private static string[] States(IReadOnlySet<string> checks) => StateChecks.Where(checks.Contains).ToArray();
+
     // -----------------------------------------------------------------------
-    // Pre-scroll actionability: attached, visible, enabled, editable
+    // Element states: attached, visible, enabled, editable
     // -----------------------------------------------------------------------
 
     /// <summary>
-    /// Wait for the element to pass actionability checks (pre-scroll). Retries
-    /// with backoff until <paramref name="timeoutMs"/> elapsed. Throws a specific
-    /// <see cref="ActionabilityError"/> subclass on failure. Returns immediately
-    /// when <paramref name="force"/> is true.
+    /// Wait for the element to be attached and to pass <paramref name="checks"/>
+    /// (<c>visible</c>, <c>enabled</c>, <c>editable</c>; <c>pointer_events</c> is checked
+    /// at the click point by <see cref="CheckPointerEventsAsync(IPage, string, double, double, double, IsolatedWorld?)"/>).
+    /// Throws an <see cref="ActionabilityError"/> subclass when the budget is spent.
+    /// Returns immediately when <paramref name="force"/> is true.
     /// </summary>
-    public static async Task EnsureActionableAsync(
+    public static Task EnsureActionableAsync(
         IPage page,
         string selector,
         IReadOnlySet<string> checks,
@@ -139,168 +229,65 @@ public static class Actionability
         bool force = false,
         IsolatedWorld? stealth = null)
     {
-        if (force)
-            return;
-        if (stealth == null)
-            throw new StealthWorldUnavailableError();
-
-        double deadline = NowMs() + timeoutMs;
-        int attempt = 0;
-        Exception? lastError = null;
-
-        while (true)
-        {
-            double remainingMs = Math.Max(0, deadline - NowMs());
-            if (remainingMs <= 0)
-            {
-                if (lastError != null)
-                    throw lastError;
-                throw new ActionabilityError(selector, "timeout", "timeout expired before first check");
-            }
-
-            try
-            {
-                var (status, snapshot) = await StealthDom.ActionableAsync(
-                    stealth, selector).ConfigureAwait(false);
-                if (status == StealthStatus.Unsupported)
-                    throw new UnsupportedHumanizeSelectorError(selector);
-                if (status == StealthStatus.EvaluationFailed)
-                    throw new StealthEvaluationError(selector);
-                if (status == StealthStatus.NotFound)
-                    throw new ElementNotAttachedError(selector);
-                if (status != StealthStatus.Ok || snapshot == null)
-                    throw new StealthEvaluationError(selector);
-
-                var value = snapshot.Value;
-                if (checks.Contains("visible") && !value.Visible)
-                    throw new ElementNotVisibleError(selector);
-                if (checks.Contains("enabled") && !value.Enabled)
-                    throw new ElementNotEnabledError(selector);
-                if (checks.Contains("editable") && !value.Editable)
-                    throw new ElementNotEditableError(selector);
-                return;
-            }
-            catch (Exception error) when (error is ActionabilityError or StealthEvaluationError)
-            {
-                lastError = error;
-                if (NowMs() >= deadline)
-                    throw;
-                await BackoffSleepAsync(attempt).ConfigureAwait(false);
-                attempt++;
-            }
-        }
+        if (force) return Task.CompletedTask;
+        var (engine, target) = ForSelector(page, selector);
+        var states = States(checks);
+        return RetryAsync(timeoutMs, () => engine.AttemptStatesAsync(target, states, false),
+            reason => Typed(selector, reason));
     }
 
-    // -----------------------------------------------------------------------
-    // Post-scroll stability check
-    // -----------------------------------------------------------------------
-
-    private static bool BoxesDiffer(BoundingBox a, BoundingBox b) =>
-        Math.Abs(a.X - b.X) > 1
-        || Math.Abs(a.Y - b.Y) > 1
-        || Math.Abs(a.Width - b.Width) > 1
-        || Math.Abs(a.Height - b.Height) > 1;
-
-    /// <summary>Bounding box via the isolated world only.</summary>
-    private static async Task<BoundingBox?> ReadBoxAsync(
-        IPage page, string selector, IsolatedWorld? stealth, double remainingMs)
+    /// <summary>Element-state checks for an <see cref="IElementHandle"/>.</summary>
+    public static Task EnsureActionableHandleAsync(
+        IElementHandle el,
+        IReadOnlySet<string> checks,
+        double timeoutMs = 30000,
+        bool force = false)
     {
-        if (stealth == null)
-            throw new StealthWorldUnavailableError();
-
-        var (status, target) = await StealthDom.BoxAsync(stealth, selector).ConfigureAwait(false);
-        return status switch
-        {
-            StealthStatus.Ok when target != null => target.Value.Box,
-            StealthStatus.NotFound => null,
-            StealthStatus.Unsupported => throw new UnsupportedHumanizeSelectorError(selector),
-            _ => throw new StealthEvaluationError(selector),
-        };
+        if (force) return Task.CompletedTask;
+        var (engine, target) = ForHandle(el);
+        var states = States(checks);
+        return RetryAsync(timeoutMs, () => engine.AttemptStatesAsync(target, states, false),
+            reason => Typed(HandleLabel, reason));
     }
+
+    // -----------------------------------------------------------------------
+    // Stability
+    // -----------------------------------------------------------------------
 
     /// <summary>
-    /// Wait for the element's position to stabilize (two samples 100ms apart).
-    /// Only call after a scroll - skip if the element was already in the viewport.
+    /// Wait until the element's box stops moving (two reads 100 ms apart differ by at
+    /// most 1 px). Throws <see cref="ElementNotStableError"/> when the budget is spent,
+    /// <see cref="ElementNotAttachedError"/> if the element never appears.
     /// </summary>
-    public static async Task EnsureStableAsync(IPage page, string selector, double timeoutMs = 5000, IsolatedWorld? stealth = null)
+    public static Task EnsureStableAsync(IPage page, string selector, double timeoutMs = 5000, IsolatedWorld? stealth = null)
     {
-        double deadline = NowMs() + timeoutMs;
-        int attempt = 0;
-
-        while (true)
+        var (engine, target) = ForSelector(page, selector);
+        bool found = false;
+        return RetryAsync(timeoutMs, async () =>
         {
-            double remainingMs = Math.Max(0, deadline - NowMs());
-            if (remainingMs <= 0)
-                throw new ElementNotStableError(selector);
-
-            try
-            {
-                var box1 = await ReadBoxAsync(page, selector, stealth, remainingMs).ConfigureAwait(false);
-                if (box1 == null)
-                    throw new ElementNotAttachedError(selector);
-
-                await Task.Delay(100).ConfigureAwait(false);
-
-                var box2 = await ReadBoxAsync(page, selector, stealth, remainingMs).ConfigureAwait(false);
-                if (box2 == null)
-                    throw new ElementNotAttachedError(selector);
-
-                if (!BoxesDiffer(box1.Value, box2.Value))
-                    return;
-            }
-            catch (StealthEvaluationError)
-            {
-                if (NowMs() >= deadline)
-                    throw;
-                await BackoffSleepAsync(attempt).ConfigureAwait(false);
-                attempt++;
-                continue;
-            }
-
-            if (NowMs() >= deadline)
-                throw new ElementNotStableError(selector);
-
-            await BackoffSleepAsync(attempt).ConfigureAwait(false);
-            attempt++;
-        }
+            var r = await engine.ResolveAsync(target).ConfigureAwait(false);
+            found = true;
+            var a = await engine.ElementBoxAsync(r).ConfigureAwait(false);
+            await Task.Delay(100).ConfigureAwait(false);
+            var b = await engine.ElementBoxAsync(r).ConfigureAwait(false);
+            if (Math.Abs(a.X - b.X) > 1 || Math.Abs(a.Y - b.Y) > 1 ||
+                Math.Abs(a.Width - b.Width) > 1 || Math.Abs(a.Height - b.Height) > 1)
+                throw new RetryException("element is not stable");
+            return true;
+        }, reason => found ? new ElementNotStableError(selector) : new ElementNotAttachedError(selector));
     }
 
     // -----------------------------------------------------------------------
-    // Pointer-events check (post-scroll, at actual click coordinates)
+    // Pointer events at the actual click point
     // -----------------------------------------------------------------------
 
-    // data.box is page-space (from boundingBox); rect is frame-local. Their delta
-    // is the iframe offset, needed to map page-space click coords into the frame's
-    // own viewport before elementFromPoint. For main-frame elements the offset is 0.
-    internal const string PointerEventsJs = @"(expected, data) => {
-    const rect = expected.getBoundingClientRect();
-    const frameOffsetX = data.box ? data.box.x - rect.x : 0;
-    const frameOffsetY = data.box ? data.box.y - rect.y : 0;
-    const target = document.elementFromPoint(data.x - frameOffsetX, data.y - frameOffsetY);
-    if (!target) return { hit: false, reason: 'no_element_at_point', covering: 'none' };
-    let node = target;
-    while (node) { if (node === expected) return { hit: true }; node = node.parentNode; }
-    if (expected.contains(target)) return { hit: true };
-    return { hit: false, reason: 'covered', covering: target.tagName || 'unknown' };
-}";
-
     /// <summary>
-    /// Result of the <c>elementFromPoint</c> pointer-events probe. Internal (not private)
-    /// so unit tests can construct a "covered" result without a live browser.
+    /// Wait until a click at viewport point (<paramref name="x"/>, <paramref name="y"/>)
+    /// would land on the element: Playwright's hit-target check, also through every
+    /// ancestor <c>&lt;iframe&gt;</c>. Throws <see cref="ElementNotReceivingEventsError"/>
+    /// naming the covering element when the budget is spent.
     /// </summary>
-    internal sealed class PointerResult
-    {
-        public bool Hit { get; set; }
-        public string? Reason { get; set; }
-        public string? Covering { get; set; }
-    }
-
-    /// <summary>
-    /// Compatibility overload for callers that do not yet carry a canonical target ID.
-    /// It snapshots the target in the isolated world, then delegates to identity-aware
-    /// revalidation. New interaction paths should pass the original target ID directly.
-    /// </summary>
-    public static async Task CheckPointerEventsAsync(
+    public static Task CheckPointerEventsAsync(
         IPage page,
         string selector,
         double x,
@@ -308,27 +295,16 @@ public static class Actionability
         double timeoutMs = 5000,
         IsolatedWorld? stealth = null)
     {
-        if (stealth == null)
-            throw new StealthWorldUnavailableError();
-
-        var (status, snapshot) = await StealthDom.SnapshotAsync(stealth, selector).ConfigureAwait(false);
-        var resolved = status switch
-        {
-            StealthStatus.Ok when snapshot != null => snapshot.Value,
-            StealthStatus.NotFound => throw new ElementNotAttachedError(selector),
-            StealthStatus.Unsupported => throw new UnsupportedHumanizeSelectorError(selector),
-            _ => throw new StealthEvaluationError(selector),
-        };
-        await CheckPointerEventsAsync(
-            page, selector, resolved.TargetId, resolved.Gen, x, y, timeoutMs, stealth).ConfigureAwait(false);
+        var (engine, target) = ForSelector(page, selector);
+        return PointerAsync(engine, target, selector, x, y, timeoutMs);
     }
 
     /// <summary>
-    /// Revalidate that the click point still hits the same resolved element.
-    /// Callers skip this entirely when force is set (matching Playwright, where
-    /// force bypasses all actionability checks).
+    /// Overload kept for source compatibility. <paramref name="targetId"/> and
+    /// <paramref name="gen"/> identified elements in the old resolver and are ignored;
+    /// the element is re-resolved from <paramref name="selector"/>.
     /// </summary>
-    public static async Task CheckPointerEventsAsync(
+    public static Task CheckPointerEventsAsync(
         IPage page,
         string selector,
         int targetId,
@@ -336,179 +312,39 @@ public static class Actionability
         double x,
         double y,
         double timeoutMs = 5000,
-        IsolatedWorld? stealth = null)
-    {
-        if (stealth == null)
-            throw new StealthWorldUnavailableError();
-
-        double deadline = NowMs() + timeoutMs;
-        int attempt = 0;
-
-        while (true)
-        {
-            var (status, hit, covering, _) = await StealthDom.ValidateAsync(
-                stealth, selector, targetId, gen, x, y).ConfigureAwait(false);
-
-            if (status == StealthStatus.Unsupported)
-                throw new UnsupportedHumanizeSelectorError(selector);
-            if (status == StealthStatus.Stale)
-                throw new ElementTargetChangedError(selector);
-            if (status == StealthStatus.NotFound)
-                throw new ElementNotAttachedError(selector);
-            if (status == StealthStatus.EvaluationFailed)
-            {
-                if (NowMs() >= deadline)
-                    throw new StealthEvaluationError(selector);
-            }
-            else if (status == StealthStatus.Ok && hit)
-            {
-                return;
-            }
-            else if (status == StealthStatus.Ok)
-            {
-                if (NowMs() >= deadline)
-                    throw new ElementNotReceivingEventsError(selector, covering);
-            }
-            else
-            {
-                throw new StealthEvaluationError(selector);
-            }
-
-            await BackoffSleepAsync(attempt).ConfigureAwait(false);
-            attempt++;
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // ElementHandle variants
-    // -----------------------------------------------------------------------
-
-    /// <summary>Actionability checks for an <see cref="IElementHandle"/> (no selector needed).</summary>
-    public static async Task EnsureActionableHandleAsync(
-        IElementHandle el,
-        IReadOnlySet<string> checks,
-        double timeoutMs = 30000,
-        bool force = false)
-    {
-        if (force)
-            return;
-
-        double deadline = NowMs() + timeoutMs;
-        int attempt = 0;
-        ActionabilityError? lastError = null;
-        const string label = "<ElementHandle>";
-
-        while (true)
-        {
-            double remainingMs = Math.Max(0, deadline - NowMs());
-            if (remainingMs <= 0)
-            {
-                if (lastError != null)
-                    throw lastError;
-                throw new ActionabilityError(label, "timeout", "timeout expired before first check");
-            }
-
-            try
-            {
-                if (checks.Contains("visible"))
-                {
-                    try
-                    {
-                        await el.WaitForElementStateAsync(ElementState.Visible, new ElementHandleWaitForElementStateOptions
-                        {
-                            Timeout = (float)Math.Max(1, Math.Min(remainingMs, 2000)),
-                        }).ConfigureAwait(false);
-                    }
-                    catch (Exception) { throw new ElementNotVisibleError(label); }
-                }
-
-                if (checks.Contains("enabled"))
-                {
-                    try
-                    {
-                        await el.WaitForElementStateAsync(ElementState.Enabled, new ElementHandleWaitForElementStateOptions
-                        {
-                            Timeout = (float)Math.Max(1, Math.Min(remainingMs, 2000)),
-                        }).ConfigureAwait(false);
-                    }
-                    catch (Exception) { throw new ElementNotEnabledError(label); }
-                }
-
-                if (checks.Contains("editable"))
-                {
-                    try
-                    {
-                        await el.WaitForElementStateAsync(ElementState.Editable, new ElementHandleWaitForElementStateOptions
-                        {
-                            Timeout = (float)Math.Max(1, Math.Min(remainingMs, 2000)),
-                        }).ConfigureAwait(false);
-                    }
-                    catch (Exception) { throw new ElementNotEditableError(label); }
-                }
-
-                return;
-            }
-            catch (ActionabilityError e)
-            {
-                lastError = e;
-                if (NowMs() >= deadline)
-                    throw;
-                await BackoffSleepAsync(attempt).ConfigureAwait(false);
-                attempt++;
-            }
-        }
-    }
+        IsolatedWorld? stealth = null) =>
+        CheckPointerEventsAsync(page, selector, x, y, timeoutMs, stealth);
 
     /// <summary>Pointer-events check for an <see cref="IElementHandle"/>.</summary>
-    public static async Task CheckPointerEventsHandleAsync(
+    public static Task CheckPointerEventsHandleAsync(
         IElementHandle el,
         double x,
         double y,
         double timeoutMs = 5000)
     {
-        double deadline = NowMs() + timeoutMs;
-        int attempt = 0;
-        string? lastMiss = null;
+        var (engine, target) = ForHandle(el);
+        return PointerAsync(engine, target, HandleLabel, x, y, timeoutMs);
+    }
 
-        while (true)
+    private const string Intercepts = " intercepts pointer events";
+
+    private static Task PointerAsync(HumanEngine engine, Target target, string label, double x, double y, double timeoutMs)
+    {
+        bool found = false;
+        return RetryAsync(timeoutMs, async () =>
         {
-            PointerResult? result = null;
-            try
-            {
-                var box = await el.BoundingBoxAsync().ConfigureAwait(false);
-                var data = new
-                {
-                    x,
-                    y,
-                    box = box == null ? null : new { x = box.X, y = box.Y, width = box.Width, height = box.Height },
-                };
-                result = await el.EvaluateAsync<PointerResult?>(PointerEventsJs, data).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                result = null;
-            }
-
-            // See the locator variant: an indeterminate result fails open, but a
-            // miss that was already determined must not be laundered into a pass
-            // by a late attempt that merely errored (#329).
-            if (result == null)
-            {
-                if (lastMiss != null && NowMs() >= deadline)
-                    throw new ElementNotReceivingEventsError("<ElementHandle>", lastMiss);
-                return;
-            }
-            if (result.Hit)
-                return;
-
-            string covering = result.Covering ?? "unknown";
-            lastMiss = covering;
-
-            if (NowMs() >= deadline)
-                throw new ElementNotReceivingEventsError("<ElementHandle>", covering);
-
-            await BackoffSleepAsync(attempt).ConfigureAwait(false);
-            attempt++;
-        }
+            var r = await engine.ResolveAsync(target).ConfigureAwait(false);
+            found = true;
+            await engine.HitAsync(r, x, y).ConfigureAwait(false);
+            return true;
+        }, reason =>
+        {
+            if (!found) return Typed(label, reason);
+            if (reason != null && reason.EndsWith(Intercepts, StringComparison.Ordinal))
+                return new ElementNotReceivingEventsError(label, reason[..^Intercepts.Length]);
+            if (reason == "element is outside of the viewport")
+                return new ElementNotReceivingEventsError(label, "nothing: the point is outside the viewport");
+            return Typed(label, reason);
+        });
     }
 }

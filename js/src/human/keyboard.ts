@@ -24,12 +24,12 @@ export async function pressWithDelay<Key>(
   await press(key, { delay });
 }
 
-const SHIFT_SYMBOLS = new Set([
+export const SHIFT_SYMBOLS = new Set([
   '@', '#', '!', '$', '%', '^', '&', '*', '(', ')',
   '_', '+', '{', '}', '|', ':', '"', '<', '>', '?', '~',
 ]);
 
-const NEARBY_KEYS: Record<string, string> = {
+export const NEARBY_KEYS: Record<string, string> = {
   a: 'sqwz', b: 'vghn', c: 'xdfv', d: 'sfecx', e: 'wrsdf',
   f: 'dgrtcv', g: 'fhtyb', h: 'gjybn', i: 'ujko', j: 'hkunm',
   k: 'jloi', l: 'kop', m: 'njk', n: 'bhjm', o: 'iklp',
@@ -46,7 +46,7 @@ const NEARBY_KEYS: Record<string, string> = {
  * CDP key code for each shift symbol's physical key.
  * Used by Input.dispatchKeyEvent to produce isTrusted=true events.
  */
-const SHIFT_SYMBOL_CODES: Record<string, string> = {
+export const SHIFT_SYMBOL_CODES: Record<string, string> = {
   '!': 'Digit1', '@': 'Digit2', '#': 'Digit3', '$': 'Digit4',
   '%': 'Digit5', '^': 'Digit6', '&': 'Digit7', '*': 'Digit8',
   '(': 'Digit9', ')': 'Digit0', '_': 'Minus', '+': 'Equal',
@@ -59,7 +59,7 @@ const SHIFT_SYMBOL_CODES: Record<string, string> = {
  * Windows virtual key codes for shift symbols.
  * Input.dispatchKeyEvent uses these to match real keyboard behavior.
  */
-const SHIFT_SYMBOL_KEYCODES: Record<string, number> = {
+export const SHIFT_SYMBOL_KEYCODES: Record<string, number> = {
   '!': 49, '@': 50, '#': 51, '$': 52, '%': 53,
   '^': 54, '&': 55, '*': 56, '(': 57, ')': 48,
   '_': 189, '+': 187, '{': 219, '}': 221, '|': 220,

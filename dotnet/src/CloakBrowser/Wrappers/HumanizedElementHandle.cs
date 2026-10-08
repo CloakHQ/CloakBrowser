@@ -6,15 +6,11 @@ namespace CloakBrowser.Wrappers;
 /// <summary>
 /// Transparent humanizing decorator over Playwright's <see cref="IElementHandle"/>.
 ///
-/// ElementHandle is a legacy, lower-level surface (Playwright itself recommends
-/// <see cref="ILocator"/>). For completeness this wrapper humanizes the common
-/// interaction methods (click/dblclick/hover/tap/fill/type/press/check/uncheck) by
-/// driving the shared cursor to the handle's bounding box, so the ElementHandle path
-/// does NOT silently bypass humanization. Handle-returning queries are re-wrapped;
-/// everything else is delegated by the generator.
-///
-/// Recommendation: prefer Locator / selector-based methods - they get the full
-/// actionability + isolated-world stealth path.
+/// Interaction methods run through the unified <see cref="HumanEngine"/>: the handle is
+/// identified inside the isolated world by its protocol-level bounding box (no page
+/// script runs); when two elements share that exact box the action raises and asks for a
+/// Locator instead. Handle-returning queries are re-wrapped; everything else is delegated
+/// by the generator.
 /// </summary>
 [GenerateInterfaceDelegation(typeof(IElementHandle))]
 public sealed partial class HumanizedElementHandle : IElementHandle
@@ -36,111 +32,30 @@ public sealed partial class HumanizedElementHandle : IElementHandle
     /// <summary>Alias of <see cref="Original"/>.</summary>
     public IElementHandle Inner => _inner;
 
-    private async Task<(double X, double Y, bool IsInput)> MoveToAsync(double timeout, bool force)
-    {
-        await _cursor.EnsureInitializedAsync(_cfg).ConfigureAwait(false);
-        if (!force)
-        {
-            try { await _inner.ScrollIntoViewIfNeededAsync(new ElementHandleScrollIntoViewIfNeededOptions { Timeout = (float)timeout }).ConfigureAwait(false); }
-            catch (System.Exception) { /* best effort */ }
-        }
-        var box = await _inner.BoundingBoxAsync().ConfigureAwait(false);
-        bool isInput;
-        try
-        {
-            isInput = await _inner.EvaluateAsync<bool>(
-                @"el => { const t = el.tagName.toLowerCase();
-                    return t==='input'||t==='textarea'||el.getAttribute('contenteditable')==='true'; }")
-                .ConfigureAwait(false);
-        }
-        catch (System.Exception) { isInput = false; }
-
-        var bb = box == null ? new BoundingBox(_cursor.X, _cursor.Y, 1, 1)
-                             : new BoundingBox(box.X, box.Y, box.Width, box.Height);
-        var target = HumanMouse.ClickTarget(bb, isInput, _cfg);
-        await HumanMouse.HumanMoveAsync(_cursor.RawMouse, _cursor.X, _cursor.Y, target.X, target.Y, _cfg).ConfigureAwait(false);
-        _cursor.Set(target.X, target.Y);
-        return (target.X, target.Y, isInput);
-    }
-
-    public async Task ClickAsync(ElementHandleClickOptions? options = null)
-    {
-        var t = await MoveToAsync(OptionReader.Timeout(options), OptionReader.Force(options)).ConfigureAwait(false);
-        await HumanMouse.HumanClickAsync(_cursor.RawMouse, t.IsInput, _cfg).ConfigureAwait(false);
-    }
-
-    public async Task DblClickAsync(ElementHandleDblClickOptions? options = null)
-    {
-        await MoveToAsync(OptionReader.Timeout(options), OptionReader.Force(options)).ConfigureAwait(false);
-        await _cursor.RawMouseDownAsync(2).ConfigureAwait(false);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(30, 60)).ConfigureAwait(false);
-        await _cursor.RawMouseUpAsync(2).ConfigureAwait(false);
-    }
-
-    public Task HoverAsync(ElementHandleHoverOptions? options = null) =>
-        MoveToAsync(OptionReader.Timeout(options), OptionReader.Force(options));
-
-    public Task TapAsync(ElementHandleTapOptions? options = null) =>
-        ClickAsync(new ElementHandleClickOptions
-        {
-            Force = OptionReader.Force(options),
-            Timeout = (float)OptionReader.Timeout(options),
-        });
-
-    public async Task FillAsync(string value, ElementHandleFillOptions? options = null)
-    {
-        await ClickAsync(new ElementHandleClickOptions { Force = OptionReader.Force(options), Timeout = (float)OptionReader.Timeout(options) }).ConfigureAwait(false);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(100, 250)).ConfigureAwait(false);
-        await _cursor.SelectAllAsync().ConfigureAwait(false);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(30, 80)).ConfigureAwait(false);
-        await _cursor.PressAsync("Backspace").ConfigureAwait(false);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(50, 150)).ConfigureAwait(false);
-        await _cursor.HumanTypeAsync(value, _cfg).ConfigureAwait(false);
-    }
-
-    public async Task TypeAsync(string text, ElementHandleTypeOptions? options = null)
-    {
-        await _inner.FocusAsync().ConfigureAwait(false);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(50, 150)).ConfigureAwait(false);
-        await _cursor.HumanTypeAsync(text, _cfg).ConfigureAwait(false);
-    }
-
-    public async Task PressAsync(string key, ElementHandlePressOptions? options = null)
-    {
-        await _inner.FocusAsync().ConfigureAwait(false);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(50, 150)).ConfigureAwait(false);
-        await _cursor.PressAsync(key, OptionReader.Delay(options)).ConfigureAwait(false);
-    }
-
-    public async Task CheckAsync(ElementHandleCheckOptions? options = null)
-    {
-        if (!await _inner.IsCheckedAsync().ConfigureAwait(false))
-            await ClickAsync(new ElementHandleClickOptions { Force = OptionReader.Force(options), Timeout = (float)OptionReader.Timeout(options) }).ConfigureAwait(false);
-    }
-
-    public async Task UncheckAsync(ElementHandleUncheckOptions? options = null)
-    {
-        if (await _inner.IsCheckedAsync().ConfigureAwait(false))
-            await ClickAsync(new ElementHandleClickOptions { Force = OptionReader.Force(options), Timeout = (float)OptionReader.Timeout(options) }).ConfigureAwait(false);
-    }
-
-    public async Task SetCheckedAsync(bool checkedState, ElementHandleSetCheckedOptions? options = null)
-    {
-        bool current;
-        try { current = await _inner.IsCheckedAsync().ConfigureAwait(false); }
-        catch (System.Exception) { current = !checkedState; }
-        if (current != checkedState)
-            await ClickAsync(new ElementHandleClickOptions { Force = OptionReader.Force(options), Timeout = (float)OptionReader.Timeout(options) }).ConfigureAwait(false);
-    }
-
     // -----------------------------------------------------------------------
-    // SelectOptionAsync (all 6 IElementHandle overloads) - humanized pre-roll.
-    // Mirrors Python _human_el_select_option: move the cursor to the <select>
-    // (curved), click, pause, then delegate the real select (native popups can't
-    // be mouse-driven). Unwrap any HumanizedElementHandle args.
+    // Humanized actions. The handle is located inside the isolated world by its
+    // protocol-level bounding box (no page script); an ambiguous box raises.
     // -----------------------------------------------------------------------
 
-    private static IElementHandle Unwrap(IElementHandle h) => h is HumanizedElementHandle w ? w.Original : h;
+    private HumanEngine E => _cursor.EngineFor(_cfg);
+    private Target T() => new(PlaywrightInternals.HandleFrame(_inner), null, false, _inner);
+    private static ActOpts Opt(object? options) => ActOpts.From(options);
+
+    public Task ClickAsync(ElementHandleClickOptions? options = null) => E.ClickAsync(T(), Opt(options), "ElementHandle.ClickAsync");
+    public Task DblClickAsync(ElementHandleDblClickOptions? options = null) => E.ClickAsync(T(), Opt(options), "ElementHandle.DblClickAsync", 2);
+    public Task HoverAsync(ElementHandleHoverOptions? options = null) => E.HoverAsync(T(), Opt(options), "ElementHandle.HoverAsync");
+    public Task TapAsync(ElementHandleTapOptions? options = null) => E.TapAsync(T(), Opt(options), "ElementHandle.TapAsync");
+    public Task FillAsync(string value, ElementHandleFillOptions? options = null) => E.FillAsync(T(), value, Opt(options), "ElementHandle.FillAsync");
+    public Task TypeAsync(string text, ElementHandleTypeOptions? options = null) => E.TypeAsync(T(), text, Opt(options), "ElementHandle.TypeAsync");
+    public Task PressAsync(string key, ElementHandlePressOptions? options = null) => E.PressAsync(T(), key, Opt(options), "ElementHandle.PressAsync");
+    public Task CheckAsync(ElementHandleCheckOptions? options = null) => E.SetCheckedAsync(T(), true, Opt(options), "ElementHandle.CheckAsync");
+    public Task UncheckAsync(ElementHandleUncheckOptions? options = null) => E.SetCheckedAsync(T(), false, Opt(options), "ElementHandle.UncheckAsync");
+    public Task SetCheckedAsync(bool checkedState, ElementHandleSetCheckedOptions? options = null) =>
+        E.SetCheckedAsync(T(), checkedState, Opt(options), "ElementHandle.SetCheckedAsync");
+    public Task FocusAsync() => E.FocusAsync(T(), new ActOpts(), "ElementHandle.FocusAsync", move: true);
+    public Task ScrollIntoViewIfNeededAsync(ElementHandleScrollIntoViewIfNeededOptions? options = null) =>
+        E.ScrollIntoViewIfNeededAsync(T(), Opt(options), "ElementHandle.ScrollIntoViewIfNeededAsync");
+
     private static ILocator Unwrap(ILocator l) => l is HumanizedLocator w ? w.Original : l;
 
     // #549: unwrap masked locators in place (rebuilding options would drop future fields).
@@ -151,48 +66,21 @@ public sealed partial class HumanizedElementHandle : IElementHandle
         return _inner.ScreenshotAsync(options);
     }
 
-    private async Task SelectPrologueAsync(ElementHandleSelectOptionOptions? options)
-    {
-        var t = await MoveToAsync(OptionReader.Timeout(options), OptionReader.Force(options)).ConfigureAwait(false);
-        await HumanMouse.HumanClickAsync(_cursor.RawMouse, t.IsInput, _cfg).ConfigureAwait(false);
-        await HumanRandom.SleepMsAsync(HumanRandom.Rand(100, 300)).ConfigureAwait(false);
-    }
+    private Task<IReadOnlyList<string>> Select(SelectValues v, ElementHandleSelectOptionOptions? options) =>
+        E.SelectOptionAsync(T(), v.Options, v.Handles, Opt(options), "ElementHandle.SelectOptionAsync");
 
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(string values, ElementHandleSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(values, options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(IElementHandle values, ElementHandleSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(Unwrap(values), options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(IEnumerable<string> values, ElementHandleSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(values, options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(SelectOptionValue values, ElementHandleSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(values, options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(IEnumerable<IElementHandle> values, ElementHandleSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(values.Select(Unwrap), options).ConfigureAwait(false);
-    }
-
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(IEnumerable<SelectOptionValue> values, ElementHandleSelectOptionOptions? options = null)
-    {
-        await SelectPrologueAsync(options).ConfigureAwait(false);
-        return await _inner.SelectOptionAsync(values, options).ConfigureAwait(false);
-    }
+    public Task<IReadOnlyList<string>> SelectOptionAsync(string values, ElementHandleSelectOptionOptions? options = null) =>
+        Select(SelectValues.Of(new[] { values }), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(IElementHandle values, ElementHandleSelectOptionOptions? options = null) =>
+        Select(SelectValues.Of(new[] { values }), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(IEnumerable<string> values, ElementHandleSelectOptionOptions? options = null) =>
+        Select(SelectValues.Of(values), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(SelectOptionValue values, ElementHandleSelectOptionOptions? options = null) =>
+        Select(SelectValues.Of(new[] { values }), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(IEnumerable<IElementHandle> values, ElementHandleSelectOptionOptions? options = null) =>
+        Select(SelectValues.Of(values), options);
+    public Task<IReadOnlyList<string>> SelectOptionAsync(IEnumerable<SelectOptionValue> values, ElementHandleSelectOptionOptions? options = null) =>
+        Select(SelectValues.Of(values), options);
 
     // -----------------------------------------------------------------------
     // Handle-returning members - re-wrap.
@@ -214,5 +102,17 @@ public sealed partial class HumanizedElementHandle : IElementHandle
     {
         var h = await _inner.WaitForSelectorAsync(selector, options).ConfigureAwait(false);
         return h == null ? null : Humanize.WrapElementHandle(h, _cursor, _cfg);
+    }
+
+    public async Task<IFrame?> ContentFrameAsync()
+    {
+        var f = await _inner.ContentFrameAsync().ConfigureAwait(false);
+        return f == null ? null : Humanize.WrapFrame(f, _cursor, _cfg);
+    }
+
+    public async Task<IFrame?> OwnerFrameAsync()
+    {
+        var f = await _inner.OwnerFrameAsync().ConfigureAwait(false);
+        return f == null ? null : Humanize.WrapFrame(f, _cursor, _cfg);
     }
 }
