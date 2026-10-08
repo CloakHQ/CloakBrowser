@@ -278,7 +278,7 @@ Try the latest free → **[cloakbrowser.dev/free](https://cloakbrowser.dev/free)
 
 ## Requirements
 
-- Node.js >= 20
+- Node.js 20.19+ or 22.12+
 - One of: `playwright-core` >= 1.53 or `puppeteer-core` >= 21
 
 ## Troubleshooting
