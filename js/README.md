@@ -83,6 +83,10 @@ const browser = await launch({
 const browser = await launch({
   proxy: 'socks5://user:pass@proxy:1080',
 });
+// Note: SOCKS5 and credentialed HTTP proxies are set on the browser, so
+// context.request / page.request / route.fetch() do NOT use them (real IP).
+// Make those calls from the page instead, which goes through the proxy:
+const data = await page.evaluate(async (url) => (await fetch(url)).json(), 'https://example.com/api');
 
 // With proxy object (bypass, separate auth fields)
 const browser = await launch({

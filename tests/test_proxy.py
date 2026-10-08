@@ -1,11 +1,15 @@
 """Tests for proxy URL parsing and credential extraction."""
 
-from unittest.mock import patch
+import asyncio
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from cloakbrowser.browser import (
     _is_socks_proxy,
     _parse_proxy_url,
     _resolve_proxy_config,
+    _warn_on_request_client_use,
     maybe_resolve_geoip,
 )
 
@@ -517,3 +521,75 @@ class TestResolveProxyConfig:
         kwargs, args = _resolve_proxy_config(proxy)
         assert kwargs == {"proxy": proxy}
         assert args == []
+
+
+class _FakeRequest:
+    """Stands in for playwright's impl APIRequestContext (method on the class)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def _inner_fetch(self, *args, **kwargs):
+        self.calls += 1
+        return "ok"
+
+
+class _FakeContext:
+    def __init__(self, options=None):
+        self._options = options or {}
+        self._request = _FakeRequest()
+
+
+class TestRequestClientProxyWarning:
+    """#579: Playwright's request client skips a proxy passed as --proxy-server."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_flag(self):
+        import cloakbrowser.browser as browser_mod
+        browser_mod._request_proxy_warned = False
+        yield
+        browser_mod._request_proxy_warned = False
+
+    def test_warns_once_on_first_use(self, capsys):
+        ctx = _FakeContext()
+        _warn_on_request_client_use(ctx)
+        assert "context.request" not in capsys.readouterr().err  # nothing until used
+
+        asyncio.run(ctx._request._inner_fetch(None, "https://x"))
+        asyncio.run(ctx._request._inner_fetch(None, "https://x"))
+        assert ctx._request.calls == 2
+        assert capsys.readouterr().err.count("context.request") == 1
+
+    def test_per_context_proxy_does_not_warn(self, capsys):
+        ctx = _FakeContext({"proxy": {"server": "http://ctx-proxy:8080"}})
+        _warn_on_request_client_use(ctx)
+        asyncio.run(ctx._request._inner_fetch(None, "https://x"))
+        assert "context.request" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize("proxy,hooked", [("socks5://u:p@h:1080", True), ("http://proxy:8080", False)])
+    @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+    @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
+    def test_launch_hooks_only_flag_path(self, _geoip, _bin, proxy, hooked):
+        pw_cm = MagicMock()
+        browser = pw_cm.start.return_value.chromium.launch.return_value
+        with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):
+            from cloakbrowser.browser import launch
+            launch(proxy=proxy)
+        calls = [c for c in browser._impl_obj.on.call_args_list if c.args == ("context", _warn_on_request_client_use)]
+        assert bool(calls) is hooked
+
+    @pytest.mark.parametrize("proxy,hooked", [("socks5://u:p@h:1080", True), ("http://proxy:8080", False)])
+    @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+    @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
+    @patch("cloakbrowser.browser.persistent_seed_args", side_effect=lambda _d, _s, a: a)
+    def test_persistent_hooks_only_flag_path(self, _seed, _geoip, _bin, proxy, hooked):
+        pw_cm = MagicMock()
+        context = pw_cm.start.return_value.chromium.launch_persistent_context.return_value
+        with patch("playwright.sync_api.sync_playwright", return_value=pw_cm), \
+                patch("cloakbrowser.browser._warn_on_request_client_use") as hook:
+            from cloakbrowser.browser import launch_persistent_context
+            launch_persistent_context("/tmp/profile", proxy=proxy)
+        if hooked:
+            hook.assert_called_once_with(context._impl_obj)
+        else:
+            hook.assert_not_called()

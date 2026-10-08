@@ -13,7 +13,7 @@ import {
 import { buildArgs } from "./args.js";
 import { maybeWarnWindowsFonts } from "./fonts.js";
 import { ensureBinary } from "./download.js";
-import { resolveProxyConfig } from "./proxy.js";
+import { resolveProxyConfig, warnOnRequestClientUse } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
 import {
   buildLaunchEnv,
@@ -196,8 +196,10 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright-core");
   const denialPath = resolveLicenseKey(options.licenseKey) ? mintDenialFile() : undefined;
   let browser: Browser;
+  let launchOptions: PlaywrightLaunchOptions;
   try {
-    browser = await chromium.launch(await buildLaunchOptions(options, denialPath));
+    launchOptions = await buildLaunchOptions(options, denialPath);
+    browser = await chromium.launch(launchOptions);
   } catch (err) {
     const lic = licenseErrorFrom(err);
     if (lic) throw lic;
@@ -209,6 +211,16 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   if (denialPath) {
     (browser as any).__cloakDenialPath = denialPath;
     installLicenseGuard(browser, denialPath);
+  }
+  // Proxy went to Chrome as --proxy-server, so Playwright's request client has no
+  // proxy (#579). browser.newPage() and launchContext() both go through newContext.
+  if (options.proxy && !launchOptions.proxy) {
+    const origNewContext = browser.newContext.bind(browser);
+    (browser as any).newContext = async (opts?: Parameters<typeof origNewContext>[0]) => {
+      const context = await origNewContext(opts);
+      warnOnRequestClientUse(context);
+      return context;
+    };
   }
   // Headed: a bare browser.newPage() would inherit Playwright's emulated 1280x720
   // viewport -> outerWidth < innerWidth (impossible window = bot tell). Default
@@ -391,6 +403,8 @@ export async function launchPersistentContext(
     if (lic) throw lic;
     throw err;
   }
+
+  if (proxyArgs.length) warnOnRequestClientUse(context);
 
   // The persistent path hands back a context, so guard its newPage (see launch()).
   if (denialPath) {

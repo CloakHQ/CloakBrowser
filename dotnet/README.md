@@ -588,7 +588,10 @@ await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 - **SOCKS5** and **credentialed HTTP** proxies are routed through Chrome's
   `--proxy-server` with inline, URL-encoded credentials (matching the Python
   logic, including the `linux-x64` / `windows-x64` + binary-version gate for HTTP
-  inline auth).
+  inline auth). Because these are set on the browser, Playwright's own request
+  client (`context.APIRequest`, `page.APIRequest`, `route.FetchAsync()`) does not
+  use them and sends from your real IP. Make those calls from the page instead
+  (`page.EvaluateAsync("url => fetch(url).then(r => r.text())", url)`).
 - **GeoIP** looks up the proxy exit IP against MaxMind GeoLite2 and applies the
   resolved timezone/locale via binary flags.
 - **WebRTC** spoofing reuses that exit IP so `RTCPeerConnection` cannot leak the

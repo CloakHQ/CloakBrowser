@@ -313,3 +313,39 @@ export function parseProxyUrl(proxy: string): ParsedProxy {
 
   return result;
 }
+
+let requestProxyWarned = false;
+
+/** @internal Exported for testing only. */
+export function resetRequestProxyWarned(): void {
+  requestProxyWarned = false;
+}
+
+/**
+ * Warn once, on first use, that Playwright's request client does not use a proxy
+ * we passed as --proxy-server (#579). Playwright only proxies context.request when
+ * it owns the proxy. get/post/fetch, page.request and route.fetch() all funnel
+ * through context.request._innerFetch, so one instance wrap catches every path.
+ */
+export function warnOnRequestClientUse(context: unknown): void {
+  const ctx = context as any;
+  // A per-context proxy does reach the request client, so nothing leaks there.
+  if (ctx?._options?.proxy) return;
+  const req = ctx?.request;
+  // Private Playwright API: if it is ever renamed, skip rather than break.
+  if (typeof req?._innerFetch !== "function") return;
+  req._innerFetch = function (...args: unknown[]) {
+    // Self-remove so only the first call runs through us (keeps Playwright's
+    // API-call naming in traces intact for every later call).
+    delete req._innerFetch;
+    if (!requestProxyWarned) {
+      requestProxyWarned = true;
+      console.warn(
+        "[cloakbrowser] context.request / page.request / route.fetch() do not use this proxy " +
+          "(it is set on the browser, not Playwright) and will send from your real IP. " +
+          "Use page.evaluate(() => fetch(...)) for proxied requests.",
+      );
+    }
+    return req._innerFetch(...args);
+  };
+}

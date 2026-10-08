@@ -1420,6 +1420,7 @@ A: Possibly. Bot detection is an arms race. Source-level patches are harder to d
 
 **Q: Can I use my own proxy?**
 A: Yes. Pass `proxy="http://user:pass@host:port"` or `proxy="socks5://user:pass@host:port"` to `launch()`. Both HTTP and SOCKS5 proxies are supported natively.
+SOCKS5 and credentialed HTTP proxies are set on the browser, so Playwright's own request client (`context.request`, `page.request`, `route.fetch()`) does not use them and sends from your real IP. Make those calls from the page instead, e.g. `page.evaluate("url => fetch(url).then(r => r.text())", url)`, which goes through the proxy like any browser request.
 
 ## Links
 
