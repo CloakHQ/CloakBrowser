@@ -1,17 +1,18 @@
 """Unit tests for GeoIP-based timezone/locale detection."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import threading
 import time
 
 import pytest
 
-from cloakbrowser.browser import maybe_resolve_geoip
+from cloakbrowser.browser import maybe_resolve_geoip, maybe_resolve_geoip_async
 from cloakbrowser.geoip import (
     COUNTRY_LOCALE_MAP,
     DEFAULT_GEOIP_TIMEOUT_SECONDS,
     _is_private_ip,
     _resolve_exit_ip,
+    _resolve_exit_ip_async,
     _resolve_proxy_ip,
 )
 
@@ -138,6 +139,143 @@ def test_resolve_exit_ip_no_proxy_fetches_directly():
     assert ip == "5.6.7.8"
     # httpx.get called with proxy=None (direct), not through a proxy
     assert mock_get.call_args.kwargs.get("proxy") is None
+
+
+def _fake_async_client(resp):
+    """Build a mock standing in for ``httpx.AsyncClient() as client: ...``."""
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(return_value=resp)
+    return client
+
+
+async def test_resolve_exit_ip_async_no_proxy_fetches_directly():
+    """No proxy → AsyncClient constructed with proxy=None (direct)."""
+    resp = MagicMock()
+    resp.text = "5.6.7.8"
+    resp.raise_for_status = MagicMock()
+    client = _fake_async_client(resp)
+
+    with patch("httpx.AsyncClient", return_value=client) as mock_client_cls:
+        ip = await _resolve_exit_ip_async(None)
+
+    assert ip == "5.6.7.8"
+    # AsyncClient constructed with proxy=None (direct), not through a proxy
+    mock_client_cls.assert_called_once_with(proxy=None)
+
+
+async def test_resolve_exit_ip_async_through_proxy():
+    """A proxy URL is passed through to AsyncClient(proxy=...)."""
+    resp = MagicMock()
+    resp.text = "9.9.9.9"
+    resp.raise_for_status = MagicMock()
+    client = _fake_async_client(resp)
+
+    with patch("httpx.AsyncClient", return_value=client) as mock_client_cls:
+        ip = await _resolve_exit_ip_async("http://proxy:8080")
+
+    assert ip == "9.9.9.9"
+    mock_client_cls.assert_called_once_with(proxy="http://proxy:8080")
+
+
+async def test_resolve_exit_ip_async_falls_back_across_echo_services():
+    """A failure on the first echo service falls through to the next."""
+    resp = MagicMock()
+    resp.text = "1.1.1.1"
+    resp.raise_for_status = MagicMock()
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(side_effect=[Exception("boom"), resp])
+
+    with patch("httpx.AsyncClient", return_value=client):
+        ip = await _resolve_exit_ip_async(None)
+
+    assert ip == "1.1.1.1"
+    assert client.get.call_count == 2
+
+
+async def test_resolve_exit_ip_async_returns_none_when_all_fail():
+    """All echo services failing returns None instead of raising."""
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(side_effect=Exception("boom"))
+
+    with patch("httpx.AsyncClient", return_value=client):
+        ip = await _resolve_exit_ip_async(None)
+
+    assert ip is None
+
+
+async def test_resolve_geo_async_raises_when_geoip2_missing():
+    """Should raise ImportError with install instructions when geoip2 not installed."""
+    with patch.dict("sys.modules", {"geoip2": None, "geoip2.database": None}):
+        from importlib import reload
+        import cloakbrowser.geoip as geoip_mod
+        reload(geoip_mod)
+        with pytest.raises(ImportError, match=r"pip install 'cloakbrowser\[geoip\]'"):
+            await geoip_mod.resolve_proxy_geo_with_ip_async("http://10.50.96.5:8888")
+        # Restore
+        reload(geoip_mod)
+
+
+async def test_resolve_geo_async_raises_when_exit_ip_missing():
+    """Requested async GeoIP must fail instead of launching without resolved values."""
+    mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
+            with patch("cloakbrowser.geoip._resolve_exit_ip_async", return_value=None):
+                from cloakbrowser.geoip import resolve_proxy_geo_with_ip_async
+                with pytest.raises(RuntimeError, match="could not discover the egress IP"):
+                    await resolve_proxy_geo_with_ip_async(None)
+
+
+async def test_resolve_geo_async_raises_when_db_missing():
+    """A database failure must abort requested async GeoIP resolution."""
+    mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=None):
+            with patch("cloakbrowser.geoip._resolve_exit_ip_async", return_value="9.8.7.6"):
+                from cloakbrowser.geoip import resolve_proxy_geo_with_ip_async
+                with pytest.raises(RuntimeError, match="database is unavailable"):
+                    await resolve_proxy_geo_with_ip_async("http://10.50.96.5:8888")
+
+
+async def test_resolve_geo_async_raises_when_lookup_fails():
+    """A corrupt or unreadable database must abort requested async GeoIP resolution."""
+    reader = MagicMock(side_effect=ValueError("corrupt database"))
+    mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": reader})})()
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
+            with patch("cloakbrowser.geoip._resolve_exit_ip_async", return_value="9.8.7.6"):
+                from cloakbrowser.geoip import resolve_proxy_geo_with_ip_async
+                with pytest.raises(RuntimeError, match="corrupt database"):
+                    await resolve_proxy_geo_with_ip_async("http://10.50.96.5:8888")
+
+
+async def test_resolve_geo_async_succeeds(tmp_path):
+    """Happy path: exit IP + db both resolve → (timezone, locale, ip)."""
+    resp = MagicMock()
+    resp.location.time_zone = "Europe/Berlin"
+    resp.country.iso_code = "DE"
+    reader_instance = MagicMock()
+    reader_instance.__enter__ = MagicMock(return_value=reader_instance)
+    reader_instance.__exit__ = MagicMock(return_value=False)
+    reader_instance.city = MagicMock(return_value=resp)
+    mock_geoip2 = type(
+        "module", (), {"database": type("db", (), {"Reader": MagicMock(return_value=reader_instance)})}
+    )()
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=tmp_path / "db.mmdb"):
+            with patch("cloakbrowser.geoip._resolve_exit_ip_async", return_value="5.6.7.8"):
+                from cloakbrowser.geoip import resolve_proxy_geo_with_ip_async
+                tz, locale, ip = await resolve_proxy_geo_with_ip_async("http://proxy:8080")
+
+    assert tz == "Europe/Berlin"
+    assert locale == "de-DE"
+    assert ip == "5.6.7.8"
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +433,191 @@ def test_maybe_resolve_geoip_rejects_incomplete_result():
     ):
         with pytest.raises(RuntimeError, match="could not determine locale"):
             maybe_resolve_geoip(True, "http://proxy:8080", None, None)
+
+
+async def test_maybe_resolve_async_skips_when_geoip_false():
+    tz, loc, ip = await maybe_resolve_geoip_async(False, "http://proxy:8080", None, None)
+    assert tz is None
+    assert loc is None
+    assert ip is None
+
+
+async def test_maybe_resolve_async_no_proxy_uses_machine_ip():
+    """With no proxy, geoip resolves the machine's own public IP for tz/locale."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip_async",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ) as m:
+        tz, loc, ip = await maybe_resolve_geoip_async(True, None, None, None)
+    # Called with proxy_url=None → echo services resolve machine IP
+    m.assert_called_once_with(None)
+    assert tz == "Europe/Berlin"
+    assert loc == "de-DE"
+    assert ip == "5.6.7.8"  # drives --fingerprint-webrtc-ip
+
+
+async def test_maybe_resolve_async_no_proxy_both_explicit_skips_ip():
+    """No proxy + explicit tz/locale → skip the exit-IP fetch entirely."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_exit_ip_async", return_value="5.6.7.8"
+    ) as m:
+        tz, loc, ip = await maybe_resolve_geoip_async(True, None, "Europe/Berlin", "de-DE")
+    m.assert_not_called()
+    assert tz == "Europe/Berlin"
+    assert loc == "de-DE"
+    assert ip is None
+
+
+async def test_maybe_resolve_async_skips_when_both_explicit():
+    """Explicit values should still resolve exit IP for WebRTC."""
+    with patch("cloakbrowser.geoip._resolve_exit_ip_async", return_value="1.2.3.4"):
+        tz, loc, ip = await maybe_resolve_geoip_async(
+            True, "http://proxy:8080", "Europe/Berlin", "de-DE"
+        )
+    assert tz == "Europe/Berlin"
+    assert loc == "de-DE"
+    assert ip == "1.2.3.4"
+
+
+async def test_maybe_resolve_async_fills_missing_timezone():
+    """When only locale is explicit, geoip should fill timezone."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip_async",
+        return_value=("America/New_York", "en-US", "1.2.3.4"),
+    ):
+        tz, loc, ip = await maybe_resolve_geoip_async(True, "http://proxy:8080", None, "fr-FR")
+        assert tz == "America/New_York"
+        assert loc == "fr-FR"  # Explicit wins
+
+
+async def test_maybe_resolve_async_fills_missing_locale():
+    """When only timezone is explicit, geoip should fill locale."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip_async",
+        return_value=("America/New_York", "en-US", "1.2.3.4"),
+    ):
+        tz, loc, ip = await maybe_resolve_geoip_async(True, "http://proxy:8080", "Asia/Tokyo", None)
+        assert tz == "Asia/Tokyo"  # Explicit wins
+        assert loc == "en-US"
+
+
+async def test_maybe_resolve_async_fills_both():
+    """When neither is set, geoip should fill both."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip_async",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = await maybe_resolve_geoip_async(True, "http://proxy:8080", None, None)
+        assert tz == "Europe/Berlin"
+        assert loc == "de-DE"
+        assert ip == "5.6.7.8"
+
+
+async def test_maybe_resolve_async_raw_timezone_flag_wins_over_geoip():
+    """A raw --fingerprint-timezone in args counts as explicit; geoip must not clobber it."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip_async",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = await maybe_resolve_geoip_async(
+            True, "http://proxy:8080", None, None,
+            ["--fingerprint-timezone=Asia/Tokyo"],
+        )
+    assert tz == "Asia/Tokyo"  # user's raw flag survives
+    assert loc == "de-DE"  # not raw-flagged → geoip fills it
+    assert ip == "5.6.7.8"
+
+
+async def test_maybe_resolve_async_raw_lang_flag_wins_over_geoip():
+    """A raw --lang in args counts as explicit locale; geoip must not clobber it."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip_async",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = await maybe_resolve_geoip_async(
+            True, "http://proxy:8080", None, None, ["--lang=fr-FR"],
+        )
+    assert tz == "Europe/Berlin"  # not raw-flagged → geoip fills it
+    assert loc == "fr-FR"  # user's raw flag survives
+
+
+async def test_maybe_resolve_async_raw_flags_both_skip_geo_lookup():
+    """Both tz+locale raw-flagged → treated as fully explicit, only exit IP resolved."""
+    with patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip_async") as geo, patch(
+        "cloakbrowser.geoip._resolve_exit_ip_async", return_value="1.2.3.4"
+    ):
+        tz, loc, ip = await maybe_resolve_geoip_async(
+            True, "http://proxy:8080", None, None,
+            ["--fingerprint-timezone=Asia/Tokyo", "--fingerprint-locale=ja-JP"],
+        )
+    geo.assert_not_called()
+    assert tz == "Asia/Tokyo"
+    assert loc == "ja-JP"
+    assert ip == "1.2.3.4"
+
+
+async def test_maybe_resolve_async_param_beats_raw_flag():
+    """An explicit timezone= param takes precedence over a differing raw flag."""
+    with patch("cloakbrowser.geoip._resolve_exit_ip_async", return_value="1.2.3.4"), patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip_async",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = await maybe_resolve_geoip_async(
+            True, "http://proxy:8080", "America/New_York", None,
+            ["--fingerprint-timezone=Asia/Tokyo"],
+        )
+    assert tz == "America/New_York"  # param wins over raw flag
+    assert loc == "de-DE"
+
+
+async def test_maybe_resolve_async_geoip_timeout_aborts_launch(monkeypatch):
+    """A stalled requested GeoIP lookup should fail within its timeout budget."""
+    mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()
+    monkeypatch.setenv("CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS", "0.05")
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
+            start = time.monotonic()
+            with pytest.raises(RuntimeError, match="GeoIP resolution"):
+                await maybe_resolve_geoip_async(True, "http://203.0.113.10:8080", None, "fr-FR")
+            elapsed = time.monotonic() - start
+
+    assert elapsed < 0.5
+
+
+async def test_maybe_resolve_async_rejects_incomplete_result():
+    """A partial result must not silently leave Chromium defaults in use."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip_async",
+        return_value=("Europe/Berlin", None, "5.6.7.8"),
+    ):
+        with pytest.raises(RuntimeError, match="could not determine locale"):
+            await maybe_resolve_geoip_async(True, "http://proxy:8080", None, None)
+
+
+async def test_launch_async_uses_async_geoip_resolution():
+    """launch_async(geoip=True) must resolve geoip via the async helper.
+
+    Regression guard: launch_async previously called the sync maybe_resolve_geoip,
+    which blocks the event loop with sync httpx calls (and a sync DB download).
+    """
+    browser = AsyncMock()
+    pw = AsyncMock()
+    pw.chromium.launch.return_value = browser
+    pw_cm = AsyncMock()
+    pw_cm.start.return_value = pw
+
+    with patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome"), \
+         patch("playwright.async_api.async_playwright", return_value=pw_cm), \
+         patch(
+             "cloakbrowser.browser.maybe_resolve_geoip_async",
+             return_value=(None, None, None),
+         ) as mock_async_geoip, \
+         patch("cloakbrowser.browser.maybe_resolve_geoip") as mock_sync_geoip:
+        from cloakbrowser.browser import launch_async
+        await launch_async(geoip=True)
+
+    mock_async_geoip.assert_called_once()
+    mock_sync_geoip.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
