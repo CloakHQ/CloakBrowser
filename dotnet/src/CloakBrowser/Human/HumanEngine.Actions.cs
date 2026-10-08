@@ -294,6 +294,33 @@ internal sealed partial class HumanEngine
         }
         await ClickAsync(t, new ActOpts { Deadline = d, Force = o.Force, HumanConfig = o.HumanConfig }, api).ConfigureAwait(false);
         await Sleep(R(200, 450)).ConfigureAwait(false); // popup opens; eyes find the option
+        if (OperatingSystem.IsMacOS())
+        {
+            // macOS shows a native popup that ignores arrow keys sent as page
+            // input; type-ahead on the option's label still selects it.
+            var cfg = CallCfg(o.HumanConfig);
+            foreach (var ch in plan.GetProperty("labels")[0].GetString()!)
+            {
+                if (ch < 128)
+                {
+                    await TypeCharAsync(ch, cfg).ConfigureAwait(false);
+                }
+                else // no US-layout key: send the character itself, like a native layout does
+                {
+                    var session = await World.SessionAsync().ConfigureAwait(false);
+                    await session.SendAsync("Input.dispatchKeyEvent", new()
+                    {
+                        ["type"] = "keyDown", ["key"] = ch.ToString(), ["text"] = ch.ToString(), ["unmodifiedText"] = ch.ToString(),
+                    }).ConfigureAwait(false);
+                    await Sleep(RR(cfg.KeyHold)).ConfigureAwait(false);
+                    await session.SendAsync("Input.dispatchKeyEvent", new() { ["type"] = "keyUp", ["key"] = ch.ToString() }).ConfigureAwait(false);
+                }
+                await Sleep(R(60, 140)).ConfigureAwait(false); // type-ahead resets after ~1s of silence
+            }
+            await _raw.KeyPressAsync("Enter").ConfigureAwait(false);
+            await Sleep(R(80, 160)).ConfigureAwait(false);
+            return;
+        }
         var nav = plan.GetProperty("navigable").EnumerateArray().Select(x => x.GetBoolean()).ToList();
         for (int k = 0; k <= nav.Count && cur != index; k++)
         {

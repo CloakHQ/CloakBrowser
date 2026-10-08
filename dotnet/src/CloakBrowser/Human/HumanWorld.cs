@@ -35,8 +35,7 @@ internal readonly record struct EditorField(string Kind, double Dx, double Dy);
 ///
 /// Each frame gets one isolated world per document, created through
 /// <c>Page.createIsolatedWorld</c> on the CDP session that owns the frame. Into that
-/// world we install Playwright's InjectedScript and a small helper object. Nothing
-/// runs in, or is observable from, the page's main world: frame mapping uses
+/// world we install Playwright's InjectedScript and a small helper object. Frame mapping uses
 /// <c>Page.getFrameTree</c>, iframe owners are reached via <c>DOM.getFrameOwner</c>
 /// + <c>DOM.resolveNode</c>, elements live in a world-local registry of integer ids.
 /// </summary>

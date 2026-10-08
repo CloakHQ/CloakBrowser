@@ -12,7 +12,7 @@ Playwright method.  Every humanized method:
   ``click_count``, ``modifiers``, ``position``, ``trial``, ``force``,
   ``timeout`` including page defaults and ``0`` = no limit, ``strict``);
 * raises Playwright ``Error`` / ``TimeoutError`` instead of silently falling
-  back to Playwright's own (page-visible) implementation.
+  back to Playwright's stock implementation.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def _impl_page(kind: str, impl: Any) -> Any:
 def _human_for(kind: str, wrapper: Any) -> Optional[Human]:
     # No try/except: on a supported Playwright the internals below always exist
     # (checked once in _check_playwright). Swallowing an AttributeError here would
-    # silently run Playwright's own, page-visible action on a humanized page.
+    # silently run Playwright's stock action on a humanized page.
     page = _impl_page(kind, wrapper._impl_obj)
     return getattr(page, "_cloak_human", None) if page is not None else None
 
@@ -63,7 +63,7 @@ MIN_PLAYWRIGHT = (1, 53)
 
 def _check_playwright() -> None:
     """Fail loudly on a Playwright the engine cannot drive, instead of letting a
-    humanized page fall back to Playwright's own (page-visible) actions."""
+    humanized page fall back to Playwright's stock actions."""
     from importlib.metadata import PackageNotFoundError, version
 
     try:

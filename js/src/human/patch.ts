@@ -13,7 +13,7 @@
  *   `modifiers`, `position`, `trial`, `force`, `timeout` including page
  *   defaults and `0` = no limit, `strict`);
  * - throws Playwright `Error` / `TimeoutError` instead of silently falling
- *   back to Playwright's own (page-visible) implementation.
+ *   back to Playwright's stock implementation.
  *
  * playwright-core does not export its client classes, so prototypes are
  * reached through live instances: the page itself, `page.mainFrame()`,
@@ -52,8 +52,8 @@ function pageOf(kind: Kind, self: any): any {
 }
 
 function humanFor(kind: Kind, self: any): Human | null {
-  // No try/catch: swallowing an error here would run Playwright's own
-  // (page-visible) action on a humanized page.
+  // No try/catch: swallowing an error here would run Playwright's stock
+  // action on a humanized page.
   return pageOf(kind, self)?._cloakHuman ?? null;
 }
 
@@ -258,8 +258,8 @@ function install(page: Page): void {
   // ElementHandle: the class is only reachable from an instance. Every protocol
   // object is created by Connection._createRemoteObject (all supported
   // playwright-core versions), so wrap it and patch the first handle's prototype.
-  // Without this hook handle.click() would silently run Playwright's own
-  // (page-visible) action, so a missing hook is an error, not a skipped patch.
+  // Without this hook handle.click() would silently run Playwright's stock
+  // action, so a missing hook is an error, not a skipped patch.
   if (conn && !conn.__cloakEH) {
     conn.__cloakEH = true;
     const create = conn._createRemoteObject;

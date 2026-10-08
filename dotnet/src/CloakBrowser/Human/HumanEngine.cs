@@ -132,7 +132,7 @@ internal sealed class PlaywrightRawInput : IRawInput
     public Task InsertTextAsync(string text) => _k.InsertTextAsync(text);
 }
 
-/// <summary>Reads Playwright .NET internals that carry no page-visible side effect:
+/// <summary>Reads client-side Playwright .NET internals:
 /// a locator's frame and selector string, and the page's default-timeout settings.</summary>
 internal static class PlaywrightInternals
 {
@@ -181,8 +181,8 @@ internal static class PlaywrightInternals
 /// resolve (isolated world, Playwright selector engine, strict mode) -> wait for element
 /// states -> scroll into view with mouse-wheel bursts (page, iframes, containers) ->
 /// Bezier move to a point inside the visible part of the element -> hit-target check
-/// (element and every ancestor iframe) -> press / type. Nothing runs in the page's main
-/// world, nothing falls back to Playwright's own actions, and failures throw
+/// (element and every ancestor iframe) -> press / type. Nothing falls back to
+/// Playwright's stock actions, and failures throw
 /// <see cref="PlaywrightException"/> / <see cref="System.TimeoutException"/>.
 /// </summary>
 internal sealed partial class HumanEngine
@@ -343,10 +343,16 @@ internal sealed partial class HumanEngine
         if (_handleIds.TryGetValue(guid, out var cached) && cached.Frame == frame && cached.Ctx == ctx &&
             await World.CallAsync(frame, "connected", cached.Id).ConfigureAwait(false) is { ValueKind: JsonValueKind.True })
             return new Resolved(frame, cached.Id);
-        // ElementHandles carry no identity readable without the page's main world.
-        // BoundingBoxAsync is protocol-level (no page script), so find the element with
-        // exactly that border box in our world.
-        var box = await handle.BoundingBoxAsync().ConfigureAwait(false) ?? throw new RetryException("element is not visible");
+        // An ElementHandle carries no identity our context can read, so find the element
+        // with exactly its border box.
+        var box = await handle.BoundingBoxAsync().ConfigureAwait(false);
+        if (box == null)
+        {
+            // Resolved in an earlier document of this frame and gone now
+            // (a same-document navigation keeps the element, and its box).
+            if (_handleIds.TryGetValue(guid, out var old) && old.Frame == frame) throw Err("Element is not attached to the DOM");
+            throw new RetryException("element is not visible");
+        }
         var (ox, oy, _) = await World.FrameGeometryAsync(frame).ConfigureAwait(false);
         var res = (await World.CallAsync(frame, "matchRect", box.X - ox, box.Y - oy, box.Width, box.Height).ConfigureAwait(false))!.Value;
         if (res.GetProperty("count").GetInt32() != 1)

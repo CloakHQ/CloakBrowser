@@ -5,17 +5,16 @@ using System.Text.RegularExpressions;
 namespace CloakBrowser.Human;
 
 /// <summary>
-/// Playwright's own selector / actionability engine, run inside OUR isolated world.
+/// Loads Playwright's selector / actionability engine for the humanize layer.
 /// Port of <c>cloakbrowser/human/injected.py</c>.
 ///
 /// Playwright ships its InjectedScript (selector engines for role, label, text,
 /// test-id, <c>&gt;&gt;</c> chains, <c>has</c> / <c>has-text</c> filters, <c>nth</c>,
 /// <c>visible</c>, plus <c>checkElementStates</c> / <c>expectHitTarget</c>) as a string
 /// literal in its driver package (<c>.playwright/package/lib/generated/injectedScriptSource.js</c>,
-/// copied next to the app by the Microsoft.Playwright NuGet package). It is evaluated
-/// here in a CDP isolated world that only the humanize layer uses, with the two
-/// constructor hooks that touch <c>window</c> disabled, so the page observes nothing.
-/// The literal comes from the installed driver, so selector syntax always matches
+/// copied next to the app by the Microsoft.Playwright NuGet package). The humanize
+/// layer evaluates it in its own execution context. The literal comes from the
+/// installed driver, so selector syntax always matches
 /// the client that produced the selector string.
 /// </summary>
 internal static class InjectedSource

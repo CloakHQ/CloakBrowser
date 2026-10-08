@@ -10,8 +10,8 @@
  *     -> hit-target check (element itself, and every ancestor <iframe>)
  *     -> press / type
  *
- * Nothing runs in the page's main world, nothing falls back to Playwright's
- * own actions, and failures raise Playwright `Error` / `TimeoutError`.
+ * Nothing falls back to Playwright's stock actions, and failures raise
+ * Playwright `Error` / `TimeoutError`.
  */
 
 import type { Frame, Page, ElementHandle, CDPSession } from 'playwright-core';
@@ -244,11 +244,15 @@ export class Human {
     const guid: string = (handle as any)._guid;
     const cached = this.handleIds.get(guid);
     if (cached && cached[0] === frame && cached[1] === rec.ctx) return new Resolved(frame, cached[2]);
-    // ElementHandles carry no identity readable without the page's main
-    // world. boundingBox() is protocol-level (no page script), so find the
-    // element with exactly that border box in our world.
+    // An ElementHandle carries no identity our context can read, so find
+    // the element with exactly its border box.
     const box = await handle.boundingBox();
-    if (!box) throw new Retry('element is not visible');
+    if (!box) {
+      // Resolved in an earlier document of this frame and gone now
+      // (a same-document navigation keeps the element, and its box).
+      if (cached && cached[0] === frame) throw err('Element is not attached to the DOM');
+      throw new Retry('element is not visible');
+    }
     const [ox, oy] = await this.worlds.frameGeometry(frame);
     const res = await this.worlds.call(frame, 'matchRect', box.x - ox, box.y - oy, box.width, box.height);
     if (res.count !== 1) {
@@ -831,6 +835,25 @@ export class Human {
     }
     await this.click(target, { _deadline: deadline, force: opts.force, human_config: opts.human_config }, api);
     await sleepMs(rand(200, 450)); // popup opens; eyes find the option
+    if (process.platform === 'darwin') {
+      // macOS shows a native popup that ignores arrow keys sent as page
+      // input; type-ahead on the option's label still selects it.
+      const cfg = this.callCfg(opts.human_config);
+      for (const ch of p.labels[0] as string) {
+        if (ch.charCodeAt(0) < 128) {
+          await this.typeChar(ch, cfg);
+        } else { // no US-layout key: send the character itself, like a native layout does
+          const session: CDPSession = await this.worlds.session();
+          await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, unmodifiedText: ch });
+          await sleepMs(randRange(cfg.key_hold));
+          await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
+        }
+        await sleepMs(rand(60, 140)); // type-ahead resets after ~1s of silence
+      }
+      await this.raw.keyPress('Enter');
+      await sleepMs(rand(80, 160));
+      return;
+    }
     const nav: boolean[] = p.navigable;
     let cur: number = state.current;
     for (let k = 0; k <= nav.length; k++) {

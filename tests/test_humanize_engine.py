@@ -318,7 +318,7 @@ def value(target: Any, selector: str) -> str:
         selector,
     )
 
-pytestmark = pytest.mark.timeout(120)
+pytestmark = [pytest.mark.timeout(120), pytest.mark.real_browser]
 
 
 @pytest.fixture(scope="module")
@@ -483,14 +483,58 @@ def test_press_focuses_target_first(page):
     assert (value(page, "#fa"), value(page, "#fb")) == ("", "x")
 
 
-def test_handle_sharing_its_box_with_a_child_raises(page):
-    """A wrapper whose child has exactly the same border box cannot be told apart
-    by its box alone: the handle action raises instead of acting on the child."""
+def test_handle_sharing_its_box_with_a_child_acts_on_the_focusable_one(page):
+    """A wrapper and its same-size child form one nested chain. The handle acts on
+    the element a real click would focus (the focusable wrapper), not the child."""
     page.evaluate("""() => document.body.insertAdjacentHTML('beforeend',
         '<div id="wrap" tabindex="0" style="display:inline-block"><span id="inner"'
         + ' style="display:block;width:80px;height:20px">x</span></div>')""")
+    page.evaluate("() => { window.__kd = []; document.addEventListener('keydown',"
+                  " e => __kd.push(e.target.id + ':' + e.key)); }")
+    page.query_selector("#wrap").press("a")
+    assert page.evaluate("() => __kd") == ["wrap:a"]
+
+
+def test_stale_handle_after_navigation_fails_fast(page, site):
+    """A handle from a previous document raises "not attached" at once, like
+    Playwright, instead of waiting out the timeout. A same-document navigation
+    keeps the element, so its handle keeps working."""
+    h = page.query_selector("#btn")
+    h.click()
+    page.evaluate("() => history.pushState({}, '', '#spa')")
+    h.click()
+    page.goto(site.url + "index.html?second")
+    page.click("#chk")
+    t = time.monotonic()
+    with pytest.raises(Error, match="not attached"):
+        h.click(timeout=10000)
+    assert time.monotonic() - t < 5
+
+
+def test_handle_click_on_same_box_nesting(page):
+    """Common markup where parent and child share a border box: a block link
+    wrapping a same-size image, and a list item filled by its link."""
+    page.evaluate("""() => { document.body.insertAdjacentHTML('beforeend',
+        '<a id="card" href="#c" style="display:block;width:60px"><img id="thumb" width="60" height="60"'
+        + ' style="display:block" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></a>'
+        + '<ul style="width:200px;padding:0;margin:0;list-style:none"><li id="li"><a id="nav" href="#n"'
+        + ' style="display:block">nav</a></li></ul>');
+        window.__clicks = []; document.addEventListener('click', e => { __clicks.push(e.target.id); e.preventDefault(); }); }""")
+    page.query_selector("#card").click()
+    page.query_selector("#nav").click()
+    page.query_selector("#li").click()
+    assert page.evaluate("() => __clicks") == ["thumb", "nav", "nav"]
+
+
+def test_handle_sharing_its_box_with_an_unrelated_element_raises(page):
+    """Two unrelated elements stacked on the same box cannot be told apart by the
+    box alone: the handle action raises instead of guessing."""
+    page.evaluate("""() => document.body.insertAdjacentHTML('beforeend',
+        '<div style="position:relative;width:80px;height:20px">'
+        + '<span id="s1" style="position:absolute;inset:0"></span>'
+        + '<span id="s2" style="position:absolute;inset:0"></span></div>')""")
     with pytest.raises(Error, match="shares its box"):
-        page.query_selector("#wrap").press("a")
+        page.query_selector("#s1").click()
 
 
 def test_press_and_type_reach_non_focusable_targets(page):

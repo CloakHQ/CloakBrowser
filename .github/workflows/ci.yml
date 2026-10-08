@@ -45,8 +45,12 @@ jobs:
         run: cd js && npm install && npm run build
       - name: Download the binary
         run: |
+          set -o pipefail
           cd js
-          echo "CLOAKBROWSER_BINARY_PATH=$(node -e "import('./dist/index.js').then(async m => console.log(await m.ensureBinary()))" | tail -1)" >> "$GITHUB_ENV"
+          path=$(node -e "import('./dist/index.js').then(async m => console.log(await m.ensureBinary()))" | tail -1)
+          # Without a binary the browser suites skip and the job would pass having tested nothing.
+          test -x "$path" || { echo "::error::binary download failed (got: '$path')"; exit 1; }
+          echo "CLOAKBROWSER_BINARY_PATH=$path" >> "$GITHUB_ENV"
       - name: Install browser system deps
         run: cd js && npx playwright-core install-deps chromium
       - name: Run real-browser tests

@@ -1,17 +1,12 @@
 /**
- * Playwright's own selector / actionability engine, run inside OUR isolated world.
+ * Loads Playwright's selector / actionability engine for the humanize layer.
  *
  * Playwright ships its InjectedScript (selector engines for role, label, text,
  * test-id, `>>` chains, `has` / `has-text` filters, `nth`, `visible`, plus
  * `checkElementStates` / `expectHitTarget` / `fill` rules) as a string literal
- * inside playwright-core. Playwright installs it in the page's main world or
- * its utility world -- both leave page-visible traces (capture listeners,
- * `__playwright_*` CustomEvents).
- *
- * Here the very same source is evaluated in a CDP isolated world that only the
- * humanize layer uses, with the two constructor hooks that touch `window`
- * (hit-target interceptors and global-listener-removal detection) disabled.
- * The page cannot observe the installation or any query made through it.
+ * inside playwright-core. The humanize layer evaluates that same source in its
+ * own execution context, so it gets exact Playwright selector semantics and
+ * strict mode instead of re-implementing accessible-name computation.
  *
  * The literal is extracted from the installed playwright-core, so selector
  * syntax always matches the client that produced the selector string.

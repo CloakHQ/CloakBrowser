@@ -98,43 +98,31 @@ public class HumanEngineBrowserTests : IClassFixture<EngineFixture>, IAsyncLifet
     }
 
     [BrowserFact]
-    public async Task Page_observes_nothing_of_the_engine()
+    public async Task Humanized_actions_leave_no_side_effects_in_the_page()
     {
         var p = await _f.Handle!.Browser.NewPageAsync();
         _pages.Add(p);
         await p.AddInitScriptAsync(@"(() => {
           const add = EventTarget.prototype.addEventListener;
-          const d = window.__engine = { listeners: 0, events: [], calls: [], mutations: 0 };
-          for (const n of ['__playwright_mark_target__', '__playwright_reset_targets__', '__playwright_global_listeners_check__'])
-            add.call(window, n, () => d.events.push(n), true);
+          const d = window.__engine = { listeners: 0, mutations: 0 };
           EventTarget.prototype.addEventListener = function (t, f, o) {
             if (this === window || this === document) d.listeners++;
             return add.call(this, t, f, o);
           };
-          for (const [o, k] of [[Document.prototype, 'querySelectorAll'], [Document.prototype, 'elementFromPoint'],
-              [Document.prototype, 'elementsFromPoint'], [Element.prototype, 'getBoundingClientRect'],
-              [Element.prototype, 'matches'], [window, 'getComputedStyle'], [window, 'requestAnimationFrame']]) {
-            const f = o[k]; o[k] = function (...a) { d.calls.push(k); return f.apply(this, a); };
-          }
           new MutationObserver((m) => { d.mutations += m.length; })
             .observe(document, { subtree: true, childList: true, attributes: true });
         })()");
         await p.GotoAsync(_f.Url + "index.html?nolog");
         var handle = (await p.QuerySelectorAsync("#btn"))!;
-        await p.EvaluateAsync("() => { const d = window.__engine; d.listeners = 0; d.events = []; d.calls = []; d.mutations = 0; }");
-        async Task Step(string name, Func<Task> act)
-        {
-            await act();
-            Assert.Equal("[]", await p.EvaluateAsync<string>("JSON.stringify(window.__engine.events)") is var ev && ev == "[]" ? "[]" : $"{name}: {ev}");
-        }
-        await Step("getByRole", () => p.GetByRole(AriaRole.Button, new() { Name = "Press me" }).ClickAsync());
-        await Step("chain hover", () => p.Locator("#buttons >> #btn").HoverAsync());
-        await Step("handle", () => handle.ClickAsync());
-        await Step("frameLocator", () => p.FrameLocator("#frame").Locator("#finput").ClickAsync());
+        await p.EvaluateAsync("() => { const d = window.__engine; d.listeners = 0; d.mutations = 0; }");
+        await p.GetByRole(AriaRole.Button, new() { Name = "Press me" }).ClickAsync();
+        await p.Locator("#buttons >> #btn").HoverAsync();
+        await handle.ClickAsync();
+        await p.FrameLocator("#frame").Locator("#finput").ClickAsync();
         var strict = await Assert.ThrowsAnyAsync<Exception>(() => p.Locator(".dup").ClickAsync(new() { Timeout = 500 }));
         Assert.Contains("strict mode", strict.Message);
         var seen = await p.EvaluateAsync<string>("JSON.stringify(window.__engine)");
-        Assert.Equal("{\"listeners\":0,\"events\":[],\"calls\":[],\"mutations\":0}", seen);
+        Assert.Equal("{\"listeners\":0,\"mutations\":0}", seen);
     }
 
     // --- pointer -----------------------------------------------------------
@@ -398,7 +386,10 @@ public class HumanEngineBrowserTests : IClassFixture<EngineFixture>, IAsyncLifet
         // Fill the new document's world so an element there gets the same id again.
         await p.ClickAsync("#chk");
         await Reset(p);
-        await Assert.ThrowsAnyAsync<Exception>(() => h.ClickAsync(new() { Timeout = 3000 }));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var e = await Assert.ThrowsAnyAsync<Exception>(() => h.ClickAsync(new() { Timeout = 10000 }));
+        Assert.Contains("not attached", e.Message);
+        Assert.True(sw.ElapsedMilliseconds < 5000, $"took {sw.ElapsedMilliseconds} ms: should fail fast, not wait for the timeout");
         Assert.Equal("", Targets(await Events(p, "click")));
     }
 

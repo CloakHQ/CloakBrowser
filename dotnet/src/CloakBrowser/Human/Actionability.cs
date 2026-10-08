@@ -108,9 +108,8 @@ public sealed class StealthEvaluationError : StealthDomError
 /// Kept with the pre-engine signatures so existing callers keep compiling and
 /// working. Humanized actions no longer call this class: they run the same checks
 /// inside <c>HumanEngine</c> and raise Playwright errors. Here the checks run on that
-/// engine too (Playwright's InjectedScript in a CDP isolated world per frame), so
-/// they accept every Playwright selector (<c>GetByRole</c>, <c>&gt;&gt;</c> chains,
-/// filters, frame locators) and leave no page-observable trace. Failures raise the
+/// engine too, so they accept every Playwright selector (<c>GetByRole</c>,
+/// <c>&gt;&gt;</c> chains, filters, frame locators). Failures raise the
 /// typed <see cref="ActionabilityError"/> subclasses, as before.
 ///
 /// The optional <see cref="IsolatedWorld"/> arguments are accepted for source

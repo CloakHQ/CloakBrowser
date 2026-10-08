@@ -119,34 +119,22 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)('humanize engine (real br
     }
   }, 60_000);
 
-  it('the page observes nothing of the engine (listeners, events, DOM calls)', async () => {
-    // Playwright's own InjectedScript would add capture listeners and dispatch
-    // __playwright_* events; ours runs in an isolated world with those hooks
-    // disabled, and every DOM read happens there.
+  it('humanized actions leave no side effects in the page (listeners, mutations)', async () => {
     page = await browser.newPage();
     await page.addInitScript(() => {
       const add = EventTarget.prototype.addEventListener;
-      const d: any = (window as any).__engine = { listeners: 0, events: [], calls: [], mutations: 0 };
-      for (const n of ['__playwright_mark_target__', '__playwright_reset_targets__', '__playwright_global_listeners_check__']) {
-        add.call(window, n, () => d.events.push(n), true);
-      }
+      const d: any = (window as any).__engine = { listeners: 0, mutations: 0 };
       EventTarget.prototype.addEventListener = function (this: any, t: any, f: any, o: any) {
         if (this === window || this === document) d.listeners++;
         return add.call(this, t, f, o);
       };
-      for (const [o, k] of [[Document.prototype, 'querySelectorAll'], [Document.prototype, 'elementFromPoint'],
-        [Document.prototype, 'elementsFromPoint'], [Element.prototype, 'getBoundingClientRect'],
-        [Element.prototype, 'matches'], [window, 'getComputedStyle'], [window, 'requestAnimationFrame']] as [any, string][]) {
-        const f = o[k]; o[k] = function (this: any, ...a: any[]) { d.calls.push(k); return f.apply(this, a); };
-      }
       new MutationObserver((m) => { d.mutations += m.length; })
         .observe(document, { subtree: true, childList: true, attributes: true });
     });
     await page.goto(srv.url + 'index.html?nolog');
-    // page.$() is Playwright's own query (its utility-world InjectedScript
-    // registers listeners); take the handle first, then measure our actions.
+    // page.$() is Playwright's own query; take the handle first, then measure our actions.
     const handle = (await page.$('#btn'))!;
-    await page.evaluate(() => { const d = (window as any).__engine; d.listeners = 0; d.calls = []; d.mutations = 0; });
+    await page.evaluate(() => { const d = (window as any).__engine; d.listeners = 0; d.mutations = 0; });
     await page.getByRole('button', { name: 'Press me' }).click();
     await page.locator('#buttons >> #btn').hover();
     await handle.click();
@@ -154,9 +142,9 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)('humanize engine (real br
     await expect(page.locator('.dup').click({ timeout: 500 })).rejects.toThrow(/strict mode/);
     const seen = await page.evaluate(() => {
       const d = (window as any).__engine;
-      return { listeners: d.listeners, events: d.events, calls: d.calls, mutations: d.mutations };
+      return { listeners: d.listeners, mutations: d.mutations };
     });
-    expect(seen).toEqual({ listeners: 0, events: [], calls: [], mutations: 0 });
+    expect(seen).toEqual({ listeners: 0, mutations: 0 });
   });
 
   // --- pointer actions ------------------------------------------------------

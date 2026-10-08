@@ -4,8 +4,7 @@
  * Each frame gets one isolated world per document, created through
  * `Page.createIsolatedWorld` on the CDP session that owns the frame. Into that
  * world we install Playwright's InjectedScript (see injected.ts) and a small
- * helper object. Nothing here runs in, or is observable from, the page's main
- * world:
+ * helper object:
  *
  * - frame <-> CDP frame id mapping uses `Page.getFrameTree` only;
  * - iframe owner elements are reached via `DOM.getFrameOwner` +

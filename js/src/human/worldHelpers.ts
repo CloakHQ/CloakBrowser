@@ -43,9 +43,8 @@ const H = {
   el: (id) => get(id),
   adopt() { return put(this); },
   matchRect(x, y, w, h) {
-    // ElementHandles carry no DOM identity we can read without touching the
-    // main world, but Playwright reports their border box through CDP
-    // (bounding_box, page-invisible). Find the element with exactly that box.
+    // An ElementHandle carries no identity this context can read, but
+    // Playwright reports its border box. Find the element with exactly that box.
     const out = [];
     const visit = (root) => {
       for (const e of root.querySelectorAll('*')) {
@@ -56,11 +55,18 @@ const H = {
       }
     };
     visit(document);
-    // Exactly one element must have this box. A wrapper and its child with the
-    // same box (or two overlapping siblings) are ambiguous: the caller raises
-    // rather than guessing and acting on the wrong one.
-    if (out.length !== 1) return { count: out.length };
-    return { count: 1, id: put(out[0]) };
+    if (out.length < 2) return out.length ? { count: 1, id: put(out[0]) } : { count: 0 };
+    // A wrapper and its same-size descendants form one nested chain: a click
+    // lands the same on any of them. Take the element a real click would focus
+    // (the deepest focusable one), else the outermost. Unrelated elements that
+    // share the box stay ambiguous and the caller raises.
+    const depth = (e) => { let d = 0; for (let n = e; n; n = parentOrHost(n)) d++; return d; };
+    const within = (a, e) => { for (let n = e; n; n = parentOrHost(n)) if (n === a) return true; return false; };
+    const chain = out.map((e) => [depth(e), e]).sort((a, b) => a[0] - b[0]).map((p) => p[1]);
+    for (let i = 1; i < chain.length; i++) if (!within(chain[i - 1], chain[i])) return { count: out.length };
+    const focusable = chain.filter((e) => !e.disabled && e.matches('a[href], area[href], button, input:not([type="hidden"]), '
+      + 'select, textarea, iframe, summary, [tabindex], [contenteditable]:not([contenteditable="false"])'));
+    return { count: 1, id: put(focusable.length ? focusable[focusable.length - 1] : chain[0]) };
   },
   release(ids) { for (const id of ids) els.delete(id); },
   resolve(selector, strict, rootId) {
@@ -224,7 +230,7 @@ const H = {
     if (remaining.length) return { retry: 'did not find some options' };
     return { targets, multiple: sel.multiple, listbox: sel.multiple || sel.size > 1,
              navigable: opts.map(o => enabled(o) && !o.hidden && getComputedStyle(o).display !== 'none'),
-             values: targets.map(i => opts[i].value) };
+             values: targets.map(i => opts[i].value), labels: targets.map(i => norm(opts[i].label)) };
   },
   optionId(id, index) { const sel = I.retarget(get(id), 'follow-label') || get(id); return put(sel.options[index]); },
   selectState(id) {

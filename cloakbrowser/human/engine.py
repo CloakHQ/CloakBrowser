@@ -10,13 +10,14 @@ both the sync and the async Playwright API:
       -> hit-target check (element itself, and every ancestor <iframe>)
       -> press / type
 
-Nothing runs in the page's main world, nothing falls back to Playwright's own
-actions, and failures raise Playwright ``Error`` / ``TimeoutError``.
+Nothing falls back to Playwright's stock actions, and failures raise
+Playwright ``Error`` / ``TimeoutError``.
 """
 
 from __future__ import annotations
 
 import re
+import sys
 
 import asyncio
 import math
@@ -248,11 +249,14 @@ class Human:
         cached = self._handle_ids.get(handle._guid)
         if cached and cached[0] is frame and cached[1] == rec.ctx:
             return Resolved(frame, cached[2])
-        # ElementHandles carry no identity readable without the page's main
-        # world. Playwright's bounding_box is protocol-level (no page script),
-        # so find the element with exactly that border box in our world.
+        # An ElementHandle carries no identity our context can read, so find
+        # the element with exactly its border box.
         box = await handle.bounding_box()
         if box is None:
+            if cached and cached[0] is frame:
+                # Resolved in an earlier document of this frame and gone now
+                # (a same-document navigation keeps the element, and its box).
+                raise Error("Element is not attached to the DOM")
             raise _Retry("element is not visible")
         ox, oy, _ = await self.worlds.frame_geometry(frame)
         res = await self.worlds.call(frame, "matchRect", box["x"] - ox, box["y"] - oy,
@@ -878,6 +882,22 @@ class Human:
         await self.click(target, {"_deadline": deadline, "force": opts.get("force"),
                                   "human_config": opts.get("human_config")}, api=api)
         await sleep_ms(rand(200, 450))  # popup opens; eyes find the option
+        if sys.platform == "darwin":
+            # macOS shows a native popup that ignores arrow keys sent as page
+            # input; type-ahead on the option's label still selects it.
+            for ch in p["labels"][0]:
+                if ch.isascii():
+                    await self._type_char(ch, cfg)
+                else:  # no US-layout key: send the character itself, like a native layout does
+                    session = await self.worlds.session()
+                    await session.send("Input.dispatchKeyEvent",
+                                       {"type": "keyDown", "key": ch, "text": ch, "unmodifiedText": ch})
+                    await sleep_ms(rand_range(cfg.key_hold))
+                    await session.send("Input.dispatchKeyEvent", {"type": "keyUp", "key": ch})
+                await sleep_ms(rand(60, 140))  # type-ahead resets after ~1s of silence
+            await self.keyboard.press("Enter")
+            await sleep_ms(rand(80, 160))
+            return
         nav = p["navigable"]
         cur = state["current"]
         for _ in range(len(nav) + 1):
