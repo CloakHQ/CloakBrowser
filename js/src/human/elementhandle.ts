@@ -26,6 +26,7 @@ import {
   ensureActionableHandle, checkPointerEventsHandle,
   CHECKS_CLICK, CHECKS_HOVER, CHECKS_INPUT, CHECKS_FOCUS, CHECKS_CHECK,
 } from './actionability.js';
+import { capTimeout, timeoutBudget } from './timeout.js';
 
 // --- Platform-aware select-all shortcut ---
 const SELECT_ALL = process.platform === 'darwin' ? 'Meta+a' : 'Control+a';
@@ -194,12 +195,11 @@ export function patchSingleElementHandle(
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const force = options?.force ?? false;
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    if (!force) await ensureActionableHandle(el, CHECKS_CLICK, remainingMs(), force);
+    const budget = timeoutBudget(timeout);
+    if (!force) await ensureActionableHandle(el, CHECKS_CLICK, budget, force);
     const info = await moveToElement(callCfg);
     if (!info) return origElClick(options);
-    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, Math.min(remainingMs(), 5000));
+    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, capTimeout(budget, 5000));
     await humanClick(raw, info.isInp, callCfg);
   };
 
@@ -216,12 +216,11 @@ export function patchSingleElementHandle(
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const force = options?.force ?? false;
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    if (!force) await ensureActionableHandle(el, CHECKS_CLICK, remainingMs(), force);
+    const budget = timeoutBudget(timeout);
+    if (!force) await ensureActionableHandle(el, CHECKS_CLICK, budget, force);
     const info = await moveToElement(callCfg);
     if (!info) return origElDblclick(options);
-    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, Math.min(remainingMs(), 5000));
+    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, capTimeout(budget, 5000));
     await raw.down({ clickCount: 2 });
     await sleep(rand(30, 60));
     await raw.up({ clickCount: 2 });
@@ -237,9 +236,8 @@ export function patchSingleElementHandle(
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const force = options?.force ?? false;
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    if (!force) await ensureActionableHandle(el, CHECKS_HOVER, remainingMs(), force);
+    const budget = timeoutBudget(timeout);
+    if (!force) await ensureActionableHandle(el, CHECKS_HOVER, budget, force);
     const info = await moveToElement(callCfg);
     if (!info) return origElHover(options);
   };
@@ -252,12 +250,11 @@ export function patchSingleElementHandle(
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const force = (options as any)?.force ?? false;
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    if (!force) await ensureActionableHandle(el, CHECKS_INPUT, remainingMs(), force);
+    const budget = timeoutBudget(timeout);
+    if (!force) await ensureActionableHandle(el, CHECKS_INPUT, budget, force);
     const info = await moveToElement(callCfg);
     if (!info) return origElType(text, options);
-    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, Math.min(remainingMs(), 5000));
+    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, capTimeout(budget, 5000));
     await humanClick(raw, info.isInp, callCfg);
     await sleep(rand(100, 250));
     let cdpSession: CDPSession | null = null;
@@ -277,12 +274,11 @@ export function patchSingleElementHandle(
     const callCfg = mergeConfig(cfg, options?.human_config ?? options);
     const force = options?.force ?? false;
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    if (!force) await ensureActionableHandle(el, CHECKS_INPUT, remainingMs(), force);
+    const budget = timeoutBudget(timeout);
+    if (!force) await ensureActionableHandle(el, CHECKS_INPUT, budget, force);
     const info = await moveToElement(callCfg);
     if (!info) return origElFill(value, options);
-    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, Math.min(remainingMs(), 5000));
+    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, capTimeout(budget, 5000));
     await humanClick(raw, info.isInp, callCfg);
     await sleep(rand(100, 250));
     await originals.keyboardPress(SELECT_ALL);
@@ -312,9 +308,8 @@ export function patchSingleElementHandle(
   }) => {
     const force = options?.force ?? false;
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    if (!force) await ensureActionableHandle(el, CHECKS_FOCUS, remainingMs(), force);
+    const budget = timeoutBudget(timeout);
+    if (!force) await ensureActionableHandle(el, CHECKS_FOCUS, budget, force);
     const info = await moveToElement();
     if (!info) return origElSelectOption(values, options);
     await humanClick(raw, false, cfg);
@@ -332,9 +327,8 @@ export function patchSingleElementHandle(
   }) => {
     const force = options?.force ?? false;
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    if (!force) await ensureActionableHandle(el, CHECKS_CHECK, remainingMs(), force);
+    const budget = timeoutBudget(timeout);
+    if (!force) await ensureActionableHandle(el, CHECKS_CHECK, budget, force);
     try {
       const checked = await el.isChecked();
       if (checked) return;
@@ -343,7 +337,7 @@ export function patchSingleElementHandle(
     }
     const info = await moveToElement();
     if (!info) return origElCheck(options);
-    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, Math.min(remainingMs(), 5000));
+    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, capTimeout(budget, 5000));
     await humanClick(raw, info.isInp, cfg);
   };
 
@@ -357,9 +351,8 @@ export function patchSingleElementHandle(
   }) => {
     const force = options?.force ?? false;
     const timeout = options?.timeout ?? 30000;
-    const deadline = Date.now() + timeout;
-    const remainingMs = () => Math.max(0, deadline - Date.now());
-    if (!force) await ensureActionableHandle(el, CHECKS_CHECK, remainingMs(), force);
+    const budget = timeoutBudget(timeout);
+    if (!force) await ensureActionableHandle(el, CHECKS_CHECK, budget, force);
     try {
       const checked = await el.isChecked();
       if (!checked) return;
@@ -368,7 +361,7 @@ export function patchSingleElementHandle(
     }
     const info = await moveToElement();
     if (!info) return origElUncheck(options);
-    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, Math.min(remainingMs(), 5000));
+    if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, capTimeout(budget, 5000));
     await humanClick(raw, info.isInp, cfg);
   };
 
@@ -383,9 +376,8 @@ export function patchSingleElementHandle(
     }) => {
       const force = options?.force ?? false;
       const timeout = options?.timeout ?? 30000;
-      const deadline = Date.now() + timeout;
-      const remainingMs = () => Math.max(0, deadline - Date.now());
-      if (!force) await ensureActionableHandle(el, CHECKS_CHECK, remainingMs(), force);
+      const budget = timeoutBudget(timeout);
+      if (!force) await ensureActionableHandle(el, CHECKS_CHECK, budget, force);
       try {
         const current = await el.isChecked();
         if (current === checked) return;
@@ -394,7 +386,7 @@ export function patchSingleElementHandle(
       }
       const info = await moveToElement();
       if (!info) return origElSetChecked(checked, options);
-      if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, Math.min(remainingMs(), 5000));
+      if (!force) await checkPointerEventsHandle(el, cursor.x, cursor.y, capTimeout(budget, 5000));
       await humanClick(raw, info.isInp, cfg);
     };
   }
