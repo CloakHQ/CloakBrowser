@@ -130,25 +130,3 @@ public static class Humanize
             return (IPage)new HumanizedPage(p, cursor, cfg);
         }).ToList();
 }
-
-/// <summary>
-/// Shared helpers for reading Force/Timeout/Delay out of per-action Playwright option
-/// objects, which expose these properties but have no common base.
-/// </summary>
-internal static class OptionReader
-{
-    public static bool Force(object? options) =>
-        options?.GetType().GetProperty("Force")?.GetValue(options) is bool b && b;
-
-    public static double Timeout(object? options)
-    {
-        var v = options?.GetType().GetProperty("Timeout")?.GetValue(options);
-        return v is float f ? f : v is double d ? d : 30000;
-    }
-
-    public static float? Delay(object? options)
-    {
-        var v = options?.GetType().GetProperty("Delay")?.GetValue(options);
-        return v is float f ? f : v is double d ? (float)d : null;
-    }
-}

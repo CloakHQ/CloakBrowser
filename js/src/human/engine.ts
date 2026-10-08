@@ -22,7 +22,6 @@ import { bezier, easeInOut, randomControlPoints, clickTarget } from './mouse.js'
 import * as fields from './fields.js';
 import { HELPERS, StaleElement, Worlds, intersect, type Rect } from './world.js';
 
-export const ENTER_FRAME = ' >> internal:control=enter-frame >> ';
 const ENTER_FRAME_SPLIT = /\s*>>\s*internal:control=enter-frame\s*>>\s*/;
 
 const CLICK_STATES = ['visible', 'enabled', 'stable'];
@@ -688,10 +687,6 @@ export class Human {
       }
     }
     if (value) await this.typeText(value, cfg, r.frame, info, undefined);
-  }
-
-  async clear(target: Target, opts: Opts, api = 'clear'): Promise<void> {
-    await this.fill(target, '', opts, api);
   }
 
   async setChecked(target: Target, checked: boolean, opts: Opts, api: string): Promise<void> {

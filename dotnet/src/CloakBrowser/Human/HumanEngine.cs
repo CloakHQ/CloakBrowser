@@ -187,7 +187,6 @@ internal static class PlaywrightInternals
 /// </summary>
 internal sealed partial class HumanEngine
 {
-    public const string EnterFrame = " >> internal:control=enter-frame >> ";
     // Microsoft.Playwright .NET joins FrameLocator parts with an extra space
     // ("enter-frame  >> "), so split on the marker with any surrounding whitespace.
     private static readonly System.Text.RegularExpressions.Regex EnterFrameSplit =
@@ -215,7 +214,6 @@ internal sealed partial class HumanEngine
     public HumanConfig Config { get; }
     public CursorPosition Cursor { get; }
     public HumanWorld World { get; }
-    public IRawInput Raw => _raw;
     public IPage Page => _page;
 
     private static Task Sleep(double ms) => ms > 0 ? Task.Delay(TimeSpan.FromMilliseconds(ms)) : Task.CompletedTask;

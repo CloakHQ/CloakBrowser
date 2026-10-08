@@ -280,7 +280,6 @@ def _wrap(kind: str, cls: type, name: str, handler: Handler, is_async: bool) -> 
                 return orig(self, *args, **kwargs)
             return self._sync(handler(h, self._impl_obj, bind(self, args, kwargs, human_config)))
 
-    wrapper.__cloak_humanized__ = True  # type: ignore[attr-defined]
     setattr(cls, name, wrapper)
 
 

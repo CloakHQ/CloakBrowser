@@ -157,7 +157,6 @@ public sealed partial class HumanizedPage : IPage
     public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<SelectOptionValue> values, PageSelectOptionOptions? options = null) =>
         Select(selector, SelectValues.Of(values), options);
 
-    private static IElementHandle Unwrap(IElementHandle h) => h is HumanizedElementHandle hh ? hh.Original : h;
     private static ILocator Unwrap(ILocator l) => l is HumanizedLocator hl ? hl.Original : l;
 
     // #549: Playwright down-casts ILocator args to concrete Locator; unwrap ours first.

@@ -41,7 +41,6 @@ const contentsBox = (root) => {
 const parentOrHost = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null;
 const H = {
   el: (id) => get(id),
-  adopt() { return put(this); },
   matchRect(x, y, w, h) {
     // An ElementHandle carries no identity this context can read, but
     // Playwright reports its border box. Find the element with exactly that box.
@@ -68,7 +67,6 @@ const H = {
       + 'select, textarea, iframe, summary, [tabindex], [contenteditable]:not([contenteditable="false"])'));
     return { count: 1, id: put(focusable.length ? focusable[focusable.length - 1] : chain[0]) };
   },
-  release(ids) { for (const id of ids) els.delete(id); },
   resolve(selector, strict, rootId) {
     const root = rootId ? get(rootId) : document;
     let parsed, all;
@@ -79,17 +77,6 @@ const H = {
       return { status: 'strict', message: I.strictModeViolationError(parsed, all).message };
     return { status: 'ok', id: put(all[0]), count: all.length };
   },
-  fromPath(path) {
-    let cur = document;
-    for (const step of path) {
-      if (step === 'S') { cur = cur.shadowRoot; if (!cur) return { status: 'closed-shadow' }; continue; }
-      cur = cur.childNodes[step];
-      if (!cur) return { status: 'none' };
-    }
-    if (cur.nodeType !== 1) return { status: 'none' };
-    return { status: 'ok', id: put(cur) };
-  },
-  retarget(id, behavior) { const t = I.retarget(get(id), behavior); return t ? put(t) : 0; },
   info(id) {
     const e = get(id);
     const t = I.retarget(e, 'follow-label') || e;
@@ -175,16 +162,6 @@ const H = {
   hit(id, x, y) {
     const r = I.expectHitTarget({ x, y }, get(id));
     return r === 'done' ? null : r.hitTargetDescription;
-  },
-  fill(id, value) {
-    try { return { result: I.fill(get(id), value) }; } catch (err) { return { error: err.message }; }
-  },
-  select(id, options, elementIds) {
-    const opts = options.concat(elementIds.map(get));
-    try {
-      const r = I.selectOptions(get(id), opts);
-      return Array.isArray(r) ? { values: r } : { error: String(r) };
-    } catch (err) { return { error: err.message }; }
   },
   focus(id) { const e = I.retarget(get(id), 'follow-label') || get(id); I.focusNode(e, false); return true; },
   caretAtEnd(id) {

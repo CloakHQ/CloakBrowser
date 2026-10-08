@@ -33,7 +33,6 @@ from .keyboard import NEARBY_KEYS, SHIFT_SYMBOLS, _SHIFT_SYMBOL_CODES, _SHIFT_SY
 from .mouse import Point, _bezier, _ease_in_out, _random_control_points, click_target
 from .world import HELPERS, StaleElement, Worlds, intersect
 
-ENTER_FRAME = " >> internal:control=enter-frame >> "
 _ENTER_FRAME_SPLIT = re.compile(r"\s*>>\s*internal:control=enter-frame\s*>>\s*")
 
 CLICK_STATES = ["visible", "enabled", "stable"]
@@ -126,7 +125,6 @@ class Human:
         self.keyboard = page.keyboard
         self._platform: Optional[str] = None
         self._handle_ids: Dict[str, Tuple[Any, int, int]] = {}
-        self._buttons_down: set = set()
 
     # -- configuration ------------------------------------------------------
 
@@ -605,9 +603,6 @@ class Human:
         await self.pointer_action(api, target, opts, HOVER_STATES, is_input_hint=False,
                                   hold=opts.get("modifiers"))
 
-    async def tap(self, target: Target, opts: dict) -> None:
-        await self.click(target, {k: v for k, v in opts.items() if k != "click_count"}, api="tap")
-
     async def focus_element(self, target: Target, opts: dict, api: str, cfg: HumanConfig,
                             deadline: _Deadline, require_focus: bool = True) -> Tuple[Resolved, bool]:
         """Focus by a human click unless already focused.
@@ -718,11 +713,7 @@ class Human:
         if value:
             await self.type_text(value, cfg, r.frame, info, None)
 
-    async def clear(self, target: Target, opts: dict) -> None:
-        await self.fill(target, "", opts, api="clear")
-
     async def set_checked(self, target: Target, checked: bool, opts: dict, api: str) -> None:
-        cfg = self.call_cfg(opts.get("human_config"))
         deadline = self.deadline(target, opts)
         r = await self.wait_for(target, CLICK_STATES, deadline, api, bool(opts.get("force")))
         state = await self.worlds.call(r.frame, "checked", r.id)

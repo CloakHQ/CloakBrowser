@@ -99,9 +99,6 @@ public sealed partial class HumanizedLocator : ILocator
     public Task<IReadOnlyList<string>> SelectOptionAsync(IEnumerable<SelectOptionValue> values, LocatorSelectOptionOptions? options = null) =>
         Select(SelectValues.Of(values), options);
 
-    private static IElementHandle Unwrap(IElementHandle handle) =>
-        handle is HumanizedElementHandle h ? h.Original : handle;
-
     // -----------------------------------------------------------------------
     // Locator-returning members - re-wrap so chains stay humanized.
     // -----------------------------------------------------------------------

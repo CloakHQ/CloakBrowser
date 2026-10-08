@@ -1,5 +1,4 @@
 using CloakBrowser.Human;
-using Microsoft.Playwright;
 using Xunit;
 
 namespace CloakBrowser.Tests.HumanEngine;

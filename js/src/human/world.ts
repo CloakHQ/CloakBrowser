@@ -160,8 +160,6 @@ export class Worlds {
     return { session: prec.session, cdpId, ctx: null };
   }
 
-  async cdpFrameId(frame: Frame): Promise<string> { return (await this.locate(frame)).cdpId; }
-
   async frameForCdpId(parent: Frame, cdpId: string): Promise<Frame | null> {
     for (const child of parent.childFrames()) {
       try { if ((await this.locate(child)).cdpId === cdpId) return child; } catch { /* skip */ }
@@ -234,26 +232,6 @@ export class Worlds {
     return [rec.session, obj.objectId];
   }
 
-  /** Register the DOM node `backendNodeId` in `frame`'s world. */
-  async adopt(frame: Frame, backendNodeId: number): Promise<number> {
-    const rec = await this.ready(frame);
-    let obj: any;
-    try {
-      obj = (await rec.session.send('DOM.resolveNode', { backendNodeId, executionContextId: rec.ctx! } as any) as any).object;
-    } catch { throw new StaleElement(); }
-    let res: any;
-    try {
-      res = await rec.session.send('Runtime.callFunctionOn', {
-        objectId: obj.objectId, returnByValue: true,
-        functionDeclaration: `function () { return globalThis.${HELPERS}.adopt.call(this); }`,
-      });
-    } finally {
-      await release(rec.session, obj.objectId);
-    }
-    if (res.exceptionDetails) throw new StaleElement();
-    return res.result.value;
-  }
-
   /**
    * Segments of a native date/time editor in visual order, with centres
    * relative to the input's border box. They live in the input's closed
@@ -286,15 +264,6 @@ export class Worlds {
     await walk(node);
     out.sort((a, b) => (Math.round(a.dy / 4) - Math.round(b.dy / 4)) || (a.dx - b.dx));
     return out;
-  }
-
-  /** Register `frame`'s <iframe> element in the parent frame's world. */
-  async ownerElement(frame: Frame): Promise<number> {
-    const rec = await this.locate(frame);
-    const parent = frame.parentFrame()!;
-    const prec = await this.ready(parent);
-    const owner: any = await prec.session.send('DOM.getFrameOwner', { frameId: rec.cdpId });
-    return this.adopt(parent, owner.backendNodeId);
   }
 
   /** Child frame owned by the <iframe> element `id` in `frame`. */

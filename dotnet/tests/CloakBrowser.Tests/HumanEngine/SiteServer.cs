@@ -129,10 +129,8 @@ public sealed class SiteServer
 <section id="text">
   <h4>Text inputs</h4>
   <input id="name" value="firstname">
-  <input id="long" value="hello world">
   <!-- Masked field: the page strips anything that is not hex (card/IBAN/serial-style mask). -->
   <input id="hex" oninput="this.value=this.value.replace(/[^0-9a-f]/gi,'')">
-  <textarea id="ta">old text</textarea>
 </section>
 <section id="special">
   <h4>Non-text inputs</h4>

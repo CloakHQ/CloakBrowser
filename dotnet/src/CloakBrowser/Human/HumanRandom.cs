@@ -4,7 +4,7 @@ namespace CloakBrowser.Human;
 /// Random and timing utilities for the humanize layer.
 /// Mirrors the helpers at the bottom of Python <c>cloakbrowser/human/config.py</c>
 /// (<c>rand</c>, <c>rand_int</c>, <c>rand_range</c>, <c>rand_int_range</c>,
-/// <c>sleep_ms</c>, <c>async_sleep_ms</c>), plus a <c>Choice</c> helper used by
+/// <c>sleep_ms</c>), plus a <c>Choice</c> helper used by
 /// the keyboard mistype simulation.
 /// </summary>
 /// <remarks>

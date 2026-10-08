@@ -39,8 +39,6 @@ internal sealed class HumanCursor
     /// <summary>Kept for API compatibility: worlds are created lazily per frame.</summary>
     public Task InitStealthAsync() => Task.CompletedTask;
 
-    public void InvalidateStealth() => Engine.World.Invalidate();
-
     public async Task EnsureInitializedAsync(HumanConfig cfg)
     {
         try { await EngineFor(cfg).EnsureCursorAsync(cfg).ConfigureAwait(false); }

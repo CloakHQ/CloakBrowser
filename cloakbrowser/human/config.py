@@ -248,10 +248,3 @@ def sleep_ms(ms: float) -> None:
     """Sleep for `ms` milliseconds."""
     if ms > 0:
         time.sleep(ms / 1000.0)
-
-
-async def async_sleep_ms(ms: float) -> None:
-    """Async sleep for `ms` milliseconds."""
-    if ms > 0:
-        import asyncio
-        await asyncio.sleep(ms / 1000.0)

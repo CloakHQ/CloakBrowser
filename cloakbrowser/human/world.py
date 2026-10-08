@@ -68,7 +68,6 @@ const contentsBox = (root) => {
 const parentOrHost = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null;
 const H = {
   el: (id) => get(id),
-  adopt() { return put(this); },
   matchRect(x, y, w, h) {
     // An ElementHandle carries no identity this context can read, but
     // Playwright reports its border box. Find the element with exactly that box.
@@ -95,7 +94,6 @@ const H = {
       + 'select, textarea, iframe, summary, [tabindex], [contenteditable]:not([contenteditable="false"])'));
     return { count: 1, id: put(focusable.length ? focusable[focusable.length - 1] : chain[0]) };
   },
-  release(ids) { for (const id of ids) els.delete(id); },
   resolve(selector, strict, rootId) {
     const root = rootId ? get(rootId) : document;
     let parsed, all;
@@ -106,17 +104,6 @@ const H = {
       return { status: 'strict', message: I.strictModeViolationError(parsed, all).message };
     return { status: 'ok', id: put(all[0]), count: all.length };
   },
-  fromPath(path) {
-    let cur = document;
-    for (const step of path) {
-      if (step === 'S') { cur = cur.shadowRoot; if (!cur) return { status: 'closed-shadow' }; continue; }
-      cur = cur.childNodes[step];
-      if (!cur) return { status: 'none' };
-    }
-    if (cur.nodeType !== 1) return { status: 'none' };
-    return { status: 'ok', id: put(cur) };
-  },
-  retarget(id, behavior) { const t = I.retarget(get(id), behavior); return t ? put(t) : 0; },
   info(id) {
     const e = get(id);
     const t = I.retarget(e, 'follow-label') || e;
@@ -202,16 +189,6 @@ const H = {
   hit(id, x, y) {
     const r = I.expectHitTarget({ x, y }, get(id));
     return r === 'done' ? null : r.hitTargetDescription;
-  },
-  fill(id, value) {
-    try { return { result: I.fill(get(id), value) }; } catch (err) { return { error: err.message }; }
-  },
-  select(id, options, elementIds) {
-    const opts = options.concat(elementIds.map(get));
-    try {
-      const r = I.selectOptions(get(id), opts);
-      return Array.isArray(r) ? { values: r } : { error: String(r) };
-    } catch (err) { return { error: err.message }; }
   },
   focus(id) { const e = I.retarget(get(id), 'follow-label') || get(id); I.focusNode(e, false); return true; },
   caretAtEnd(id) {
@@ -360,9 +337,6 @@ class Worlds:
             raise Error("cloakbrowser humanize: could not map the frame to a CDP frame")
         return _FrameRec(prec.session, cdp_id)
 
-    async def cdp_frame_id(self, frame: Any) -> str:
-        return (await self._locate(frame)).cdp_id
-
     async def frame_for_cdp_id(self, parent: Any, cdp_id: str) -> Optional[Any]:
         for child in parent.child_frames:
             try:
@@ -438,26 +412,6 @@ class Worlds:
         obj = await self._raw_eval(rec.session, rec.ctx, f"{HELPERS}.el({int(element_id)})", by_value=False)
         return rec.session, obj["objectId"]
 
-    async def adopt(self, frame: Any, backend_node_id: int) -> int:
-        """Register the DOM node ``backend_node_id`` in ``frame``'s world."""
-        rec = await self._ready(frame)
-        try:
-            obj = (await rec.session.send("DOM.resolveNode", {
-                "backendNodeId": backend_node_id, "executionContextId": rec.ctx,
-            }))["object"]
-        except Error as exc:
-            raise StaleElement() from exc
-        try:
-            res = await rec.session.send("Runtime.callFunctionOn", {
-                "objectId": obj["objectId"], "returnByValue": True,
-                "functionDeclaration": f"function () {{ return globalThis.{HELPERS}.adopt.call(this); }}",
-            })
-        finally:
-            await _release(rec.session, obj["objectId"])
-        if "exceptionDetails" in res:
-            raise StaleElement()
-        return res["result"]["value"]
-
     async def editor_fields(self, frame: Any, element_id: int) -> List[Dict[str, Any]]:
         """Segments of a native date/time editor (``<input type=date>`` ...) in
         visual order, with centres relative to the input's border box.
@@ -487,13 +441,6 @@ class Worlds:
         await walk(node)
         out.sort(key=lambda f: (round(f["dy"] / 4), f["dx"]))
         return out
-
-    async def owner_element(self, frame: Any) -> int:
-        """Register ``frame``'s <iframe> element in the parent frame's world."""
-        rec = await self._locate(frame)
-        prec = await self._ready(frame.parent_frame)
-        owner = await prec.session.send("DOM.getFrameOwner", {"frameId": rec.cdp_id})
-        return await self.adopt(frame.parent_frame, owner["backendNodeId"])
 
     async def content_frame(self, frame: Any, element_id: int) -> Optional[Any]:
         """Child frame owned by the <iframe> element ``element_id`` in ``frame``."""
