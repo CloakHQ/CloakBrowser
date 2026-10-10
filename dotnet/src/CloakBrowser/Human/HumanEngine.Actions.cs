@@ -292,16 +292,21 @@ internal sealed partial class HumanEngine
             await HoverAsync(t, new ActOpts { Deadline = d, HumanConfig = o.HumanConfig }, api).ConfigureAwait(false);
             return;
         }
-        await ClickAsync(t, new ActOpts { Deadline = d, Force = o.Force, HumanConfig = o.HumanConfig }, api).ConfigureAwait(false);
-        await Sleep(R(200, 450)).ConfigureAwait(false); // popup opens; eyes find the option
-        var cfg = CallCfg(o.HumanConfig);
         bool mac = OperatingSystem.IsMacOS(); // a macOS host's native popup ignores arrow keys
         var ta = await World.CallAsync(r.Frame, "typeAheadPlan", r.Id, index.Value, mac ? 0 : 3).ConfigureAwait(false);
         if (ta is not { ValueKind: JsonValueKind.Object } p) throw Err($"{api}: Error: no option of this dropdown can be reached");
+        bool viaHome = p.TryGetProperty("home", out var home) && home.GetBoolean();
+        if (mac && viaHome && p.GetProperty("label").GetString()!.Any(char.IsSurrogate))
+            throw Err($"{api}: Error: this option's label has an emoji or similar character that cannot be typed, and a " +
+                      "macOS dropdown ignores arrow keys, so it cannot be picked with human input; select it on the " +
+                      "original page (Humanize.Unwrap(page).SelectOptionAsync) if a programmatic selection is acceptable");
+        await ClickAsync(t, new ActOpts { Deadline = d, Force = o.Force, HumanConfig = o.HumanConfig }, api).ConfigureAwait(false);
+        await Sleep(R(200, 450)).ConfigureAwait(false); // popup opens; eyes find the option
+        var cfg = CallCfg(o.HumanConfig);
         int n = p.GetProperty("arrows").GetInt32();
         var walk = Enumerable.Repeat(n > 0 ? "ArrowDown" : "ArrowUp", Math.Abs(n));
         var keys = new List<string>();
-        if (p.TryGetProperty("home", out var home) && home.GetBoolean())
+        if (viaHome)
         {
             // No name prefix is unique (duplicate labels): Home, then walk; on macOS type the whole label.
             if (mac) keys.AddRange(p.GetProperty("label").GetString()!.Select(c => c.ToString()));

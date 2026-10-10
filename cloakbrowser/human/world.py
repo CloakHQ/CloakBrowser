@@ -266,6 +266,8 @@ const H = {
         const cost = k + Math.abs(n) + (a === target ? 0 : 1); // prefer the option's own name
         if (best && cost >= best.cost) break;
         const s = keys[a].slice(0, k);
+        // Blink takes one UTF-16 unit per key and drops a surrogate: an emoji can't be typed.
+        if (/[\uD800-\uDFFF]/.test(s)) break;
         // A run of one letter ('aa', 'aaa') cycles from the highlighted row instead.
         if (/^(.)\1+$/.test(s) || s.endsWith(' ')) continue;
         if (unique(s) === a) { best = { cost, typed: s, arrows: n }; break; }

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.server
 import socketserver
+import sys
 import threading
 import time
 from typing import Any
@@ -672,10 +673,26 @@ def test_select_option_on_a_long_dropdown_types_ahead(page):
     assert page.select_option("#long", "v150") == ["v150"]
     keys = [e["key"] for e in events(page, "keydown")]
     assert "ArrowDown" not in keys and len(keys) <= 13, keys
-    assert page.evaluate("__sel") == ["input", "change"]
+    sel = page.evaluate("__sel")
+    # A macOS dropdown moves on every typed letter (one input/change each); elsewhere only Enter commits.
+    assert sel[-2:] == ["input", "change"] and (sys.platform == "darwin" or len(sel) == 2), sel
     page.evaluate("document.querySelector('#long').selectedIndex = 0")
     with pytest.raises(TimeoutError):
         page.select_option("#long", "v200", timeout=200)
+
+
+def test_select_option_on_emoji_labels(page):
+    """Blink's type-ahead drops a typed emoji, so these options are reached with
+    arrows; a macOS popup ignores arrows, so there it refuses."""
+    page.evaluate("""() => { const s = document.createElement('select'); s.id = 'emoji';
+        for (const [l, v] of [['Pick one', ''], ['\U0001F34E Apple', 'a'], ['\U0001F34C Banana', 'b'],
+                              ['\U0001F352 Cherry', 'c']]) s.add(new Option(l, v));
+        document.body.append(s); }""")
+    if sys.platform == "darwin":
+        with pytest.raises(Error, match="cannot be picked with human input"):
+            page.select_option("#emoji", "c")
+    else:
+        assert page.select_option("#emoji", "c") == ["c"]
 
 
 # --- frames and handles ------------------------------------------------------

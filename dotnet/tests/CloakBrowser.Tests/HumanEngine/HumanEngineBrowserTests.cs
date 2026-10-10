@@ -361,9 +361,28 @@ public class HumanEngineBrowserTests : IClassFixture<EngineFixture>, IAsyncLifet
         var keys = (await Events(p, "keydown")).Select(e => e.GetProperty("key").GetString()).ToList();
         Assert.DoesNotContain("ArrowDown", keys);
         Assert.True(keys.Count <= 13, string.Join(",", keys));
-        Assert.Equal("[\"input\",\"change\"]", await p.EvaluateAsync<string>("JSON.stringify(__sel)"));
+        var sel = await p.EvaluateAsync<string[]>("__sel");
+        // A macOS dropdown moves on every typed letter (one input/change each); elsewhere only Enter commits.
+        Assert.Equal(new[] { "input", "change" }, sel.TakeLast(2));
+        if (!OperatingSystem.IsMacOS()) Assert.Equal(2, sel.Length);
         await p.EvaluateAsync("document.querySelector('#long').selectedIndex = 0");
         await Assert.ThrowsAsync<TimeoutException>(() => p.SelectOptionAsync("#long", "v200", new() { Timeout = 200 }));
+    }
+
+    [BrowserFact]
+    public async Task SelectOption_types_ahead_on_emoji_labels()
+    {
+        // Blink's type-ahead drops a typed emoji, so these options are reached with
+        // arrows; a macOS popup ignores arrows, so there it refuses.
+        var p = await Open();
+        await p.EvaluateAsync(@"() => { const s = document.createElement('select'); s.id = 'emoji';
+            for (const [l, v] of [['Pick one', ''], ['🍎 Apple', 'a'], ['🍌 Banana', 'b'], ['🍒 Cherry', 'c']]) s.add(new Option(l, v));
+            document.body.append(s); }");
+        if (OperatingSystem.IsMacOS())
+            Assert.Contains("cannot be picked with human input",
+                (await Assert.ThrowsAnyAsync<PlaywrightException>(() => p.SelectOptionAsync("#emoji", "c"))).Message);
+        else
+            Assert.Equal(new[] { "c" }, await p.SelectOptionAsync("#emoji", "c"));
     }
 
     // --- frames / handles --------------------------------------------------

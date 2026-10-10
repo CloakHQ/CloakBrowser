@@ -871,13 +871,18 @@ class Human:
         if state["current"] == index:
             await self.hover(target, {"_deadline": deadline, "human_config": opts.get("human_config")}, api=api)
             return
-        await self.click(target, {"_deadline": deadline, "force": opts.get("force"),
-                                  "human_config": opts.get("human_config")}, api=api)
-        await sleep_ms(rand(200, 450))  # popup opens; eyes find the option
         mac = sys.platform == "darwin"  # a macOS host's native popup ignores arrow keys
         plan = await self.worlds.call(r.frame, "typeAheadPlan", r.id, index, 0 if mac else 3)
         if plan is None:
             raise Error(f"{api}: Error: no option of this dropdown can be reached")
+        if mac and plan.get("home") and any(ord(c) > 0xFFFF for c in plan["label"]):
+            raise Error(f"{api}: Error: this option's label has an emoji or similar character that cannot be "
+                        "typed, and a macOS dropdown ignores arrow keys, so it cannot be picked with human "
+                        "input; select it with page._original.select_option(...) if a programmatic "
+                        "selection is acceptable")
+        await self.click(target, {"_deadline": deadline, "force": opts.get("force"),
+                                  "human_config": opts.get("human_config")}, api=api)
+        await sleep_ms(rand(200, 450))  # popup opens; eyes find the option
         if plan.get("home"):
             # No name prefix is unique (duplicate labels): Home, then walk; on
             # macOS type the whole label instead.

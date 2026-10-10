@@ -349,10 +349,28 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)('humanize engine (real br
     const keys = (await events(p, 'keydown')).map((e) => e.key);
     expect(keys).not.toContain('ArrowDown');
     expect(keys.length).toBeLessThanOrEqual(13);
-    expect(await p.evaluate(() => (window as any).__sel)).toEqual(['input', 'change']);
+    const sel: string[] = await p.evaluate(() => (window as any).__sel);
+    // A macOS dropdown moves on every typed letter (one input/change each); elsewhere only Enter commits.
+    expect(sel.slice(-2)).toEqual(['input', 'change']);
+    if (process.platform !== 'darwin') expect(sel).toHaveLength(2);
     await p.evaluate(() => { (document.querySelector('#long') as HTMLSelectElement).selectedIndex = 0; });
     const e = await p.selectOption('#long', 'v200', { timeout: 200 }).catch((x) => x);
     expect(e).toBeInstanceOf(errors.TimeoutError);
+  });
+
+  it('selectOption on emoji labels uses arrows, and refuses on macOS', async () => {
+    // Blink's type-ahead drops a typed emoji; a macOS popup ignores arrows.
+    const p = await open();
+    await p.evaluate(() => {
+      const s = document.createElement('select'); s.id = 'emoji';
+      for (const [l, v] of [['Pick one', ''], ['🍎 Apple', 'a'], ['🍌 Banana', 'b'], ['🍒 Cherry', 'c']]) s.add(new Option(l, v));
+      document.body.append(s);
+    });
+    if (process.platform === 'darwin') {
+      await expect(p.selectOption('#emoji', 'c')).rejects.toThrow(/cannot be picked with human input/);
+    } else {
+      expect(await p.selectOption('#emoji', 'c')).toEqual(['c']);
+    }
   });
 
   // --- frames and handles ---------------------------------------------------

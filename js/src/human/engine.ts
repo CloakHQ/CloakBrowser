@@ -830,12 +830,17 @@ export class Human {
       await this.hover(target, { _deadline: deadline, human_config: opts.human_config }, api);
       return;
     }
-    await this.click(target, { _deadline: deadline, force: opts.force, human_config: opts.human_config }, api);
-    await sleepMs(rand(200, 450)); // popup opens; eyes find the option
-    const cfg = this.callCfg(opts.human_config);
     const mac = process.platform === 'darwin'; // a macOS host's native popup ignores arrow keys
     const plan = await this.worlds.call(r.frame, 'typeAheadPlan', r.id, index, mac ? 0 : 3);
     if (!plan) throw err(`${api}: Error: no option of this dropdown can be reached`);
+    if (mac && plan.home && /[\uD800-\uDFFF]/.test(plan.label)) {
+      throw err(`${api}: Error: this option's label has an emoji or similar character that cannot be typed, and a `
+        + 'macOS dropdown ignores arrow keys, so it cannot be picked with human input; select it with '
+        + 'page._original.selectOption(...) if a programmatic selection is acceptable');
+    }
+    await this.click(target, { _deadline: deadline, force: opts.force, human_config: opts.human_config }, api);
+    await sleepMs(rand(200, 450)); // popup opens; eyes find the option
+    const cfg = this.callCfg(opts.human_config);
     const arrows = (n: number) => Array<string>(Math.abs(n)).fill(n > 0 ? 'ArrowDown' : 'ArrowUp');
     // No name prefix is unique (duplicate labels): Home, then walk; on macOS type the whole label.
     const keys: string[] = plan.home ? (mac ? [...plan.label] : ['Home', ...arrows(plan.arrows)])

@@ -9,6 +9,7 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 ## [Unreleased]
 
 - **[wrapper]** Humanized `select_option()` on a dropdown now types the first letters of the option, like a person does on a long list, plus a few arrow keys when that is shorter, instead of pressing an arrow key once per row. A pick on a 200-option list takes about 1.5-2s instead of up to 30s, and `timeout=` now bounds it (#581). The keys typed land on the same option wherever the open popup's highlight starts, so a popup that opens under the mouse pointer no longer picks the wrong option on headed Linux (#580). On a macOS host the shortest unique prefix of the label is typed instead of the whole label. Python, JavaScript Playwright, and .NET.
+- **[wrapper]** Humanized `select_option()` now reaches dropdown options whose label starts with an emoji (e.g. a flag before a country name) with arrow keys, because the browser's dropdown search ignores a typed emoji. On a macOS host, where the dropdown also ignores arrow keys, such an option raises a clear error that points to `page._original.select_option(...)` instead of failing with a mismatched selection. Python, JavaScript Playwright, and .NET.
 
 ## [0.6.0] — 2026-10-08
 
