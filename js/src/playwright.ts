@@ -201,7 +201,7 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     launchOptions = await buildLaunchOptions(options, denialPath);
     browser = await chromium.launch(launchOptions);
   } catch (err) {
-    const lic = licenseErrorFrom(err);
+    const lic = licenseErrorFrom(err, denialPath);
     if (lic) throw lic;
     throw err;
   }
@@ -399,7 +399,7 @@ export async function launchPersistentContext(
       ...envResult,
     });
   } catch (err) {
-    const lic = licenseErrorFrom(err);
+    const lic = licenseErrorFrom(err, denialPath);
     if (lic) throw lic;
     throw err;
   }

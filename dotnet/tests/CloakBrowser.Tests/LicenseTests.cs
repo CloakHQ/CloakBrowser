@@ -1099,6 +1099,40 @@ public class LicenseTests : IDisposable
         Assert.Null(License.LicenseErrorFrom(new Exception("some unrelated crash")));
     }
 
+    [Fact]
+    public void LicenseErrorFrom_FallsBackToDenialFile()
+    {
+        // .NET Playwright's real launch failure on an over-cap seat carries no exit
+        // code (#584); the binary's denial file is the only source.
+        var dir = Directory.CreateTempSubdirectory("cb-denial-").FullName;
+        try
+        {
+            var f = Path.Combine(dir, "launch.json");
+            File.WriteAllText(f, "76");
+            var original = new Exception("Target page, context or browser has been closed");
+            var lic = License.LicenseErrorFrom(original, f);
+            Assert.NotNull(lic);
+            Assert.Contains("session limit", lic!.Message);
+            Assert.Same(original, lic.InnerException);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void LicenseErrorFrom_NoFileOrNonLicenseCode_ReturnsNull()
+    {
+        var dir = Directory.CreateTempSubdirectory("cb-denial-").FullName;
+        try
+        {
+            var closed = new Exception("Target page, context or browser has been closed");
+            Assert.Null(License.LicenseErrorFrom(closed, Path.Combine(dir, "absent.json")));
+            var f = Path.Combine(dir, "crash.json");
+            File.WriteAllText(f, "139");
+            Assert.Null(License.LicenseErrorFrom(closed, f));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
     // ── post-handshake denial: helpers + guard ────────────
 
     [Theory]

@@ -136,10 +136,14 @@ public static class License
     /// <summary>
     /// Returns a <see cref="CloakBrowserLicenseError"/> if a launch failure was a
     /// license deny, else null so the original exception propagates unchanged.
+    /// Falls back to the launch's denial file: .NET Playwright's launch failure
+    /// carries no exit code in its message ("Target ... has been closed").
     /// </summary>
-    public static CloakBrowserLicenseError? LicenseErrorFrom(Exception ex)
+    public static CloakBrowserLicenseError? LicenseErrorFrom(Exception ex, string? denialPath = null)
     {
         var msg = LicenseErrorMessage(ex.Message);
+        if (msg is null && denialPath is not null && ReadDenialFile(denialPath) is int code)
+            LicenseExitMessages.TryGetValue(code, out msg);
         return msg is not null ? new CloakBrowserLicenseError(msg, ex) : null;
     }
 

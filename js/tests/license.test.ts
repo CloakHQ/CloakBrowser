@@ -808,8 +808,11 @@ describe("license exit-code surfacing", () => {
   const playwrightText = (code: number) =>
     "BrowserType.launch: Target page, context or browser has been closed\n" +
     `Browser logs:\n- [pid=123] <process did exit: exitCode=${code}, signal=null>`;
+  // Verbatim shape from puppeteer-core 25.12 (@puppeteer/browsers launch.ts), as in #584.
   const puppeteerText = (code: number) =>
-    `Failed to launch the browser process!\nBrowser process exited with code ${code}`;
+    `Failed to launch the browser process:  Code: ${code}\n\nstderr:\n` +
+    "[3105:3105:1011/003330.769964:ERROR:media/gpu/vaapi/vaapi_wrapper.cc:1801] vaInitialize failed: unknown libva error\n\n" +
+    "TROUBLESHOOTING: https://pptr.dev/troubleshooting\n";
 
   it.each([
     [76, "session limit"],
@@ -823,7 +826,7 @@ describe("license exit-code surfacing", () => {
     expect(msg!.startsWith("CloakBrowser Pro:")).toBe(true);
   });
 
-  it("maps the Puppeteer 'exited with code N' phrasing", () => {
+  it("maps the Puppeteer 'Code: N' launch-failure phrasing", () => {
     expect(licenseErrorMessage(puppeteerText(76))).toContain("session limit");
     expect(licenseErrorMessage(puppeteerText(77))).toContain("invalid");
   });
@@ -846,6 +849,28 @@ describe("license exit-code surfacing", () => {
     expect(lic).toBeInstanceOf(CloakBrowserLicenseError);
     expect(lic!.message).toContain("invalid");
     expect(licenseErrorFrom(new Error("some unrelated crash"))).toBeNull();
+  });
+
+  it("licenseErrorFrom falls back to the denial file when the text has no code", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-denial-"));
+    const f = path.join(dir, "launch.json");
+    fs.writeFileSync(f, "76");
+    const original = new Error("Target page, context or browser has been closed");
+    const lic = licenseErrorFrom(original, f);
+    expect(lic).toBeInstanceOf(CloakBrowserLicenseError);
+    expect(lic!.message).toContain("session limit");
+    expect(lic!.cause).toBe(original);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("licenseErrorFrom returns null with no file or a non-license code in it", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-denial-"));
+    const closed = new Error("Target page, context or browser has been closed");
+    expect(licenseErrorFrom(closed, path.join(dir, "absent.json"))).toBeNull();
+    const f = path.join(dir, "crash.json");
+    fs.writeFileSync(f, "139");
+    expect(licenseErrorFrom(closed, f)).toBeNull();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 

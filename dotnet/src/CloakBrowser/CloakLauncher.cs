@@ -68,7 +68,7 @@ public static class CloakLauncher
         catch (Exception ex)
         {
             playwright.Dispose();
-            var lic = License.LicenseErrorFrom(ex);
+            var lic = License.LicenseErrorFrom(ex, denialPath);
             if (lic is not null) throw lic;
             throw;
         }
@@ -216,7 +216,7 @@ public static class CloakLauncher
         catch (Exception ex)
         {
             playwright.Dispose();
-            var lic = License.LicenseErrorFrom(ex);
+            var lic = License.LicenseErrorFrom(ex, denialPath);
             if (lic is not null) throw lic;
             throw;
         }

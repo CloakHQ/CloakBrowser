@@ -79,10 +79,11 @@ const LICENSE_EXIT_MESSAGES: Record<number, string> = {
 };
 
 // Playwright embeds the child-process exit as "<process did exit: exitCode=N, ...>".
-// Puppeteer surfaces it as "Browser process exited with code N" / "with exit code N".
+// Puppeteer 25.x surfaces it as "Failed to launch the browser process:  Code: N".
 // Anchored so an unrelated "exitCode=" elsewhere in the error can't false-match.
 const EXIT_CODE_PATTERNS = [
   /process did exit:\s*exitCode=(\d+)/,
+  /Failed to launch the browser process:\s*Code:\s*(\d+)/,
   /exited with (?:exit )?code (\d+)/i,
 ];
 
@@ -105,12 +106,18 @@ export function licenseErrorMessage(errorText: string): string | null {
 
 /**
  * Return a CloakBrowserLicenseError if a launch failure was a license deny,
- * else null so the original error propagates unchanged.
+ * else null so the original error propagates unchanged. Falls back to the
+ * launch's denial file because not every driver puts the exit code in its
+ * error text (.NET Playwright reports only "Target ... has been closed").
  */
-export function licenseErrorFrom(err: unknown): CloakBrowserLicenseError | null {
+export function licenseErrorFrom(err: unknown, denialPath?: string): CloakBrowserLicenseError | null {
   const text = err instanceof Error ? err.message : String(err);
   const msg = licenseErrorMessage(text);
-  return msg !== null ? new CloakBrowserLicenseError(msg, { cause: err }) : null;
+  if (msg !== null) return new CloakBrowserLicenseError(msg, { cause: err });
+  if (!denialPath) return null;
+  const code = readDenialFile(denialPath);
+  const fromFile = code !== null ? LICENSE_EXIT_MESSAGES[code] : undefined;
+  return fromFile ? new CloakBrowserLicenseError(fromFile, { cause: err }) : null;
 }
 
 // Env var the wrapper uses to tell the Pro binary where to record a license

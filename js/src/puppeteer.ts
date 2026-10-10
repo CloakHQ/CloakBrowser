@@ -210,7 +210,7 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
       ...envResult,
     });
   } catch (err) {
-    const lic = licenseErrorFrom(err);
+    const lic = licenseErrorFrom(err, denialPath);
     if (lic) throw lic;
     throw err;
   }
@@ -277,7 +277,7 @@ export async function launchPersistentContext(
       ...envResult,
     });
   } catch (err) {
-    const lic = licenseErrorFrom(err);
+    const lic = licenseErrorFrom(err, denialPath);
     if (lic) throw lic;
     throw err;
   }
