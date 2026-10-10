@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime
 import functools
 import inspect
+import types
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .config import HumanConfig, rand
@@ -61,6 +62,17 @@ def _human_for(kind: str, wrapper: Any) -> Optional[Human]:
 MIN_PLAYWRIGHT = (1, 53)
 
 
+def _assigns_attr(func: Any, name: str) -> bool:
+    """Whether ``func`` stores ``self.<name>``, read from its bytecode."""
+    # Only a plain Python function has bytecode to read. A compiled Playwright
+    # (e.g. built with Nuitka) exposes a placeholder ``__code__`` whose ``co_names``
+    # says nothing about the source, so it is left to the version check instead
+    # of being reported as missing the attribute.
+    if type(func) is not types.FunctionType:
+        return True
+    return name in func.__code__.co_names
+
+
 def _check_playwright() -> None:
     """Fail loudly on a Playwright the engine cannot drive, instead of letting a
     humanized page fall back to Playwright's stock actions."""
@@ -75,7 +87,7 @@ def _check_playwright() -> None:
     from playwright._impl._frame import Frame
 
     missing = [n for n, ok in (("Frame._timeout", hasattr(Frame, "_timeout")),
-                               ("ElementHandle._frame", "_frame" in ElementHandle.__init__.__code__.co_names))
+                               ("ElementHandle._frame", _assigns_attr(ElementHandle.__init__, "_frame")))
                if not ok]
     if (len(parts) == 2 and parts < MIN_PLAYWRIGHT) or missing:
         raise RuntimeError(

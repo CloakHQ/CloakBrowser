@@ -852,3 +852,28 @@ def test_error_classes_stay_importable():
     for name in ("UnsupportedHumanizeSelectorError", "StealthWorldUnavailableError",
                  "StealthEvaluationError"):
         assert issubclass(getattr(h, name), h.StealthDomError)
+
+
+def test_check_playwright_accepts_a_compiled_playwright(monkeypatch):
+    """A Nuitka build swaps function bytecode for a placeholder, so the
+    internals probe must not report a supported Playwright as broken."""
+    from playwright._impl._element_handle import ElementHandle
+    from cloakbrowser.human import patch
+
+    class _CompiledFunction:  # stands in for Nuitka's compiled_function
+        __code__ = (lambda: None).__code__
+
+    monkeypatch.setattr(ElementHandle, "__init__", _CompiledFunction())
+    patch._check_playwright()
+
+
+def test_check_playwright_still_flags_missing_internals(monkeypatch):
+    from playwright._impl._element_handle import ElementHandle
+    from cloakbrowser.human import patch
+
+    def __init__(self, parent, type, guid, initializer):
+        pass
+
+    monkeypatch.setattr(ElementHandle, "__init__", __init__)
+    with pytest.raises(RuntimeError, match="missing internals: ElementHandle._frame"):
+        patch._check_playwright()
