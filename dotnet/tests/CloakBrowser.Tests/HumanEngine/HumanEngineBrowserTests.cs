@@ -347,6 +347,25 @@ public class HumanEngineBrowserTests : IClassFixture<EngineFixture>, IAsyncLifet
         Assert.Equal(new[] { "b" }, await p.SelectOptionAsync("#sel", new SelectOptionValue { Index = 1 }));
     }
 
+    [BrowserFact]
+    public async Task SelectOption_on_a_long_dropdown_types_ahead()
+    {
+        // #581: no walk over every row, and the timeout bounds it.
+        var p = await Open();
+        await p.EvaluateAsync(@"() => { const s = document.createElement('select'); s.id = 'long';
+            for (let i = 0; i < 205; i++) s.add(new Option('Country ' + String(i).padStart(3, '0'), 'v' + i));
+            window.__sel = []; for (const t of ['input', 'change']) s.addEventListener(t, () => __sel.push(t));
+            document.body.append(s); }");
+        await Reset(p);
+        Assert.Equal(new[] { "v150" }, await p.SelectOptionAsync("#long", "v150"));
+        var keys = (await Events(p, "keydown")).Select(e => e.GetProperty("key").GetString()).ToList();
+        Assert.DoesNotContain("ArrowDown", keys);
+        Assert.True(keys.Count <= 13, string.Join(",", keys));
+        Assert.Equal("[\"input\",\"change\"]", await p.EvaluateAsync<string>("JSON.stringify(__sel)"));
+        await p.EvaluateAsync("document.querySelector('#long').selectedIndex = 0");
+        await Assert.ThrowsAsync<TimeoutException>(() => p.SelectOptionAsync("#long", "v200", new() { Timeout = 200 }));
+    }
+
     // --- frames / handles --------------------------------------------------
 
     [BrowserFact]

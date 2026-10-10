@@ -335,6 +335,26 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)('humanize engine (real br
     expect(await p.selectOption('#sel', { index: 1 })).toEqual(['b']);
   });
 
+  it('selectOption on a long dropdown types ahead instead of walking every row (#581)', async () => {
+    const p = await open();
+    await p.evaluate(() => {
+      const s = document.createElement('select'); s.id = 'long';
+      for (let i = 0; i < 205; i++) s.add(new Option('Country ' + String(i).padStart(3, '0'), 'v' + i));
+      (window as any).__sel = [];
+      for (const t of ['input', 'change']) s.addEventListener(t, () => (window as any).__sel.push(t));
+      document.body.append(s);
+    });
+    await reset(p);
+    expect(await p.selectOption('#long', 'v150')).toEqual(['v150']);
+    const keys = (await events(p, 'keydown')).map((e) => e.key);
+    expect(keys).not.toContain('ArrowDown');
+    expect(keys.length).toBeLessThanOrEqual(13);
+    expect(await p.evaluate(() => (window as any).__sel)).toEqual(['input', 'change']);
+    await p.evaluate(() => { (document.querySelector('#long') as HTMLSelectElement).selectedIndex = 0; });
+    const e = await p.selectOption('#long', 'v200', { timeout: 200 }).catch((x) => x);
+    expect(e).toBeInstanceOf(errors.TimeoutError);
+  });
+
   // --- frames and handles ---------------------------------------------------
 
   it('frame actions', async () => {

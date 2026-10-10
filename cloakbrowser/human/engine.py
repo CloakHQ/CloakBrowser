@@ -121,6 +121,7 @@ class Human:
         self.cfg = cfg
         self.cursor = cursor
         self.worlds = Worlds(page)
+        self._typeahead_until = 0.0  # monotonic time until which the browser joins typed letters
         self.mouse = page.mouse
         self.keyboard = page.keyboard
         self._platform: Optional[str] = None
@@ -873,39 +874,53 @@ class Human:
         await self.click(target, {"_deadline": deadline, "force": opts.get("force"),
                                   "human_config": opts.get("human_config")}, api=api)
         await sleep_ms(rand(200, 450))  # popup opens; eyes find the option
-        if sys.platform == "darwin":
-            # macOS shows a native popup that ignores arrow keys sent as page
-            # input; type-ahead on the option's label still selects it.
-            for ch in p["labels"][0]:
-                if ch.isascii():
-                    await self._type_char(ch, cfg)
-                else:  # no US-layout key: send the character itself, like a native layout does
-                    session = await self.worlds.session()
-                    await session.send("Input.dispatchKeyEvent",
-                                       {"type": "keyDown", "key": ch, "text": ch, "unmodifiedText": ch})
-                    await sleep_ms(rand_range(cfg.key_hold))
-                    await session.send("Input.dispatchKeyEvent", {"type": "keyUp", "key": ch})
-                await sleep_ms(rand(60, 140))  # type-ahead resets after ~1s of silence
-            await self.keyboard.press("Enter")
-            await sleep_ms(rand(80, 160))
-            return
-        nav = p["navigable"]
-        cur = state["current"]
-        for _ in range(len(nav) + 1):
-            if cur == index:
-                break
-            step = 1 if index > cur else -1
-            nxt = cur + step
-            while 0 <= nxt < len(nav) and not nav[nxt]:
-                nxt += step
-            if not (0 <= nxt < len(nav)):
-                break
-            await self.keyboard.press("ArrowDown" if step > 0 else "ArrowUp")
-            await sleep_ms(rand(70, 180))
-            cur = nxt
+        mac = sys.platform == "darwin"  # a macOS host's native popup ignores arrow keys
+        plan = await self.worlds.call(r.frame, "typeAheadPlan", r.id, index, 0 if mac else 3)
+        if plan is None:
+            raise Error(f"{api}: Error: no option of this dropdown can be reached")
+        if plan.get("home"):
+            # No name prefix is unique (duplicate labels): Home, then walk; on
+            # macOS type the whole label instead.
+            keys = list(plan["label"]) if mac else ["Home"] + [
+                "ArrowDown" if plan["arrows"] > 0 else "ArrowUp"] * abs(plan["arrows"])
+        else:
+            keys = list(plan["typed"]) + ["ArrowDown" if plan["arrows"] > 0 else "ArrowUp"] * abs(plan["arrows"])
+        # The browser joins letters typed within ~1s into one search: let an
+        # earlier select_option's search lapse before starting a new one.
+        if keys and len(keys[0]) == 1:
+            wait = self._typeahead_until - time.monotonic()
+            if wait > 0:
+                await sleep_ms(wait * 1000)
+        typed = False
+        for k in keys:
+            if deadline.expired():
+                await self.keyboard.press("Escape")
+                raise TimeoutError(f"{api}: Timeout {deadline.timeout:.0f}ms exceeded.\n"
+                                   f"Call log:\n  - choosing an option of {target.description}")
+            if len(k) == 1:
+                await self._typeahead_char(k, cfg)
+                typed = True
+                self._typeahead_until = time.monotonic() + 1.1
+                await sleep_ms(rand(60, 160))
+            else:
+                await self.keyboard.press(k)
+                await sleep_ms(rand(90, 200))
         await sleep_ms(rand(100, 250))
         await self.keyboard.press("Enter")
+        if typed:
+            self._typeahead_until = time.monotonic() + 1.1
         await sleep_ms(rand(80, 160))
+
+    async def _typeahead_char(self, ch: str, cfg: HumanConfig) -> None:
+        """One type-ahead letter. Letters go lowercase (a person doesn't hold Shift
+        to search a list); a character without a US-layout key is sent as itself."""
+        if ch.isascii():
+            await self._type_char(ch, cfg)
+            return
+        session = await self.worlds.session()
+        await session.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": ch, "text": ch, "unmodifiedText": ch})
+        await sleep_ms(rand_range(cfg.key_hold))
+        await session.send("Input.dispatchKeyEvent", {"type": "keyUp", "key": ch})
 
     async def _select_listbox(self, target: Target, r: Resolved, p: dict, opts: dict, api: str,
                               cfg: HumanConfig, deadline: _Deadline) -> None:

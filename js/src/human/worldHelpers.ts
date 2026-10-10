@@ -210,6 +210,45 @@ const H = {
              values: targets.map(i => opts[i].value), labels: targets.map(i => norm(opts[i].label)) };
   },
   optionId(id, index) { const sel = I.retarget(get(id), 'follow-label') || get(id); return put(sel.options[index]); },
+  // How to reach option 'target' of an open dropdown by typing, like a person:
+  // the shortest prefix whose type-ahead result does not depend on which row is
+  // highlighted (it can't be read while the popup is open), then a few arrows.
+  // Mirrors Blink's TypeAhead (case/accent-insensitive prefix match over enabled
+  // options, leading whitespace ignored; a repeated first letter cycles instead).
+  typeAheadPlan(id, target, maxArrows) {
+    const sel = I.retarget(get(id), 'follow-label') || get(id);
+    const opts = [...sel.options];
+    const fold = (s) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+    const enabled = (o) => !o.disabled && !(o.parentElement && o.parentElement.nodeName === 'OPTGROUP' && o.parentElement.disabled);
+    const nav = opts.map(o => enabled(o) && !o.hidden && getComputedStyle(o).display !== 'none');
+    const keys = opts.map(o => enabled(o) ? fold(o.label.replace(/\s+/g, ' ').trim()) : '');
+    if (!nav[target]) return null;
+    // Signed arrow presses from row a to the target (disabled/hidden rows are skipped).
+    const arrows = (a) => { let n = 0; const d = target > a ? 1 : -1;
+      for (let i = a; i !== target; i += d) if (nav[i + d]) n += d; return n; };
+    const unique = (s) => { let hit = -1;
+      for (let i = 0; i < keys.length; i++) if (keys[i].startsWith(s)) { if (hit >= 0) return -1; hit = i; }
+      return hit; };
+    let best = null;
+    const order = [target].concat(opts.map((_, i) => i).filter(i => i !== target));
+    for (const a of order) {
+      if (!keys[a] || !nav[a]) continue;
+      const n = arrows(a);
+      if (Math.abs(n) > maxArrows) continue;
+      for (let k = 1; k <= keys[a].length; k++) {
+        const cost = k + Math.abs(n) + (a === target ? 0 : 1); // prefer the option's own name
+        if (best && cost >= best.cost) break;
+        const s = keys[a].slice(0, k);
+        // A run of one letter ('aa', 'aaa') cycles from the highlighted row instead.
+        if (/^(.)\1+$/.test(s) || s.endsWith(' ')) continue;
+        if (unique(s) === a) { best = { cost, typed: s, arrows: n }; break; }
+      }
+    }
+    if (best) return { typed: best.typed, arrows: best.arrows };
+    // No name prefix is unique (e.g. duplicate labels): Home, then walk with arrows.
+    const first = nav.indexOf(true);
+    return first < 0 ? null : { typed: '', home: true, arrows: first === target ? 0 : arrows(first), label: keys[target] };
+  },
   selectState(id) {
     const sel = I.retarget(get(id), 'follow-label') || get(id);
     return { current: sel.selectedIndex, selected: [...sel.options].map((o, i) => o.selected ? i : -1).filter(i => i >= 0),
