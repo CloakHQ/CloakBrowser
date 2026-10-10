@@ -294,46 +294,78 @@ internal sealed partial class HumanEngine
         }
         await ClickAsync(t, new ActOpts { Deadline = d, Force = o.Force, HumanConfig = o.HumanConfig }, api).ConfigureAwait(false);
         await Sleep(R(200, 450)).ConfigureAwait(false); // popup opens; eyes find the option
-        if (OperatingSystem.IsMacOS())
+        var cfg = CallCfg(o.HumanConfig);
+        bool mac = OperatingSystem.IsMacOS(); // a macOS host's native popup ignores arrow keys
+        var ta = await World.CallAsync(r.Frame, "typeAheadPlan", r.Id, index.Value, mac ? 0 : 3).ConfigureAwait(false);
+        if (ta is not { ValueKind: JsonValueKind.Object } p) throw Err($"{api}: Error: no option of this dropdown can be reached");
+        int n = p.GetProperty("arrows").GetInt32();
+        var walk = Enumerable.Repeat(n > 0 ? "ArrowDown" : "ArrowUp", Math.Abs(n));
+        var keys = new List<string>();
+        if (p.TryGetProperty("home", out var home) && home.GetBoolean())
         {
-            // macOS shows a native popup that ignores arrow keys sent as page
-            // input; type-ahead on the option's label still selects it.
-            var cfg = CallCfg(o.HumanConfig);
-            foreach (var ch in plan.GetProperty("labels")[0].GetString()!)
-            {
-                if (ch < 128)
-                {
-                    await TypeCharAsync(ch, cfg).ConfigureAwait(false);
-                }
-                else // no US-layout key: send the character itself, like a native layout does
-                {
-                    var session = await World.SessionAsync().ConfigureAwait(false);
-                    await session.SendAsync("Input.dispatchKeyEvent", new()
-                    {
-                        ["type"] = "keyDown", ["key"] = ch.ToString(), ["text"] = ch.ToString(), ["unmodifiedText"] = ch.ToString(),
-                    }).ConfigureAwait(false);
-                    await Sleep(RR(cfg.KeyHold)).ConfigureAwait(false);
-                    await session.SendAsync("Input.dispatchKeyEvent", new() { ["type"] = "keyUp", ["key"] = ch.ToString() }).ConfigureAwait(false);
-                }
-                await Sleep(R(60, 140)).ConfigureAwait(false); // type-ahead resets after ~1s of silence
-            }
-            await _raw.KeyPressAsync("Enter").ConfigureAwait(false);
-            await Sleep(R(80, 160)).ConfigureAwait(false);
-            return;
+            // No name prefix is unique (duplicate labels): Home, then walk; on macOS type the whole label.
+            if (mac) keys.AddRange(p.GetProperty("label").GetString()!.Select(c => c.ToString()));
+            else { keys.Add("Home"); keys.AddRange(walk); }
         }
-        var nav = plan.GetProperty("navigable").EnumerateArray().Select(x => x.GetBoolean()).ToList();
-        for (int k = 0; k <= nav.Count && cur != index; k++)
+        else
         {
-            int step = index > cur ? 1 : -1, nxt = cur + step;
-            while (nxt >= 0 && nxt < nav.Count && !nav[nxt]) nxt += step;
-            if (nxt < 0 || nxt >= nav.Count) break;
-            await _raw.KeyPressAsync(step > 0 ? "ArrowDown" : "ArrowUp").ConfigureAwait(false);
-            await Sleep(R(70, 180)).ConfigureAwait(false);
-            cur = nxt;
+            keys.AddRange(p.GetProperty("typed").GetString()!.Select(c => c.ToString()));
+            keys.AddRange(walk);
+        }
+        // The browser joins letters typed within ~1s into one search: let an earlier
+        // SelectOption's search lapse before starting a new one.
+        if (keys.Count > 0 && keys[0].Length == 1)
+        {
+            double wait = (_typeAheadUntil - DateTime.UtcNow).TotalMilliseconds;
+            if (wait > 0) await Sleep(wait).ConfigureAwait(false);
+        }
+        bool typed = false;
+        foreach (var k in keys)
+        {
+            if (d.Expired)
+            {
+                await _raw.KeyPressAsync("Escape").ConfigureAwait(false);
+                throw new System.TimeoutException($"{api}: Timeout {Math.Round(d.Timeout)}ms exceeded.\n"
+                    + $"Call log:\n  - choosing an option of {t.Description}");
+            }
+            if (k.Length == 1)
+            {
+                await TypeAheadCharAsync(k[0], cfg).ConfigureAwait(false);
+                typed = true;
+                _typeAheadUntil = DateTime.UtcNow.AddMilliseconds(1100);
+                await Sleep(R(60, 160)).ConfigureAwait(false);
+            }
+            else
+            {
+                await _raw.KeyPressAsync(k).ConfigureAwait(false);
+                await Sleep(R(90, 200)).ConfigureAwait(false);
+            }
         }
         await Sleep(R(100, 250)).ConfigureAwait(false);
         await _raw.KeyPressAsync("Enter").ConfigureAwait(false);
+        if (typed) _typeAheadUntil = DateTime.UtcNow.AddMilliseconds(1100);
         await Sleep(R(80, 160)).ConfigureAwait(false);
+    }
+
+    /// <summary>When the browser stops joining typed letters into one type-ahead search.</summary>
+    private DateTime _typeAheadUntil = DateTime.MinValue;
+
+    /// <summary>One type-ahead letter (lowercase: a person doesn't hold Shift to search a list);
+    /// a character without a US-layout key is sent as itself.</summary>
+    private async Task TypeAheadCharAsync(char ch, HumanConfig cfg)
+    {
+        if (ch < 128)
+        {
+            await TypeCharAsync(ch, cfg).ConfigureAwait(false);
+            return;
+        }
+        var session = await World.SessionAsync().ConfigureAwait(false);
+        await session.SendAsync("Input.dispatchKeyEvent", new()
+        {
+            ["type"] = "keyDown", ["key"] = ch.ToString(), ["text"] = ch.ToString(), ["unmodifiedText"] = ch.ToString(),
+        }).ConfigureAwait(false);
+        await Sleep(RR(cfg.KeyHold)).ConfigureAwait(false);
+        await session.SendAsync("Input.dispatchKeyEvent", new() { ["type"] = "keyUp", ["key"] = ch.ToString() }).ConfigureAwait(false);
     }
 
     private async Task SelectListboxAsync(Target t, Resolved r, List<int> want, ActOpts o, string api, HumanConfig cfg, Deadline d)

@@ -119,6 +119,8 @@ const isUpper = (ch: string) => /^[A-Z]$/.test(ch);
 
 export class Human {
   readonly worlds: Worlds;
+  /** Date.now() until which the browser joins typed letters into one type-ahead search. */
+  private typeAheadUntil = 0;
   private _platform: string | null = null;
   private handleIds = new Map<string, [Frame, number, number]>();
 
@@ -830,40 +832,54 @@ export class Human {
     }
     await this.click(target, { _deadline: deadline, force: opts.force, human_config: opts.human_config }, api);
     await sleepMs(rand(200, 450)); // popup opens; eyes find the option
-    if (process.platform === 'darwin') {
-      // macOS shows a native popup that ignores arrow keys sent as page
-      // input; type-ahead on the option's label still selects it.
-      const cfg = this.callCfg(opts.human_config);
-      for (const ch of p.labels[0] as string) {
-        if (ch.charCodeAt(0) < 128) {
-          await this.typeChar(ch, cfg);
-        } else { // no US-layout key: send the character itself, like a native layout does
-          const session: CDPSession = await this.worlds.session();
-          await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, unmodifiedText: ch });
-          await sleepMs(randRange(cfg.key_hold));
-          await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
-        }
-        await sleepMs(rand(60, 140)); // type-ahead resets after ~1s of silence
-      }
-      await this.raw.keyPress('Enter');
-      await sleepMs(rand(80, 160));
-      return;
+    const cfg = this.callCfg(opts.human_config);
+    const mac = process.platform === 'darwin'; // a macOS host's native popup ignores arrow keys
+    const plan = await this.worlds.call(r.frame, 'typeAheadPlan', r.id, index, mac ? 0 : 3);
+    if (!plan) throw err(`${api}: Error: no option of this dropdown can be reached`);
+    const arrows = (n: number) => Array<string>(Math.abs(n)).fill(n > 0 ? 'ArrowDown' : 'ArrowUp');
+    // No name prefix is unique (duplicate labels): Home, then walk; on macOS type the whole label.
+    const keys: string[] = plan.home ? (mac ? [...plan.label] : ['Home', ...arrows(plan.arrows)])
+      : [...plan.typed, ...arrows(plan.arrows)];
+    // The browser joins letters typed within ~1s into one search: let an earlier
+    // selectOption's search lapse before starting a new one.
+    if (keys.length && keys[0].length === 1) {
+      const wait = this.typeAheadUntil - Date.now();
+      if (wait > 0) await sleepMs(wait);
     }
-    const nav: boolean[] = p.navigable;
-    let cur: number = state.current;
-    for (let k = 0; k <= nav.length; k++) {
-      if (cur === index) break;
-      const step = index > cur ? 1 : -1;
-      let nxt = cur + step;
-      while (nxt >= 0 && nxt < nav.length && !nav[nxt]) nxt += step;
-      if (!(nxt >= 0 && nxt < nav.length)) break;
-      await this.raw.keyPress(step > 0 ? 'ArrowDown' : 'ArrowUp');
-      await sleepMs(rand(70, 180));
-      cur = nxt;
+    let typed = false;
+    for (const k of keys) {
+      if (deadline.expired()) {
+        await this.raw.keyPress('Escape');
+        throw new errors.TimeoutError(`${api}: Timeout ${Math.round(deadline.timeout)}ms exceeded.\n`
+          + `Call log:\n  - choosing an option of ${target.description}`);
+      }
+      if (k.length === 1) {
+        await this.typeAheadChar(k, cfg);
+        typed = true;
+        this.typeAheadUntil = Date.now() + 1100;
+        await sleepMs(rand(60, 160));
+      } else {
+        await this.raw.keyPress(k);
+        await sleepMs(rand(90, 200));
+      }
     }
     await sleepMs(rand(100, 250));
     await this.raw.keyPress('Enter');
+    if (typed) this.typeAheadUntil = Date.now() + 1100;
     await sleepMs(rand(80, 160));
+  }
+
+  /** One type-ahead letter (lowercase: a person doesn't hold Shift to search a
+   * list); a character without a US-layout key is sent as itself. */
+  private async typeAheadChar(ch: string, cfg: HumanConfig): Promise<void> {
+    if (ch.charCodeAt(0) < 128) {
+      await this.typeChar(ch, cfg);
+      return;
+    }
+    const session: CDPSession = await this.worlds.session();
+    await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, unmodifiedText: ch });
+    await sleepMs(randRange(cfg.key_hold));
+    await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
   }
 
   private async selectListbox(target: Target, r: Resolved, p: any, opts: Opts, api: string, cfg: HumanConfig,
