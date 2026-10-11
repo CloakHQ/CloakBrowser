@@ -368,7 +368,7 @@ export function showWelcome(tier = "keyless"): void {
   if (!welcomeDue(marker, tier === "pro")) return;
   // ASCII-only banner: on a legacy Windows console a non-ASCII glyph can
   // crash or mojibake the write, and this runs on the binary-download path
-  // (ticket 2354). Keep the three wrappers byte-parallel.
+  // Keep the three wrappers byte-parallel.
   console.error();
   console.error("  CloakBrowser - stealth Chromium for automation");
   console.error("  https://github.com/CloakHQ/CloakBrowser");

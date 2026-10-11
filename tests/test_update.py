@@ -623,7 +623,7 @@ def _make_pro_binary(version: str):
 
 
 class TestUnpinnedProUpgrade:
-    """Ticket 431: an unpinned Pro launch must track the server's latest stable,
+    """An unpinned Pro launch must track the server's latest stable,
     never roll down to a stale cached build, and never fall back to the free binary."""
 
     OLD = "148.0.7778.215.3"
@@ -907,7 +907,7 @@ class TestUnpinnedProUpgrade:
 
 
 class TestCheckForProUpdate:
-    """`cloakbrowser update` for Pro installs (ticket 431 Fix 1)."""
+    """`cloakbrowser update` for Pro installs."""
 
     OLD = "148.0.7778.215.3"
     NEW = "148.0.7778.215.5"
@@ -959,7 +959,7 @@ class TestCheckForProUpdate:
 
 class TestEffectiveVersionProNoFreeFallback:
     """get_effective_version(pro=True) must return None — never the free base —
-    when no cached Pro binary matches the marker (ticket 431 Fix 4)."""
+    when no cached Pro binary matches the marker."""
 
     def test_none_when_no_cached_pro_binary(self, tmp_path):
         with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}):

@@ -726,6 +726,17 @@ def launch_persistent_context(
     if proxy_extra_args:
         _warn_on_request_client_use(context._impl_obj)
 
+    # Human-like behavioral patching. Applied BEFORE the license guard: the guard
+    # stores its wrapper on the page/context object itself (it needs this launch's
+    # denial path), and an object attribute shadows the class method humanize
+    # patches. Guarding first would therefore capture Playwright's own methods and
+    # silently disable humanize for every call on that page.
+    if humanize:
+        from .human import patch_context
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_context(context, cfg)
+
     # The persistent path hands back a context, so guard it (new_page deep — see
     # launch()). A persistent context also arrives with a page already open, so
     # the user navigates pages[0] directly and never calls new_page — guard those
@@ -735,13 +746,6 @@ def launch_persistent_context(
         _install_license_guard(context, denial_path)
         for _pg in context.pages:
             _install_license_guard(_pg, denial_path)
-
-    # Human-like behavioral patching
-    if humanize:
-        from .human import patch_context
-        from .human.config import resolve_config
-        cfg = resolve_config(human_preset, human_config)
-        patch_context(context, cfg)
 
     return context
 
@@ -893,6 +897,15 @@ async def launch_persistent_context_async(
     if proxy_extra_args:
         _warn_on_request_client_use(context._impl_obj)
 
+    # Human-like behavioral patching (async variant). Applied BEFORE the license
+    # guard, for the same reason as the sync variant: the guard stores its wrapper
+    # on the page/context object, which shadows the class method humanize patches.
+    if humanize:
+        from .human import patch_context_async
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_context_async(context, cfg)
+
     # The persistent path hands back a context, so guard it (new_page deep — see
     # launch()). A persistent context also arrives with a page already open (see
     # the sync variant): guard those existing pages so a post-handshake denial on
@@ -902,13 +915,6 @@ async def launch_persistent_context_async(
         _install_license_guard_async(context, denial_path)
         for _pg in context.pages:
             _install_license_guard_async(_pg, denial_path)
-
-    # Human-like behavioral patching (async variant)
-    if humanize:
-        from .human import patch_context_async
-        from .human.config import resolve_config
-        cfg = resolve_config(human_preset, human_config)
-        patch_context_async(context, cfg)
 
     return context
 
@@ -1637,7 +1643,7 @@ def _maybe_warn_windows_fonts(chrome_args: list[str]) -> None:
         # Write straight to stderr (like the welcome banner and the JS/.NET
         # wrappers) so an app's logging config can't silence it. ASCII-only and
         # swallow-everything: on a legacy Windows console stderr is cp1252/strict
-        # and this write is on the launch path (ticket 2354).
+        # and this write is on the launch path.
         try:
             sys.stderr.write(
                 "[cloakbrowser] Incomplete Windows font set - installing the full "

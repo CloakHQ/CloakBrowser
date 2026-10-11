@@ -128,7 +128,7 @@ def _emit(text: str) -> None:
 
     On a legacy Windows console sys.stderr is cp1252/strict; an unencodable
     glyph raises UnicodeEncodeError. Because the welcome banner runs on the
-    binary-download path, that would abort the whole launch (ticket 2354).
+    binary-download path, that would abort the whole launch.
     A banner is decoration - never let it propagate.
     """
     try:

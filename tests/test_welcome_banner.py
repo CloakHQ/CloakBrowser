@@ -60,7 +60,7 @@ def test_free_reshows_after_interval(cache, capsys):
 @pytest.mark.parametrize("tier", ["keyless", "free", "pro"])
 def test_banner_is_ascii_only(cache, capsys, tier):
     """Banner must be pure ASCII so a legacy Windows console (cp1252/strict)
-    can always encode it. Regression for ticket 2354 (the '->' glyph)."""
+    can always encode it. Regression for the '->' glyph."""
     out = _banner(capsys, tier)
     assert out != ""
     non_ascii = [c for c in out if ord(c) > 0x7F]
@@ -70,7 +70,7 @@ def test_banner_is_ascii_only(cache, capsys, tier):
 @pytest.mark.parametrize("tier", ["keyless", "free", "pro"])
 def test_banner_never_raises_on_cp1252_stderr(cache, monkeypatch, tier):
     """Even if a future glyph slips in, a cp1252/strict stderr must not abort
-    the launch — the banner is cosmetic. Reproduces ticket 2354's crash path."""
+    the launch — the banner is cosmetic. Reproduces that crash path."""
     strict = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
     monkeypatch.setattr(sys, "stderr", strict)
     download._show_welcome(tier)  # pre-fix: UnicodeEncodeError; post-fix: returns

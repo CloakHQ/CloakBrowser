@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { showWelcome } from "../src/download.js";
 
 // The welcome banner runs on the binary-download path. On a legacy Windows
-// console a non-ASCII glyph can crash or mojibake the write (ticket 2354), so
+// console a non-ASCII glyph can crash or mojibake the write, so
 // the banner must be pure ASCII. Mirrors the Python test_welcome_banner suite.
 describe("welcome banner", () => {
   let cacheDir: string;

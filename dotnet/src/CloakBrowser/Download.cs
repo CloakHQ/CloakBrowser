@@ -156,7 +156,7 @@ public static class Download
 
         // ASCII-only banner: on a legacy Windows console a non-ASCII glyph can
         // crash or mojibake the write, and this runs on the binary-download
-        // path (ticket 2354). Keep the three wrappers byte-parallel.
+        // path. Keep the three wrappers byte-parallel.
         var sb = new System.Text.StringBuilder();
         sb.Append('\n');
         sb.Append("  CloakBrowser - stealth Chromium for automation\n");

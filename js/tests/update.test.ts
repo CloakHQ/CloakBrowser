@@ -340,7 +340,7 @@ describe("effective version", () => {
     }
   });
 
-  // Ticket 431 Fix 4: a valid Pro license must NEVER fall back to the free binary.
+  // A valid Pro license must NEVER fall back to the free binary.
   it("returns null for Pro when nothing is cached (never the free base)", () => {
     const orig = process.env.CLOAKBROWSER_CACHE_DIR;
     process.env.CLOAKBROWSER_CACHE_DIR = `/tmp/cloakbrowser-test-${Date.now()}-pro`;

@@ -60,7 +60,7 @@ public class WelcomeCadenceTests
 
 /// <summary>
 /// The welcome banner runs on the binary-download path. On a legacy Windows
-/// console a non-ASCII glyph can crash or mojibake the write (ticket 2354), so
+/// console a non-ASCII glyph can crash or mojibake the write, so
 /// the banner must be pure ASCII. Mirrors the Python/JS welcome tests.
 /// Serialized: mutates CLOAKBROWSER_CACHE_DIR and Console.Error.
 /// </summary>

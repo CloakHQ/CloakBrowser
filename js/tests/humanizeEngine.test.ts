@@ -166,6 +166,24 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)('humanize engine (real br
     expect(await p.evaluate(() => (window as any).__dt)).toEqual([true, true]);
   });
 
+  it('a license guard installed on a humanized page does not disable humanize', async () => {
+    // The guard stores its wrapper on the page object (it carries this launch's
+    // denial path), so the order it is applied in decides which methods it holds.
+    // Installed on an already-humanized page it must forward to the human engine.
+    const p: any = await open();
+    const { installLicenseGuard } = await import('../src/license.js');
+    installLicenseGuard(p, '/tmp/denial-compose-test');
+    await p.evaluate(() => {
+      (window as any).__m = 0;
+      document.addEventListener('mousemove', () => { (window as any).__m += 1; }, true);
+    });
+
+    await p.click('#btn');
+
+    // A humanized click travels in a curve; Playwright's own click teleports (1-2).
+    expect(await p.evaluate(() => (window as any).__m)).toBeGreaterThan(3);
+  });
+
   it('the probe works: the page records events dispatched in its own world', async () => {
     const p: any = await open();
     const before = await p.evaluate(() => (window as any).__dispatched.length);
