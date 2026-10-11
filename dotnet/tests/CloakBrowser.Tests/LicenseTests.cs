@@ -1056,7 +1056,7 @@ public class LicenseTests : IDisposable
     [InlineData(76, "session limit")]
     [InlineData(77, "invalid, expired, or missing")]
     [InlineData(78, "couldn't verify")]
-    [InlineData(79, "not writable")]
+    [InlineData(79, "--license-route")]
     public void LicenseErrorMessage_MapsKnownCodes(int code, string fragment)
     {
         var msg = License.LicenseErrorMessage(LaunchText(code));
@@ -1139,7 +1139,7 @@ public class LicenseTests : IDisposable
     [InlineData(76, "session limit")]
     [InlineData(77, "invalid, expired, or missing")]
     [InlineData(78, "couldn't verify")]
-    [InlineData(79, "not writable")]
+    [InlineData(79, "--license-route")]
     public void LicenseErrorForCode_MapsKnownCodes(int code, string fragment)
     {
         var err = License.LicenseErrorForCode(code);

@@ -116,8 +116,9 @@ _LICENSE_EXIT_MESSAGES = {
         "unreachable or a connection problem)."
     ),
     79: (
-        "CloakBrowser Pro: local configuration problem, ~/.cloakbrowser "
-        "is not writable."
+        "CloakBrowser Pro: local configuration problem. Either ~/.cloakbrowser "
+        "is not writable, or the --license-route value is invalid (use auto, "
+        "direct, or proxy with a proxy set)."
     ),
 }
 

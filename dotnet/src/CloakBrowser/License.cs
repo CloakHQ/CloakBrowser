@@ -109,7 +109,7 @@ public static class License
         [76] = "CloakBrowser Pro: session limit reached for your plan. Close another running session or upgrade your plan. Always close with await browser.CloseAsync() (e.g. in a finally block). A session that crashed or was killed frees its seat automatically within 4 min (free/trial/solo), 15 min (team) or 30 min (business/scale).",
         [77] = "CloakBrowser Pro: license key is invalid, expired, or missing. Check CLOAKBROWSER_LICENSE_KEY.",
         [78] = "CloakBrowser Pro: couldn't verify your license (license server unreachable or a connection problem).",
-        [79] = "CloakBrowser Pro: local configuration problem, ~/.cloakbrowser is not writable.",
+        [79] = "CloakBrowser Pro: local configuration problem. Either ~/.cloakbrowser is not writable, or the --license-route value is invalid (use auto, direct, or proxy with a proxy set).",
     };
 
     // Playwright embeds the child-process exit as "<process did exit: exitCode=N, ...>".

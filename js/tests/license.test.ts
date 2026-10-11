@@ -620,7 +620,7 @@ describe("denial file + license guard", () => {
     [76, "session limit"],
     [77, "invalid, expired, or missing"],
     [78, "couldn't verify"],
-    [79, "not writable"],
+    [79, "--license-route"],
   ])("licenseErrorForCode maps %i", (code, fragment) => {
     const err = licenseErrorForCode(code as number);
     expect(err).toBeInstanceOf(CloakBrowserLicenseError);
@@ -818,7 +818,7 @@ describe("license exit-code surfacing", () => {
     [76, "session limit"],
     [77, "invalid, expired, or missing"],
     [78, "couldn't verify"],
-    [79, "not writable"],
+    [79, "--license-route"],
   ])("maps Playwright exitCode=%i", (code, fragment) => {
     const msg = licenseErrorMessage(playwrightText(code as number));
     expect(msg).not.toBeNull();
