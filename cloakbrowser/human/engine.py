@@ -26,6 +26,7 @@ import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 from playwright._impl._errors import Error, TimeoutError
+from playwright._impl._js_handle import JSHandle
 
 from . import fields
 from .config import HumanConfig, merge_config, rand, rand_int_range, rand_range
@@ -107,6 +108,23 @@ class _Retry(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+class RawFallback(Exception):
+    """A read / dispatch on an ElementHandle the isolated world cannot locate
+    (no box: hidden; or a box shared with another element). The patched method
+    runs Playwright's own call instead, which reads hidden elements. Also a
+    dispatch_event whose event_init holds a JSHandle (it lives in the page's
+    main world, where Playwright dispatches)."""
+
+
+def _has_handle(v: Any) -> bool:
+    """A JSHandle anywhere in ``v`` (public wrapper or impl object)."""
+    if isinstance(v, dict):
+        return any(_has_handle(x) for x in v.values())
+    if isinstance(v, (list, tuple)):
+        return any(_has_handle(x) for x in v)
+    return isinstance(getattr(v, "_impl_obj", v), JSHandle)
 
 
 # ---------------------------------------------------------------------------
@@ -242,16 +260,21 @@ class Human:
             frame = child
         raise Error("unreachable")  # pragma: no cover
 
-    async def _resolve_handle(self, handle: Any, deadline: _Deadline) -> Resolved:
+    async def _resolve_handle(self, handle: Any, deadline: _Deadline, exact: bool = False) -> Resolved:
+        """``exact`` (reads): skip the cache (it may hold a click's pick from a
+        same-box chain) and accept only the one element with this box; anything
+        else raises RawFallback."""
         frame = handle._frame
         rec = await self.worlds._ready(frame)
         cached = self._handle_ids.get(handle._guid)
-        if cached and cached[0] is frame and cached[1] == rec.ctx:
+        if not exact and cached and cached[0] is frame and cached[1] == rec.ctx:
             return Resolved(frame, cached[2])
         # An ElementHandle carries no identity our context can read, so find
         # the element with exactly its border box.
         box = await handle.bounding_box()
         if box is None:
+            if exact:
+                raise RawFallback()
             if cached and cached[0] is frame:
                 # Resolved in an earlier document of this frame and gone now
                 # (a same-document navigation keeps the element, and its box).
@@ -259,8 +282,10 @@ class Human:
             raise _Retry("element is not visible")
         ox, oy, _ = await self.worlds.frame_geometry(frame)
         res = await self.worlds.call(frame, "matchRect", box["x"] - ox, box["y"] - oy,
-                                     box["width"], box["height"])
+                                     box["width"], box["height"], exact)
         if res.get("count") != 1:
+            if exact:
+                raise RawFallback()
             raise Error(
                 "cloakbrowser humanize: cannot identify the element behind this ElementHandle "
                 "inside the isolated world (it shares its box with another element); "
@@ -290,6 +315,46 @@ class Human:
                 raise Error("Element is not attached to the DOM")
             raise _Retry("element was detached from the DOM, retrying")
         raise _Retry(f"element is not {missing}")
+
+    async def _handle_or_raw(self, target: Target, deadline: _Deadline, api: str) -> None:
+        """For an ElementHandle: cache its exact isolated-world id, or raise
+        RawFallback at once when it has no box or shares it (Playwright reads
+        hidden elements; a read must not land on a same-box wrapper)."""
+        if target.handle is not None:
+            await self.retry(api, target, deadline,
+                             lambda: self._resolve_handle(target.handle, deadline, exact=True))
+
+    async def read(self, target: Target, op: str, opts: dict, api: str, *extra: Any) -> Any:
+        """Read a property through the isolated world.
+
+        Resolve until the selector matches once (Playwright's read semantics),
+        then read the property in the world the engine already runs in.
+        """
+        deadline = self.deadline(target, opts)
+        await self._handle_or_raw(target, deadline, api)
+        r = await self.wait_for(target, [], deadline, api)
+        res = await self.worlds.call(r.frame, op, r.id, *extra)
+        if isinstance(res, dict):
+            if "error" in res:
+                raise Error(f"{api}: Error: {res['error']}")
+            return res.get("value")
+        return res
+
+    async def dispatch(self, target: Target, opts: dict, api: str, event_type: str,
+                       event_init: Any = None) -> None:
+        """Dispatch a DOM event on the resolved element.
+
+        The event is built by Playwright's own injected helper, evaluated in the
+        isolated world instead of the page's world.
+        """
+        if _has_handle(event_init):
+            raise RawFallback()
+        deadline = self.deadline(target, opts)
+        await self._handle_or_raw(target, deadline, api)
+        r = await self.wait_for(target, [], deadline, api)
+        res = await self.worlds.call(r.frame, "dispatchEvent", r.id, event_type, event_init)
+        if isinstance(res, dict) and "error" in res:
+            raise Error(f"{api}: Error: {res['error']}")
 
     async def retry(self, api: str, target: Target, deadline: _Deadline,
                     attempt: Callable[[], Awaitable[Any]]) -> Any:

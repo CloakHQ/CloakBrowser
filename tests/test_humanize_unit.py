@@ -877,3 +877,179 @@ def test_check_playwright_still_flags_missing_internals(monkeypatch):
     monkeypatch.setattr(ElementHandle, "__init__", __init__)
     with pytest.raises(RuntimeError, match="missing internals: ElementHandle._frame"):
         patch._check_playwright()
+
+
+# =========================================================================
+# Reads: resolved and read in the isolated world, never Playwright's own
+# read path (which a humanized flow otherwise never touches)
+# =========================================================================
+
+READ_OPS = {
+    "input_value": "inputValue",
+    "text_content": "textContent",
+    "inner_text": "innerText",
+    "inner_html": "innerHTML",
+    "get_attribute": "getAttribute",
+}
+
+
+class _StubWorlds:
+    """Stands in for human.world.Worlds: records ops, answers resolve/states."""
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    async def call(self, frame, op, *args):
+        self.calls.append((op, args))
+        if op == "resolve":
+            return {"status": "ok", "id": 7, "count": 1}
+        if op == "states":
+            return None
+        return self.result
+
+
+class _StubFrame:
+    def _timeout(self, timeout):
+        return 5000.0 if timeout is None else float(timeout)
+
+
+def _human_with(result):
+    from cloakbrowser.human.engine import Human, Target
+
+    human = Human.__new__(Human)  # read() needs only worlds + the target frame
+    human.worlds = _StubWorlds(result)
+    return human, Target(_StubFrame(), "input[name='q']")
+
+
+def test_read_returns_the_world_value_without_playwright():
+    from cloakbrowser.human.engine import Human
+
+    human, target = _human_with({"value": "laptop"})
+    got = asyncio.run(human.read(target, "inputValue", {}, "page.input_value"))
+    assert got == "laptop"
+    ops = [op for op, _ in human.worlds.calls]
+    assert ops == ["resolve", "states", "inputValue"], ops
+    assert human.worlds.calls[-1][1] == (7,)
+
+
+def test_read_passes_extra_args_to_the_world_op():
+    from cloakbrowser.human.engine import Human
+
+    human, target = _human_with({"value": "data-x"})
+    got = asyncio.run(human.read(target, "getAttribute", {}, "page.get_attribute", "data-x"))
+    assert got == "data-x"
+    assert human.worlds.calls[-1] == ("getAttribute", (7, "data-x"))
+
+
+def test_read_maps_null_and_missing_values():
+    for result in ({"value": None}, {}):
+        human, target = _human_with(result)
+        assert asyncio.run(human.read(target, "textContent", {}, "page.text_content")) is None
+
+
+def test_read_raises_playwright_error_on_world_error():
+    from playwright.sync_api import Error
+    from cloakbrowser.human.engine import Human
+
+    human, target = _human_with(
+        {"error": "Node is not an <input>, <textarea> or <select> element"}
+    )
+    with pytest.raises(Error, match="page.input_value: Error: Node is not an <input>"):
+        asyncio.run(human.read(target, "inputValue", {}, "page.input_value"))
+
+
+def test_read_api_label_follows_the_kind():
+    """Handlers pass ``<Kind>.<method>`` (same as click/type), e.g. Page.input_value."""
+    from cloakbrowser.human import patch
+
+    class _StubHuman:
+        def __init__(self):
+            self.api = None
+
+        async def read(self, target, op, opts, api, *extra):
+            self.api = api
+            return None
+
+    impl = MagicMock()
+    human = _StubHuman()
+    asyncio.run(patch._handlers("Locator")["input_value"](human, impl, {"timeout": None, "human_config": None}))
+    assert human.api == "Locator.input_value"
+
+
+def test_read_handlers_registered_for_every_class():
+    from cloakbrowser.human import patch
+
+    for kind in ("Page", "Frame", "Locator", "ElementHandle"):
+        table = patch._handlers(kind)
+        for name in READ_OPS:
+            assert name in table, f"{kind}.{name} not patched"
+
+
+def test_read_handlers_use_the_matching_world_op():
+    from cloakbrowser.human import patch
+
+    class _StubHuman:
+        def __init__(self):
+            self.seen = []
+
+        async def read(self, target, op, opts, api, *extra):
+            self.seen.append((op, api, extra))
+            return "ok"
+
+    impl = MagicMock()
+    for name, op in READ_OPS.items():
+        human = _StubHuman()
+        args = {"selector": "#x", "name": "data-x", "timeout": None, "strict": None,
+                "human_config": None}
+        asyncio.run(patch._handlers("Page")[name](human, impl, dict(args)))
+        extra = ("data-x",) if name == "get_attribute" else ()
+        assert human.seen == [(op, f"Page.{name}", extra)], (name, human.seen)
+
+
+def test_originals_expose_the_raw_reads():
+    from cloakbrowser.human import patch
+
+    for name in READ_OPS:
+        assert name in patch._Originals._PAGE, f"page._original.{name} missing"
+
+
+def test_dispatch_event_handlers_pass_type_and_init():
+    from cloakbrowser.human import patch
+
+    class _StubHuman:
+        def __init__(self):
+            self.seen = []
+
+        async def dispatch(self, target, opts, api, event_type, event_init=None):
+            self.seen.append((api, event_type, event_init))
+            return None
+
+    impl = MagicMock()
+    human = _StubHuman()
+    asyncio.run(patch._handlers("Page")["dispatch_event"](
+        human, impl, {"selector": "#x", "type": "click", "event_init": {"bubbles": False},
+                      "timeout": None, "strict": None, "human_config": None}))
+    assert human.seen == [("Page.dispatch_event", "click", {"bubbles": False})]
+
+    human = _StubHuman()
+    asyncio.run(patch._handlers("ElementHandle")["dispatch_event"](
+        human, impl, {"type": "input", "event_init": None, "human_config": None}))
+    assert human.seen == [("ElementHandle.dispatch_event", "input", None)]
+
+
+def test_dispatch_event_uses_the_world_op():
+    from cloakbrowser.human.engine import Human
+
+    human, target = _human_with({"value": True})
+    asyncio.run(human.dispatch(target, {}, "page.dispatch_event", "click", {"clientX": 7}))
+    assert human.worlds.calls[-1] == ("dispatchEvent", (7, "click", {"clientX": 7}))
+
+
+def test_dispatch_event_raises_on_world_error():
+    from playwright.sync_api import Error
+    from cloakbrowser.human.engine import Human
+
+    human, target = _human_with({"error": "boom"})
+    with pytest.raises(Error, match="page.dispatch_event: Error: boom"):
+        asyncio.run(human.dispatch(target, {}, "page.dispatch_event", "click"))

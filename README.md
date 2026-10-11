@@ -601,7 +601,7 @@ clearCache();
 
 ## Human Behavior
 
-Pass `humanize=True` to make all mouse, keyboard, and scroll interactions indistinguishable from real users. All Playwright calls (`page.click()`, `page.fill()`, `page.type()`, `page.mouse.*`, `page.keyboard.*`, Locator API) and Puppeteer calls (`page.click()`, `page.type()`, `page.mouse.*`, `page.keyboard.*`, ElementHandle API) are automatically replaced with human-like equivalents. No code changes needed.
+Pass `humanize=True` to make all mouse, keyboard, scroll and element-read interactions indistinguishable from real users. All Playwright calls (`page.click()`, `page.fill()`, `page.type()`, `page.mouse.*`, `page.keyboard.*`, `page.input_value()`, `page.text_content()`, `page.inner_text()`, `page.inner_html()`, `page.get_attribute()`, Locator API) and Puppeteer calls (`page.click()`, `page.type()`, `page.mouse.*`, `page.keyboard.*`, ElementHandle API) are automatically replaced with human-like equivalents. No code changes needed.
 
 ```python
 browser = launch(humanize=True)
@@ -666,7 +666,9 @@ const browser = await launch({
 });
 ```
 
-Access the original un-patched Playwright page at `page._original` if you need raw speed for a specific call.
+Access the original un-patched Playwright page at `page._original` if you need raw speed for a specific call — this includes the reads (`page._original.input_value(...)`, `text_content`, `inner_text`, `inner_html`, `get_attribute`), which are humanized by default.
+
+For an arbitrary expression, `page._stealth_world.evaluate("…")` evaluates it in the isolated world the humanize engine uses.
 
 > **Note (Playwright):** Always use `page.click(selector)`, `page.type(selector, text)`, `page.hover(selector)`, or `page.locator(selector).*` — these go through the full humanize pipeline. Avoid `page.query_selector()` — `ElementHandle` objects bypass all patches, so mouse movement teleports, keyboard events fire without timing, and scroll has no human curve.
 >

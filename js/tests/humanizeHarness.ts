@@ -73,6 +73,15 @@ const INDEX_HTML = `<!doctype html>
     note('document.querySelector', sel);
     return origQS.call(this, sel);
   };
+
+  // Records the event types the page sees dispatched, so tests can assert that a
+  // humanized read leaves the page's own state alone.
+  window.__dispatched = [];
+  const origDispatch = EventTarget.prototype.dispatchEvent;
+  EventTarget.prototype.dispatchEvent = function (e) {
+    if (e && typeof e.type === 'string') window.__dispatched.push(e.type);
+    return origDispatch.call(this, e);
+  };
 })();
 </script>
 <script>
@@ -200,6 +209,15 @@ const FRAME_HTML = `<!doctype html>
   Document.prototype.querySelector = function (sel) {
     note('document.querySelector', sel);
     return origQS.call(this, sel);
+  };
+
+  // Records the event types the page sees dispatched, so tests can assert that a
+  // humanized read leaves the page's own state alone.
+  window.__dispatched = [];
+  const origDispatch = EventTarget.prototype.dispatchEvent;
+  EventTarget.prototype.dispatchEvent = function (e) {
+    if (e && typeof e.type === 'string') window.__dispatched.push(e.type);
+    return origDispatch.call(this, e);
   };
 })();
 </script>

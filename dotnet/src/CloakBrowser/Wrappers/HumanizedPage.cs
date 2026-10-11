@@ -7,8 +7,9 @@ namespace CloakBrowser.Wrappers;
 /// <summary>
 /// Transparent humanizing decorator over Playwright's <see cref="IPage"/>.
 ///
-/// Selector-based interaction methods (Click/Fill/Type/Hover/Press/Tap/Check/...) are
-/// routed through the unified <see cref="HumanEngine"/>. <c>Mouse</c> and
+/// Selector-based interaction methods (Click/Fill/Type/Hover/Press/Tap/Check/...), the
+/// element reads (InputValue/TextContent/InnerText/InnerHTML/GetAttribute) and
+/// DispatchEvent are routed through the unified <see cref="HumanEngine"/>. <c>Mouse</c> and
 /// <c>Keyboard</c> return humanized wrappers; <c>Locator</c>/<c>GetBy*</c>/frames return
 /// re-wrapped objects so the whole chain stays humanized. Everything else is delegated
 /// to the inner page by the source generator.
@@ -156,6 +157,37 @@ public sealed partial class HumanizedPage : IPage
         Select(selector, SelectValues.Of(new[] { values }), options);
     public Task<IReadOnlyList<string>> SelectOptionAsync(string selector, IEnumerable<SelectOptionValue> values, PageSelectOptionOptions? options = null) =>
         Select(selector, SelectValues.Of(values), options);
+
+    // -----------------------------------------------------------------------
+    // Element reads and event dispatch: resolved and executed by the engine in the
+    // frame's isolated world, like the actions above. The raw Playwright methods stay
+    // reachable through Original / Humanize.Unwrap(page) (escape hatch).
+    // -----------------------------------------------------------------------
+
+    private Task<string?> Read(string selector, string op, object? options, string api, params object?[] extra) =>
+        _engine.ReadAsync(T(selector, options), op, Opt(options), api, extra);
+
+    public async Task<string> InputValueAsync(string selector, PageInputValueOptions? options = null) =>
+        (await Read(selector, "inputValue", options, "Page.InputValueAsync").ConfigureAwait(false))!;
+
+    public Task<string?> TextContentAsync(string selector, PageTextContentOptions? options = null) =>
+        Read(selector, "textContent", options, "Page.TextContentAsync");
+
+    public async Task<string> InnerTextAsync(string selector, PageInnerTextOptions? options = null) =>
+        (await Read(selector, "innerText", options, "Page.InnerTextAsync").ConfigureAwait(false))!;
+
+    public async Task<string> InnerHTMLAsync(string selector, PageInnerHTMLOptions? options = null) =>
+        (await Read(selector, "innerHTML", options, "Page.InnerHTMLAsync").ConfigureAwait(false))!;
+
+    public Task<string?> GetAttributeAsync(string selector, string name, PageGetAttributeOptions? options = null) =>
+        Read(selector, "getAttribute", options, "Page.GetAttributeAsync", name);
+
+    public async Task DispatchEventAsync(string selector, string type, object? eventInit = null, PageDispatchEventOptions? options = null)
+    {
+        // A JSHandle in eventInit lives in the main world: Playwright's own call.
+        try { await _engine.DispatchAsync(T(selector, options), Opt(options), "Page.DispatchEventAsync", type, eventInit).ConfigureAwait(false); }
+        catch (RawFallbackException) { await _inner.DispatchEventAsync(selector, type, eventInit, options).ConfigureAwait(false); }
+    }
 
     private static ILocator Unwrap(ILocator l) => l is HumanizedLocator hl ? hl.Original : l;
 

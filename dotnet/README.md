@@ -220,6 +220,7 @@ foreach (var frame in page.Frames) { /* wrapped IFrame */ }
 | `FillAsync`, `TypeAsync` / `PressSequentiallyAsync`, `ClearAsync` | instant value set / fast type | click into the field, select-all (persona-aware), per-character typing with variable delays, pauses and self-corrected typos; text continues at the end |
 | `FillAsync` on date/time/range, `SelectOptionAsync` | programmatic value | operated like a person with trusted events (segments typed, slider clicked + arrow keys, dropdown opened + arrows + Enter); `type=color` throws |
 | `PressAsync` | direct | clicks to focus first if needed, human key timing, `Delay` honoured |
+| `InputValueAsync`, `TextContentAsync`, `InnerTextAsync`, `InnerHTMLAsync`, `GetAttributeAsync`, `DispatchEventAsync` on `IPage` / `IFrame` / `ILocator` / `IElementHandle` | direct Playwright read / dispatch | resolved and read / dispatched in the same isolated world the rest of the engine runs in: same values, same event shape for a page listener; `Timeout` honoured |
 | `CheckAsync`, `UncheckAsync`, `SetCheckedAsync`, `DragToAsync` / `DragAndDropAsync`, `FocusAsync`, `ScrollIntoViewIfNeededAsync` | direct | humanized click / curved drag / wheel scroll |
 | `IMouse` `MoveAsync`, `ClickAsync`, `DblClickAsync` | direct | curved, eased motion (`Steps` = exact raw steps), real `detail=1,2` sequence |
 | `IMouse` `DownAsync`, `UpAsync`, `WheelAsync`; `IKeyboard` `DownAsync`, `UpAsync`, `PressAsync`, `InsertTextAsync` | direct | passed through 1:1 (they already are single human inputs) |

@@ -101,16 +101,18 @@ public class LocatorWrapperTests
         var (page, _, _) = BuildPage();
         var (inner, innerRec) = Fake.Of<ILocator>();
         innerRec.On("CountAsync", Task.FromResult(7));
-        innerRec.On("TextContentAsync", Task.FromResult<string?>("hello"));
+        // A pure query; the element reads (TextContentAsync, GetAttributeAsync, ...) are
+        // humanized instead (see GeneratorDelegationTests).
+        innerRec.On("AllTextContentsAsync", Task.FromResult<IReadOnlyList<string>>(new[] { "hello" }));
         innerRec.On("IsVisibleAsync", Task.FromResult(true));
 
         var human = new HumanizedLocator(inner, new HumanCursor(page), FastConfig());
 
         Assert.Equal(7, await human.CountAsync());
-        Assert.Equal("hello", await human.TextContentAsync());
+        Assert.Equal(new[] { "hello" }, await human.AllTextContentsAsync());
         Assert.True(await human.IsVisibleAsync());
         Assert.True(innerRec.WasCalled("CountAsync"));
-        Assert.True(innerRec.WasCalled("TextContentAsync"));
+        Assert.True(innerRec.WasCalled("AllTextContentsAsync"));
     }
 
     // -----------------------------------------------------------------------

@@ -82,6 +82,20 @@ class Retry extends Error {
   constructor(public reason: string) { super(reason); }
 }
 
+/** A read / dispatchEvent on an ElementHandle the isolated world cannot locate
+ * (no box: hidden; or a box shared with another element). The patched method
+ * runs Playwright's own call instead, which reads hidden elements. Also a
+ * dispatchEvent whose eventInit holds a JSHandle (it lives in the page's main
+ * world, where Playwright dispatches). */
+export class RawFallback extends Error {}
+
+/** A JSHandle (or ElementHandle) anywhere in `v`. */
+function hasHandle(v: any): boolean {
+  if (!v || typeof v !== 'object') return false;
+  if (typeof v.jsonValue === 'function' && typeof v.evaluateHandle === 'function') return true;
+  return Object.values(v).some(hasHandle);
+}
+
 /** Options every humanized action understands (Playwright names + ours). */
 export interface Opts {
   timeout?: number;
@@ -239,24 +253,29 @@ export class Human {
     throw err('unreachable');
   }
 
-  async resolveHandle(handle: ElementHandle, _deadline?: Deadline): Promise<Resolved> {
+  /** `exact` (reads): skip the cache (it may hold a click's pick from a
+   * same-box chain) and accept only the one element with this box; anything
+   * else throws RawFallback. */
+  async resolveHandle(handle: ElementHandle, _deadline?: Deadline, exact = false): Promise<Resolved> {
     const frame: Frame = (handle as any)._frame;
     const rec = await this.worlds.ready(frame);
     const guid: string = (handle as any)._guid;
     const cached = this.handleIds.get(guid);
-    if (cached && cached[0] === frame && cached[1] === rec.ctx) return new Resolved(frame, cached[2]);
+    if (!exact && cached && cached[0] === frame && cached[1] === rec.ctx) return new Resolved(frame, cached[2]);
     // An ElementHandle carries no identity our context can read, so find
     // the element with exactly its border box.
     const box = await handle.boundingBox();
     if (!box) {
+      if (exact) throw new RawFallback();
       // Resolved in an earlier document of this frame and gone now
       // (a same-document navigation keeps the element, and its box).
       if (cached && cached[0] === frame) throw err('Element is not attached to the DOM');
       throw new Retry('element is not visible');
     }
     const [ox, oy] = await this.worlds.frameGeometry(frame);
-    const res = await this.worlds.call(frame, 'matchRect', box.x - ox, box.y - oy, box.width, box.height);
+    const res = await this.worlds.call(frame, 'matchRect', box.x - ox, box.y - oy, box.width, box.height, exact);
     if (res.count !== 1) {
+      if (exact) throw new RawFallback();
       throw err('cloakbrowser humanize: cannot identify the element behind this ElementHandle inside the ' +
         'isolated world (it shares its box with another element); use a Locator instead');
     }
@@ -282,6 +301,44 @@ export class Human {
     throw new Retry(`element is not ${res.missing}`);
   }
 
+  /** Read a property through the isolated world.
+   *
+   * Resolve until the selector matches once (Playwright's read semantics),
+   * then read the property in the world the engine already runs in.
+   */
+  /** For an ElementHandle: cache its exact isolated-world id, or throw
+   * RawFallback at once when it has no box or shares it (Playwright reads
+   * hidden elements; a read must not land on a same-box wrapper). */
+  async handleOrRaw(target: Target, deadline: Deadline, api: string): Promise<void> {
+    if (target.handle) await this.retry(api, target, deadline, () => this.resolveHandle(target.handle!, deadline, true));
+  }
+
+  async read(target: Target, op: string, opts: Opts, api: string, ...extra: any[]): Promise<any> {
+    const deadline = this.deadline(target, opts);
+    await this.handleOrRaw(target, deadline, api);
+    const r = await this.waitFor(target, [], deadline, api);
+    const res = await this.worlds.call(r.frame, op, r.id, ...extra);
+    if (res && typeof res === 'object' && !Array.isArray(res)) {
+      if (res.error) throw err(`${api}: Error: ${res.error}`);
+      return res.value;
+    }
+    return res;
+  }
+
+  /** Dispatch a DOM event on the resolved element.
+   *
+   * The event is built by Playwright's own injected helper, evaluated in the
+   * isolated world instead of the page's world.
+   */
+  async dispatch(target: Target, opts: Opts, api: string, type: string, eventInit?: any): Promise<void> {
+    if (hasHandle(eventInit)) throw new RawFallback();
+    const deadline = this.deadline(target, opts);
+    await this.handleOrRaw(target, deadline, api);
+    const r = await this.waitFor(target, [], deadline, api);
+    const res = await this.worlds.call(r.frame, 'dispatchEvent', r.id, type, eventInit ?? null);
+    if (res && typeof res === 'object' && res.error) throw err(`${api}: Error: ${res.error}`);
+  }
+
   async retry<T>(api: string, target: Target, deadline: Deadline, attempt: () => Promise<T>): Promise<T> {
     const reasons: string[] = [];
     const note = (r: string) => { if (reasons[reasons.length - 1] !== r) reasons.push(r); };
@@ -289,6 +346,7 @@ export class Human {
       try {
         return await attempt();
       } catch (e: any) {
+        if (e instanceof RawFallback) throw e;
         if (e instanceof StaleElement) {
           if (target.handle) throw err(`${api}: Element is not attached to the DOM`);
           note('element was detached from the DOM, retrying');

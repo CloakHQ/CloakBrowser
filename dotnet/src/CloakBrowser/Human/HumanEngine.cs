@@ -41,6 +41,24 @@ internal sealed class RetryException : Exception
     public RetryException(string reason) : base(reason) { }
 }
 
+/// <summary>A read / DispatchEvent on an ElementHandle the isolated world cannot locate
+/// (no box: hidden; or a box shared with another element). The wrapper runs Playwright's
+/// own call instead, which reads hidden elements. Also a DispatchEvent whose eventInit
+/// holds a JSHandle (it lives in the page's main world, where Playwright dispatches).</summary>
+internal sealed class RawFallbackException : Exception
+{
+    /// <summary>A JSHandle anywhere in an eventInit (dictionary, list or plain/anonymous object).</summary>
+    public static bool HasHandle(object? v) => v switch
+    {
+        null or string => false,
+        IJSHandle => true,
+        System.Collections.IDictionary d => d.Values.Cast<object?>().Any(HasHandle),
+        System.Collections.IEnumerable e => e.Cast<object?>().Any(HasHandle),
+        _ when v.GetType().IsValueType => false,
+        _ => v.GetType().GetProperties().Any(p => p.GetIndexParameters().Length == 0 && HasHandle(p.GetValue(v))),
+    };
+}
+
 /// <summary>Options every humanized action understands (Playwright names + ours).</summary>
 internal sealed class ActOpts
 {
@@ -331,14 +349,17 @@ internal sealed partial class HumanEngine
         throw Err("unreachable");
     }
 
-    public async Task<Resolved> ResolveHandleAsync(IElementHandle handle)
+    /// <summary><paramref name="exact"/> (reads): skip the cache (it may hold a click's pick
+    /// from a same-box chain) and accept only the one element with this box; anything else
+    /// throws <see cref="RawFallbackException"/>.</summary>
+    public async Task<Resolved> ResolveHandleAsync(IElementHandle handle, bool exact = false)
     {
         var frame = PlaywrightInternals.HandleFrame(handle);
         var guid = PlaywrightInternals.HandleGuid(handle);
         // Element ids are local to one isolated world, and a new document gets a new
         // world: an id cached before a navigation may now name a different element.
         int ctx = await World.ContextIdAsync(frame).ConfigureAwait(false);
-        if (_handleIds.TryGetValue(guid, out var cached) && cached.Frame == frame && cached.Ctx == ctx &&
+        if (!exact && _handleIds.TryGetValue(guid, out var cached) && cached.Frame == frame && cached.Ctx == ctx &&
             await World.CallAsync(frame, "connected", cached.Id).ConfigureAwait(false) is { ValueKind: JsonValueKind.True })
             return new Resolved(frame, cached.Id);
         // An ElementHandle carries no identity our context can read, so find the element
@@ -346,16 +367,20 @@ internal sealed partial class HumanEngine
         var box = await handle.BoundingBoxAsync().ConfigureAwait(false);
         if (box == null)
         {
+            if (exact) throw new RawFallbackException();
             // Resolved in an earlier document of this frame and gone now
             // (a same-document navigation keeps the element, and its box).
             if (_handleIds.TryGetValue(guid, out var old) && old.Frame == frame) throw Err("Element is not attached to the DOM");
             throw new RetryException("element is not visible");
         }
         var (ox, oy, _) = await World.FrameGeometryAsync(frame).ConfigureAwait(false);
-        var res = (await World.CallAsync(frame, "matchRect", box.X - ox, box.Y - oy, box.Width, box.Height).ConfigureAwait(false))!.Value;
+        var res = (await World.CallAsync(frame, "matchRect", box.X - ox, box.Y - oy, box.Width, box.Height, exact).ConfigureAwait(false))!.Value;
         if (res.GetProperty("count").GetInt32() != 1)
+        {
+            if (exact) throw new RawFallbackException();
             throw Err("cloakbrowser humanize: cannot identify the element behind this ElementHandle inside the isolated " +
                       "world (it shares its box with another element); use a Locator instead");
+        }
         int id = res.GetProperty("id").GetInt32();
         _handleIds[guid] = (frame, ctx, id);
         return new Resolved(frame, id);
@@ -378,6 +403,62 @@ internal sealed partial class HumanEngine
             throw new RetryException("element was detached from the DOM, retrying");
         }
         throw new RetryException($"element is not {missing}");
+    }
+
+    // -- reads --------------------------------------------------------------
+
+    private static object?[] WithId(int id, object?[] extra)
+    {
+        var args = new object?[extra.Length + 1];
+        args[0] = id;
+        Array.Copy(extra, 0, args, 1, extra.Length);
+        return args;
+    }
+
+    private static string? WorldValue(JsonElement res) =>
+        res.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>Read a property through the isolated world.
+    ///
+    /// Resolve until the selector matches once (Playwright's read semantics), then read
+    /// the property in the world the engine already runs in — the same isolated world
+    /// the actions use.</summary>
+    /// <summary>For an ElementHandle: cache its exact isolated-world id, or throw
+    /// <see cref="RawFallbackException"/> at once when it has no box or shares it
+    /// (Playwright reads hidden elements; a read must not land on a same-box wrapper).</summary>
+    private async Task HandleOrRawAsync(Target t, Deadline d, string api)
+    {
+        if (t.Handle is { } h)
+            await RetryAsync(api, t, d, () => ResolveHandleAsync(h, exact: true)).ConfigureAwait(false);
+    }
+
+    public async Task<string?> ReadAsync(Target t, string op, ActOpts o, string api, params object?[] extra)
+    {
+        var d = DeadlineFor(t, o);
+        await HandleOrRawAsync(t, d, api).ConfigureAwait(false);
+        var r = await WaitForAsync(t, Array.Empty<string>(), d, api).ConfigureAwait(false);
+        var res = await World.CallAsync(r.Frame, op, WithId(r.Id, extra)).ConfigureAwait(false);
+        if (res is JsonElement e && e.ValueKind == JsonValueKind.Object)
+        {
+            if (e.TryGetProperty("error", out var err)) throw Err($"{api}: Error: {err.GetString()}");
+            return WorldValue(e);
+        }
+        return null;
+    }
+
+    /// <summary>Dispatch a DOM event on the resolved element.
+    ///
+    /// The event is built by Playwright's own injected helper, evaluated in the
+    /// isolated world instead of the page's world.</summary>
+    public async Task DispatchAsync(Target t, ActOpts o, string api, string type, object? eventInit = null)
+    {
+        if (RawFallbackException.HasHandle(eventInit)) throw new RawFallbackException();
+        var d = DeadlineFor(t, o);
+        await HandleOrRawAsync(t, d, api).ConfigureAwait(false);
+        var r = await WaitForAsync(t, Array.Empty<string>(), d, api).ConfigureAwait(false);
+        var res = await World.CallAsync(r.Frame, "dispatchEvent", r.Id, type, eventInit).ConfigureAwait(false);
+        if (res is JsonElement e && e.ValueKind == JsonValueKind.Object && e.TryGetProperty("error", out var err))
+            throw Err($"{api}: Error: {err.GetString()}");
     }
 
     public async Task<T> RetryAsync<T>(string api, Target t, Deadline d, Func<Task<T>> attempt)

@@ -8,7 +8,8 @@ namespace CloakBrowser.Wrappers;
 /// Transparent humanizing decorator over Playwright's <see cref="IFrame"/>.
 ///
 /// Frames have no Mouse/Keyboard of their own (those belong to the page): selector
-/// actions run through the page's <see cref="HumanEngine"/>, resolved in this frame's
+/// actions and the element reads / DispatchEvent run through the page's
+/// <see cref="HumanEngine"/>, resolved in this frame's
 /// own isolated world, with wheel scrolling and hit-tests through every ancestor
 /// iframe. Locator/frame returning members are re-wrapped; everything else is
 /// delegated by the generator.
@@ -59,6 +60,37 @@ public sealed partial class HumanizedFrame : IFrame
     public Task FocusAsync(string selector, FrameFocusOptions? options = null) => E.FocusAsync(T(selector, options), Opt(options), "Frame.FocusAsync");
     public Task DragAndDropAsync(string source, string target, FrameDragAndDropOptions? options = null) =>
         E.DragAsync(T(source, options), T(target, options), Opt(options), "Frame.DragAndDropAsync");
+
+    // -----------------------------------------------------------------------
+    // Element reads and event dispatch: resolved and executed by the engine in THIS
+    // frame's isolated world, like the actions above. The raw Playwright methods stay
+    // reachable through Original (escape hatch).
+    // -----------------------------------------------------------------------
+
+    private Task<string?> Read(string selector, string op, object? options, string api, params object?[] extra) =>
+        E.ReadAsync(T(selector, options), op, Opt(options), api, extra);
+
+    public async Task<string> InputValueAsync(string selector, FrameInputValueOptions? options = null) =>
+        (await Read(selector, "inputValue", options, "Frame.InputValueAsync").ConfigureAwait(false))!;
+
+    public Task<string?> TextContentAsync(string selector, FrameTextContentOptions? options = null) =>
+        Read(selector, "textContent", options, "Frame.TextContentAsync");
+
+    public async Task<string> InnerTextAsync(string selector, FrameInnerTextOptions? options = null) =>
+        (await Read(selector, "innerText", options, "Frame.InnerTextAsync").ConfigureAwait(false))!;
+
+    public async Task<string> InnerHTMLAsync(string selector, FrameInnerHTMLOptions? options = null) =>
+        (await Read(selector, "innerHTML", options, "Frame.InnerHTMLAsync").ConfigureAwait(false))!;
+
+    public Task<string?> GetAttributeAsync(string selector, string name, FrameGetAttributeOptions? options = null) =>
+        Read(selector, "getAttribute", options, "Frame.GetAttributeAsync", name);
+
+    public async Task DispatchEventAsync(string selector, string type, object? eventInit = null, FrameDispatchEventOptions? options = null)
+    {
+        // A JSHandle in eventInit lives in the main world: Playwright's own call.
+        try { await E.DispatchAsync(T(selector, options), Opt(options), "Frame.DispatchEventAsync", type, eventInit).ConfigureAwait(false); }
+        catch (RawFallbackException) { await _inner.DispatchEventAsync(selector, type, eventInit, options).ConfigureAwait(false); }
+    }
 
     private Task<IReadOnlyList<string>> Select(string selector, SelectValues v, FrameSelectOptionOptions? options) =>
         E.SelectOptionAsync(T(selector, options), v.Options, v.Handles, Opt(options), "Frame.SelectOptionAsync");

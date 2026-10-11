@@ -13,7 +13,10 @@
  *   `modifiers`, `position`, `trial`, `force`, `timeout` including page
  *   defaults and `0` = no limit, `strict`);
  * - throws Playwright `Error` / `TimeoutError` instead of silently falling
- *   back to Playwright's stock implementation.
+ *   back to Playwright's stock implementation. One exception: an ElementHandle
+ *   read / dispatchEvent on an element the isolated world cannot locate
+ *   (hidden, or sharing its box), and any dispatchEvent whose eventInit holds
+ *   a JSHandle, run Playwright's own call (`RawFallback`).
  *
  * playwright-core does not export its client classes, so prototypes are
  * reached through live instances: the page itself, `page.mainFrame()`,
@@ -24,7 +27,7 @@
 import { createRequire } from 'node:module';
 import type { Browser, BrowserContext, ElementHandle, Frame, Page } from 'playwright-core';
 import { type HumanConfig, rand } from './config.js';
-import { CursorState, Human, Target, type Opts, type RawInput } from './engine.js';
+import { CursorState, Human, RawFallback, Target, type Opts, type RawInput } from './engine.js';
 
 type Kind = 'Page' | 'Frame' | 'Locator' | 'ElementHandle' | 'Mouse' | 'Keyboard';
 type Handler = (h: Human, self: any, args: any[]) => Promise<any>;
@@ -105,6 +108,7 @@ function target(kind: Kind, self: any, args: any[], o: Opts): { t: Target; rest:
 const OPT_INDEX: Record<string, number> = {
   click: 0, dblclick: 0, hover: 0, tap: 0, check: 0, uncheck: 0, focus: 0, clear: 0, scrollIntoViewIfNeeded: 0,
   fill: 1, type: 1, pressSequentially: 1, press: 1, setChecked: 1, selectOption: 1, dragTo: 1,
+  inputValue: 0, textContent: 0, innerText: 0, innerHTML: 0, getAttribute: 1, dispatchEvent: 2,
 };
 
 function handlers(kind: Kind): Record<string, Handler> {
@@ -138,6 +142,30 @@ function handlers(kind: Kind): Record<string, Handler> {
     focus: async (h, self, args) => {
       const { o, t } = prep('focus', h, self, args);
       await h.focus(t, o, `${api}.focus`, kind === 'ElementHandle');
+    },
+    inputValue: async (h, self, args) => {
+      const { o, t } = prep('inputValue', h, self, args);
+      return h.read(t, 'inputValue', o, `${api}.inputValue`);
+    },
+    textContent: async (h, self, args) => {
+      const { o, t } = prep('textContent', h, self, args);
+      return h.read(t, 'textContent', o, `${api}.textContent`);
+    },
+    innerText: async (h, self, args) => {
+      const { o, t } = prep('innerText', h, self, args);
+      return h.read(t, 'innerText', o, `${api}.innerText`);
+    },
+    innerHTML: async (h, self, args) => {
+      const { o, t } = prep('innerHTML', h, self, args);
+      return h.read(t, 'innerHTML', o, `${api}.innerHTML`);
+    },
+    getAttribute: async (h, self, args) => {
+      const { o, t, rest } = prep('getAttribute', h, self, args);
+      return h.read(t, 'getAttribute', o, `${api}.getAttribute`, String(rest[0]));
+    },
+    dispatchEvent: async (h, self, args) => {
+      const { o, t, rest } = prep('dispatchEvent', h, self, args);
+      await h.dispatch(t, o, `${api}.dispatchEvent`, String(rest[0]), rest[1]);
     },
   };
   if (kind === 'Page' || kind === 'Frame') {
@@ -191,7 +219,12 @@ function wrap(kind: Kind, proto: any, name: string, handler: Handler): void {
   const wrapper = async function (this: any, ...args: any[]) {
     const h = humanFor(kind, this);
     if (!h) return orig.apply(this, args);
-    return handler(h, this, args);
+    try {
+      return await handler(h, this, args);
+    } catch (e) {
+      if (e instanceof RawFallback) return orig.apply(this, args);
+      throw e;
+    }
   };
   Object.defineProperty(wrapper, 'name', { value: name });
   (wrapper as any)[MARK] = true;
@@ -288,7 +321,8 @@ function rawInput(page: Page): RawInput {
 }
 
 const PAGE_ORIGINALS = ['click', 'dblclick', 'hover', 'type', 'fill', 'check', 'uncheck', 'selectOption', 'press', 'tap',
-  'focus', 'setChecked', 'dragAndDrop'];
+  'focus', 'setChecked', 'dragAndDrop',
+  'inputValue', 'textContent', 'innerText', 'innerHTML', 'getAttribute', 'dispatchEvent'];
 
 /** `page._original`: raw, un-humanized Playwright calls for this page. */
 function originals(page: Page): Record<string, (...a: any[]) => any> {

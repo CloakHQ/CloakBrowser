@@ -41,19 +41,20 @@ public class GeneratorDelegationTests
     public async Task Method_arguments_are_forwarded_unchanged()
     {
         var (human, rec) = Locator();
-        rec.On("GetAttributeAsync", Task.FromResult<string?>("yes"));
-        await human.GetAttributeAsync("data-id");
-        Assert.Equal("data-id", rec.Last("GetAttributeAsync")!.Args[0]);
+        rec.On("WaitForAsync", Task.CompletedTask);
+        var options = new LocatorWaitForOptions();
+        await human.WaitForAsync(options);
+        Assert.Same(options, rec.Last("WaitForAsync")!.Args[0]);
     }
 
     [Fact]
     public async Task Method_with_optional_options_delegates_without_throwing()
     {
         var (human, rec) = Locator();
-        rec.On("InnerTextAsync", Task.FromResult("text"));
+        rec.On("WaitForAsync", Task.CompletedTask);
         // Call without supplying the optional options argument.
-        Assert.Equal("text", await human.InnerTextAsync());
-        Assert.True(rec.WasCalled("InnerTextAsync"));
+        await human.WaitForAsync();
+        Assert.True(rec.WasCalled("WaitForAsync"));
     }
 
     [Fact]
@@ -88,8 +89,8 @@ public class GeneratorDelegationTests
     public async Task Delegated_exception_propagates_with_same_type_and_message()
     {
         var (human, rec) = Locator();
-        rec.On("InnerHTMLAsync", _ => throw new TimeoutException("timed out"));
-        var ex = await Assert.ThrowsAsync<TimeoutException>(() => human.InnerHTMLAsync());
+        rec.On("WaitForAsync", _ => throw new TimeoutException("timed out"));
+        var ex = await Assert.ThrowsAsync<TimeoutException>(() => human.WaitForAsync());
         Assert.Equal("timed out", ex.Message);
     }
 
@@ -202,6 +203,31 @@ public class GeneratorDelegationTests
         new object[] { typeof(HumanizedMouse), "DblClickAsync" },
         // HumanizedKeyboard
         new object[] { typeof(HumanizedKeyboard), "TypeAsync" },
+        // Element reads + event dispatch (isolated world, never Playwright's own path)
+        new object[] { typeof(HumanizedPage), "InputValueAsync" },
+        new object[] { typeof(HumanizedPage), "TextContentAsync" },
+        new object[] { typeof(HumanizedPage), "InnerTextAsync" },
+        new object[] { typeof(HumanizedPage), "InnerHTMLAsync" },
+        new object[] { typeof(HumanizedPage), "GetAttributeAsync" },
+        new object[] { typeof(HumanizedPage), "DispatchEventAsync" },
+        new object[] { typeof(HumanizedFrame), "InputValueAsync" },
+        new object[] { typeof(HumanizedFrame), "TextContentAsync" },
+        new object[] { typeof(HumanizedFrame), "InnerTextAsync" },
+        new object[] { typeof(HumanizedFrame), "InnerHTMLAsync" },
+        new object[] { typeof(HumanizedFrame), "GetAttributeAsync" },
+        new object[] { typeof(HumanizedFrame), "DispatchEventAsync" },
+        new object[] { typeof(HumanizedLocator), "InputValueAsync" },
+        new object[] { typeof(HumanizedLocator), "TextContentAsync" },
+        new object[] { typeof(HumanizedLocator), "InnerTextAsync" },
+        new object[] { typeof(HumanizedLocator), "InnerHTMLAsync" },
+        new object[] { typeof(HumanizedLocator), "GetAttributeAsync" },
+        new object[] { typeof(HumanizedLocator), "DispatchEventAsync" },
+        new object[] { typeof(HumanizedElementHandle), "InputValueAsync" },
+        new object[] { typeof(HumanizedElementHandle), "TextContentAsync" },
+        new object[] { typeof(HumanizedElementHandle), "InnerTextAsync" },
+        new object[] { typeof(HumanizedElementHandle), "InnerHTMLAsync" },
+        new object[] { typeof(HumanizedElementHandle), "GetAttributeAsync" },
+        new object[] { typeof(HumanizedElementHandle), "DispatchEventAsync" },
     };
 
     /// <summary>Every member that hands out an element handle, frame or frame locator

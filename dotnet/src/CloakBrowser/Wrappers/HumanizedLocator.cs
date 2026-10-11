@@ -9,7 +9,9 @@ namespace CloakBrowser.Wrappers;
 ///
 /// Intercepted (humanized, unified engine, strict mode): Click/DblClick/Hover/Tap/Fill/
 /// Clear/Type/PressSequentially/Press/Check/Uncheck/SetChecked/SelectOption/Focus/DragTo/
-/// ScrollIntoViewIfNeeded, for every locator shape (GetBy*, chains, Filter, FrameLocator).
+/// ScrollIntoViewIfNeeded and the element reads (InputValue/TextContent/InnerText/
+/// InnerHTML/GetAttribute) / DispatchEvent, for every locator shape (GetBy*, chains,
+/// Filter, FrameLocator).
 /// All other members - assertions, queries, waits, getters - are delegated to the inner
 /// locator by the source generator. Locator-returning members are re-wrapped so chaining stays
 /// humanized.
@@ -81,6 +83,37 @@ public sealed partial class HumanizedLocator : ILocator
         var other = target is HumanizedLocator h ? h.Original : target;
         var (frame, selector) = PlaywrightInternals.LocatorParts(other);
         return E.DragAsync(T(), new Target(frame, selector, strict: true), Opt(options), "Locator.DragToAsync");
+    }
+
+    // -----------------------------------------------------------------------
+    // Element reads and event dispatch: resolved and executed by the engine in this
+    // locator's frame's isolated world (strict mode, like the actions above).
+    // The raw Playwright methods stay reachable through Original (escape hatch).
+    // -----------------------------------------------------------------------
+
+    private Task<string?> Read(string op, string api, object? options, params object?[] extra) =>
+        E.ReadAsync(T(), op, Opt(options), api, extra);
+
+    public async Task<string> InputValueAsync(LocatorInputValueOptions? options = null) =>
+        (await Read("inputValue", "Locator.InputValueAsync", options).ConfigureAwait(false))!;
+
+    public Task<string?> TextContentAsync(LocatorTextContentOptions? options = null) =>
+        Read("textContent", "Locator.TextContentAsync", options);
+
+    public async Task<string> InnerTextAsync(LocatorInnerTextOptions? options = null) =>
+        (await Read("innerText", "Locator.InnerTextAsync", options).ConfigureAwait(false))!;
+
+    public async Task<string> InnerHTMLAsync(LocatorInnerHTMLOptions? options = null) =>
+        (await Read("innerHTML", "Locator.InnerHTMLAsync", options).ConfigureAwait(false))!;
+
+    public Task<string?> GetAttributeAsync(string name, LocatorGetAttributeOptions? options = null) =>
+        Read("getAttribute", "Locator.GetAttributeAsync", options, name);
+
+    public async Task DispatchEventAsync(string type, object? eventInit = null, LocatorDispatchEventOptions? options = null)
+    {
+        // A JSHandle in eventInit lives in the main world: Playwright's own call.
+        try { await E.DispatchAsync(T(), Opt(options), "Locator.DispatchEventAsync", type, eventInit).ConfigureAwait(false); }
+        catch (RawFallbackException) { await _inner.DispatchEventAsync(type, eventInit, options).ConfigureAwait(false); }
     }
 
     private Task<IReadOnlyList<string>> Select(SelectValues v, LocatorSelectOptionOptions? options) =>

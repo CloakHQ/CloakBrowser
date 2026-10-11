@@ -45,7 +45,7 @@ const contentsBox = (root) => {
 const parentOrHost = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null;
 const H = {
   el: (id) => get(id),
-  matchRect(x, y, w, h) {
+  matchRect(x, y, w, h, exact) {
     // An ElementHandle carries no identity this context can read, but
     // Playwright reports its border box. Find the element with exactly that box.
     const out = [];
@@ -59,6 +59,8 @@ const H = {
     };
     visit(document);
     if (out.length < 2) return out.length ? { count: 1, id: put(out[0]) } : { count: 0 };
+    // A read needs the handle's own element, not a click-equivalent one.
+    if (exact) return { count: out.length };
     // A wrapper and its same-size descendants form one nested chain: a click
     // lands the same on any of them. Take the element a real click would focus
     // (the deepest focusable one), else the outermost. Unrelated elements that
@@ -97,6 +99,24 @@ const H = {
   },
   connected(id) { return get(id).isConnected; },
   value(id) { const e = get(id); return textValue(I.retarget(e, 'follow-label') || e); },
+  inputValue(id) {
+    const e = I.retarget(get(id), 'follow-label');
+    if (!e || (e.nodeName !== 'INPUT' && e.nodeName !== 'TEXTAREA' && e.nodeName !== 'SELECT'))
+      return { error: 'Node is not an <input>, <textarea> or <select> element' };
+    return { value: e.value };
+  },
+  textContent(id) { return { value: get(id).textContent }; },
+  innerText(id) {
+    const e = get(id);
+    if (e.namespaceURI !== 'http://www.w3.org/1999/xhtml') return { error: 'Node is not an HTMLElement' };
+    return { value: e.innerText };
+  },
+  innerHTML(id) { return { value: get(id).innerHTML }; },
+  getAttribute(id, name) { return { value: get(id).getAttribute(name) }; },
+  dispatchEvent(id, type, eventInit) {
+    try { I.dispatchEvent(get(id), type, eventInit); return { value: true }; }
+    catch (err) { return { error: err && err.message ? err.message : String(err) }; }
+  },
   activeValue() {
     const a = document.activeElement;
     if (!a || a === document.body) return { tag: null };

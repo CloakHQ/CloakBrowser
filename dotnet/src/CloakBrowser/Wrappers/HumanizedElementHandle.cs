@@ -6,10 +6,13 @@ namespace CloakBrowser.Wrappers;
 /// <summary>
 /// Transparent humanizing decorator over Playwright's <see cref="IElementHandle"/>.
 ///
-/// Interaction methods run through the unified <see cref="HumanEngine"/>: the handle is
+/// Interaction methods and the element reads (InputValue/TextContent/InnerText/
+/// InnerHTML/GetAttribute) / DispatchEvent run through the unified
+/// <see cref="HumanEngine"/>: the handle is
 /// identified inside the isolated world by its protocol-level bounding box (no page
 /// script runs); when two elements share that exact box the action raises and asks for a
-/// Locator instead. Handle-returning queries are re-wrapped; everything else is delegated
+/// Locator instead (a read / DispatchEvent on a hidden or same-box handle runs
+/// Playwright's own call). Handle-returning queries are re-wrapped; everything else is delegated
 /// by the generator.
 /// </summary>
 [GenerateInterfaceDelegation(typeof(IElementHandle))]
@@ -55,6 +58,43 @@ public sealed partial class HumanizedElementHandle : IElementHandle
     public Task FocusAsync() => E.FocusAsync(T(), new ActOpts(), "ElementHandle.FocusAsync", move: true);
     public Task ScrollIntoViewIfNeededAsync(ElementHandleScrollIntoViewIfNeededOptions? options = null) =>
         E.ScrollIntoViewIfNeededAsync(T(), Opt(options), "ElementHandle.ScrollIntoViewIfNeededAsync");
+
+    // -----------------------------------------------------------------------
+    // Element reads and event dispatch. The handle is located inside the isolated
+    // world by its protocol-level bounding box (like the actions above); a hidden
+    // handle or one sharing its box runs Playwright's own call instead
+    // (RawFallbackException). The raw methods also stay reachable through Original.
+    // -----------------------------------------------------------------------
+
+    private async Task<string?> Read(string op, string api, ActOpts o, Func<Task<string?>> raw, params object?[] extra)
+    {
+        try { return await E.ReadAsync(T(), op, o, api, extra).ConfigureAwait(false); }
+        catch (RawFallbackException) { return await raw().ConfigureAwait(false); }
+    }
+
+    public async Task<string> InputValueAsync(ElementHandleInputValueOptions? options = null) =>
+        (await Read("inputValue", "ElementHandle.InputValueAsync", Opt(options),
+            async () => await _inner.InputValueAsync(options).ConfigureAwait(false)).ConfigureAwait(false))!;
+
+    public Task<string?> TextContentAsync() =>
+        Read("textContent", "ElementHandle.TextContentAsync", new ActOpts(), () => _inner.TextContentAsync());
+
+    public async Task<string> InnerTextAsync() =>
+        (await Read("innerText", "ElementHandle.InnerTextAsync", new ActOpts(),
+            async () => await _inner.InnerTextAsync().ConfigureAwait(false)).ConfigureAwait(false))!;
+
+    public async Task<string> InnerHTMLAsync() =>
+        (await Read("innerHTML", "ElementHandle.InnerHTMLAsync", new ActOpts(),
+            async () => await _inner.InnerHTMLAsync().ConfigureAwait(false)).ConfigureAwait(false))!;
+
+    public Task<string?> GetAttributeAsync(string name) =>
+        Read("getAttribute", "ElementHandle.GetAttributeAsync", new ActOpts(), () => _inner.GetAttributeAsync(name), name);
+
+    public async Task DispatchEventAsync(string type, object? eventInit = null)
+    {
+        try { await E.DispatchAsync(T(), new ActOpts(), "ElementHandle.DispatchEventAsync", type, eventInit).ConfigureAwait(false); }
+        catch (RawFallbackException) { await _inner.DispatchEventAsync(type, eventInit).ConfigureAwait(false); }
+    }
 
     private static ILocator Unwrap(ILocator l) => l is HumanizedLocator w ? w.Original : l;
 

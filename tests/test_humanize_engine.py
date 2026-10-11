@@ -535,6 +535,35 @@ def test_handle_sharing_its_box_with_an_unrelated_element_raises(page):
         page.query_selector("#s1").click()
 
 
+def test_handle_reads_of_hidden_or_same_box_elements(page):
+    """A handle read needs the handle's own element: hidden (no box) and same-box
+    handles run Playwright's own read at once; a unique visible one reads in the
+    isolated world."""
+    page.evaluate("""() => {
+        document.head.insertAdjacentHTML('beforeend', '<meta name="csrf" content="tok123">');
+        document.body.insertAdjacentHTML('beforeend', '<input id="hid" type="hidden" value="secret">'
+            + '<div id="outer" style="width:90px;height:30px"><div id="inner" style="width:90px;height:30px"></div></div>'
+            + '<p id="uniq" data-x="shown">u</p>'); }""")
+    t = time.monotonic()
+    assert page.query_selector('meta[name="csrf"]').get_attribute("content") == "tok123"
+    assert page.query_selector("#hid").input_value() == "secret"
+    assert time.monotonic() - t < 5
+    assert page.query_selector("#inner").get_attribute("id") == "inner"
+    assert page.query_selector("#outer").get_attribute("id") == "outer"
+    assert page.query_selector("#uniq").get_attribute("data-x") == "shown"
+
+
+def test_dispatch_event_with_a_js_handle_in_event_init(page):
+    """Playwright's documented drag pattern: the DataTransfer handle lives in the
+    page's main world, so the dispatch runs Playwright's own call."""
+    page.evaluate("""() => { window.__dt = [];
+        document.addEventListener('dragstart', e => __dt.push(e.dataTransfer instanceof DataTransfer)); }""")
+    dt = page.evaluate_handle("() => new DataTransfer()")
+    page.dispatch_event("#btn", "dragstart", {"dataTransfer": dt})
+    page.locator("#btn").dispatch_event("dragstart", {"dataTransfer": dt})
+    assert page.evaluate("() => __dt") == [True, True]
+
+
 def test_press_and_type_reach_non_focusable_targets(page):
     """A <canvas> (or a game area with document-level key handlers) does not take
     focus. press()/type() click it and send the keys anyway, like Playwright."""

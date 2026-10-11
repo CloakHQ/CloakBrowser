@@ -12,7 +12,10 @@ Playwright method.  Every humanized method:
   ``click_count``, ``modifiers``, ``position``, ``trial``, ``force``,
   ``timeout`` including page defaults and ``0`` = no limit, ``strict``);
 * raises Playwright ``Error`` / ``TimeoutError`` instead of silently falling
-  back to Playwright's stock implementation.
+  back to Playwright's stock implementation. One exception: an ElementHandle
+  read / dispatch_event on an element the isolated world cannot locate (hidden,
+  or sharing its box), and any dispatch_event whose event_init holds a JSHandle,
+  run Playwright's own call (``RawFallback``).
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ import types
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .config import HumanConfig, rand
-from .engine import CursorState, Human, Target
+from .engine import CursorState, Human, RawFallback, Target
 
 _PATCHED = {"sync": False, "async": False}
 # (class, method name) -> original function
@@ -206,6 +209,29 @@ def _handlers(kind: str) -> Dict[str, Handler]:
         options, elements = _select_options(a)
         return await h.select_option(t, options, elements, a, api=f"{api}.select_option")
 
+    async def input_value(h: Human, impl: Any, a: dict) -> Any:
+        return await h.read(_target(kind, impl, a), "inputValue", a, api=f"{api}.input_value")
+
+    async def text_content(h: Human, impl: Any, a: dict) -> Any:
+        return await h.read(_target(kind, impl, a), "textContent", a, api=f"{api}.text_content")
+
+    async def inner_text(h: Human, impl: Any, a: dict) -> Any:
+        return await h.read(_target(kind, impl, a), "innerText", a, api=f"{api}.inner_text")
+
+    async def inner_html(h: Human, impl: Any, a: dict) -> Any:
+        return await h.read(_target(kind, impl, a), "innerHTML", a, api=f"{api}.inner_html")
+
+    async def get_attribute(h: Human, impl: Any, a: dict) -> Any:
+        t = _target(kind, impl, a)
+        name = a.pop("name")
+        return await h.read(t, "getAttribute", a, f"{api}.get_attribute", name)
+
+    async def dispatch_event(h: Human, impl: Any, a: dict) -> None:
+        t = _target(kind, impl, a)
+        event_type = a.pop("type")
+        event_init = a.pop("event_init", None)
+        await h.dispatch(t, a, f"{api}.dispatch_event", event_type, event_init)
+
     async def focus(h: Human, impl: Any, a: dict) -> None:
         await h.focus(_target(kind, impl, a), a, api=f"{api}.focus", move=kind == "ElementHandle")
 
@@ -227,6 +253,8 @@ def _handlers(kind: str) -> Dict[str, Handler]:
         "click": click, "dblclick": dblclick, "hover": hover, "tap": tap, "fill": fill,
         "type": type_, "press": press, "check": check, "uncheck": uncheck,
         "set_checked": set_checked, "select_option": select_option, "focus": focus,
+        "input_value": input_value, "text_content": text_content, "inner_text": inner_text,
+        "inner_html": inner_html, "get_attribute": get_attribute, "dispatch_event": dispatch_event,
     }
     if kind in ("Page", "Frame"):
         return {**common, "drag_and_drop": drag_and_drop}
@@ -283,14 +311,20 @@ def _wrap(kind: str, cls: type, name: str, handler: Handler, is_async: bool) -> 
             h = _human_for(kind, self)
             if h is None:
                 return await orig(self, *args, **kwargs)
-            return await handler(h, self._impl_obj, bind(self, args, kwargs, human_config))
+            try:
+                return await handler(h, self._impl_obj, bind(self, args, kwargs, human_config))
+            except RawFallback:
+                return await orig(self, *args, **kwargs)
     else:
         @functools.wraps(orig)
         def wrapper(self: Any, *args: Any, human_config: Optional[dict] = None, **kwargs: Any) -> Any:
             h = _human_for(kind, self)
             if h is None:
                 return orig(self, *args, **kwargs)
-            return self._sync(handler(h, self._impl_obj, bind(self, args, kwargs, human_config)))
+            try:
+                return self._sync(handler(h, self._impl_obj, bind(self, args, kwargs, human_config)))
+            except RawFallback:
+                return orig(self, *args, **kwargs)
 
     setattr(cls, name, wrapper)
 
@@ -324,7 +358,9 @@ class _Originals:
     """``page._original``: raw, un-humanized Playwright calls for this page."""
 
     _PAGE = ("click", "type", "fill", "hover", "dblclick", "select_option", "check", "uncheck",
-             "press", "tap", "focus", "set_checked", "drag_and_drop", "goto")
+             "press", "tap", "focus", "set_checked", "drag_and_drop", "goto",
+             "input_value", "text_content", "inner_text", "inner_html", "get_attribute",
+             "dispatch_event")
 
     def __init__(self, page: Any) -> None:
         cls, mouse, kb = type(page), page.mouse, page.keyboard

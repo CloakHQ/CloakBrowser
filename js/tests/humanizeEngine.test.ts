@@ -94,6 +94,85 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)('humanize engine (real br
 
   // --- wiring -------------------------------------------------------------
 
+  it('humanized reads resolve in the isolated world: correct values, page state untouched', async () => {
+    const p: any = await open();
+    const dispatched = async () => p.evaluate(() => (window as any).__dispatched.length);
+    const before = await dispatched();
+
+    await p.fill('#name', 'laptop');
+    const reads = {
+      inputValue: await p.inputValue('#name'),
+      locatorInputValue: await p.locator('#name').inputValue(),
+      handleInputValue: await (await p.$('#name')).inputValue(),
+      textContent: await p.textContent('#btn'),
+      innerText: await p.innerText('#btn'),
+      innerHTML: await p.innerHTML('#btn'),
+      getAttribute: await p.getAttribute('#btn', 'id'),
+      locatorTextContent: await p.locator('#btn').textContent(),
+    };
+
+    expect(reads.inputValue).toBe('laptop');
+    expect(reads.locatorInputValue).toBe('laptop');
+    expect(reads.handleInputValue).toBe('laptop');
+    expect(reads.getAttribute).toBe('btn');
+    expect(reads.textContent).toBe(reads.locatorTextContent);
+    expect(reads.innerText).toBe(reads.textContent);
+    expect(reads.innerHTML).toBe(reads.textContent);
+    expect(await dispatched()).toBe(before);
+  });
+
+  it('dispatchEvent reaches a page listener with the same event shape', async () => {
+    const p: any = await open();
+    await p.evaluate(() => {
+      (window as any).__clicks = [];
+      document.addEventListener('click', (e) => {
+        (window as any).__clicks.push({ mouse: e instanceof MouseEvent, bubbles: e.bubbles, x: (e as MouseEvent).clientX });
+      });
+    });
+
+    await p.dispatchEvent('#btn', 'click', { clientX: 7, clientY: 9 });
+    await p.locator('#btn').dispatchEvent('click', { clientX: 3, clientY: 4 });
+
+    const clicks = await p.evaluate(() => (window as any).__clicks);
+    expect(clicks).toHaveLength(2);
+    expect(clicks[0]).toEqual({ mouse: true, bubbles: true, x: 7 });
+  });
+
+  it('handle reads of hidden or same-box elements use the raw path at once', async () => {
+    const p: any = await open();
+    await p.evaluate(() => {
+      document.head.insertAdjacentHTML('beforeend', '<meta name="csrf" content="tok123">');
+      document.body.insertAdjacentHTML('beforeend', '<input id="hid" type="hidden" value="secret">'
+        + '<div id="outer" style="width:90px;height:30px"><div id="inner" style="width:90px;height:30px"></div></div>');
+    });
+    const t = Date.now();
+    expect(await (await p.$('meta[name="csrf"]')).getAttribute('content')).toBe('tok123');
+    expect(await (await p.$('#hid')).inputValue()).toBe('secret');
+    expect(Date.now() - t).toBeLessThan(5000);
+    // A read must land on the handle's own element, not its same-box wrapper.
+    expect(await (await p.$('#inner')).getAttribute('id')).toBe('inner');
+    expect(await (await p.$('#outer')).getAttribute('id')).toBe('outer');
+  });
+
+  it('dispatchEvent with a JSHandle in eventInit uses the raw path', async () => {
+    const p: any = await open();
+    await p.evaluate(() => {
+      (window as any).__dt = [];
+      document.addEventListener('dragstart', (e) => (window as any).__dt.push(e.dataTransfer instanceof DataTransfer));
+    });
+    const dt = await p.evaluateHandle(() => new DataTransfer());
+    await p.dispatchEvent('#btn', 'dragstart', { dataTransfer: dt });
+    await p.locator('#btn').dispatchEvent('dragstart', { dataTransfer: dt });
+    expect(await p.evaluate(() => (window as any).__dt)).toEqual([true, true]);
+  });
+
+  it('the probe works: the page records events dispatched in its own world', async () => {
+    const p: any = await open();
+    const before = await p.evaluate(() => (window as any).__dispatched.length);
+    await p.evaluate(() => document.getElementById('btn')!.dispatchEvent(new Event('probe')));
+    expect(await p.evaluate(() => (window as any).__dispatched.length)).toBe(before + 1);
+  });
+
   it('page is humanized and keeps the compat attributes', async () => {
     const p: any = await open();
     expect(p._humanCfg.mistype_chance).toBe(0);
