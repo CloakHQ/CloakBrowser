@@ -123,14 +123,14 @@ const H = {
     const e = get(id);
     try {
       if (I.checkElementStates) {
-        const r = await I.checkElementStates(e, states);
+        const r = await I.checkElementStates(e, states, true);
         if (r === undefined) return null;
         if (r === 'error:notconnected') return { missing: 'attached' };
         return { missing: r.missingState };
       }
       for (const s of states) {
         if (s === 'stable') continue;
-        const r = I.elementState(e, s);
+        const r = I.elementState(e, s, true);
         if (r === 'error:notconnected' || r.received === 'error:notconnected') return { missing: 'attached' };
         if (!(r.matches !== undefined ? r.matches : r)) return { missing: s };
       }
