@@ -883,6 +883,20 @@ browser = await launch_async(args=["--remote-debugging-port=9242"])
 | [Selenium](https://github.com/SeleniumHQ/selenium) | — | Python | [`selenium_example.py`](examples/integrations/selenium_example.py) |
 | [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) | 12K | Python | [`undetected_chromedriver.py`](examples/integrations/undetected_chromedriver.py) |
 | [agent-browser](https://github.com/nichochar/agent-browser) | — | Shell | [`agent_browser.sh`](examples/integrations/agent_browser.sh) |
+| [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp) | — | Python | [`parallel_search.py`](examples/integrations/parallel_search.py) — find a URL with free, keyless search, then read it with CloakBrowser |
+
+**Search, then browse** (Python 3.10+):
+
+```bash
+pip install . 'mcp>=1.30,<2'
+python examples/integrations/parallel_search.py 'Python Playwright documentation'
+```
+
+The example uses Streamable HTTP to search in Fast mode, opens the first result
+with CloakBrowser, and prints its URL, title, and up to 4,000 characters of rendered
+text. No LLM or Parallel account is needed; anonymous search has lower rate limits
+and is intended for light use. CloakBrowser's normal binary selection applies.
+On Linux, run `playwright install-deps chromium` if browser system libraries are missing.
 
 ### Deployment Integrations
 
