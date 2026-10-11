@@ -150,7 +150,7 @@ page.goto("https://example.com")
 
 ---
 
-## Latest: v0.6.0 — 87 source-level stealth patches (Chromium 154.0.8037.57.1)
+## Latest: v0.6.1 — 87 source-level stealth patches (Chromium 154.0.8037.57.1)
 
 - **CloakBrowser Pro Stable** — Chromium `154.0.8037.57.1` on Linux x64, Linux ARM64, Windows x64, and macOS (Apple Silicon and Intel). Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest Stable build for your platform automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
 - **.NET 8 / C# client** — CloakBrowser now ships as a NuGet package (`CloakBrowser`), mirroring the Python and JS wrappers.
@@ -1486,6 +1486,7 @@ Issues and PRs welcome. If something isn't working, [open an issue](https://gith
 - [@ishiko732](https://github.com/ishiko732) — HTTP proxy credentials in GeoIP resolution
 - [@Shub3am](https://github.com/Shub3am) — horizontal scroll-into-view for humanized clicks, safe concurrent first-run downloads
 - [@dstosch](https://github.com/dstosch) — cloakserve idle cleanup for browsers launched over HTTP
+- [@bercedev](https://github.com/bercedev) — humanize support for compiled (Nuitka) Playwright builds
 
 ## Star History
 
