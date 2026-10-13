@@ -311,6 +311,10 @@ describe("COUNTRY_LOCALE_MAP", () => {
     }
   });
 
+  it("maps Seychelles (issue #591)", () => {
+    expect(COUNTRY_LOCALE_MAP["SC"]).toBe("en-SC");
+  });
+
   it("values are BCP 47 language-REGION format", () => {
     for (const [code, locale] of Object.entries(COUNTRY_LOCALE_MAP)) {
       const parts = locale.split("-");

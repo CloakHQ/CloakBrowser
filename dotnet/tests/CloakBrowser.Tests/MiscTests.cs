@@ -27,6 +27,7 @@ public class GeoIpTests
         // Extended-coverage entries (parity with Python/JS COUNTRY_LOCALE_MAP).
         Assert.Equal("sl-SI", GeoIp.CountryLocaleMap["SI"]);
         Assert.Equal("es-PE", GeoIp.CountryLocaleMap["PE"]);
+        Assert.Equal("en-SC", GeoIp.CountryLocaleMap["SC"]);
     }
 
     [Fact]

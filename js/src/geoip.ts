@@ -63,6 +63,7 @@ export const COUNTRY_LOCALE_MAP: Record<string, string> = {
   CM: "fr-CM", AO: "pt-AO", MZ: "pt-MZ", ZM: "en-ZM", ZW: "en-ZW",
   HN: "es-HN", NI: "es-NI", SV: "es-SV", PA: "es-PA", JM: "en-JM",
   TT: "en-TT", PR: "es-PR",
+  SC: "en-SC",
 };
 
 export interface GeoResult {
