@@ -180,6 +180,86 @@ class TestBezierMath:
             assert 50 <= t.y <= 80
 
 
+class TestHumanTiming:
+    """Distributions the engine draws from, checked against human data
+    (136M Keystrokes, Dhakal et al. CHI 2018; Fitts' law; SapiMouse)."""
+
+    def test_removed_settings_are_dropped_with_a_warning(self):
+        import pytest
+        from cloakbrowser.human.config import HumanConfig, resolve_config
+        for k in ("mouse_steps_divisor", "mouse_burst_size", "mouse_burst_pause",
+                  "scroll_delta_base", "scroll_delta_variance"):
+            assert k not in HumanConfig.__dataclass_fields__
+        with pytest.warns(FutureWarning, match="mouse_steps_divisor") as rec:
+            cfg = resolve_config("default", {"mouse_steps_divisor": 4, "typing_delay": 90})
+        assert cfg.typing_delay == 90
+        # Shown by default (not a DeprecationWarning) and points at the caller.
+        assert rec[0].filename == __file__
+
+    def test_key_hold_is_human_length(self):
+        import statistics
+        from cloakbrowser.human.config import resolve_config
+        from cloakbrowser.human.keyboard import key_hold
+        cfg = resolve_config("default", None)
+        holds = [key_hold(cfg) for _ in range(5000)]
+        # People hold a key ~100 ms; under 40 ms is under 1% of human presses.
+        assert 85 <= statistics.median(holds) <= 120
+        assert sum(h < 40 for h in holds) / len(holds) < 0.01
+
+    def test_key_gap_depends_on_the_letters(self):
+        import statistics
+        from cloakbrowser.human.config import resolve_config
+        from cloakbrowser.human.keyboard import key_gap
+        cfg = resolve_config("default", {"typing_pause_chance": 0})
+        med = lambda a, b: statistics.median(key_gap(cfg, a, b) for _ in range(3000))
+        other_hand, same_hand, after_space = med("a", "j"), med("a", "s"), med(" ", "t")
+        assert other_hand < same_hand < after_space
+
+    def test_mouse_never_reports_a_move_without_movement(self):
+        from cloakbrowser.human.config import resolve_config
+        from cloakbrowser.human.mouse import plan_move
+        cfg = resolve_config("default", None)
+        for d in (2, 30, 300, 1500):
+            for _ in range(100):
+                pts = plan_move(10, 10, 10 + d, 10 + d / 2, cfg)
+                prev = (10, 10)
+                for x, y, dt in pts:
+                    assert abs(x - prev[0]) >= 1 or abs(y - prev[1]) >= 1
+                    assert dt >= 0
+                    prev = (x, y)
+                assert pts[-1][:2] == (10 + d, 10 + d / 2)
+
+    def test_mouse_duration_follows_fitts_law_with_spread(self):
+        import statistics
+        from cloakbrowser.human.config import resolve_config
+        from cloakbrowser.human.mouse import plan_stroke
+        cfg = resolve_config("default", None)
+        def times(d):
+            return [sum(p[2] for p in plan_stroke(0, 0, d, 0, cfg)) for _ in range(400)]
+        short, long = times(100), times(1200)
+        assert statistics.median(short) < statistics.median(long) < statistics.median(short) * 2
+        # Same distance, very different durations (human CV is ~0.5).
+        assert statistics.pstdev(long) / statistics.mean(long) > 0.2
+
+    def test_mouse_speed_peaks_early(self):
+        import math, statistics
+        from cloakbrowser.human.config import resolve_config
+        from cloakbrowser.human.mouse import plan_stroke
+        cfg = resolve_config("default", None)
+        peaks = []
+        for _ in range(200):
+            pts = plan_stroke(0, 0, 800, 0, cfg)
+            t, prev, best, at = 0.0, (0, 0), 0.0, 0.0
+            for x, y, dt in pts:
+                t += dt
+                v = math.hypot(x - prev[0], y - prev[1]) / max(dt, 1e-6)
+                if v > best:
+                    best, at = v, t
+                prev = (x, y)
+            peaks.append(at / t)
+        assert statistics.median(peaks) < 0.4  # people: ~0.3; a symmetric ease: 0.5
+
+
 # =========================================================================
 # 3. Async compatibility
 # =========================================================================

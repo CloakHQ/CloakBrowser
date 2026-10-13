@@ -73,11 +73,11 @@ internal sealed partial class HumanEngine
         if (S(info, "tag") == "input")
         {
             if (await World.CallAsync(r.Frame, "caretAtEnd", r.Id).ConfigureAwait(false) is not { ValueKind: JsonValueKind.True })
-                await _raw.KeyPressAsync("End").ConfigureAwait(false);
+                await PressKeyAsync("End").ConfigureAwait(false);
         }
         else
         {
-            await _raw.KeyPressAsync("Control+End").ConfigureAwait(false);
+            await PressKeyAsync("Control+End").ConfigureAwait(false);
         }
         await Sleep(R(20, 60)).ConfigureAwait(false);
     }
@@ -87,7 +87,7 @@ internal sealed partial class HumanEngine
         var d = DeadlineFor(t, o);
         await FocusElementAsync(t, o, api, d, requireFocus: false).ConfigureAwait(false);
         await Sleep(R(50, 150)).ConfigureAwait(false);
-        await _raw.KeyPressAsync(await KeysAsync(key).ConfigureAwait(false), o.Delay).ConfigureAwait(false);
+        await PressKeyAsync(await KeysAsync(key).ConfigureAwait(false), null, o.Delay).ConfigureAwait(false);
     }
 
     public async Task TypeAsync(Target t, string text, ActOpts o, string api)
@@ -129,9 +129,9 @@ internal sealed partial class HumanEngine
         info = await InfoAsync(r).ConfigureAwait(false);
         if (!string.IsNullOrEmpty(S(info, "value")))
         {
-            await _raw.KeyPressAsync(await SelectAllKeyAsync().ConfigureAwait(false)).ConfigureAwait(false);
+            await PressKeyAsync(await SelectAllKeyAsync().ConfigureAwait(false)).ConfigureAwait(false);
             await Sleep(R(30, 80)).ConfigureAwait(false);
-            await _raw.KeyPressAsync("Backspace").ConfigureAwait(false);
+            await PressKeyAsync("Backspace").ConfigureAwait(false);
             await Sleep(R(50, 150)).ConfigureAwait(false);
             info = await InfoAsync(r).ConfigureAwait(false);
             var left = S(info, "value");
@@ -141,7 +141,7 @@ internal sealed partial class HumanEngine
                 await CaretToEndAsync(r).ConfigureAwait(false);
                 for (int i = 0; i < left.Length; i++)
                 {
-                    await _raw.KeyPressAsync("Backspace").ConfigureAwait(false);
+                    await PressKeyAsync("Backspace").ConfigureAwait(false);
                     await Sleep(R(15, 40)).ConfigureAwait(false);
                 }
             }
@@ -195,7 +195,7 @@ internal sealed partial class HumanEngine
                 int diff = int.Parse(parts["month"]) - int.Parse(current["month"]);
                 for (int k = 0; k < Math.Abs(diff); k++)
                 {
-                    await _raw.KeyPressAsync(diff > 0 ? "ArrowUp" : "ArrowDown").ConfigureAwait(false);
+                    await PressKeyAsync(diff > 0 ? "ArrowUp" : "ArrowDown").ConfigureAwait(false);
                     await Sleep(R(60, 140)).ConfigureAwait(false);
                 }
             }
@@ -211,11 +211,11 @@ internal sealed partial class HumanEngine
                     await TypeCharAsync(digits[j], cfg).ConfigureAwait(false);
                     // The editor forgets a partial entry after ~1 s without a key.
                     if (j < digits.Length - 1)
-                        await Sleep(Math.Min(450, Math.Max(40, cfg.TypingDelay + (HumanRandom.NextDouble() - 0.5) * 2 * cfg.TypingDelaySpread))).ConfigureAwait(false);
+                        await Sleep(Math.Min(450, Math.Max(40, KeyTiming.KeyGap(cfg, digits[j].ToString(), digits[j + 1].ToString()) - KeyTiming.KeyHold(cfg)))).ConfigureAwait(false);
                 }
             }
             if (i < segs.Count - 1 && !Fields.SegmentAutoAdvances(kind, parts, inputType))
-                await _raw.KeyPressAsync("ArrowRight").ConfigureAwait(false);
+                await PressKeyAsync("ArrowRight").ConfigureAwait(false);
             await Sleep(R(60, 160)).ConfigureAwait(false);
         }
         var got = await ValueAsync(r).ConfigureAwait(false);
@@ -241,7 +241,7 @@ internal sealed partial class HumanEngine
             double cur = await Read().ConfigureAwait(false);
             if (Math.Abs(cur - want) < 1e-9 || (step > 0 && Math.Abs(cur - want) < step / 2)) break;
             bool up = cur < want;
-            await _raw.KeyPressAsync(!rtl ? (up ? "ArrowRight" : "ArrowLeft") : (up ? "ArrowLeft" : "ArrowRight")).ConfigureAwait(false);
+            await PressKeyAsync(!rtl ? (up ? "ArrowRight" : "ArrowLeft") : (up ? "ArrowLeft" : "ArrowRight")).ConfigureAwait(false);
             await Sleep(R(40, 110)).ConfigureAwait(false);
             if (await Read().ConfigureAwait(false) == cur) break; // min/max reached
         }
@@ -339,7 +339,7 @@ internal sealed partial class HumanEngine
         {
             if (d.Expired)
             {
-                await _raw.KeyPressAsync("Escape").ConfigureAwait(false);
+                await PressKeyAsync("Escape").ConfigureAwait(false);
                 throw new System.TimeoutException($"{api}: Timeout {Math.Round(d.Timeout)}ms exceeded.\n"
                     + $"Call log:\n  - choosing an option of {t.Description}");
             }
@@ -352,12 +352,12 @@ internal sealed partial class HumanEngine
             }
             else
             {
-                await _raw.KeyPressAsync(k).ConfigureAwait(false);
+                await PressKeyAsync(k).ConfigureAwait(false);
                 await Sleep(R(90, 200)).ConfigureAwait(false);
             }
         }
         await Sleep(R(100, 250)).ConfigureAwait(false);
-        await _raw.KeyPressAsync("Enter").ConfigureAwait(false);
+        await PressKeyAsync("Enter").ConfigureAwait(false);
         if (typed) _typeAheadUntil = DateTime.UtcNow.AddMilliseconds(1100);
         await Sleep(R(80, 160)).ConfigureAwait(false);
     }
@@ -379,7 +379,7 @@ internal sealed partial class HumanEngine
         {
             ["type"] = "keyDown", ["key"] = ch.ToString(), ["text"] = ch.ToString(), ["unmodifiedText"] = ch.ToString(),
         }).ConfigureAwait(false);
-        await Sleep(RR(cfg.KeyHold)).ConfigureAwait(false);
+        await Sleep(KeyTiming.KeyHold(cfg)).ConfigureAwait(false);
         await session.SendAsync("Input.dispatchKeyEvent", new() { ["type"] = "keyUp", ["key"] = ch.ToString() }).ConfigureAwait(false);
     }
 
@@ -471,34 +471,41 @@ internal sealed partial class HumanEngine
         string? tag = info is JsonElement i ? S(i, "tag") : null;
         bool mistypes = cfg.MistypeChance > 0 && tag != null && Fields.AllowsMistype(tag, S(info!.Value, "type"));
         var elements = System.Globalization.StringInfo.GetTextElementEnumerator(text);
-        var chars = new List<string>();
-        while (elements.MoveNext()) chars.Add((string)elements.Current);
-        for (int k = 0; k < chars.Count; k++)
+        var typist = NewTypist(cfg, delay);
+        try
         {
-            var ch = chars[k];
-            if (!IsAscii(ch) || ch.Length != 1)
+            while (elements.MoveNext())
             {
-                await Sleep(RR(cfg.KeyHold)).ConfigureAwait(false);
-                await _raw.InsertTextAsync(ch).ConfigureAwait(false);
+                var ch = (string)elements.Current;
+                if (ch.Length == 1 && IsAscii(ch) && char.IsLetterOrDigit(ch[0]) && mistypes
+                    && HumanRandom.NextDouble() < cfg.MistypeChance)
+                    await TypoAsync(typist, ch[0], cfg, frame).ConfigureAwait(false);
+                await typist.KeyAsync(ch).ConfigureAwait(false);
             }
-            else
-            {
-                char c = ch[0];
-                if (mistypes && char.IsLetterOrDigit(c) && HumanRandom.NextDouble() < cfg.MistypeChance)
-                    await TypoAsync(c, cfg, frame).ConfigureAwait(false);
-                await TypeCharAsync(c, cfg).ConfigureAwait(false);
-            }
-            if (k < chars.Count - 1) await BetweenKeysAsync(cfg, delay).ConfigureAwait(false);
+            await typist.FinishAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            await typist.ReleaseAllAsync().ConfigureAwait(false);
         }
     }
 
-    private async Task TypoAsync(char ch, HumanConfig cfg, IFrame frame)
+    private Typist NewTypist(HumanConfig cfg, double? delay = null) => new(
+        k => _raw.KeyDownAsync(k),
+        k => _raw.KeyUpAsync(k),
+        t => _raw.InsertTextAsync(t),
+        async p => await (await World.SessionAsync().ConfigureAwait(false)).SendAsync("Input.dispatchKeyEvent", p).ConfigureAwait(false),
+        cfg, delay);
+
+    private async Task TypoAsync(Typist typist, char ch, HumanConfig cfg, IFrame frame)
     {
         if (!HumanKeyboard.NearbyKeys.TryGetValue(char.ToLowerInvariant(ch), out var near) || near.Length == 0) return;
         char wrong = HumanRandom.Choice(near);
         if (IsUpper(ch)) wrong = char.ToUpperInvariant(wrong);
+        await typist.FinishAsync().ConfigureAwait(false);
         var before = await ActiveValueAsync(frame).ConfigureAwait(false);
-        await TypeCharAsync(wrong, cfg).ConfigureAwait(false);
+        await typist.KeyAsync(wrong.ToString()).ConfigureAwait(false);
+        await typist.RestAsync().ConfigureAwait(false);
         await Sleep(RR(cfg.MistypeDelayNotice)).ConfigureAwait(false);
         var after = await ActiveValueAsync(frame).ConfigureAwait(false);
         if (before != null && after == before)
@@ -507,9 +514,8 @@ internal sealed partial class HumanEngine
             await Sleep(RR(cfg.MistypeDelayCorrect)).ConfigureAwait(false);
             return;
         }
-        await _raw.KeyDownAsync("Backspace").ConfigureAwait(false);
-        await Sleep(RR(cfg.KeyHold)).ConfigureAwait(false);
-        await _raw.KeyUpAsync("Backspace").ConfigureAwait(false);
+        await typist.KeyAsync("Backspace").ConfigureAwait(false);
+        await typist.RestAsync().ConfigureAwait(false);
         await Sleep(RR(cfg.MistypeDelayCorrect)).ConfigureAwait(false);
     }
 
@@ -519,52 +525,25 @@ internal sealed partial class HumanEngine
         catch (PlaywrightException) { return null; }
     }
 
+    /// <summary>One key on its own (date editors, type-ahead).</summary>
     public async Task TypeCharAsync(char ch, HumanConfig cfg)
     {
-        var key = ch.ToString();
-        if (IsUpper(ch))
+        var typist = NewTypist(cfg);
+        try
         {
-            await _raw.KeyDownAsync("Shift").ConfigureAwait(false);
-            await Sleep(RR(cfg.ShiftDownDelay)).ConfigureAwait(false);
-            await _raw.KeyDownAsync(key).ConfigureAwait(false);
-            await Sleep(RR(cfg.KeyHold)).ConfigureAwait(false);
-            await _raw.KeyUpAsync(key).ConfigureAwait(false);
-            await Sleep(RR(cfg.ShiftUpDelay)).ConfigureAwait(false);
-            await _raw.KeyUpAsync("Shift").ConfigureAwait(false);
+            await typist.KeyAsync(ch.ToString()).ConfigureAwait(false);
+            await typist.FinishAsync().ConfigureAwait(false);
         }
-        else if (HumanKeyboard.ShiftSymbols.Contains(ch))
+        finally
         {
-            var session = await World.SessionAsync().ConfigureAwait(false);
-            var (code, vk) = HumanKeyboard.ShiftSymbolKey(ch);
-            await _raw.KeyDownAsync("Shift").ConfigureAwait(false);
-            await Sleep(RR(cfg.ShiftDownDelay)).ConfigureAwait(false);
-            await session.SendAsync("Input.dispatchKeyEvent", new()
-            {
-                ["type"] = "keyDown", ["modifiers"] = 8, ["key"] = key, ["code"] = code,
-                ["windowsVirtualKeyCode"] = vk, ["text"] = key, ["unmodifiedText"] = key,
-            }).ConfigureAwait(false);
-            await Sleep(RR(cfg.KeyHold)).ConfigureAwait(false);
-            await session.SendAsync("Input.dispatchKeyEvent", new()
-            {
-                ["type"] = "keyUp", ["modifiers"] = 8, ["key"] = key, ["code"] = code, ["windowsVirtualKeyCode"] = vk,
-            }).ConfigureAwait(false);
-            await Sleep(RR(cfg.ShiftUpDelay)).ConfigureAwait(false);
-            await _raw.KeyUpAsync("Shift").ConfigureAwait(false);
-        }
-        else
-        {
-            await _raw.KeyDownAsync(key).ConfigureAwait(false);
-            await Sleep(RR(cfg.KeyHold)).ConfigureAwait(false);
-            await _raw.KeyUpAsync(key).ConfigureAwait(false);
+            await typist.ReleaseAllAsync().ConfigureAwait(false);
         }
     }
 
-    private static Task BetweenKeysAsync(HumanConfig cfg, float? delay)
-    {
-        if (delay != null) return Sleep(delay.Value);
-        if (HumanRandom.NextDouble() < cfg.TypingPauseChance) return Sleep(RR(cfg.TypingPauseRange));
-        return Sleep(Math.Max(10, cfg.TypingDelay + (HumanRandom.NextDouble() - 0.5) * 2 * cfg.TypingDelaySpread));
-    }
+    /// <summary><c>keyboard.press</c> with a human key-down time (Playwright's own press
+    /// releases the key in the same instant).</summary>
+    public Task PressKeyAsync(string key, HumanConfig? cfg = null, float? delay = null) =>
+        _raw.KeyPressAsync(key, delay ?? (float)KeyTiming.KeyHold(cfg ?? Config));
 
     /// <summary><c>page.Keyboard.TypeAsync</c>: no target; mistypes only where safe.</summary>
     public async Task KeyboardTypeAsync(string text, float? delay = null)

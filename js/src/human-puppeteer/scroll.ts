@@ -36,30 +36,63 @@ function isInViewportX(bounds: ElementBounds, viewportWidth: number): boolean {
   return bounds.x >= 0 && bounds.x + bounds.width <= viewportWidth;
 }
 
+/**
+ * CSS pixels one wheel notch scrolls on `platform` (navigator.platform):
+ * Chrome scrolls 100 px per notch on Windows (3 lines of 33.3 px), 40 on
+ * macOS and 120 on Linux, and reports `wheelDelta` 120 per notch. CDP always
+ * reports one notch per wheel event, so whole-notch events are the only ones
+ * whose `deltaY` and `wheelDeltaY` agree.
+ */
+export function notchPxFor(platform: string, cfg: HumanConfig): number {
+  if (cfg.scroll_notch_px && cfg.scroll_notch_px > 0) return cfg.scroll_notch_px;
+  const p = (platform || '').toLowerCase();
+  if (p.startsWith('mac')) return 40;
+  if (p.startsWith('win')) return 100;
+  return 120;
+}
+
+/** Notch size of `page`'s persona (cached per page). */
+const notchCache = new WeakMap<object, string>();
+export async function pageNotchPx(page: Page, cfg: HumanConfig): Promise<number> {
+  let plat = notchCache.get(page);
+  if (plat === undefined) {
+    try {
+      const stealth = (page as any)._stealth;
+      plat = String(stealth ? await stealth.evaluate('navigator.platform') : await page.evaluate(() => navigator.platform)) || '';
+    } catch { plat = ''; }
+    notchCache.set(page, plat);
+  }
+  return notchPxFor(plat, cfg);
+}
+
+/**
+ * Turn the wheel by about `delta` px in whole notches of `notch` px: flicks
+ * of a few notches, quicker inside a flick, with a short pause between
+ * flicks. Returns the distance actually wheeled (a whole number of notches).
+ */
 export async function smoothWheel(
   raw: RawMouse,
   delta: number,
   cfg: HumanConfig,
   axis: 'x' | 'y' = 'y',
-): Promise<void> {
-  const absD = Math.abs(delta);
+  notch = 100,
+): Promise<number> {
   const sign = delta > 0 ? 1 : -1;
-  let sent = 0;
-  while (sent < absD) {
-    const stepSize = rand(20, 40);
-    let chunk = Math.min(stepSize, absD - sent);
-    // Fold a sub-pixel tail into this step: on its own it would round to a
-    // (0, 0) wheel event, which no real wheel sends.
-    if (absD - sent - chunk < 0.5) chunk = absD - sent;
-    const d = Math.round(chunk) * sign;
-    if (axis === 'x') {
-      await raw.wheel(d, 0);
+  const notches = Math.round(Math.abs(delta) / notch);
+  let flick = randIntRange([2, 5]);
+  for (let i = 0; i < notches; i++) {
+    const d = notch * sign;
+    if (axis === 'x') await raw.wheel(d, 0);
+    else await raw.wheel(0, d);
+    if (i === notches - 1) break;
+    if (--flick <= 0) {
+      flick = randIntRange([2, 5]);
+      await sleep(randRange(cfg.scroll_pause_slow) + rand(40, 120));
     } else {
-      await raw.wheel(0, d);
+      await sleep(randRange(cfg.scroll_pause_fast));
     }
-    sent += chunk;
-    await sleep(rand(8, 20));
   }
+  return notches * notch * sign;
 }
 
 /**
@@ -111,8 +144,9 @@ export async function humanScrollIntoView(
   }
   if (!viewport || !viewport.height) throw new Error('Viewport size not available');
 
-  const yPass = await scrollYIntoView(raw, getBox, viewport, cursorX, cursorY, cfg);
-  return scrollXIntoView(raw, getBox, yPass.box, viewport, yPass.cursorX, yPass.cursorY, cfg);
+  const notch = await pageNotchPx(page, cfg);
+  const yPass = await scrollYIntoView(raw, getBox, viewport, cursorX, cursorY, cfg, notch);
+  return scrollXIntoView(raw, getBox, yPass.box, viewport, yPass.cursorX, yPass.cursorY, cfg, notch);
 }
 
 /** Vertical pass: bring the box into ``scroll_target_zone``. */
@@ -123,6 +157,7 @@ async function scrollYIntoView(
   cursorX: number,
   cursorY: number,
   cfg: HumanConfig,
+  notch: number,
 ): Promise<{ box: ElementBounds; cursorX: number; cursorY: number }> {
   let box = await getBox();
   if (!box) throw new Error('Element not found while scrolling into view');
@@ -139,63 +174,33 @@ async function scrollYIntoView(
   cursorY = scrollAreaY;
   await sleep(randRange(cfg.scroll_pre_move_delay));
 
-  // Calculate scroll distance
+  // Wheel in whole notches, re-measuring between flicks, until the element
+  // sits in the target zone (or the page stops moving).
   const targetY = viewport.height * rand(cfg.scroll_target_zone[0], cfg.scroll_target_zone[1]);
-  const elementCenter = box.y + box.height / 2;
-  const distanceToScroll = elementCenter - targetY;
-
-  const direction = distanceToScroll > 0 ? 1 : -1;
-  const absDistance = Math.abs(distanceToScroll);
-  const avgDelta = (cfg.scroll_delta_base[0] + cfg.scroll_delta_base[1]) / 2;
-  const totalClicks = Math.max(3, Math.ceil(absDistance / avgDelta));
-  const accelSteps = randIntRange(cfg.scroll_accel_steps);
-  const decelSteps = randIntRange(cfg.scroll_decel_steps);
-
-  let scrolled = 0;
-
-  for (let i = 0; i < totalClicks; i++) {
-    let delta: number;
-    let pause: number;
-
-    if (i < accelSteps) {
-      delta = rand(80, 100);
-      pause = randRange(cfg.scroll_pause_slow);
-    } else if (i >= totalClicks - decelSteps) {
-      delta = rand(60, 90);
-      pause = randRange(cfg.scroll_pause_slow);
-    } else {
-      delta = randRange(cfg.scroll_delta_base);
-      pause = randRange(cfg.scroll_pause_fast);
-    }
-
-    delta *= 1 + (Math.random() - 0.5) * 2 * cfg.scroll_delta_variance;
-    delta = Math.round(delta) * direction;
-
-    await smoothWheel(raw, delta, cfg);
-    scrolled += Math.abs(delta);
-    await sleep(pause);
-
-    if (i % 3 === 2 || i === totalClicks - 1) {
-      box = await getBox();
-      if (box && isInViewport(box, viewport.height, cfg)) {
-        break;
-      }
-    }
-
-    if (scrolled >= absDistance * 1.1) break;
-  }
-
-  // Optional overshoot + correction
-  if (Math.random() < cfg.scroll_overshoot_chance) {
-    const overshootPx = Math.round(randRange(cfg.scroll_overshoot_px)) * direction;
-    await smoothWheel(raw, overshootPx, cfg);
-    await sleep(randRange(cfg.scroll_settle_delay));
-
-    const corrections = randIntRange([1, 2]);
-    for (let c = 0; c < corrections; c++) {
-      const corrDelta = Math.round(rand(40, 80)) * -direction;
-      await smoothWheel(raw, corrDelta, cfg);
+  let overshot = false;
+  let stalled = 0;
+  for (let round = 0; round < 40 && stalled < 2; round++) {
+    const distance = box.y + box.height / 2 - targetY;
+    if (Math.abs(distance) < notch / 2 || isInViewport(box, viewport.height, cfg)) break;
+    const direction = distance > 0 ? 1 : -1;
+    const flick = Math.min(Math.round(Math.abs(distance) / notch), randIntRange([2, 5]));
+    const beforeY = box.y;
+    await smoothWheel(raw, flick * notch * direction, cfg, 'y', notch);
+    await sleep(randRange(cfg.scroll_pause_slow));
+    const nb = await getBox();
+    if (!nb) break;
+    box = nb;
+    stalled = Math.abs(box.y - beforeY) < 1 ? stalled + 1 : 0;
+    if (!overshot && Math.random() < cfg.scroll_overshoot_chance &&
+        Math.abs(box.y + box.height / 2 - targetY) < notch * 2) {
+      // Optional overshoot + correction, in whole notches.
+      overshot = true;
+      const over = Math.max(1, Math.round(randRange(cfg.scroll_overshoot_px) / notch));
+      await smoothWheel(raw, over * notch * direction, cfg, 'y', notch);
+      await sleep(randRange(cfg.scroll_settle_delay));
+      await smoothWheel(raw, -over * notch * direction, cfg, 'y', notch);
       await sleep(rand(100, 250));
+      box = (await getBox()) ?? box;
     }
   }
 
@@ -221,6 +226,7 @@ async function scrollXIntoView(
   cursorX: number,
   cursorY: number,
   cfg: HumanConfig,
+  notch: number,
 ): Promise<{ box: ElementBounds; cursorX: number; cursorY: number }> {
   if (isInViewportX(box, viewport.width)) {
     return { box, cursorX, cursorY };
@@ -239,7 +245,7 @@ async function scrollXIntoView(
   cursorY = scrollAreaY;
   await sleep(randRange(cfg.scroll_pre_move_delay));
 
-  await smoothWheel(raw, Math.round(distanceToScroll), cfg, 'x');
+  await smoothWheel(raw, distanceToScroll, cfg, 'x', notch);
   await sleep(randRange(cfg.scroll_settle_delay));
 
   const finalBox = await getBox();

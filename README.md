@@ -648,7 +648,7 @@ const browser = await launch({ humanize: true, humanPreset: 'careful' });
 ```python
 browser = launch(humanize=True, human_config={
     "mistype_chance": 0.05,              # 5% typo rate with self-correction
-    "typing_delay": 100,                 # slower typing (ms per character)
+    "typing_delay": 200,                 # slower typing (ms between keys)
     "idle_between_actions": True,        # micro-movements between clicks
     "idle_between_duration": [0.3, 0.8], # idle duration range (seconds)
 })
@@ -659,7 +659,7 @@ const browser = await launch({
     humanize: true,
     humanConfig: {
         mistype_chance: 0.05,
-        typing_delay: 100,
+        typing_delay: 200,
         idle_between_actions: true,
         idle_between_duration: [0.3, 0.8],
     }

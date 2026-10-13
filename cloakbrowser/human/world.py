@@ -184,11 +184,24 @@ const H = {
              bl: parseFloat(st.borderLeftWidth) || 0, bt: parseFloat(st.borderTopWidth) || 0 };
   },
   scroller(id) {
+    // Walk the containing-block chain, not plain DOM ancestors: overflow only
+    // clips descendants whose containing block lies inside the scroller. A
+    // fixed box escapes every ancestor that does not establish a containing
+    // block for it; an absolute box escapes static ancestors (#593).
     const e = get(id);
+    const none = (v) => !v || v === 'none';
+    const fixedCB = (s) => !none(s.transform) || !none(s.translate) || !none(s.rotate) || !none(s.scale) ||
+      !none(s.perspective) || !none(s.filter) || !none(s.backdropFilter) ||
+      /layout|paint|strict|content/.test(s.contain || '') ||
+      /transform|perspective|filter/.test(s.willChange || '') || /size/.test(s.containerType || '');
     const b = e.getBoundingClientRect();
     const top = document.scrollingElement || document.documentElement;
+    let pos = getComputedStyle(e).position;
     for (let p = parentOrHost(e); p && p !== top && p !== document.body; p = parentOrHost(p)) {
       const s = getComputedStyle(p);
+      if (pos === 'fixed' && !fixedCB(s)) continue;
+      if (pos === 'absolute' && s.position === 'static' && !fixedCB(s)) continue;
+      pos = s.position;
       const sy = /(auto|scroll|overlay)/.test(s.overflowY) && p.scrollHeight > p.clientHeight;
       const sx = /(auto|scroll|overlay)/.test(s.overflowX) && p.scrollWidth > p.clientWidth;
       if (!sy && !sx) continue;

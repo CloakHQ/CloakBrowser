@@ -432,28 +432,28 @@ keys. Ranges are `(min, max)` and may be passed as a `(double,double)` tuple or 
 
 | Group | Field (PascalCase) | Default | Meaning |
 | --- | --- | --- | --- |
-| Keyboard | `TypingDelay` | `70` | base inter-key delay (ms) |
-| | `TypingDelaySpread` | `40` | ± jitter around `TypingDelay` |
-| | `TypingPauseChance` | `0.1` | chance of a longer "thinking" pause |
-| | `TypingPauseRange` | `(400, 1000)` | thinking-pause duration (ms) |
-| | `ShiftDownDelay` / `ShiftUpDelay` | `(30,70)` / `(20,50)` | shift key timing |
-| | `KeyHold` | `(15, 35)` | key-down hold time (ms) |
-| Mistype | `MistypeChance` | `0.02` | chance of a fat-finger typo (ASCII alnum only) |
+| Keyboard | `TypingDelay` | `150` | median gap between key presses (ms), adjusted per key pair |
+| | `TypingDelaySpread` | `70` | spread of the gap around `TypingDelay` |
+| | `TypingPauseChance` | `0.15` | chance of a longer "thinking" pause before a word |
+| | `TypingPauseRange` | `(300, 1000)` | thinking-pause duration (ms) |
+| | `ShiftDownDelay` / `ShiftUpDelay` | `(60,220)` / `(-60,30)` | Shift down before the letter / Shift up relative to the letter's release (negative = Shift first) |
+| | `KeyHold` | `(60, 175)` | key-down hold time (ms, p5-p95 of a log-normal) |
+| Mistype | `MistypeChance` | `0.04` | chance of a fat-finger typo (ASCII alnum only) |
 | | `MistypeDelayNotice` | `(100, 300)` | pause before noticing the typo |
 | | `MistypeDelayCorrect` | `(50, 150)` | pause after correcting |
 | | `FieldSwitchDelay` | `(800, 1500)` | delay when moving between fields |
-| Mouse - move | `MouseStepsDivisor` | `8` | distance ÷ divisor = step count |
-| | `MouseMinSteps` / `MouseMaxSteps` | `25` / `80` | clamp on step count |
+| Mouse - move | `MouseTimeBase` / `MouseTimePerBit` | `160` / `75` | Fitts-law move time: base + per_bit × log2(1 + distance / 8) (ms) |
+| | `MouseTimeSpread` | `0.3` | log-normal spread of the move time |
+| | `MouseMinSteps` / `MouseMaxSteps` | `2` / `200` | clamp on pointer events per stroke (one per display frame) |
 | | `MouseWobbleMax` | `1.5` | perpendicular wobble amplitude (px) |
-| | `MouseOvershootChance` | `0.15` | chance of overshoot + correction |
-| | `MouseOvershootPx` | `(3, 6)` | overshoot distance |
-| | `MouseBurstSize` / `MouseBurstPause` | `(3,5)` / `(8,18)` | move-burst grouping + pause |
+| | `MouseOvershootChance` | `0.35` | chance the stroke lands slightly off and a short second stroke corrects it |
+| | `MouseOvershootPx` | `(2, 6)` | extra miss distance on top of a few % of the move |
 | Mouse - click | `ClickAimDelayInput` / `...Button` | `(60,140)` / `(80,200)` | aim delay before pressing |
 | | `ClickHoldInput` / `...Button` | `(40,100)` / `(60,150)` | mouse-down hold time |
 | | `ClickInputXRange` | `(0.05, 0.30)` | left-biased X target inside inputs |
 | Mouse - idle | `IdleDriftPx` | `3` | idle drift amplitude |
 | | `IdlePauseRange` | `(300, 1000)` | idle pause between drifts |
-| Scroll | `ScrollDeltaBase` | `(80, 130)` | wheel delta per microstep |
+| Scroll | `ScrollNotchPx` | `0` | CSS px per wheel notch; 0 = the persona's platform (Windows 100, macOS 40, Linux 120) |
 | | `ScrollOvershootChance` | `0.1` | chance to overshoot then settle |
 | | `ScrollSettleDelay` | `(300, 600)` | pause after reaching the target |
 | | `ScrollTargetZone` | `(0.20, 0.80)` | viewport band the element lands in |
@@ -484,15 +484,17 @@ overrides return a clone, and non-overridden fields are preserved.
 `HumanMouse.HumanMoveAsync` traces a **cubic Bezier curve** between the current
 cursor position and a randomized aim point inside the target's bounding box:
 
-1. Step count scales with distance (`dist / MouseStepsDivisor`, clamped to
-   `[MouseMinSteps, MouseMaxSteps]`).
+1. Move time follows Fitts' law (`MouseTimeBase` + `MouseTimePerBit` ×
+   log2(1 + distance / 8), log-normal spread `MouseTimeSpread`); one pointer
+   event per display frame, clamped to `[MouseMinSteps, MouseMaxSteps]`.
 2. Two control points are biased **perpendicular** to the straight path, so the
    curve is never a straight line.
 3. Each step adds **sinusoidal wobble** (max amplitude `MouseWobbleMax`).
-4. Motion is **eased** (cubic ease-in-out) and grouped into bursts with short
-   pauses (`MouseBurstSize` / `MouseBurstPause`).
-5. With probability `MouseOvershootChance`, the cursor overshoots the target and
-   corrects back - exactly like a real hand.
+4. Speed follows a minimum-jerk profile that peaks early (about the first
+   third of the move), as in recorded human strokes; no event reports zero
+   movement.
+5. With probability `MouseOvershootChance`, the stroke lands slightly off and a
+   short corrective stroke finishes the move.
 
 Click points are computed by `HumanMouse.ClickTarget`: inputs get a left-biased X
 and wide Y band; buttons get a centered cluster.

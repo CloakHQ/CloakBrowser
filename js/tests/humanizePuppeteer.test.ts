@@ -78,6 +78,34 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)('humanize: Puppeteer (rea
     expect((await events(f, 'mousemove')).length).toBeGreaterThan(0);
   });
 
+  it('same key lower then upper case never sends a repeat keydown ("xX", "1!")', async () => {
+    const b = await launch({
+      headless: true, humanize: true,
+      humanConfig: {
+        ...FAST, key_hold: [60, 175], typing_delay: 150, typing_delay_spread: 70, typing_pause_chance: 0,
+        shift_down_delay: [60, 220], shift_up_delay: [-60, 30],
+      } as any,
+    });
+    try {
+      const page = await open(b);
+      await page.evaluate(() => {
+        (window as any).__kd = [];
+        for (const t of ['keydown', 'keyup'])
+          document.addEventListener(t, (e: any) => (window as any).__kd.push([t, e.code, e.repeat]), true);
+      });
+      const text = 'xX aA zZ 1! qQ';
+      for (let i = 0; i < 3; i++) {
+        await page.evaluate(() => { (document.querySelector('#name') as HTMLInputElement).value = ''; });
+        await page.type('#name', text);
+        expect(await value(page, '#name')).toBe(text);
+      }
+      const log: [string, string, boolean][] = await page.evaluate(() => (window as any).__kd);
+      expect(log.filter(e => e[2])).toEqual([]);
+    } finally {
+      await b.close();
+    }
+  }, 90_000);
+
   it('uppercase typos are typed with Shift', async () => {
     const b = await launch({ headless: true, humanize: true, humanConfig: { ...FAST, mistype_chance: 1 } as any });
     try {

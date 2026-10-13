@@ -29,9 +29,9 @@ from playwright._impl._errors import Error, TimeoutError
 from playwright._impl._js_handle import JSHandle
 
 from . import fields
-from .config import HumanConfig, merge_config, rand, rand_int_range, rand_range
-from .keyboard import NEARBY_KEYS, SHIFT_SYMBOLS, _SHIFT_SYMBOL_CODES, _SHIFT_SYMBOL_KEYCODES
-from .mouse import Point, _bezier, _ease_in_out, _random_control_points, click_target
+from .config import HumanConfig, merge_config, rand, rand_int_range, rand_log, rand_range
+from .keyboard import NEARBY_KEYS, SHIFT_SYMBOLS, _SHIFT_SYMBOL_CODES, _SHIFT_SYMBOL_KEYCODES, key_gap, key_hold, physical_key
+from .mouse import click_target, plan_move
 from .world import HELPERS, StaleElement, Worlds, intersect
 
 _ENTER_FRAME_SPLIT = re.compile(r"\s*>>\s*internal:control=enter-frame\s*>>\s*")
@@ -128,6 +128,148 @@ def _has_handle(v: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Typing timeline
+# ---------------------------------------------------------------------------
+
+class _Typist:
+    """Presses keys on a timeline the way a person does: each press follows
+    the previous *press* after a letter-dependent gap, and each key is held
+    for its own time, so the next key often goes down before the previous one
+    comes up (rollover). Shift goes down before the letter and is usually let
+    go just before the letter key. Releases are queued and sent when due."""
+
+    def __init__(self, human: "Human", cfg: HumanConfig, delay: Optional[float] = None) -> None:
+        self.h, self.cfg, self.delay = human, cfg, delay
+        self.prev = ""
+        self.last_press: Optional[float] = None
+        self.ups: List[Tuple[float, str, Optional[dict]]] = []  # (due, key, cdp params)
+        self.shift_up_due: Optional[float] = None
+        self.shift_down = False
+
+    async def _shift(self, down: bool) -> None:
+        self.shift_down = down
+        await (self.h.keyboard.down if down else self.h.keyboard.up)("Shift")
+
+    async def _wait(self, until: float) -> None:
+        await sleep_ms((until - time.monotonic()) * 1000)
+
+    async def _flush(self, until: float) -> None:
+        """Send every release due before ``until`` (in time order)."""
+        while True:
+            due = [(t, k, p) for t, k, p in self.ups if t <= until]
+            if self.shift_up_due is not None and self.shift_up_due <= until:
+                due.append((self.shift_up_due, "Shift", None))
+            if not due:
+                return
+            t, k, p = min(due, key=lambda e: e[0])
+            await self._wait(t)
+            if k == "Shift" and p is None and self.shift_up_due is not None and t == self.shift_up_due:
+                self.shift_up_due = None
+                await self._shift(False)
+            else:
+                self.ups.remove((t, k, p))
+                await self._up(k, p)
+
+    async def _up(self, k: str, p: Optional[dict]) -> None:
+        if p is not None:
+            await (await self.h.worlds.session()).send("Input.dispatchKeyEvent", p)
+        elif len(k) == 1 and k.isupper() and not self.shift_down:
+            # Shift already came up: the OS reports the bare key ("a").
+            await self.h.keyboard.up(k.lower())
+        else:
+            await self.h.keyboard.up(k)
+
+    async def key(self, ch: str) -> None:
+        cfg = self.cfg
+        now = time.monotonic()
+        if self.last_press is None:
+            at = now
+        elif self.delay is not None:
+            at = self.last_press + self.delay / 1000
+        else:
+            at = self.last_press + key_gap(cfg, self.prev, ch) / 1000
+        shifted = (len(ch) == 1 and ch.isascii() and ch.isalpha() and ch.isupper()) or ch in SHIFT_SYMBOLS
+        text_only = len(ch) == 1 and not ch.isascii()
+        # A key cannot go down twice: let the earlier press of the same
+        # physical key ("x" before "X", "1" before "!") come up first.
+        key = physical_key(ch)
+        held = [t for t, k, _ in self.ups if physical_key(k) == key]
+        if held:
+            at = max(at, min(held) + 0.005)
+        if shifted:
+            if self.shift_up_due is not None:
+                self.shift_up_due = None  # still down from the previous capital
+                await self._flush(at)
+            else:
+                lead = rand_log(cfg.shift_down_delay) / 1000
+                # Shift goes down after the previous key comes up.
+                await self._flush(at - lead)
+                await self._wait(at - lead)
+                await self._shift(True)
+                # Keys due to come up while Shift is going down (e.g. the "x"
+                # of "xX") are released before the capital is pressed.
+                await self._flush(at)
+        else:
+            await self._flush(at)
+            if self.shift_up_due is not None and ch != "Backspace":
+                # A lower-case key while Shift is still down: let it go first.
+                self.shift_up_due = None
+                await self._shift(False)
+        await self._wait(at)
+        self.last_press = max(at, time.monotonic())
+        hold = (self.delay if self.delay is not None and self.delay < key_hold(cfg) else key_hold(cfg)) / 1000
+        up_at = self.last_press + hold
+        if text_only:
+            # Non-ASCII text has no key: it arrives as one input, like an IME.
+            await self.h.keyboard.insert_text(ch)
+        elif ch in SHIFT_SYMBOLS:
+            code = _SHIFT_SYMBOL_CODES.get(ch, "")
+            vk = _SHIFT_SYMBOL_KEYCODES.get(ch, 0)
+            await (await self.h.worlds.session()).send("Input.dispatchKeyEvent", {
+                "type": "keyDown", "modifiers": 8, "key": ch, "code": code,
+                "windowsVirtualKeyCode": vk, "text": ch, "unmodifiedText": ch,
+            })
+            self.ups.append((up_at, ch, {"type": "keyUp", "modifiers": 8, "key": ch, "code": code,
+                                         "windowsVirtualKeyCode": vk}))
+        else:
+            await self.h.keyboard.down(ch)
+            self.ups.append((up_at, ch, None))
+        if shifted:
+            # Usually let go of Shift around the letter's release, most often
+            # just before it.
+            self.shift_up_due = max(self.last_press + 0.01, up_at + rand_range(cfg.shift_up_delay) / 1000)
+            if ch in SHIFT_SYMBOLS:
+                # The CDP keyUp of a shift symbol carries the Shift modifier.
+                self.shift_up_due = max(self.shift_up_due, up_at + 0.005)
+        self.prev = ch
+
+    async def finish(self) -> None:
+        """Release everything still held, on schedule."""
+        await self._flush(float("inf"))
+
+    async def rest(self) -> None:
+        """Hands off the keys (before a pause): release, and start the next
+        key without a gap carried over from the last one."""
+        await self.finish()
+        self.last_press = None
+
+    async def release_all(self) -> None:
+        """Error path: never leave a key stuck down."""
+        ups, self.ups = self.ups, []
+        for _, k, p in ups:
+            try:
+                await self._up(k, p)
+            except Exception:
+                pass
+        self.shift_up_due = None
+        if self.shift_down:
+            try:
+                await self._shift(False)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Human
 # ---------------------------------------------------------------------------
 
@@ -183,42 +325,24 @@ class Human:
     async def ensure_cursor(self, cfg: Optional[HumanConfig] = None) -> None:
         if not self.cursor.initialized:
             cfg = cfg or self.cfg
-            self.cursor.x = rand(*cfg.initial_cursor_x)
-            self.cursor.y = rand(*cfg.initial_cursor_y)
+            self.cursor.x = round(rand(*cfg.initial_cursor_x))
+            self.cursor.y = round(rand(*cfg.initial_cursor_y))
             await self.mouse.move(self.cursor.x, self.cursor.y)
             self.cursor.initialized = True
 
     async def move_to(self, x: float, y: float, cfg: HumanConfig) -> None:
-        """Bezier move from the current cursor position to (x, y)."""
+        """Move from the current cursor position to (x, y): an early-peaking
+        main stroke timed by Fitts' law, sometimes a short corrective stroke,
+        one pointer event per frame and none without movement."""
         await self.ensure_cursor(cfg)
         sx, sy = self.cursor.x, self.cursor.y
-        dist = math.hypot(x - sx, y - sy)
-        if dist >= 1:
-            steps = max(cfg.mouse_min_steps, min(cfg.mouse_max_steps, round(dist / cfg.mouse_steps_divisor)))
-            start, end = Point(sx, sy), Point(x, y)
-            cp1, cp2 = _random_control_points(start, end)
-            burst, burst_size = 0, rand_int_range(cfg.mouse_burst_size)
-            for i in range(1, steps + 1):
-                progress = i / steps
-                pt = _bezier(start, cp1, cp2, end, _ease_in_out(progress))
-                wobble = math.sin(math.pi * progress) * cfg.mouse_wobble_max
-                if i == steps:
-                    await self.mouse.move(x, y)  # exact end point (position= offsets)
-                    continue
-                else:
-                    wx = pt.x + (random.random() - 0.5) * 2 * wobble
-                    wy = pt.y + (random.random() - 0.5) * 2 * wobble
-                await self.mouse.move(round(wx), round(wy))
-                burst += 1
-                if burst >= burst_size and i < steps:
-                    await sleep_ms(rand_range(cfg.mouse_burst_pause))
-                    burst = 0
-            if random.random() < cfg.mouse_overshoot_chance:
-                angle = math.atan2(y - sy, x - sx)
-                over = rand_range(cfg.mouse_overshoot_px)
-                await self.mouse.move(round(x + math.cos(angle) * over), round(y + math.sin(angle) * over))
-                await sleep_ms(rand(30, 70))
-                await self.mouse.move(x, y)
+        clock = time.monotonic()
+        for px, py, dt in plan_move(sx, sy, x, y, cfg):
+            # Keep to the planned schedule: the CDP round trip of each move
+            # comes out of the next wait instead of adding to it.
+            clock += dt / 1000
+            await sleep_ms((clock - time.monotonic()) * 1000)
+            await self.mouse.move(px, py)
         self.cursor.x, self.cursor.y = x, y
 
     async def idle(self, cfg: HumanConfig) -> None:
@@ -416,11 +540,20 @@ class Human:
         vp = await self.worlds.viewport()
         stalled = rounds = 0
         overshot = False
+        last = (0.0, 0.0)
+        notch = await self.notch_px(cfg)
         while stalled < 2 and rounds < 40 and not deadline.expired():
             dx, dy = await self._needed_scroll(r, box, vp, cfg)
             if abs(dx) < 1 and abs(dy) < 1:
                 break
             rounds += 1
+            # Whole notches can jump over a target whose slack is smaller than
+            # one notch (a short scroll box): after such a reversal, finish
+            # with one wheel event of the exact remainder (a free-spinning or
+            # high-resolution wheel sends those) instead of swinging forever.
+            fine_y = dy * last[1] < 0 and abs(dy) < notch
+            fine_x = dx * last[0] < 0 and abs(dx) < notch
+            last = (dx, dy)
             area = box["clip"] if box["clip"]["width"] > 4 and box["clip"]["height"] > 4 else \
                 {"x": 0.0, "y": 0.0, "width": float(vp["width"]), "height": float(vp["height"])}
             if not self._inside(area, self.cursor):
@@ -429,12 +562,18 @@ class Human:
                 await sleep_ms(rand_range(cfg.scroll_pre_move_delay))
             before = (box["x"], box["y"])
             if abs(dy) >= 1:
-                await self._wheel_burst(0, dy, cfg, deadline)
-                if not overshot:
-                    overshot = True
-                    await self._overshoot(dy, cfg, deadline)
+                if fine_y:
+                    await self.mouse.wheel(0, round(dy))
+                else:
+                    await self._wheel_burst(0, dy, cfg, deadline)
+                    if not overshot:
+                        overshot = True
+                        await self._overshoot(dy, cfg, deadline)
             if abs(dx) >= 1:
-                await self._wheel_burst(dx, 0, cfg, deadline)
+                if fine_x:
+                    await self.mouse.wheel(round(dx), 0)
+                else:
+                    await self._wheel_burst(dx, 0, cfg, deadline)
             await sleep_ms(min(rand_range(cfg.scroll_settle_delay), deadline.remaining()))
             box = await self.element_box(r)
             moved = abs(box["x"] - before[0]) + abs(box["y"] - before[1])
@@ -485,43 +624,61 @@ class Human:
         if random.random() >= cfg.scroll_overshoot_chance or deadline.expired():
             return
         sign = 1 if dy > 0 else -1
-        await self._wheel_burst(0, round(rand_range(cfg.scroll_overshoot_px)) * sign, cfg, deadline)
+        notch = await self.notch_px(cfg)
+        over = max(1, int(round(rand_range(cfg.scroll_overshoot_px) / notch)))
+        await self._wheel_burst(0, over * notch * sign, cfg, deadline)
         await sleep_ms(min(rand_range(cfg.scroll_settle_delay), deadline.remaining()))
-        for _ in range(rand_int_range((1, 2))):
-            if deadline.expired():
-                break
-            await self._wheel_burst(0, round(rand(40, 80)) * -sign, cfg, deadline)
+        # Turn back in one or two flicks.
+        first = rand_int_range((1, over)) if over > 1 and random.random() < 0.5 else over
+        for n in (first, over - first):
+            if n <= 0 or deadline.expired():
+                continue
+            await self._wheel_burst(0, n * notch * -sign, cfg, deadline)
             await sleep_ms(min(rand(100, 250), deadline.remaining()))
+
+    async def notch_px(self, cfg: HumanConfig) -> float:
+        """CSS pixels one wheel notch scrolls for the persona's platform:
+        Chrome scrolls 100 px per notch on Windows (3 lines of 33.3 px), 40 on
+        macOS and 120 on Linux, and reports ``wheelDelta`` 120 per notch. CDP
+        always reports one notch per wheel event, so whole-notch events are
+        the only ones whose ``deltaY`` and ``wheelDeltaY`` agree."""
+        if cfg.scroll_notch_px and cfg.scroll_notch_px > 0:
+            return float(cfg.scroll_notch_px)
+        plat = (await self.platform()).lower()
+        if plat.startswith("mac"):
+            return 40.0
+        if plat.startswith("win"):
+            return 100.0
+        return 120.0
 
     async def _wheel_burst(self, dx: float, dy: float, cfg: HumanConfig,
                            deadline: Optional[_Deadline] = None) -> None:
-        """One logical scroll: accelerate -> cruise -> decelerate in wheel ticks."""
+        """One logical scroll: flicks of a few wheel notches each, quicker in
+        the middle of a flick, with short pauses between flicks. Every event
+        is exactly one notch, so the page scrolls by the nearest whole number
+        of notches (the caller re-measures and scrolls again when needed)."""
         total = abs(dy) if dy else abs(dx)
         sign = 1 if (dy or dx) > 0 else -1
+        notch = await self.notch_px(cfg)
+        notches = max(1, int(round(total / notch)))
         accel, decel = rand_int_range(cfg.scroll_accel_steps), rand_int_range(cfg.scroll_decel_steps)
-        avg = (cfg.scroll_delta_base[0] + cfg.scroll_delta_base[1]) / 2
-        ticks = max(1, math.ceil(total / avg))
-        sent = 0.0
-        for i in range(ticks):
-            if sent >= total or (deadline is not None and deadline.expired()):
+        flick = rand_int_range((2, 5))
+        for i in range(notches):
+            if deadline is not None and deadline.expired():
                 break
-            if i < accel or i >= ticks - decel:
-                pause = rand_range(cfg.scroll_pause_slow)
+            step = notch * sign
+            await self.mouse.wheel(step if dx else 0, step if dy else 0)
+            if i == notches - 1:
+                break
+            flick -= 1
+            if flick <= 0:
+                # A finger lifts and turns the wheel again.
+                flick = rand_int_range((2, 5))
+                await sleep_ms(rand_range(cfg.scroll_pause_slow) + rand(40, 120))
+            elif i < accel or i >= notches - decel:
+                await sleep_ms(rand_range(cfg.scroll_pause_slow))
             else:
-                pause = rand_range(cfg.scroll_pause_fast)
-            tick = min(total - sent, rand_range(cfg.scroll_delta_base) *
-                       (1 + (random.random() - 0.5) * 2 * cfg.scroll_delta_variance))
-            # Split each tick into small wheel events like real inertia.
-            left = tick
-            while left > 0.5:
-                chunk = min(left, rand(20, 40))
-                step = round(chunk) * sign
-                if step:
-                    await self.mouse.wheel(step if dx else 0, step if dy else 0)
-                left -= chunk
-                await sleep_ms(rand(8, 20))
-            sent += tick
-            await sleep_ms(pause)
+                await sleep_ms(rand_range(cfg.scroll_pause_fast))
 
     # -- pointer ------------------------------------------------------------
 
@@ -708,9 +865,9 @@ class Human:
         info = await self.worlds.call(r.frame, "info", r.id)
         if info["tag"] == "input":
             if not await self.worlds.call(r.frame, "caretAtEnd", r.id):
-                await self.keyboard.press("End")
+                await self.press_key("End")
         else:
-            await self.keyboard.press("Control+End")
+            await self.press_key("Control+End")
         await sleep_ms(rand(20, 60))
 
     async def press(self, target: Target, key: str, opts: dict, api: str = "press") -> None:
@@ -718,7 +875,7 @@ class Human:
         deadline = self.deadline(target, opts)
         await self.focus_element(target, opts, api, cfg, deadline, require_focus=False)
         await sleep_ms(rand(50, 150))
-        await self.keyboard.press(await self._keys(key), delay=opts.get("delay"))
+        await self.press_key(await self._keys(key), delay=opts.get("delay"))
 
     async def _keys(self, key: str) -> str:
         if "ControlOrMeta" in key:
@@ -765,16 +922,16 @@ class Human:
         await sleep_ms(rand(100, 250))
         info = await self.worlds.call(r.frame, "info", r.id)
         if info["value"]:
-            await self.keyboard.press(await self.select_all_key())
+            await self.press_key(await self.select_all_key())
             await sleep_ms(rand(30, 80))
-            await self.keyboard.press("Backspace")
+            await self.press_key("Backspace")
             await sleep_ms(rand(50, 150))
             info = await self.worlds.call(r.frame, "info", r.id)
             if info["value"]:
                 # Some widgets ignore select-all; clear what is left by keys.
                 await self.caret_to_end(r)
                 for _ in range(len(info["value"])):
-                    await self.keyboard.press("Backspace")
+                    await self.press_key("Backspace")
                     await sleep_ms(rand(15, 40))
         if value:
             await self.type_text(value, cfg, r.frame, info, None)
@@ -829,7 +986,7 @@ class Human:
                 # person scrolling through the names.
                 diff = int(parts["month"]) - int(current["month"])
                 for _ in range(abs(diff)):
-                    await self.keyboard.press("ArrowUp" if diff > 0 else "ArrowDown")
+                    await self.press_key("ArrowUp" if diff > 0 else "ArrowDown")
                     await sleep_ms(rand(60, 140))
             elif kind == "ampm":
                 await self._type_char("P" if parts["hour24"] >= 12 else "A", cfg)
@@ -841,10 +998,9 @@ class Human:
                         # The editor forgets a partial entry after ~1 s without
                         # a key; people type a number in one go, so keep the
                         # gap inside a segment short (pauses go between parts).
-                        await sleep_ms(min(450.0, max(40.0, cfg.typing_delay +
-                                                      (random.random() - 0.5) * 2 * cfg.typing_delay_spread)))
+                        await sleep_ms(min(450.0, max(40.0, key_gap(cfg, ch, digits[j + 1]) - key_hold(cfg))))
             if i < len(segs) - 1 and not fields.segment_auto_advances(kind, parts, input_type):
-                await self.keyboard.press("ArrowRight")
+                await self.press_key("ArrowRight")
             await sleep_ms(rand(60, 160))
         got = await self.worlds.call(r.frame, "value", r.id)
         if got != value:
@@ -873,7 +1029,7 @@ class Human:
                 break
             up = cur < want
             key = ("ArrowRight" if up else "ArrowLeft") if not info["rtl"] else ("ArrowLeft" if up else "ArrowRight")
-            await self.keyboard.press(key)
+            await self.press_key(key)
             await sleep_ms(rand(40, 110))
             if float(await self.worlds.call(r.frame, "value", r.id)) == cur:
                 break  # cannot move further (min/max reached)
@@ -969,7 +1125,7 @@ class Human:
         typed = False
         for k in keys:
             if deadline.expired():
-                await self.keyboard.press("Escape")
+                await self.press_key("Escape")
                 raise TimeoutError(f"{api}: Timeout {deadline.timeout:.0f}ms exceeded.\n"
                                    f"Call log:\n  - choosing an option of {target.description}")
             if len(k) == 1:
@@ -978,10 +1134,10 @@ class Human:
                 self._typeahead_until = time.monotonic() + 1.1
                 await sleep_ms(rand(60, 160))
             else:
-                await self.keyboard.press(k)
+                await self.press_key(k)
                 await sleep_ms(rand(90, 200))
         await sleep_ms(rand(100, 250))
-        await self.keyboard.press("Enter")
+        await self.press_key("Enter")
         if typed:
             self._typeahead_until = time.monotonic() + 1.1
         await sleep_ms(rand(80, 160))
@@ -994,7 +1150,7 @@ class Human:
             return
         session = await self.worlds.session()
         await session.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": ch, "text": ch, "unmodifiedText": ch})
-        await sleep_ms(rand_range(cfg.key_hold))
+        await sleep_ms(key_hold(cfg))
         await session.send("Input.dispatchKeyEvent", {"type": "keyUp", "key": ch})
 
     async def _select_listbox(self, target: Target, r: Resolved, p: dict, opts: dict, api: str,
@@ -1076,35 +1232,35 @@ class Human:
         """Type ``text`` key by key into the focused element of ``frame``."""
         tag = info.get("tag") if info else None
         mistypes = cfg.mistype_chance > 0 and tag is not None and fields.allows_mistype(tag, info.get("type"))
-        for i, ch in enumerate(text):
-            if not ch.isascii():
-                await sleep_ms(rand_range(cfg.key_hold))
-                await self.keyboard.insert_text(ch)
-            else:
-                if mistypes and ch.isalnum() and random.random() < cfg.mistype_chance:
-                    await self._typo(ch, cfg, frame)
-                await self._type_char(ch, cfg)
-            if i < len(text) - 1:
-                await self._between_keys(cfg, delay)
+        typist = _Typist(self, cfg, delay)
+        try:
+            for ch in text:
+                if mistypes and ch.isascii() and ch.isalnum() and random.random() < cfg.mistype_chance:
+                    await self._typo(typist, ch, cfg, frame)
+                await typist.key(ch)
+            await typist.finish()
+        finally:
+            await typist.release_all()
 
-    async def _typo(self, ch: str, cfg: HumanConfig, frame: Any) -> None:
+    async def _typo(self, typist: "_Typist", ch: str, cfg: HumanConfig, frame: Any) -> None:
         lower = ch.lower()
         if lower not in NEARBY_KEYS:
             return
         wrong = random.choice(NEARBY_KEYS[lower])
         if ch.isupper():
             wrong = wrong.upper()
+        await typist.finish()
         before = await self._active_value(frame)
-        await self._type_char(wrong, cfg)
+        await typist.key(wrong)
+        await typist.rest()
         await sleep_ms(rand_range(cfg.mistype_delay_notice))
         after = await self._active_value(frame)
         if before is not None and after == before:
             # The page rejected the wrong key (mask / filter): nothing to undo.
             await sleep_ms(rand_range(cfg.mistype_delay_correct))
             return
-        await self.keyboard.down("Backspace")
-        await sleep_ms(rand_range(cfg.key_hold))
-        await self.keyboard.up("Backspace")
+        await typist.key("Backspace")
+        await typist.rest()
         await sleep_ms(rand_range(cfg.mistype_delay_correct))
 
     async def _active_value(self, frame: Any) -> Optional[str]:
@@ -1114,42 +1270,18 @@ class Human:
             return None
 
     async def _type_char(self, ch: str, cfg: HumanConfig) -> None:
-        if ch.isalpha() and ch.isupper():
-            await self.keyboard.down("Shift")
-            await sleep_ms(rand_range(cfg.shift_down_delay))
-            await self.keyboard.down(ch)
-            await sleep_ms(rand_range(cfg.key_hold))
-            await self.keyboard.up(ch)
-            await sleep_ms(rand_range(cfg.shift_up_delay))
-            await self.keyboard.up("Shift")
-        elif ch in SHIFT_SYMBOLS:
-            session = await self.worlds.session()
-            code = _SHIFT_SYMBOL_CODES.get(ch, "")
-            vk = _SHIFT_SYMBOL_KEYCODES.get(ch, 0)
-            await self.keyboard.down("Shift")
-            await sleep_ms(rand_range(cfg.shift_down_delay))
-            await session.send("Input.dispatchKeyEvent", {
-                "type": "keyDown", "modifiers": 8, "key": ch, "code": code,
-                "windowsVirtualKeyCode": vk, "text": ch, "unmodifiedText": ch,
-            })
-            await sleep_ms(rand_range(cfg.key_hold))
-            await session.send("Input.dispatchKeyEvent", {
-                "type": "keyUp", "modifiers": 8, "key": ch, "code": code, "windowsVirtualKeyCode": vk,
-            })
-            await sleep_ms(rand_range(cfg.shift_up_delay))
-            await self.keyboard.up("Shift")
-        else:
-            await self.keyboard.down(ch)
-            await sleep_ms(rand_range(cfg.key_hold))
-            await self.keyboard.up(ch)
+        """One key on its own (date editors, type-ahead)."""
+        typist = _Typist(self, cfg)
+        try:
+            await typist.key(ch)
+            await typist.finish()
+        finally:
+            await typist.release_all()
 
-    async def _between_keys(self, cfg: HumanConfig, delay: Optional[float]) -> None:
-        if delay is not None:
-            await sleep_ms(delay)
-        elif random.random() < cfg.typing_pause_chance:
-            await sleep_ms(rand_range(cfg.typing_pause_range))
-        else:
-            await sleep_ms(max(10, cfg.typing_delay + (random.random() - 0.5) * 2 * cfg.typing_delay_spread))
+    async def press_key(self, key: str, cfg: Optional[HumanConfig] = None, delay: Optional[float] = None) -> None:
+        """``keyboard.press`` with a human key-down time (Playwright's own
+        press releases the key in the same instant)."""
+        await self.keyboard.press(key, delay=delay if delay is not None else key_hold(cfg or self.cfg))
 
     async def keyboard_type(self, text: str, delay: Optional[float] = None) -> None:
         """``page.keyboard.type``: no target; mistypes only where safe."""

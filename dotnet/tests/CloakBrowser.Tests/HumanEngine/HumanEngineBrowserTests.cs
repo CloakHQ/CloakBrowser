@@ -289,6 +289,43 @@ public class HumanEngineBrowserTests : IClassFixture<EngineFixture>, IAsyncLifet
     }
 
     [BrowserFact]
+    public async Task Same_key_lower_then_upper_case_never_sends_a_repeat_keydown()
+    {
+        // "xX": the capital's key must not go down while the lower-case press of the
+        // same physical key is still held (keydown with repeat = true). Same for "1!".
+        var p = await OpenWith(new()
+        {
+            ["key_hold"] = new[] { 60.0, 175.0 }, ["typing_delay"] = 150.0, ["typing_delay_spread"] = 70.0,
+            ["typing_pause_chance"] = 0.0, ["shift_down_delay"] = new[] { 60.0, 220.0 },
+            ["shift_up_delay"] = new[] { -60.0, 30.0 },
+        });
+        await p.EvaluateAsync("() => { window.__kd = []; for (const t of ['keydown', 'keyup'])"
+            + " document.addEventListener(t, e => __kd.push([t, e.code, e.repeat]), true); }");
+        const string text = "xX aA zZ 1! qQ";
+        for (int i = 0; i < 3; i++)
+        {
+            await p.FillAsync("#name", text);
+            Assert.Equal(text, await Value(p, "#name"));
+        }
+        var repeats = await p.EvaluateAsync<int>("__kd.filter(e => e[2]).length");
+        Assert.Equal(0, repeats);
+    }
+
+    [BrowserFact]
+    public async Task Text_with_crlf_types_without_throwing()
+    {
+        // StringInfo returns "\r\n" as one text element; it has no key of its own and
+        // is inserted as text, as before, instead of being sent to KeyDownAsync (which
+        // Playwright rejects with "Unknown key"). Same value as on main.
+        var p = await Open();
+        await p.GotoAsync("data:text/html," + Uri.EscapeDataString("<textarea id=\"ta\"></textarea>"));
+        await p.FillAsync("#ta", "ab\r\ncd");
+        Assert.Equal("ab\r\ncd", await p.EvaluateAsync<string>("document.getElementById('ta').value"));
+        await p.Locator("#ta").PressSequentiallyAsync("\r\nef");
+        Assert.Equal("ab\r\ncd\r\nef", await p.EvaluateAsync<string>("document.getElementById('ta').value"));
+    }
+
+    [BrowserFact]
     public async Task Mistypes_are_corrected_skip_masked_fields_and_use_shift()
     {
         var p = await OpenWith(new() { ["mistype_chance"] = 1.0 });
@@ -313,6 +350,34 @@ public class HumanEngineBrowserTests : IClassFixture<EngineFixture>, IAsyncLifet
         var dys = (await Events(p, "wheel")).Select(e => e.GetProperty("dy").GetDouble()).ToList();
         Assert.True(dys.Any(d => d > 0) && dys.Any(d => d < 0), string.Join(",", dys));
         Assert.Equal(new[] { "chk" }, (await Events(p, "click")).Select(e => e.GetProperty("target").GetString()));
+    }
+
+    // #593: overflow clips only boxes whose containing block lies inside the scroller.
+    private const string CbCss = "<!doctype html><style>body { margin: 0 } header { height: 215px }"
+        + ".content { height: 300px; overflow: auto } .tall { height: 2000px } button { width: 44px; height: 44px }"
+        + "</style><header>header</header>";
+
+    [BrowserTheory]
+    [InlineData("<div class=\"content\"><div class=\"tall\"><div style=\"position: fixed; inset: 0\">"
+        + "<button id=\"t\" style=\"position: absolute; top: 146px; right: 36px\">X</button></div></div></div>", false)]
+    [InlineData("<div style=\"position: relative\"><div class=\"content\"><div class=\"tall\">"
+        + "<button id=\"t\" style=\"position: absolute; top: 320px; left: 10px\">X</button></div></div></div>", false)]
+    [InlineData("<div class=\"content\"><div class=\"tall\"><div style=\"height: 1500px\"></div>"
+        + "<button id=\"t\">X</button></div></div>", true)]
+    [InlineData("<div class=\"content\" style=\"position: relative\"><div class=\"tall\">"
+        + "<button id=\"t\" style=\"position: absolute; top: 1500px; left: 10px\">X</button></div></div>", true)]
+    [InlineData("<div class=\"content\" style=\"transform: translateZ(0)\"><div class=\"tall\">"
+        + "<button id=\"t\" style=\"position: fixed; top: 1500px; left: 10px\">X</button></div></div>", true)]
+    public async Task Scroller_follows_the_containing_block_chain(string body, bool clipped)
+    {
+        var p = await Open();
+        await p.SetViewportSizeAsync(390, 844);
+        await p.GotoAsync("data:text/html," + Uri.EscapeDataString(CbCss + body));
+        await p.EvaluateAsync("() => { window.__clicks = 0; document.getElementById('t').addEventListener('click', () => window.__clicks++); }");
+        await p.ClickAsync("#t", new() { Timeout = 5000 });
+        Assert.Equal(1, await p.EvaluateAsync<int>("window.__clicks"));
+        var scrolled = await p.EvaluateAsync<double>("document.querySelector('.content').scrollTop");
+        Assert.Equal(clipped, scrolled > 0);
     }
 
     [BrowserFact]

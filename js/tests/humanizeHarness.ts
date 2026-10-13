@@ -21,7 +21,6 @@ export const FAST = {
   shift_up_delay: [5, 5] as [number, number],
   mouse_min_steps: 4,
   mouse_max_steps: 4,
-  mouse_burst_pause: [0, 0] as [number, number],
   mouse_overshoot_chance: 0,
   click_aim_delay_input: [5, 5] as [number, number],
   click_aim_delay_button: [5, 5] as [number, number],

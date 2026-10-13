@@ -38,7 +38,7 @@ public readonly record struct ScrollResult(BoundingBox Box, double CursorX, doub
 
 /// <summary>
 /// Human-like scrolling via mouse wheel events.
-/// Direct port of Python <c>cloakbrowser/human/scroll.py</c>.
+/// Standalone helper (humanized actions use the engine); mirrors the JS Puppeteer scroller.
 /// </summary>
 public static class HumanScroll
 {
@@ -56,44 +56,54 @@ public static class HumanScroll
         return bounds.X >= 0 && bounds.X + bounds.Width <= viewportWidth;
     }
 
-    /// <summary>Send one logical scroll as a burst of small wheel events (like real inertia).</summary>
-    private static async Task SmoothWheelAsync(IRawMouse raw, int delta, HumanConfig cfg, bool horizontal = false)
+    /// <summary>CSS pixels per wheel notch: <see cref="HumanConfig.ScrollNotchPx"/> when set,
+    /// else 100 (Chrome on Windows; this helper has no persona to ask).</summary>
+    private static double NotchPx(HumanConfig cfg) => cfg.ScrollNotchPx > 0 ? cfg.ScrollNotchPx : 100;
+
+    /// <summary>
+    /// Turn the wheel by about <paramref name="delta"/> px in whole notches: flicks of a
+    /// few notches, quicker inside a flick, with a short pause between flicks. CDP reports
+    /// every wheel event as one notch (<c>wheelDeltaY</c> 120), so whole-notch events are
+    /// the only ones whose <c>deltaY</c> agrees. Returns the distance actually wheeled.
+    /// </summary>
+    private static async Task<double> WheelNotchesAsync(IRawMouse raw, double delta, HumanConfig cfg, bool horizontal = false)
     {
-        double absD = Math.Abs(delta);
+        double notch = NotchPx(cfg);
         int sign = delta > 0 ? 1 : -1;
-        double sent = 0;
-        while (sent < absD)
+        int notches = (int)Math.Round(Math.Abs(delta) / notch);
+        int flick = HumanRandom.RandIntRange((2, 5));
+        for (int i = 0; i < notches; i++)
         {
-            double stepSize = HumanRandom.Rand(20, 40);
-            double chunk = Math.Min(stepSize, absD - sent);
-            // Fold a sub-pixel tail into this step: on its own it would round to a
-            // (0, 0) wheel event, which no real wheel sends.
-            if (absD - sent - chunk < 0.5)
-                chunk = absD - sent;
-            double step = Math.Round(chunk) * sign;
-            if (horizontal)
-                await raw.WheelAsync(step, 0).ConfigureAwait(false);
+            double d = notch * sign;
+            if (horizontal) await raw.WheelAsync(d, 0).ConfigureAwait(false);
+            else await raw.WheelAsync(0, d).ConfigureAwait(false);
+            if (i == notches - 1) break;
+            if (--flick <= 0)
+            {
+                flick = HumanRandom.RandIntRange((2, 5));
+                await HumanRandom.SleepMsAsync(HumanRandom.RandRange(cfg.ScrollPauseSlow) + HumanRandom.Rand(40, 120)).ConfigureAwait(false);
+            }
             else
-                await raw.WheelAsync(0, step).ConfigureAwait(false);
-            sent += chunk;
-            await HumanRandom.SleepMsAsync(HumanRandom.Rand(8, 20)).ConfigureAwait(false);
+            {
+                await HumanRandom.SleepMsAsync(HumanRandom.RandRange(cfg.ScrollPauseFast)).ConfigureAwait(false);
+            }
         }
+        return notches * notch * sign;
     }
 
     /// <summary>
-    /// Public smooth-wheel helper for the transparent <c>IMouse.WheelAsync</c> override:
-    /// breaks a (deltaX, deltaY) wheel request into the same small-burst-with-inertia
-    /// pattern used for scroll-into-view, so direct wheel calls look human too.
+    /// Public smooth-wheel helper for a direct wheel request: each non-zero axis is
+    /// turned by a whole number of notches (at least one), like a person would. When
+    /// both deltas are zero a single no-op wheel event is sent, matching Playwright's
+    /// <c>IMouse.WheelAsync(0, 0)</c>.
     /// </summary>
     public static async Task SmoothWheelAsync(IRawMouse raw, double deltaX, double deltaY, HumanConfig cfg)
     {
-        // X axis is sent in one go (horizontal scroll is rarely incremental), Y is
-        // chunked for inertia. When both are zero, send a single no-op wheel event so
-        // semantics match Playwright's IMouse.WheelAsync(0, 0).
+        double notch = NotchPx(cfg);
         if (deltaY != 0)
-            await SmoothWheelAsync(raw, (int)Math.Round(deltaY), cfg).ConfigureAwait(false);
+            await WheelNotchesAsync(raw, Math.Sign(deltaY) * Math.Max(notch, Math.Abs(deltaY)), cfg).ConfigureAwait(false);
         if (deltaX != 0)
-            await raw.WheelAsync(Math.Round(deltaX), 0).ConfigureAwait(false);
+            await WheelNotchesAsync(raw, Math.Sign(deltaX) * Math.Max(notch, Math.Abs(deltaX)), cfg, horizontal: true).ConfigureAwait(false);
         if (deltaX == 0 && deltaY == 0)
             await raw.WheelAsync(0, 0).ConfigureAwait(false);
     }
@@ -166,69 +176,36 @@ public static class HumanScroll
         cursorY = scrollAreaY;
         await HumanRandom.SleepMsAsync(HumanRandom.RandRange(cfg.ScrollPreMoveDelay)).ConfigureAwait(false);
 
-        // Calculate scroll distance.
+        // Wheel in whole notches, re-measuring between flicks, until the element
+        // sits in the target zone (or the page stops moving).
+        double notch = NotchPx(cfg);
         double targetY = viewportHeight * HumanRandom.Rand(cfg.ScrollTargetZone.Min, cfg.ScrollTargetZone.Max);
-        double elementCenter = box.Value.Y + box.Value.Height / 2;
-        double distanceToScroll = elementCenter - targetY;
-
-        int direction = distanceToScroll > 0 ? 1 : -1;
-        double absDistance = Math.Abs(distanceToScroll);
-        double avgDelta = (cfg.ScrollDeltaBase.Min + cfg.ScrollDeltaBase.Max) / 2;
-        int totalClicks = Math.Max(3, (int)Math.Ceiling(absDistance / avgDelta));
-        int accelSteps = HumanRandom.RandIntRange(cfg.ScrollAccelSteps);
-        int decelSteps = HumanRandom.RandIntRange(cfg.ScrollDecelSteps);
-
-        // Scroll loop: accelerate -> cruise -> decelerate.
-        double scrolled = 0;
-        for (int i = 0; i < totalClicks; i++)
+        bool overshot = false;
+        int stalled = 0;
+        for (int round = 0; round < 40 && stalled < 2; round++)
         {
-            double delta, pause;
-            if (i < accelSteps)
+            double distance = box.Value.Y + box.Value.Height / 2 - targetY;
+            if (Math.Abs(distance) < notch / 2 || IsInViewport(box.Value, viewportHeight, cfg)) break;
+            int direction = distance > 0 ? 1 : -1;
+            int flick = Math.Min((int)Math.Round(Math.Abs(distance) / notch), HumanRandom.RandIntRange((2, 5)));
+            double beforeY = box.Value.Y;
+            await WheelNotchesAsync(raw, flick * notch * direction, cfg).ConfigureAwait(false);
+            await HumanRandom.SleepMsAsync(HumanRandom.RandRange(cfg.ScrollPauseSlow)).ConfigureAwait(false);
+            var nb = await getBox().ConfigureAwait(false);
+            if (nb == null) break;
+            box = nb;
+            stalled = Math.Abs(box.Value.Y - beforeY) < 1 ? stalled + 1 : 0;
+            if (!overshot && HumanRandom.NextDouble() < cfg.ScrollOvershootChance
+                && Math.Abs(box.Value.Y + box.Value.Height / 2 - targetY) < notch * 2)
             {
-                delta = HumanRandom.Rand(80, 100);
-                pause = HumanRandom.RandRange(cfg.ScrollPauseSlow);
-            }
-            else if (i >= totalClicks - decelSteps)
-            {
-                delta = HumanRandom.Rand(60, 90);
-                pause = HumanRandom.RandRange(cfg.ScrollPauseSlow);
-            }
-            else
-            {
-                delta = HumanRandom.RandRange(cfg.ScrollDeltaBase);
-                pause = HumanRandom.RandRange(cfg.ScrollPauseFast);
-            }
-
-            delta *= 1 + (HumanRandom.NextDouble() - 0.5) * 2 * cfg.ScrollDeltaVariance;
-            int deltaInt = (int)(Math.Round(delta) * direction);
-
-            await SmoothWheelAsync(raw, deltaInt, cfg).ConfigureAwait(false);
-            scrolled += Math.Abs(deltaInt);
-            await HumanRandom.SleepMsAsync(pause).ConfigureAwait(false);
-
-            // Check visibility every 3 steps.
-            if (i % 3 == 2 || i == totalClicks - 1)
-            {
-                box = await getBox().ConfigureAwait(false);
-                if (box != null && IsInViewport(box.Value, viewportHeight, cfg))
-                    break;
-            }
-            if (scrolled >= absDistance * 1.1)
-                break;
-        }
-
-        // Optional overshoot + correction.
-        if (HumanRandom.NextDouble() < cfg.ScrollOvershootChance)
-        {
-            int overshootPx = (int)(Math.Round(HumanRandom.RandRange(cfg.ScrollOvershootPx)) * direction);
-            await SmoothWheelAsync(raw, overshootPx, cfg).ConfigureAwait(false);
-            await HumanRandom.SleepMsAsync(HumanRandom.RandRange(cfg.ScrollSettleDelay)).ConfigureAwait(false);
-            int corrections = HumanRandom.RandIntRange((1, 2));
-            for (int c = 0; c < corrections; c++)
-            {
-                int corrDelta = (int)(Math.Round(HumanRandom.Rand(40, 80)) * -direction);
-                await SmoothWheelAsync(raw, corrDelta, cfg).ConfigureAwait(false);
+                // Optional overshoot + correction, in whole notches.
+                overshot = true;
+                int over = Math.Max(1, (int)Math.Round(HumanRandom.RandRange(cfg.ScrollOvershootPx) / notch));
+                await WheelNotchesAsync(raw, over * notch * direction, cfg).ConfigureAwait(false);
+                await HumanRandom.SleepMsAsync(HumanRandom.RandRange(cfg.ScrollSettleDelay)).ConfigureAwait(false);
+                await WheelNotchesAsync(raw, -over * notch * direction, cfg).ConfigureAwait(false);
                 await HumanRandom.SleepMsAsync(HumanRandom.Rand(100, 250)).ConfigureAwait(false);
+                box = await getBox().ConfigureAwait(false) ?? box;
             }
         }
 
@@ -276,7 +253,7 @@ public static class HumanScroll
         cursorY = scrollAreaY;
         await HumanRandom.SleepMsAsync(HumanRandom.RandRange(cfg.ScrollPreMoveDelay)).ConfigureAwait(false);
 
-        await SmoothWheelAsync(raw, (int)Math.Round(distanceToScroll), cfg, horizontal: true).ConfigureAwait(false);
+        await WheelNotchesAsync(raw, distanceToScroll, cfg, horizontal: true).ConfigureAwait(false);
         await HumanRandom.SleepMsAsync(HumanRandom.RandRange(cfg.ScrollSettleDelay)).ConfigureAwait(false);
 
         var finalBox = await getBox().ConfigureAwait(false);

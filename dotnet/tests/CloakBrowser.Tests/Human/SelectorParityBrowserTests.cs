@@ -19,7 +19,6 @@ public class SelectorParityBrowserTests
         {
             ["mouse_min_steps"] = 3,
             ["mouse_max_steps"] = 3,
-            ["mouse_burst_pause"] = new[] { 0.0, 0.0 },
             ["idle_between_actions"] = false,
             ["scroll_settle_delay"] = new[] { 0.0, 0.0 },
         },

@@ -19,7 +19,6 @@ public sealed class SiteServer
         ["shift_up_delay"] = new[] { 5.0, 5.0 },
         ["mouse_min_steps"] = 4,
         ["mouse_max_steps"] = 4,
-        ["mouse_burst_pause"] = new[] { 0.0, 0.0 },
         ["mouse_overshoot_chance"] = 0.0,
         ["click_aim_delay_input"] = new[] { 5.0, 5.0 },
         ["click_aim_delay_button"] = new[] { 5.0, 5.0 },

@@ -8,7 +8,7 @@
 
 import type { Page, CDPSession } from 'playwright-core';
 import type { RawKeyboard } from './mouse.js';
-import { type HumanConfig, randRange, sleep } from './config.js';
+import { type HumanConfig, randLog, randLognormal, randRange, sleep } from './config.js';
 
 export async function pressWithDelay<Key>(
   press: (key: Key, options?: { delay?: number }) => Promise<void>,
@@ -55,6 +55,22 @@ export const SHIFT_SYMBOL_CODES: Record<string, string> = {
   '?': 'Slash', '~': 'Backquote',
 };
 
+/** Physical key of each unshifted digit / punctuation character, so a shift
+ * symbol and its base character ("1" and "!") count as the same key. */
+const BASE_KEY_CODES: Record<string, string> = {
+  '1': 'Digit1', '2': 'Digit2', '3': 'Digit3', '4': 'Digit4', '5': 'Digit5',
+  '6': 'Digit6', '7': 'Digit7', '8': 'Digit8', '9': 'Digit9', '0': 'Digit0',
+  '-': 'Minus', '=': 'Equal', '[': 'BracketLeft', ']': 'BracketRight',
+  '\\': 'Backslash', ';': 'Semicolon', "'": 'Quote', ',': 'Comma',
+  '.': 'Period', '/': 'Slash', '`': 'Backquote',
+};
+
+/** The physical key that types `ch`: "x" and "X" are one key, so are "1" and
+ * "!". Used so a key never goes down while it is still held. */
+export function physicalKey(ch: string): string {
+  return SHIFT_SYMBOL_CODES[ch] || BASE_KEY_CODES[ch] || ch.toLowerCase();
+}
+
 /**
  * Windows virtual key codes for shift symbols.
  * Input.dispatchKeyEvent uses these to match real keyboard behavior.
@@ -80,6 +96,204 @@ function getNearbyKey(ch: string): string {
     return ch === ch.toUpperCase() && ch !== ch.toLowerCase() ? wrong.toUpperCase() : wrong;
   }
   return ch;
+}
+
+// ---------------------------------------------------------------------------
+// Key timing (shared by the humanize engine)
+// ---------------------------------------------------------------------------
+//
+// Numbers come from the 136M Keystrokes data (Dhakal et al., CHI 2018):
+// letters typed with the other hand follow ~20% faster than letters of the
+// same hand, a repeated letter (same finger) is slower, and the first letter
+// of a word (after a space) is the slowest. People commonly press the next
+// key before letting go of the previous one (rollover).
+
+const LEFT_HAND = new Set('qwertasdfgzxcvb`12345~!@#$%');
+
+function hand(ch: string): 'L' | 'R' | null {
+  const c = ch.toLowerCase();
+  if (!c || c.length !== 1 || c.charCodeAt(0) > 127 || /\s/.test(c)) return null;
+  return LEFT_HAND.has(c) ? 'L' : 'R';
+}
+
+/** How much slower / faster than average the press of `ch` follows `prev`. */
+export function gapFactor(prev: string, ch: string): number {
+  if (!prev) return 1;
+  if (prev === ' ') return 1.3;
+  if (ch === ' ') return 0.9;
+  if (prev.toLowerCase() === ch.toLowerCase()) return 1.05;
+  const hp = hand(prev), hc = hand(ch);
+  if (hp && hc) return hp !== hc ? 0.85 : 1.1;
+  return 1;
+}
+
+/**
+ * Milliseconds from the press of `prev` to the press of `ch` (log-normal
+ * around `typing_delay`, plus occasional thinking pauses before words).
+ */
+export function keyGap(cfg: HumanConfig, prev: string, ch: string): number {
+  const median = Math.max(1, cfg.typing_delay * gapFactor(prev, ch));
+  const spread = Math.max(0, cfg.typing_delay_spread);
+  const sigma = cfg.typing_delay > 0 ? Math.log1p(spread / cfg.typing_delay) : 0;
+  let gap = randLognormal(median, sigma);
+  const wordStart = prev === ' ' || prev === '';
+  const chance = cfg.typing_pause_chance * (wordStart ? 1 : 0.1);
+  if (chance > 0 && Math.random() < chance) gap += randRange(cfg.typing_pause_range);
+  return Math.max(15, gap);
+}
+
+/** How long one key stays down (ms). */
+export function keyHold(cfg: HumanConfig): number {
+  return Math.max(1, randLog(cfg.key_hold));
+}
+
+// ---------------------------------------------------------------------------
+// Typing timeline
+// ---------------------------------------------------------------------------
+
+type KeyUp = { due: number; key: string; cdp: any | null };
+
+/** Key primitives a Typist drives. `cdp` sends one Input.dispatchKeyEvent. */
+export interface TypistKeys {
+  down(key: string): Promise<void>;
+  up(key: string): Promise<void>;
+  insertText(text: string): Promise<void>;
+  cdp(params: any): Promise<void>;
+}
+
+const sleepMs = (ms: number) => (ms > 0 ? sleep(ms) : Promise.resolve());
+const isUpper = (ch: string) => /^[A-Z]$/.test(ch);
+
+/**
+ * Presses keys on a timeline the way a person does: each press follows the
+ * previous *press* after a letter-dependent gap, and each key is held for its
+ * own time, so the next key often goes down before the previous one comes up
+ * (rollover). Shift goes down before the letter and is usually let go just
+ * before the letter key. Releases are queued and sent when due.
+ */
+export class Typist {
+  private prev = '';
+  private lastPress: number | null = null;
+  private ups: KeyUp[] = [];
+  private shiftUpDue: number | null = null;
+  private shiftDown = false;
+
+  constructor(private keys: TypistKeys, private cfg: HumanConfig, private delay?: number) {}
+
+  private async wait(until: number): Promise<void> { await sleepMs(until - performance.now()); }
+
+  private async shift(down: boolean): Promise<void> {
+    this.shiftDown = down;
+    await (down ? this.keys.down('Shift') : this.keys.up('Shift'));
+  }
+
+  private async up(u: KeyUp): Promise<void> {
+    if (u.cdp) await this.keys.cdp(u.cdp);
+    else if (u.key.length === 1 && isUpper(u.key) && !this.shiftDown) await this.keys.up(u.key.toLowerCase());
+    else await this.keys.up(u.key);
+  }
+
+  /** Send every release due before `until` (in time order). */
+  private async flush(until: number): Promise<void> {
+    for (;;) {
+      let next: KeyUp | null = null;
+      for (const u of this.ups) if (u.due <= until && (!next || u.due < next.due)) next = u;
+      const shiftFirst = this.shiftUpDue !== null && this.shiftUpDue <= until && (!next || this.shiftUpDue <= next.due);
+      if (shiftFirst) {
+        await this.wait(this.shiftUpDue!);
+        this.shiftUpDue = null;
+        await this.shift(false);
+        continue;
+      }
+      if (!next) return;
+      await this.wait(next.due);
+      this.ups.splice(this.ups.indexOf(next), 1);
+      await this.up(next);
+    }
+  }
+
+  async key(ch: string): Promise<void> {
+    const cfg = this.cfg;
+    let at: number;
+    if (this.lastPress === null) at = performance.now();
+    else if (this.delay !== undefined && this.delay !== null) at = this.lastPress + this.delay;
+    else at = this.lastPress + keyGap(cfg, this.prev, ch);
+    const shifted = isUpper(ch) || SHIFT_SYMBOLS.has(ch);
+    const textOnly = !isAscii(ch);
+    // A key cannot go down twice: let the earlier press of the same physical
+    // key ("x" before "X", "1" before "!") come up first.
+    const key = physicalKey(ch);
+    const same = this.ups.filter(u => physicalKey(u.key) === key);
+    if (same.length) at = Math.max(at, Math.min(...same.map(u => u.due)) + 5);
+    if (shifted) {
+      if (this.shiftUpDue !== null) {
+        this.shiftUpDue = null; // still down from the previous capital
+        await this.flush(at);
+      } else {
+        const lead = randLog(cfg.shift_down_delay);
+        // Shift goes down after the previous key comes up.
+        await this.flush(at - lead);
+        await this.wait(at - lead);
+        await this.shift(true);
+        // Keys due to come up while Shift is going down (e.g. the "x" of
+        // "xX") are released before the capital is pressed.
+        await this.flush(at);
+      }
+    } else {
+      await this.flush(at);
+      if (this.shiftUpDue !== null && ch !== 'Backspace') {
+        // A lower-case key while Shift is still down: let it go first.
+        this.shiftUpDue = null;
+        await this.shift(false);
+      }
+    }
+    await this.wait(at);
+    this.lastPress = Math.max(at, performance.now());
+    const hold0 = keyHold(cfg);
+    const hold = this.delay !== undefined && this.delay !== null && this.delay < hold0 ? this.delay : hold0;
+    const upAt = this.lastPress + hold;
+    if (textOnly) {
+      // Non-ASCII text has no key: it arrives as one input, like an IME.
+      await this.keys.insertText(ch);
+    } else if (SHIFT_SYMBOLS.has(ch)) {
+      const code = SHIFT_SYMBOL_CODES[ch] || '';
+      const vk = SHIFT_SYMBOL_KEYCODES[ch] || 0;
+      await this.keys.cdp({
+        type: 'keyDown', modifiers: 8, key: ch, code, windowsVirtualKeyCode: vk, text: ch, unmodifiedText: ch,
+      });
+      this.ups.push({ due: upAt, key: ch, cdp: { type: 'keyUp', modifiers: 8, key: ch, code, windowsVirtualKeyCode: vk } });
+    } else {
+      await this.keys.down(ch);
+      this.ups.push({ due: upAt, key: ch, cdp: null });
+    }
+    if (shifted) {
+      // Usually let go of Shift around the letter's release, most often just
+      // before it.
+      this.shiftUpDue = Math.max(this.lastPress + 10, upAt + randRange(cfg.shift_up_delay));
+      // The CDP keyUp of a shift symbol carries the Shift modifier.
+      if (SHIFT_SYMBOLS.has(ch)) this.shiftUpDue = Math.max(this.shiftUpDue, upAt + 5);
+    }
+    this.prev = ch;
+  }
+
+  /** Release everything still held, on schedule. */
+  async finish(): Promise<void> { await this.flush(Infinity); }
+
+  /** Hands off the keys (before a pause): release, and start the next key
+   * without a gap carried over from the last one. */
+  async rest(): Promise<void> {
+    await this.finish();
+    this.lastPress = null;
+  }
+
+  /** Error path: never leave a key stuck down. */
+  async releaseAll(): Promise<void> {
+    const ups = this.ups;
+    this.ups = [];
+    for (const u of ups) { try { await this.up(u); } catch { /* best effort */ } }
+    this.shiftUpDue = null;
+    if (this.shiftDown) { try { await this.shift(false); } catch { /* best effort */ } }
+  }
 }
 
 function isUpperCase(ch: string): boolean {
@@ -108,7 +322,7 @@ export async function humanType(
 
     // Non-ASCII characters (Cyrillic, CJK, emoji) — use insertText
     if (!isAscii(ch)) {
-      await sleep(randRange(cfg.key_hold));
+      await sleep(keyHold(cfg));
       await raw.insertText(ch);
       if (i < chars.length - 1) {
         await interCharDelay(cfg);
@@ -122,7 +336,7 @@ export async function humanType(
       await typeNormalChar(raw, wrong, cfg);
       await sleep(randRange(cfg.mistype_delay_notice));
       await raw.down('Backspace');
-      await sleep(randRange(cfg.key_hold));
+      await sleep(keyHold(cfg));
       await raw.up('Backspace');
       await sleep(randRange(cfg.mistype_delay_correct));
     }
@@ -143,17 +357,17 @@ export async function humanType(
 
 async function typeNormalChar(raw: RawKeyboard, ch: string, cfg: HumanConfig): Promise<void> {
   await raw.down(ch);
-  await sleep(randRange(cfg.key_hold));
+  await sleep(keyHold(cfg));
   await raw.up(ch);
 }
 
 async function typeShiftedChar(raw: RawKeyboard, ch: string, cfg: HumanConfig): Promise<void> {
   await raw.down('Shift');
-  await sleep(randRange(cfg.shift_down_delay));
+  await sleep(randLog(cfg.shift_down_delay));
   await raw.down(ch);
-  await sleep(randRange(cfg.key_hold));
+  await sleep(keyHold(cfg));
   await raw.up(ch);
-  await sleep(randRange(cfg.shift_up_delay));
+  await sleep(Math.max(0, randRange(cfg.shift_up_delay)));
   await raw.up('Shift');
 }
 
@@ -180,7 +394,7 @@ async function typeShiftSymbol(
     const keyCode = SHIFT_SYMBOL_KEYCODES[ch] || 0;
 
     await raw.down('Shift');
-    await sleep(randRange(cfg.shift_down_delay));
+    await sleep(randLog(cfg.shift_down_delay));
 
     await cdpSession.send('Input.dispatchKeyEvent', {
       type: 'keyDown',
@@ -191,7 +405,7 @@ async function typeShiftSymbol(
       text: ch,
       unmodifiedText: ch,
     });
-    await sleep(randRange(cfg.key_hold));
+    await sleep(keyHold(cfg));
 
     await cdpSession.send('Input.dispatchKeyEvent', {
       type: 'keyUp',
@@ -201,12 +415,12 @@ async function typeShiftSymbol(
       windowsVirtualKeyCode: keyCode,
     });
 
-    await sleep(randRange(cfg.shift_up_delay));
+    await sleep(Math.max(0, randRange(cfg.shift_up_delay)));
     await raw.up('Shift');
   } else {
     // --- Fallback path: page.evaluate (detectable) ---
     await raw.down('Shift');
-    await sleep(randRange(cfg.shift_down_delay));
+    await sleep(randLog(cfg.shift_down_delay));
     await raw.insertText(ch);
     await page.evaluate((key: string) => {
       const el = document.activeElement;
@@ -215,16 +429,11 @@ async function typeShiftSymbol(
         el.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
       }
     }, ch);
-    await sleep(randRange(cfg.shift_up_delay));
+    await sleep(Math.max(0, randRange(cfg.shift_up_delay)));
     await raw.up('Shift');
   }
 }
 
 async function interCharDelay(cfg: HumanConfig): Promise<void> {
-  if (Math.random() < cfg.typing_pause_chance) {
-    await sleep(randRange(cfg.typing_pause_range));
-  } else {
-    const delay = cfg.typing_delay + (Math.random() - 0.5) * 2 * cfg.typing_delay_spread;
-    await sleep(Math.max(10, delay));
-  }
+  await sleep(Math.max(10, keyGap(cfg, 'a', 'b') - randLog(cfg.key_hold)));
 }

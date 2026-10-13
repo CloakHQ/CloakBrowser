@@ -273,40 +273,27 @@ internal sealed partial class HumanEngine
     {
         if (Cursor.Initialized) return;
         var c = cfg ?? Config;
-        Cursor.X = RR(c.InitialCursorX);
-        Cursor.Y = RR(c.InitialCursorY);
+        Cursor.X = Math.Round(RR(c.InitialCursorX));
+        Cursor.Y = Math.Round(RR(c.InitialCursorY));
         await _raw.MoveAsync(Cursor.X, Cursor.Y).ConfigureAwait(false);
         Cursor.Initialized = true;
     }
 
-    /// <summary>Bezier move from the current cursor position to (x, y), ending exactly there.</summary>
+    /// <summary>Move from the current cursor position to (x, y), ending exactly there: an
+    /// early-peaking main stroke timed by Fitts' law, sometimes a short corrective stroke, one
+    /// pointer event per frame and none without movement.</summary>
     public async Task MoveToAsync(double x, double y, HumanConfig cfg)
     {
         await EnsureCursorAsync(cfg).ConfigureAwait(false);
-        double sx = Cursor.X, sy = Cursor.Y;
-        double dist = Math.Sqrt((x - sx) * (x - sx) + (y - sy) * (y - sy));
-        if (dist >= 1)
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        double clock = 0;
+        foreach (var (px, py, dt) in HumanMouse.PlanMove(Cursor.X, Cursor.Y, x, y, cfg))
         {
-            int steps = (int)Math.Max(cfg.MouseMinSteps, Math.Min(cfg.MouseMaxSteps, Math.Round(dist / cfg.MouseStepsDivisor)));
-            var (cp1, cp2) = HumanMouse.RandomControlPoints(new Point(sx, sy), new Point(x, y));
-            int burst = 0, burstSize = HumanRandom.RandIntRange(cfg.MouseBurstSize);
-            for (int i = 1; i <= steps; i++)
-            {
-                double progress = (double)i / steps;
-                if (i == steps) { await _raw.MoveAsync(x, y).ConfigureAwait(false); continue; }
-                var pt = HumanMouse.Bezier(new Point(sx, sy), cp1, cp2, new Point(x, y), HumanMouse.EaseInOut(progress));
-                double wobble = Math.Sin(Math.PI * progress) * cfg.MouseWobbleMax;
-                await _raw.MoveAsync(Math.Round(pt.X + (HumanRandom.NextDouble() - 0.5) * 2 * wobble),
-                    Math.Round(pt.Y + (HumanRandom.NextDouble() - 0.5) * 2 * wobble)).ConfigureAwait(false);
-                if (++burst >= burstSize) { await Sleep(RR(cfg.MouseBurstPause)).ConfigureAwait(false); burst = 0; }
-            }
-            if (HumanRandom.NextDouble() < cfg.MouseOvershootChance)
-            {
-                double angle = Math.Atan2(y - sy, x - sx), over = RR(cfg.MouseOvershootPx);
-                await _raw.MoveAsync(Math.Round(x + Math.Cos(angle) * over), Math.Round(y + Math.Sin(angle) * over)).ConfigureAwait(false);
-                await Sleep(R(30, 70)).ConfigureAwait(false);
-                await _raw.MoveAsync(x, y).ConfigureAwait(false);
-            }
+            // Keep to the planned schedule: the CDP round trip of each move
+            // comes out of the next wait instead of adding to it.
+            clock += dt;
+            await Sleep(clock - sw.Elapsed.TotalMilliseconds).ConfigureAwait(false);
+            await _raw.MoveAsync(px, py).ConfigureAwait(false);
         }
         Cursor.X = x; Cursor.Y = y;
     }
@@ -534,11 +521,20 @@ internal sealed partial class HumanEngine
         var (vw, vh) = await World.ViewportAsync().ConfigureAwait(false);
         int stalled = 0, rounds = 0;
         bool overshot = false;
+        double lastDx = 0, lastDy = 0;
+        double notch = await NotchPxAsync(cfg).ConfigureAwait(false);
         while (stalled < 2 && rounds < 40 && !d.Expired)
         {
             var (dx, dy) = await NeededScrollAsync(r, box, vw, vh, cfg).ConfigureAwait(false);
             if (Math.Abs(dx) < 1 && Math.Abs(dy) < 1) break;
             rounds++;
+            // Whole notches can jump over a target whose slack is smaller than
+            // one notch (a short scroll box): after such a reversal, finish with
+            // one wheel event of the exact remainder (a free-spinning or
+            // high-resolution wheel sends those) instead of swinging forever.
+            bool fineY = dy * lastDy < 0 && Math.Abs(dy) < notch;
+            bool fineX = dx * lastDx < 0 && Math.Abs(dx) < notch;
+            lastDx = dx; lastDy = dy;
             var area = box.Clip.Width > 4 && box.Clip.Height > 4 ? box.Clip : new Rect(0, 0, vw, vh);
             if (!area.Contains(Cursor.X, Cursor.Y))
             {
@@ -548,14 +544,22 @@ internal sealed partial class HumanEngine
             double bx = box.X, by = box.Y;
             if (Math.Abs(dy) >= 1)
             {
-                await WheelBurstAsync(0, dy, cfg, d).ConfigureAwait(false);
-                if (!overshot)
+                if (fineY) await _raw.WheelAsync(0, Math.Round(dy)).ConfigureAwait(false);
+                else
                 {
-                    overshot = true;
-                    await OvershootAsync(dy, cfg, d).ConfigureAwait(false);
+                    await WheelBurstAsync(0, dy, cfg, d).ConfigureAwait(false);
+                    if (!overshot)
+                    {
+                        overshot = true;
+                        await OvershootAsync(dy, cfg, d).ConfigureAwait(false);
+                    }
                 }
             }
-            if (Math.Abs(dx) >= 1) await WheelBurstAsync(dx, 0, cfg, d).ConfigureAwait(false);
+            if (Math.Abs(dx) >= 1)
+            {
+                if (fineX) await _raw.WheelAsync(Math.Round(dx), 0).ConfigureAwait(false);
+                else await WheelBurstAsync(dx, 0, cfg, d).ConfigureAwait(false);
+            }
             await Sleep(Math.Min(RR(cfg.ScrollSettleDelay), d.Remaining)).ConfigureAwait(false);
             box = await ElementBoxAsync(r).ConfigureAwait(false);
             stalled = Math.Abs(box.X - bx) + Math.Abs(box.Y - by) < 1 ? stalled + 1 : 0;
@@ -612,41 +616,59 @@ internal sealed partial class HumanEngine
     {
         if (HumanRandom.NextDouble() >= cfg.ScrollOvershootChance || d.Expired) return;
         int sign = dy > 0 ? 1 : -1;
-        await WheelBurstAsync(0, Math.Round(RR(cfg.ScrollOvershootPx)) * sign, cfg, d).ConfigureAwait(false);
+        double notch = await NotchPxAsync(cfg).ConfigureAwait(false);
+        int over = Math.Max(1, (int)Math.Round(RR(cfg.ScrollOvershootPx) / notch));
+        await WheelBurstAsync(0, over * notch * sign, cfg, d).ConfigureAwait(false);
         await Sleep(Math.Min(RR(cfg.ScrollSettleDelay), d.Remaining)).ConfigureAwait(false);
-        int corrections = HumanRandom.RandInt(1, 2);
-        for (int i = 0; i < corrections && !d.Expired; i++)
+        // Turn back in one or two flicks.
+        int first = over > 1 && HumanRandom.NextDouble() < 0.5 ? HumanRandom.RandInt(1, over) : over;
+        foreach (int n in new[] { first, over - first })
         {
-            await WheelBurstAsync(0, Math.Round(R(40, 80)) * -sign, cfg, d).ConfigureAwait(false);
+            if (n <= 0 || d.Expired) continue;
+            await WheelBurstAsync(0, n * notch * -sign, cfg, d).ConfigureAwait(false);
             await Sleep(Math.Min(R(100, 250), d.Remaining)).ConfigureAwait(false);
         }
     }
 
-    /// <summary>One logical scroll: accelerate -> cruise -> decelerate in wheel ticks.</summary>
+    /// <summary>CSS pixels one wheel notch scrolls for the persona's platform: Chrome scrolls
+    /// 100 px per notch on Windows (3 lines of 33.3 px), 40 on macOS and 120 on Linux, and
+    /// reports <c>wheelDelta</c> 120 per notch. CDP always reports one notch per wheel event,
+    /// so whole-notch events are the only ones whose <c>deltaY</c> and <c>wheelDeltaY</c> agree.</summary>
+    public async Task<double> NotchPxAsync(HumanConfig cfg)
+    {
+        if (cfg.ScrollNotchPx > 0) return cfg.ScrollNotchPx;
+        var plat = (await PlatformAsync().ConfigureAwait(false)).ToLowerInvariant();
+        if (plat.StartsWith("mac", StringComparison.Ordinal)) return 40;
+        if (plat.StartsWith("win", StringComparison.Ordinal)) return 100;
+        return 120;
+    }
+
+    /// <summary>One logical scroll: flicks of a few wheel notches each, quicker in the middle
+    /// of a flick, with short pauses between flicks. Every event is exactly one notch, so the
+    /// page scrolls by the nearest whole number of notches (the caller re-measures and scrolls
+    /// again when needed).</summary>
     public async Task WheelBurstAsync(double dx, double dy, HumanConfig cfg, Deadline? d = null)
     {
         double total = dy != 0 ? Math.Abs(dy) : Math.Abs(dx);
         int sign = (dy != 0 ? dy : dx) > 0 ? 1 : -1;
+        double notch = await NotchPxAsync(cfg).ConfigureAwait(false);
+        int notches = Math.Max(1, (int)Math.Round(total / notch));
         int accel = HumanRandom.RandIntRange(cfg.ScrollAccelSteps), decel = HumanRandom.RandIntRange(cfg.ScrollDecelSteps);
-        double avg = (cfg.ScrollDeltaBase.Min + cfg.ScrollDeltaBase.Max) / 2;
-        int ticks = Math.Max(1, (int)Math.Ceiling(total / avg));
-        double sent = 0;
-        for (int i = 0; i < ticks; i++)
+        int flick = HumanRandom.RandInt(2, 5);
+        for (int i = 0; i < notches; i++)
         {
-            if (sent >= total || (d?.Expired ?? false)) break;
-            double pause = i < accel || i >= ticks - decel ? RR(cfg.ScrollPauseSlow) : RR(cfg.ScrollPauseFast);
-            double tick = Math.Min(total - sent, RR(cfg.ScrollDeltaBase) * (1 + (HumanRandom.NextDouble() - 0.5) * 2 * cfg.ScrollDeltaVariance));
-            double left = tick;
-            while (left > 0.5)
+            if (d?.Expired ?? false) break;
+            double step = notch * sign;
+            await _raw.WheelAsync(dx != 0 ? step : 0, dy != 0 ? step : 0).ConfigureAwait(false);
+            if (i == notches - 1) break;
+            if (--flick <= 0)
             {
-                double chunk = Math.Min(left, R(20, 40));
-                double step = Math.Round(chunk) * sign;
-                if (step != 0) await _raw.WheelAsync(dx != 0 ? step : 0, dy != 0 ? step : 0).ConfigureAwait(false);
-                left -= chunk;
-                await Sleep(R(8, 20)).ConfigureAwait(false);
+                // A finger lifts and turns the wheel again.
+                flick = HumanRandom.RandInt(2, 5);
+                await Sleep(RR(cfg.ScrollPauseSlow) + R(40, 120)).ConfigureAwait(false);
             }
-            sent += tick;
-            await Sleep(pause).ConfigureAwait(false);
+            else if (i < accel || i >= notches - decel) await Sleep(RR(cfg.ScrollPauseSlow)).ConfigureAwait(false);
+            else await Sleep(RR(cfg.ScrollPauseFast)).ConfigureAwait(false);
         }
     }
 

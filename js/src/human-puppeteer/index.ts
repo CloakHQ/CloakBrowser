@@ -50,9 +50,9 @@ import type { Browser, Page, Frame, CDPSession, ElementHandle, BrowserContext } 
 import type { HumanConfig, HumanActionOptions } from '../human/config.js';
 import { mergeConfig, rand, randRange, sleep } from '../human/config.js';
 import { type RawMouse, type RawKeyboard, humanMove, humanClick, clickTarget, humanIdle } from '../human/mouse.js';
-import { pressWithDelay } from '../human/keyboard.js';
+import { pressWithDelay, keyHold } from '../human/keyboard.js';
 import { humanType } from './keyboard.js';
-import { scrollToElement, humanScrollIntoView, smoothWheel } from './scroll.js';
+import { scrollToElement, humanScrollIntoView, smoothWheel, pageNotchPx } from './scroll.js';
 
 export type { HumanConfig } from '../human/config.js';
 export { resolveConfig, mergeConfig } from '../human/config.js';
@@ -332,8 +332,8 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
   async function ensureCursorInit(): Promise<void> {
     if (!cursor.initialized) {
-      cursor.x = rand(cfg.initial_cursor_x[0], cfg.initial_cursor_x[1]);
-      cursor.y = rand(cfg.initial_cursor_y[0], cfg.initial_cursor_y[1]);
+      cursor.x = Math.round(rand(cfg.initial_cursor_x[0], cfg.initial_cursor_x[1]));
+      cursor.y = Math.round(rand(cfg.initial_cursor_y[0], cfg.initial_cursor_y[1]));
       await originals.mouseMove(cursor.x, cursor.y);
       cursor.initialized = true;
     }
@@ -461,11 +461,14 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
     (page.mouse as any).wheel = async (options?: { deltaX?: number; deltaY?: number }) => {
       const dx = options?.deltaX ?? 0;
       const dy = options?.deltaY ?? 0;
+      // page.mouse.wheel asks for a distance; turn the wheel by the nearest
+      // whole number of notches (at least one), like a person would.
+      const notch = await pageNotchPx(page, cfg);
       if (Math.abs(dy) > 0) {
-        await smoothWheel(raw, dy, cfg, 'y');
+        await smoothWheel(raw, Math.sign(dy) * Math.max(notch, Math.abs(dy)), cfg, 'y', notch);
       }
       if (Math.abs(dx) > 0) {
-        await smoothWheel(raw, dx, cfg, 'x');
+        await smoothWheel(raw, Math.sign(dx) * Math.max(notch, Math.abs(dx)), cfg, 'x', notch);
       }
     };
   }
@@ -501,7 +504,7 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
 
   page.keyboard.press = async (key: any, options?: { delay?: number }) => {
     await sleep(rand(20, 60));
-    await pressWithDelay(originals.keyboardPress, key, options, randRange(cfg.key_hold));
+    await pressWithDelay(originals.keyboardPress, key, options, keyHold(cfg));
   };
 
   page.keyboard.down = async (key: any) => {
@@ -726,7 +729,7 @@ function patchSingleElementHandle(
   if (origElPress) {
     (el as any).press = async (key: string, options?: { delay?: number }) => {
       await sleep(rand(20, 60));
-      await pressWithDelay(originals.keyboardPress, key, options, randRange(cfg.key_hold));
+      await pressWithDelay(originals.keyboardPress, key, options, keyHold(cfg));
     };
   }
 

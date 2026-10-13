@@ -13,12 +13,9 @@
 import type { Page, CDPSession } from 'puppeteer-core';
 import { RawKeyboard } from '../human/mouse.js';
 import type { HumanConfig } from '../human/config.js';
-import { rand, randRange, sleep } from '../human/config.js';
+import { randRange, sleep } from '../human/config.js';
+import { Typist, type TypistKeys } from '../human/keyboard.js';
 
-const SHIFT_SYMBOLS = new Set([
-  '@', '#', '!', '$', '%', '^', '&', '*', '(', ')',
-  '_', '+', '{', '}', '|', ':', '"', '<', '>', '?', '~',
-]);
 
 const NEARBY_KEYS: Record<string, string> = {
   a: 'sqwz', b: 'vghn', c: 'xdfv', d: 'sfecx', e: 'wrsdf',
@@ -33,22 +30,7 @@ const NEARBY_KEYS: Record<string, string> = {
   '6': '57', '7': '68', '8': '79', '9': '80', '0': '9',
 };
 
-const SHIFT_SYMBOL_CODES: Record<string, string> = {
-  '!': 'Digit1', '@': 'Digit2', '#': 'Digit3', '$': 'Digit4',
-  '%': 'Digit5', '^': 'Digit6', '&': 'Digit7', '*': 'Digit8',
-  '(': 'Digit9', ')': 'Digit0', '_': 'Minus', '+': 'Equal',
-  '{': 'BracketLeft', '}': 'BracketRight', '|': 'Backslash',
-  ':': 'Semicolon', '"': 'Quote', '<': 'Comma', '>': 'Period',
-  '?': 'Slash', '~': 'Backquote',
-};
 
-const SHIFT_SYMBOL_KEYCODES: Record<string, number> = {
-  '!': 49, '@': 50, '#': 51, '$': 52, '%': 53,
-  '^': 54, '&': 55, '*': 56, '(': 57, ')': 48,
-  '_': 189, '+': 187, '{': 219, '}': 221, '|': 220,
-  ':': 186, '"': 222, '<': 188, '>': 190, '?': 191,
-  '~': 192,
-};
 
 function isAscii(ch: string): boolean {
   const code = ch.codePointAt(0);
@@ -65,9 +47,6 @@ function getNearbyKey(ch: string): string {
   return ch;
 }
 
-function isUpperCase(ch: string): boolean {
-  return ch.length === 1 && ch >= 'A' && ch <= 'Z';
-}
 
 export async function humanType(
   page: Page,
@@ -76,117 +55,45 @@ export async function humanType(
   cfg: HumanConfig,
   cdpSession?: CDPSession | null,
 ): Promise<void> {
-  const chars = [...text];
-
-  for (let i = 0; i < chars.length; i++) {
-    const ch = chars[i];
-
-    // Non-ASCII → sendCharacter via insertText adapter
-    if (!isAscii(ch)) {
-      await sleep(randRange(cfg.key_hold));
-      await raw.insertText(ch);
-      if (i < chars.length - 1) await interCharDelay(cfg);
-      continue;
-    }
-
-    // Mistype
-    if (Math.random() < cfg.mistype_chance && /^[a-zA-Z0-9]$/.test(ch)) {
-      const wrong = getNearbyKey(ch);
-      // A typo next to an uppercase letter is typed with Shift held, like the
-      // letter itself (a bare keydown of "A" reports shiftKey=false).
-      if (isUpperCase(wrong)) await typeShiftedChar(raw, wrong, cfg);
-      else await typeNormalChar(raw, wrong, cfg);
-      await sleep(randRange(cfg.mistype_delay_notice));
-      await raw.down('Backspace');
-      await sleep(randRange(cfg.key_hold));
-      await raw.up('Backspace');
-      await sleep(randRange(cfg.mistype_delay_correct));
-    }
-
-    if (isUpperCase(ch)) {
-      await typeShiftedChar(raw, ch, cfg);
-    } else if (SHIFT_SYMBOLS.has(ch)) {
-      await typeShiftSymbol(page, raw, ch, cfg, cdpSession);
-    } else {
-      await typeNormalChar(raw, ch, cfg);
-    }
-
-    if (i < chars.length - 1) await interCharDelay(cfg);
-  }
-}
-
-async function typeNormalChar(raw: RawKeyboard, ch: string, cfg: HumanConfig): Promise<void> {
-  await raw.down(ch);
-  await sleep(randRange(cfg.key_hold));
-  await raw.up(ch);
-}
-
-async function typeShiftedChar(raw: RawKeyboard, ch: string, cfg: HumanConfig): Promise<void> {
-  await raw.down('Shift');
-  await sleep(randRange(cfg.shift_down_delay));
-  await raw.down(ch);
-  await sleep(randRange(cfg.key_hold));
-  await raw.up(ch);
-  await sleep(randRange(cfg.shift_up_delay));
-  await raw.up('Shift');
-}
-
-async function typeShiftSymbol(
-  page: Page,
-  raw: RawKeyboard,
-  ch: string,
-  cfg: HumanConfig,
-  cdpSession?: CDPSession | null,
-): Promise<void> {
-  if (cdpSession) {
-    const code = SHIFT_SYMBOL_CODES[ch] || '';
-    const keyCode = SHIFT_SYMBOL_KEYCODES[ch] || 0;
-
-    await raw.down('Shift');
-    await sleep(randRange(cfg.shift_down_delay));
-
-    await cdpSession.send('Input.dispatchKeyEvent', {
-      type: 'keyDown',
-      modifiers: 8,
-      key: ch,
-      code,
-      windowsVirtualKeyCode: keyCode,
-      text: ch,
-      unmodifiedText: ch,
-    });
-    await sleep(randRange(cfg.key_hold));
-
-    await cdpSession.send('Input.dispatchKeyEvent', {
-      type: 'keyUp',
-      modifiers: 8,
-      key: ch,
-      code,
-      windowsVirtualKeyCode: keyCode,
-    });
-
-    await sleep(randRange(cfg.shift_up_delay));
-    await raw.up('Shift');
-  } else {
-    await raw.down('Shift');
-    await sleep(randRange(cfg.shift_down_delay));
-    await raw.insertText(ch);
-    await page.evaluate((key: string) => {
-      const el = document.activeElement;
-      if (el) {
-        el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
-        el.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
+  // Same key timeline as the Playwright engine: log-normal holds, rollover,
+  // Shift usually released before the letter.
+  const keys: TypistKeys = {
+    down: (k) => raw.down(k),
+    up: (k) => raw.up(k),
+    insertText: (t) => raw.insertText(t),
+    cdp: async (params) => {
+      if (cdpSession) {
+        await cdpSession.send('Input.dispatchKeyEvent', params);
+      } else if (params.type === 'keyDown') {
+        // No CDP session: insert the symbol and fire synthetic key events
+        // (detectable via isTrusted=false).
+        await raw.insertText(params.key);
+        await page.evaluate((key: string) => {
+          const el = document.activeElement;
+          if (el) {
+            el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
+          }
+        }, params.key);
       }
-    }, ch);
-    await sleep(randRange(cfg.shift_up_delay));
-    await raw.up('Shift');
-  }
-}
-
-async function interCharDelay(cfg: HumanConfig): Promise<void> {
-  if (Math.random() < cfg.typing_pause_chance) {
-    await sleep(randRange(cfg.typing_pause_range));
-  } else {
-    const delay = cfg.typing_delay + (Math.random() - 0.5) * 2 * cfg.typing_delay_spread;
-    await sleep(Math.max(10, delay));
+    },
+  };
+  const typist = new Typist(keys, cfg);
+  try {
+    for (const ch of [...text]) {
+      // Mistype
+      if (isAscii(ch) && /^[a-zA-Z0-9]$/.test(ch) && Math.random() < cfg.mistype_chance) {
+        await typist.key(getNearbyKey(ch));
+        await typist.rest();
+        await sleep(randRange(cfg.mistype_delay_notice));
+        await typist.key('Backspace');
+        await typist.rest();
+        await sleep(randRange(cfg.mistype_delay_correct));
+      }
+      await typist.key(ch);
+    }
+    await typist.finish();
+  } finally {
+    await typist.releaseAll();
   }
 }

@@ -17,7 +17,6 @@ public class LocatorWrapperTests
         IdleBetweenActions = false,
         MouseMinSteps = 2,
         MouseMaxSteps = 3,
-        MouseBurstPause = (0, 0),
         MouseOvershootChance = 0,
         ClickAimDelayButton = (0, 0),
         ClickHoldButton = (0, 0),

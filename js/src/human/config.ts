@@ -25,14 +25,14 @@ export interface HumanConfig {
 
 
   // Mouse — movement
-  mouse_steps_divisor: number;
   mouse_min_steps: number;
   mouse_max_steps: number;
   mouse_wobble_max: number;
   mouse_overshoot_chance: number;
   mouse_overshoot_px: [number, number];
-  mouse_burst_size: [number, number];
-  mouse_burst_pause: [number, number];
+  mouse_time_base: number;
+  mouse_time_per_bit: number;
+  mouse_time_spread: number;
 
   // Mouse — clicks
   click_aim_delay_input: [number, number];
@@ -46,8 +46,7 @@ export interface HumanConfig {
   idle_pause_range: [number, number];
 
   // Scroll
-  scroll_delta_base: [number, number];
-  scroll_delta_variance: number;
+  scroll_notch_px: number;
   scroll_pause_fast: [number, number];
   scroll_pause_slow: [number, number];
   scroll_accel_steps: [number, number];
@@ -82,29 +81,47 @@ export type HumanActionOptions = Partial<HumanConfig> & {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CONFIG: HumanConfig = {
-  // Keyboard
-  typing_delay: 70,
-  typing_delay_spread: 40,
-  typing_pause_chance: 0.1,
-  typing_pause_range: [400, 1000],
-  shift_down_delay: [30, 70],
-  shift_up_delay: [20, 50],
-  key_hold: [15, 35],
+  // Keyboard. Defaults follow the 136M Keystrokes study (Dhakal et al.,
+  // CHI 2018): keys are held ~100 ms, ~150 ms pass between key presses, and
+  // the next key is often pressed before the previous one is released.
+  //
+  // typing_delay: median time from one key press to the next (ms); the gap is
+  // log-normal and depends on the letters (other hand: faster, same finger:
+  // slower, after a space: slower).
+  typing_delay: 150,
+  // How much the gap varies (ms); 0 = always exactly typing_delay.
+  typing_delay_spread: 70,
+  // Chance of a thinking pause before a word (a tenth of it inside a word).
+  typing_pause_chance: 0.15,
+  typing_pause_range: [300, 1000],
+  // Shift press -> letter press (ms, log-normal: ~5th..95th percentile).
+  shift_down_delay: [60, 220],
+  // Shift release relative to the letter release (ms). Negative = Shift goes
+  // up first, which is what people usually do.
+  shift_up_delay: [-60, 30],
+  // How long a key is held down (ms, log-normal: ~5th..95th percentile).
+  key_hold: [60, 175],
   field_switch_delay: [800, 1500],
-  // Mistype (typo simulation)
-  mistype_chance: 0.02,
+  // Mistype (typo simulation): chance per letter / digit.
+  mistype_chance: 0.04,
   mistype_delay_notice: [100, 300],
   mistype_delay_correct: [50, 150],
 
-  // Mouse — movement
-  mouse_steps_divisor: 8,
-  mouse_min_steps: 25,
-  mouse_max_steps: 80,
-  mouse_wobble_max: 1.5,
-  mouse_overshoot_chance: 0.15,
-  mouse_overshoot_px: [3, 6],
-  mouse_burst_size: [3, 5],
-  mouse_burst_pause: [8, 18],
+  // Mouse — movement. A move lasts (Fitts' law, log-normal spread)
+  //   median = mouse_time_base + mouse_time_per_bit * log2(1 + distance / 8) ms;
+  // the speed peaks early (a fast main stroke, then a slow approach) and
+  // pointer events go out at ~60 Hz.
+  mouse_time_base: 160,
+  mouse_time_per_bit: 75,
+  mouse_time_spread: 0.3,
+  mouse_min_steps: 2,       // fewest pointer events per stroke
+  mouse_max_steps: 200,     // most pointer events per stroke
+  mouse_wobble_max: 1.5,    // smooth sideways drift (px)
+  // Chance that the main stroke lands a little off and a short corrective
+  // stroke finishes the move (the miss is a few % of the distance plus
+  // mouse_overshoot_px).
+  mouse_overshoot_chance: 0.35,
+  mouse_overshoot_px: [2, 6],
 
   // Mouse — clicks
   click_aim_delay_input: [60, 140],
@@ -117,9 +134,12 @@ const DEFAULT_CONFIG: HumanConfig = {
   idle_drift_px: 3,
   idle_pause_range: [300, 1000],
 
-  // Scroll
-  scroll_delta_base: [80, 130],
-  scroll_delta_variance: 0.2,
+  // Scroll. The wheel turns in whole notches: one wheel event per notch of
+  // scroll_notch_px CSS pixels, so deltaY and wheelDeltaY agree the way they
+  // do for a real mouse wheel. 0 = what Chrome uses on the persona's platform
+  // (100 on Windows, 40 on macOS, 120 on Linux).
+  scroll_notch_px: 0,
+  // Pause between notches inside one flick / at the start and end of it.
   scroll_pause_fast: [30, 80],
   scroll_pause_slow: [80, 200],
   scroll_accel_steps: [2, 3],
@@ -147,21 +167,23 @@ const CAREFUL_CONFIG: HumanConfig = {
   ...DEFAULT_CONFIG,
 
   // Keyboard — slower typing
-  typing_delay: 100,
-  typing_delay_spread: 50,
-  typing_pause_chance: 0.15,
+  typing_delay: 210,
+  typing_delay_spread: 100,
+  typing_pause_chance: 0.25,
   typing_pause_range: [500, 1200],
-  shift_down_delay: [40, 90],
-  shift_up_delay: [30, 70],
-  key_hold: [20, 45],
+  shift_down_delay: [80, 260],
+  shift_up_delay: [-50, 40],
+  key_hold: [70, 190],
   field_switch_delay: [1000, 2000],
-  mistype_chance: 0.03,
+  mistype_chance: 0.05,
   mistype_delay_notice: [150, 400],
   mistype_delay_correct: [80, 200],
 
   // Mouse — slower, more precise
-  mouse_overshoot_chance: 0.10,
-  mouse_burst_pause: [12, 25],
+  mouse_time_base: 220,
+  mouse_time_per_bit: 95,
+  mouse_overshoot_chance: 0.45,
+  mouse_overshoot_px: [2, 5],
 
   // Mouse — clicks (longer aiming and holding)
   click_aim_delay_input: [80, 180],
@@ -247,6 +269,37 @@ export function randRange(range: [number, number]): number {
 /** Random integer from a [min, max] tuple. */
 export function randIntRange(range: [number, number]): number {
   return randInt(range[0], range[1]);
+}
+
+const Z95 = 1.6449; // standard normal 95th percentile
+
+/** Standard normal sample (Box-Muller). */
+export function gauss(): number {
+  let u = 0;
+  while (u === 0) u = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
+}
+
+/**
+ * Log-normal sample with `range` as its ~5th / 95th percentiles, clipped to
+ * [low / 2, high * 2]. Human timings (key holds, gaps) are right-skewed like
+ * this, not uniform. Falls back to uniform when a bound is not positive.
+ */
+export function randLog(range: [number, number]): number {
+  let lo = range[0], hi = range[1];
+  if (hi < lo) [lo, hi] = [hi, lo];
+  if (lo <= 0) return rand(lo, hi);
+  if (hi === lo) return lo;
+  const mu = (Math.log(lo) + Math.log(hi)) / 2;
+  const sigma = (Math.log(hi) - Math.log(lo)) / (2 * Z95);
+  return Math.min(hi * 2, Math.max(lo / 2, Math.exp(mu + sigma * gauss())));
+}
+
+/** Log-normal sample with the given median and log-space sigma. */
+export function randLognormal(median: number, sigma: number): number {
+  if (median <= 0) return 0;
+  if (sigma <= 0) return median;
+  return median * Math.exp(sigma * gauss());
 }
 
 /** Sleep for `ms` milliseconds. */

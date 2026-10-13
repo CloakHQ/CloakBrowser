@@ -153,7 +153,7 @@ describe("humanMove", () => {
       if (dev > maxDev) maxDev = dev;
     }
     expect(maxDev).toBeGreaterThan(0.5);
-  });
+  }, 30_000);
 
   it("handles very short distances", async () => {
     const cfg = resolveConfig("default");

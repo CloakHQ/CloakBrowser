@@ -14,6 +14,7 @@ import socketserver
 import sys
 import threading
 import time
+import urllib.parse
 from typing import Any
 
 import pytest
@@ -32,7 +33,6 @@ FAST: dict[str, Any] = {
     "shift_up_delay": (5, 5),
     "mouse_min_steps": 4,
     "mouse_max_steps": 4,
-    "mouse_burst_pause": (0, 0),
     "mouse_overshoot_chance": 0.0,
     "click_aim_delay_input": (5, 5),
     "click_aim_delay_button": (5, 5),
@@ -607,6 +607,133 @@ def test_scroll_overshoot_wheels_back(page):
     page.evaluate("scrollTo(0, 0)")
     page.click("#chk", human_config={"scroll_overshoot_chance": 0.0})
     assert all(e["dy"] > 0 for e in events(page, "wheel"))
+
+
+def test_wheel_events_are_whole_notches(page):
+    """CDP reports every wheel event as one notch (wheelDeltaY = 120), so the
+    page-visible deltaY must be a whole notch of the persona's platform too;
+    a 20-40 px chunk with wheelDeltaY 120 is something no wheel produces."""
+    page.set_viewport_size({"width": 800, "height": 300})
+    page.evaluate("""() => { window.__wh = []; document.addEventListener('wheel',
+        e => __wh.push([e.deltaY, e.wheelDeltaY]), { capture: true, passive: true }); }""")
+    page.click("#chk", human_config={"scroll_notch_px": 0})
+    wheels = page.evaluate("__wh")
+    assert wheels
+    plat = page.evaluate("navigator.platform").lower()
+    notch = 40 if plat.startswith("mac") else 100 if plat.startswith("win") else 120
+    assert {abs(dy) for dy, _ in wheels} == {notch}, wheels
+    assert all(dy * wdy < 0 for dy, wdy in wheels)
+
+
+def test_typing_uses_human_key_timing(browser, site):
+    """Default timings: keys held ~100 ms, the next key often down before the
+    previous one is up, Shift usually let go first; never a key down twice."""
+    p = browser.new_page()
+    p.goto(site.url + "index.html")
+    try:
+        text = "The Quick brown fox jumps over the lazy dog"
+        p.fill("#name", text, human_config={"key_hold": (60, 175), "typing_delay": 150,
+                                            "typing_delay_spread": 70, "typing_pause_chance": 0,
+                                            "shift_down_delay": (60, 220), "shift_up_delay": (-60, 30)})
+        assert value(p, "#name") == text
+        down: dict = {}
+        holds, rolled, pairs, last = [], 0, 0, None
+        for e in events(p, "keydown", "keyup"):
+            if e["t"] == "keydown":
+                assert e["code"] not in down, e
+                down[e["code"]] = e["ts"]
+                if last is not None and e["key"] != "Shift":
+                    pairs += 1
+                    rolled += last in down
+                if e["key"] != "Shift":
+                    last = e["code"]
+            else:
+                holds.append(e["ts"] - down.pop(e["code"]))
+        assert not down
+        holds.sort()
+        assert 70 <= holds[len(holds) // 2] <= 140, holds
+        assert rolled > 0, "no rollover at all"
+    finally:
+        p.close()
+
+
+
+def test_same_key_lower_then_upper_never_repeats(browser, site):
+    """"xX": the capital's key must not go down while the lower-case press of
+    the same physical key is still held (a keydown with repeat=true). Same for
+    a digit and its shift symbol ("1!")."""
+    p = browser.new_page()
+    p.goto(site.url + "index.html")
+    try:
+        p.evaluate("""() => { window.__kd = []; for (const t of ['keydown', 'keyup'])
+            document.addEventListener(t, e => __kd.push([t, e.code, e.repeat]), true); }""")
+        text = "xX aA zZ 1! qQ"
+        cfg = {"key_hold": (60, 175), "typing_delay": 150, "typing_delay_spread": 70,
+               "typing_pause_chance": 0, "shift_down_delay": (60, 220), "shift_up_delay": (-60, 30)}
+        for _ in range(3):
+            p.fill("#name", text, human_config=cfg)
+            assert value(p, "#name") == text
+        log = p.evaluate("__kd")
+        assert not [e for e in log if e[2]], [e for e in log if e[2]]
+        held = set()
+        for t, code, _ in log:
+            if t == "keydown":
+                assert code not in held, (code, log)
+                held.add(code)
+            else:
+                held.discard(code)
+    finally:
+        p.close()
+
+def test_moves_never_report_zero_movement(page):
+    page.evaluate("""() => { window.__mm = []; document.addEventListener('mousemove',
+        e => __mm.push([e.movementX, e.movementY]), true); }""")
+    page.hover("#btn")
+    page.hover("#chk")
+    mm = page.evaluate("__mm")
+    assert mm and not [m for m in mm[1:] if m == [0, 0]], mm
+
+
+# --- containing-block-aware scroller (#593) ----------------------------------
+
+_CB_CSS = """<!doctype html><style>
+  body { margin: 0 } header { height: 215px }
+  .content { height: 300px; overflow: auto } .tall { height: 2000px }
+  button { width: 44px; height: 44px }
+</style><header>header</header>"""
+
+_CB_CASES = {
+    # renders on screen, outside the scroller's scrollport: no scrolling
+    "fixed_modal": ("""<div class="content"><div class="tall">
+        <div style="position: fixed; inset: 0; background: rgba(0,0,0,.4)">
+        <button id="t" style="position: absolute; top: 146px; right: 36px">X</button></div></div></div>""", False),
+    "absolute_escapes_static_scroller": ("""<div style="position: relative">
+        <div class="content"><div class="tall">
+        <button id="t" style="position: absolute; top: 320px; left: 10px">X</button></div></div></div>""", False),
+    # still clipped by the scroller: must be wheeled into view first
+    "normal_child_below_fold": ("""<div class="content"><div class="tall">
+        <div style="height: 1500px"></div><button id="t">X</button></div></div>""", True),
+    "absolute_in_positioned_scroller": ("""<div class="content" style="position: relative"><div class="tall">
+        <button id="t" style="position: absolute; top: 1500px; left: 10px">X</button></div></div>""", True),
+    "fixed_in_transformed_scroller": ("""<div class="content" style="transform: translateZ(0)"><div class="tall">
+        <button id="t" style="position: fixed; top: 1500px; left: 10px">X</button></div></div>""", True),
+}
+
+
+@pytest.mark.parametrize("name", list(_CB_CASES))
+def test_scroller_follows_the_containing_block_chain(page, name):
+    """overflow clips only boxes whose containing block sits inside the
+    scroller; a fixed modal that is a DOM child of a scrolling panel is on
+    screen and must be clicked, not retried as 'outside of the viewport'."""
+    body, clipped = _CB_CASES[name]
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto("data:text/html," + urllib.parse.quote(_CB_CSS + body))
+    page.evaluate("""() => { window.__clicks = 0;
+        document.getElementById('t').addEventListener('click', () => __clicks++); }""")
+    page.click("#t", timeout=5000)
+    assert page.evaluate("__clicks") == 1
+    scrolled = page.evaluate("document.querySelector('.content').scrollTop")
+    assert (scrolled > 0) == clipped, scrolled
 
 
 def test_per_call_human_config(page):

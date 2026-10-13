@@ -18,8 +18,6 @@ public class MouseKeyboardWrapperTests
         IdleBetweenActions = false,
         MouseMinSteps = 2,
         MouseMaxSteps = 3,
-        MouseBurstSize = (5, 5),
-        MouseBurstPause = (0, 0),
         MouseOvershootChance = 0, // deterministic: no overshoot
         ClickAimDelayButton = (0, 0),
         ClickHoldButton = (0, 0),

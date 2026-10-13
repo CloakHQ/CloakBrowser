@@ -7,10 +7,11 @@ Falls back to page.evaluate when no CDP session is available.
 
 from __future__ import annotations
 
+import math
 import random
 from typing import Any, Optional, Protocol
 
-from .config import HumanConfig, rand, rand_range, sleep_ms
+from .config import HumanConfig, rand, rand_log, rand_lognormal, rand_range, sleep_ms
 
 
 class RawKeyboard(Protocol):
@@ -45,6 +46,23 @@ _SHIFT_SYMBOL_CODES: dict[str, str] = {
     '?': 'Slash', '~': 'Backquote',
 }
 
+# Physical key of each unshifted digit / punctuation character, so a shift
+# symbol and its base character ("1" and "!") count as the same key.
+_BASE_KEY_CODES: dict[str, str] = {
+    '1': 'Digit1', '2': 'Digit2', '3': 'Digit3', '4': 'Digit4', '5': 'Digit5',
+    '6': 'Digit6', '7': 'Digit7', '8': 'Digit8', '9': 'Digit9', '0': 'Digit0',
+    '-': 'Minus', '=': 'Equal', '[': 'BracketLeft', ']': 'BracketRight',
+    '\\': 'Backslash', ';': 'Semicolon', "'": 'Quote', ',': 'Comma',
+    '.': 'Period', '/': 'Slash', '`': 'Backquote',
+}
+
+
+def physical_key(ch: str) -> str:
+    """The physical key that types ``ch``: "x" and "X" are one key, so are
+    "1" and "!". Used so a key never goes down while it is still held."""
+    return _SHIFT_SYMBOL_CODES.get(ch) or _BASE_KEY_CODES.get(ch) or ch.lower()
+
+
 # Windows virtual key codes for Input.dispatchKeyEvent.
 _SHIFT_SYMBOL_KEYCODES: dict[str, int] = {
     '!': 49, '@': 50, '#': 51, '$': 52, '%': 53,
@@ -53,6 +71,63 @@ _SHIFT_SYMBOL_KEYCODES: dict[str, int] = {
     ':': 186, '"': 222, '<': 188, '>': 190, '?': 191,
     '~': 192,
 }
+
+
+# ---------------------------------------------------------------------------
+# Key timing (shared by the humanize engine)
+# ---------------------------------------------------------------------------
+#
+# Numbers come from the 136M Keystrokes data (Dhakal et al., CHI 2018):
+# letters typed with the other hand follow ~20% faster than letters of the
+# same hand, a repeated letter (same finger) is slower, and the first letter
+# of a word (after a space) is the slowest. People commonly press the next
+# key before letting go of the previous one (rollover).
+
+_LEFT_HAND = frozenset("qwertasdfgzxcvb`12345~!@#$%")
+
+
+def _hand(ch: str) -> Optional[str]:
+    c = ch.lower()
+    if not c or not c.isascii() or c.isspace():
+        return None
+    return "L" if c in _LEFT_HAND else "R"
+
+
+def gap_factor(prev: str, ch: str) -> float:
+    """How much slower / faster than average the press of ``ch`` follows
+    ``prev`` (the previous typed character)."""
+    if not prev:
+        return 1.0
+    if prev == " ":
+        return 1.3
+    if ch == " ":
+        return 0.9
+    if prev.lower() == ch.lower():
+        return 1.05
+    hp, hc = _hand(prev), _hand(ch)
+    if hp and hc:
+        return 0.85 if hp != hc else 1.1
+    return 1.0
+
+
+def key_gap(cfg: HumanConfig, prev: str, ch: str) -> float:
+    """Milliseconds from the press of ``prev`` to the press of ``ch``
+    (log-normal around ``typing_delay``, plus occasional thinking pauses
+    before words)."""
+    median = max(1.0, cfg.typing_delay * gap_factor(prev, ch))
+    spread = max(0.0, cfg.typing_delay_spread)
+    sigma = math.log1p(spread / cfg.typing_delay) if cfg.typing_delay > 0 else 0.0
+    gap = rand_lognormal(median, sigma)
+    word_start = prev == " " or prev == ""
+    chance = cfg.typing_pause_chance * (1.0 if word_start else 0.1)
+    if chance > 0 and random.random() < chance:
+        gap += rand_range(cfg.typing_pause_range)
+    return max(15.0, gap)
+
+
+def key_hold(cfg: HumanConfig) -> float:
+    """How long one key stays down (ms)."""
+    return max(1.0, rand_log(cfg.key_hold))
 
 
 def _get_nearby_key(ch: str) -> str:
@@ -79,7 +154,7 @@ def human_type(
     for i, ch in enumerate(text):
         # Non-ASCII characters (Cyrillic, CJK, emoji) — use insertText
         if not ch.isascii():
-            sleep_ms(rand_range(cfg.key_hold))
+            sleep_ms(key_hold(cfg))
             raw.insert_text(ch)
             if i < len(text) - 1:
                 _inter_char_delay(cfg)
@@ -91,7 +166,7 @@ def human_type(
             _type_normal_char(raw, wrong, cfg)
             sleep_ms(rand_range(cfg.mistype_delay_notice))
             raw.down("Backspace")
-            sleep_ms(rand_range(cfg.key_hold))
+            sleep_ms(key_hold(cfg))
             raw.up("Backspace")
             sleep_ms(rand_range(cfg.mistype_delay_correct))
 
@@ -108,17 +183,17 @@ def human_type(
 
 def _type_normal_char(raw: RawKeyboard, ch: str, cfg: HumanConfig) -> None:
     raw.down(ch)
-    sleep_ms(rand_range(cfg.key_hold))
+    sleep_ms(key_hold(cfg))
     raw.up(ch)
 
 
 def _type_shifted_char(page: Any, raw: RawKeyboard, ch: str, cfg: HumanConfig) -> None:
     raw.down("Shift")
-    sleep_ms(rand_range(cfg.shift_down_delay))
+    sleep_ms(rand_log(cfg.shift_down_delay))
     raw.down(ch)
-    sleep_ms(rand_range(cfg.key_hold))
+    sleep_ms(key_hold(cfg))
     raw.up(ch)
-    sleep_ms(rand_range(cfg.shift_up_delay))
+    sleep_ms(max(0.0, rand_range(cfg.shift_up_delay)))
     raw.up("Shift")
 
 
@@ -141,7 +216,7 @@ def _type_shift_symbol(
         key_code = _SHIFT_SYMBOL_KEYCODES.get(ch, 0)
 
         raw.down("Shift")
-        sleep_ms(rand_range(cfg.shift_down_delay))
+        sleep_ms(rand_log(cfg.shift_down_delay))
 
         cdp_session.send("Input.dispatchKeyEvent", {
             "type": "keyDown",
@@ -152,7 +227,7 @@ def _type_shift_symbol(
             "text": ch,
             "unmodifiedText": ch,
         })
-        sleep_ms(rand_range(cfg.key_hold))
+        sleep_ms(key_hold(cfg))
 
         cdp_session.send("Input.dispatchKeyEvent", {
             "type": "keyUp",
@@ -162,12 +237,12 @@ def _type_shift_symbol(
             "windowsVirtualKeyCode": key_code,
         })
 
-        sleep_ms(rand_range(cfg.shift_up_delay))
+        sleep_ms(max(0.0, rand_range(cfg.shift_up_delay)))
         raw.up("Shift")
     else:
         # --- Fallback path: page.evaluate (detectable) ---
         raw.down("Shift")
-        sleep_ms(rand_range(cfg.shift_down_delay))
+        sleep_ms(rand_log(cfg.shift_down_delay))
         raw.insert_text(ch)
         page.evaluate(
             """(key) => {
@@ -179,13 +254,9 @@ def _type_shift_symbol(
             }""",
             ch,
         )
-        sleep_ms(rand_range(cfg.shift_up_delay))
+        sleep_ms(max(0.0, rand_range(cfg.shift_up_delay)))
         raw.up("Shift")
 
 
 def _inter_char_delay(cfg: HumanConfig) -> None:
-    if random.random() < cfg.typing_pause_chance:
-        sleep_ms(rand_range(cfg.typing_pause_range))
-    else:
-        delay = cfg.typing_delay + (random.random() - 0.5) * 2 * cfg.typing_delay_spread
-        sleep_ms(max(10, delay))
+    sleep_ms(max(10.0, key_gap(cfg, "a", "b") - rand_log(cfg.key_hold)))

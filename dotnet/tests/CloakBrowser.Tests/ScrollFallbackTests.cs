@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using CloakBrowser.Human;
 using Xunit;
@@ -192,23 +193,24 @@ public class ScrollFallbackTests
     }
 
     [Fact]
-    public async Task Smooth_wheel_never_sends_a_zero_step()
+    public async Task Smooth_wheel_sends_whole_notches_only()
     {
-        // A smooth wheel is split into 20-40px chunks and the last one is the
-        // remainder. A remainder under 0.5px used to round to a (0, 0) wheel event,
-        // which made Box_past_right_edge_scrolls_x_axis_only flaky (~1 run in 60).
-        // A 21-40px delta is one or two chunks and leaves such a remainder a few
-        // percent of the time, so 300 calls hit it with near certainty.
-        var mouse = new CountingMouse();
-        double total = 0;
-        for (int i = 0; i < 300; i++)
+        // CDP reports every wheel event as one notch (wheelDeltaY 120), so each
+        // event's pixel delta must be one whole notch - never a chunk or (0, 0).
+        foreach (double notch in new[] { 40.0, 100.0, 120.0 })
         {
-            int delta = 21 + i % 20;
-            total += delta;
-            await HumanScroll.SmoothWheelAsync(mouse, 0, delta, FastConfig());
+            var cfg = FastConfig();
+            cfg.ScrollNotchPx = notch;
+            for (int i = 0; i < 20; i++)
+            {
+                var mouse = new CountingMouse();
+                double delta = (i % 2 == 1 ? -1 : 1) * (notch + 37 * i);
+                await HumanScroll.SmoothWheelAsync(mouse, 0, delta, cfg);
+                Assert.NotEmpty(mouse.Wheels);
+                Assert.All(mouse.Wheels, w => { Assert.Equal(0, w.Dx); Assert.Equal(notch, Math.Abs(w.Dy)); });
+                Assert.True(Math.Abs(mouse.Wheels.Sum(w => w.Dy) - delta) <= notch / 2);
+            }
         }
-        Assert.DoesNotContain(mouse.Wheels, w => w.Dx == 0 && w.Dy == 0);
-        Assert.Equal(total, mouse.Wheels.Sum(w => w.Dy));
     }
 
     [Fact]

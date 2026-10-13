@@ -380,6 +380,31 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)('humanize engine (real br
     expect(await p.evaluate(() => (window as any).__keys)).toEqual(['ArrowUp', 'a', 'b']);
   });
 
+  it('same key lower then upper case never sends a repeat keydown ("xX", "1!")', async () => {
+    const p = await open();
+    await p.evaluate(() => {
+      (window as any).__kd = [];
+      for (const t of ['keydown', 'keyup'])
+        document.addEventListener(t, (e: any) => (window as any).__kd.push([t, e.code, e.repeat]), true);
+    });
+    const text = 'xX aA zZ 1! qQ';
+    const human_config = {
+      key_hold: [60, 175], typing_delay: 150, typing_delay_spread: 70, typing_pause_chance: 0,
+      shift_down_delay: [60, 220], shift_up_delay: [-60, 30],
+    };
+    for (let i = 0; i < 3; i++) {
+      await p.fill('#name', text, { human_config } as any);
+      expect(await value(p, '#name')).toBe(text);
+    }
+    const log: [string, string, boolean][] = await p.evaluate(() => (window as any).__kd);
+    expect(log.filter(e => e[2])).toEqual([]);
+    const held = new Set<string>();
+    for (const [t, code] of log) {
+      if (t === 'keydown') { expect(held.has(code)).toBe(false); held.add(code); }
+      else held.delete(code);
+    }
+  }, 60_000);
+
   it('mistypes are corrected, skip masked fields, uppercase uses Shift', async () => {
     const p = await open();
     const typo = { human_config: { mistype_chance: 1 } } as any;
@@ -406,6 +431,37 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)('humanize engine (real br
     await p.click('#chk', { human_config: { scroll_overshoot_chance: 0 } });
     expect((await events(p, 'wheel')).every((e) => e.dy > 0)).toBe(true);
   });
+
+  // #593: overflow clips only boxes whose containing block is inside the scroller.
+  const CB_CSS = '<!doctype html><style>body { margin: 0 } header { height: 215px }' +
+    '.content { height: 300px; overflow: auto } .tall { height: 2000px } button { width: 44px; height: 44px }' +
+    '</style><header>header</header>';
+  const CB_CASES: [string, string, boolean][] = [
+    ['fixed modal inside a scroller', '<div class="content"><div class="tall">' +
+      '<div style="position: fixed; inset: 0; background: rgba(0,0,0,.4)">' +
+      '<button id="t" style="position: absolute; top: 146px; right: 36px">X</button></div></div></div>', false],
+    ['absolute child escaping a static scroller', '<div style="position: relative"><div class="content"><div class="tall">' +
+      '<button id="t" style="position: absolute; top: 320px; left: 10px">X</button></div></div></div>', false],
+    ['normal child below the fold', '<div class="content"><div class="tall">' +
+      '<div style="height: 1500px"></div><button id="t">X</button></div></div>', true],
+    ['absolute child of a positioned scroller', '<div class="content" style="position: relative"><div class="tall">' +
+      '<button id="t" style="position: absolute; top: 1500px; left: 10px">X</button></div></div>', true],
+    ['fixed child of a transformed scroller', '<div class="content" style="transform: translateZ(0)"><div class="tall">' +
+      '<button id="t" style="position: fixed; top: 1500px; left: 10px">X</button></div></div>', true],
+  ];
+  for (const [name, body, clipped] of CB_CASES) {
+    it(`scroller follows the containing block: ${name} (#593)`, async () => {
+      const p = await open();
+      await p.setViewportSize({ width: 390, height: 844 });
+      await p.goto('data:text/html,' + encodeURIComponent(CB_CSS + body));
+      await p.evaluate(() => { (window as any).__clicks = 0;
+        document.getElementById('t')!.addEventListener('click', () => (window as any).__clicks++); });
+      await p.click('#t', { timeout: 5000 });
+      expect(await p.evaluate(() => (window as any).__clicks)).toBe(1);
+      const scrolled = await p.evaluate(() => document.querySelector('.content')!.scrollTop);
+      expect(scrolled > 0).toBe(clipped);
+    });
+  }
 
   it('per-call human_config and flat config keys', async () => {
     const p = await open();

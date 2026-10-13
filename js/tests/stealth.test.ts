@@ -168,7 +168,10 @@ describe("SHIFT_SYMBOL maps completeness", () => {
   it("every shift symbol has a code and keycode entry", async () => {
     // We access these via dynamic import to get internal constants
     // Since they're not exported directly, we test via humanType behavior
-    const cfg = resolveConfig("default", { mistype_chance: 0 });
+    const cfg = resolveConfig("default", {
+      mistype_chance: 0, typing_delay: 1, typing_delay_spread: 0, typing_pause_chance: 0,
+      key_hold: [1, 2], shift_down_delay: [1, 2], shift_up_delay: [0, 1],
+    });
     const SHIFT_SYMBOLS = ['@', '#', '!', '$', '%', '^', '&', '*', '(', ')',
       '_', '+', '{', '}', '|', ':', '"', '<', '>', '?', '~'];
 
@@ -713,7 +716,6 @@ describeIfSlow("stealth browser: selector parity and target identity", () => {
   const fastHumanConfig = {
     mouse_min_steps: 3,
     mouse_max_steps: 3,
-    mouse_burst_pause: [0, 0] as [number, number],
     idle_between_actions: false,
     scroll_settle_delay: [0, 0] as [number, number],
   };

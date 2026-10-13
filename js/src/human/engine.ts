@@ -16,9 +16,9 @@
 
 import type { Frame, Page, ElementHandle, CDPSession } from 'playwright-core';
 import { errors } from 'playwright-core';
-import { type HumanConfig, mergeConfig, rand, randRange, randIntRange, sleep } from './config.js';
-import { NEARBY_KEYS, SHIFT_SYMBOLS, SHIFT_SYMBOL_CODES, SHIFT_SYMBOL_KEYCODES } from './keyboard.js';
-import { bezier, easeInOut, randomControlPoints, clickTarget } from './mouse.js';
+import { type HumanConfig, mergeConfig, rand, randLog, randRange, randIntRange, sleep } from './config.js';
+import { NEARBY_KEYS, keyGap, keyHold, Typist, type TypistKeys } from './keyboard.js';
+import { clickTarget, planMove } from './mouse.js';
 import * as fields from './fields.js';
 import { HELPERS, StaleElement, Worlds, intersect, type Rect } from './world.js';
 
@@ -180,41 +180,25 @@ export class Human {
   async ensureCursor(cfg?: HumanConfig): Promise<void> {
     if (!this.cursor.initialized) {
       const c = cfg ?? this.cfg;
-      this.cursor.x = rand(c.initial_cursor_x[0], c.initial_cursor_x[1]);
-      this.cursor.y = rand(c.initial_cursor_y[0], c.initial_cursor_y[1]);
+      this.cursor.x = Math.round(rand(c.initial_cursor_x[0], c.initial_cursor_x[1]));
+      this.cursor.y = Math.round(rand(c.initial_cursor_y[0], c.initial_cursor_y[1]));
       await this.raw.move(this.cursor.x, this.cursor.y);
       this.cursor.initialized = true;
     }
   }
 
-  /** Bezier move from the current cursor position to (x, y). */
+  /** Move from the current cursor position to (x, y): an early-peaking main
+   * stroke timed by Fitts' law, sometimes a short corrective stroke, one
+   * pointer event per frame and none without movement. */
   async moveTo(x: number, y: number, cfg: HumanConfig): Promise<void> {
     await this.ensureCursor(cfg);
-    const sx = this.cursor.x, sy = this.cursor.y;
-    const dist = Math.hypot(x - sx, y - sy);
-    if (dist >= 1) {
-      const steps = Math.max(cfg.mouse_min_steps, Math.min(cfg.mouse_max_steps, Math.round(dist / cfg.mouse_steps_divisor)));
-      const start = { x: sx, y: sy }, end = { x, y };
-      const [cp1, cp2] = randomControlPoints(start, end);
-      let burst = 0;
-      const burstSize = randIntRange(cfg.mouse_burst_size);
-      for (let i = 1; i <= steps; i++) {
-        const progress = i / steps;
-        if (i === steps) { await this.raw.move(x, y); continue; } // exact end point
-        const pt = bezier(start, cp1, cp2, end, easeInOut(progress));
-        const wobble = Math.sin(Math.PI * progress) * cfg.mouse_wobble_max;
-        await this.raw.move(Math.round(pt.x + (Math.random() - 0.5) * 2 * wobble),
-          Math.round(pt.y + (Math.random() - 0.5) * 2 * wobble));
-        burst++;
-        if (burst >= burstSize) { await sleepMs(randRange(cfg.mouse_burst_pause)); burst = 0; }
-      }
-      if (Math.random() < cfg.mouse_overshoot_chance) {
-        const angle = Math.atan2(y - sy, x - sx);
-        const over = randRange(cfg.mouse_overshoot_px);
-        await this.raw.move(Math.round(x + Math.cos(angle) * over), Math.round(y + Math.sin(angle) * over));
-        await sleepMs(rand(30, 70));
-        await this.raw.move(x, y);
-      }
+    let clock = performance.now();
+    for (const [px, py, dt] of planMove(this.cursor.x, this.cursor.y, x, y, cfg)) {
+      // Keep to the planned schedule: the CDP round trip of each move comes
+      // out of the next wait instead of adding to it.
+      clock += dt;
+      await sleepMs(clock - performance.now());
+      await this.raw.move(px, py);
     }
     this.cursor.x = x; this.cursor.y = y;
   }
@@ -396,10 +380,19 @@ export class Human {
     let box = await this.elementBox(r);
     const vp = await this.worlds.viewport();
     let stalled = 0, rounds = 0, overshot = false;
+    let last: [number, number] = [0, 0];
+    const notch = await this.notchPx(cfg);
     while (stalled < 2 && rounds < 40 && !deadline.expired()) {
       const [dx, dy] = await this.neededScroll(r, box, vp, cfg);
       if (Math.abs(dx) < 1 && Math.abs(dy) < 1) break;
       rounds++;
+      // Whole notches can jump over a target whose slack is smaller than one
+      // notch (a short scroll box): after such a reversal, finish with one
+      // wheel event of the exact remainder (a free-spinning or high-resolution
+      // wheel sends those) instead of swinging forever.
+      const fineY = dy * last[1] < 0 && Math.abs(dy) < notch;
+      const fineX = dx * last[0] < 0 && Math.abs(dx) < notch;
+      last = [dx, dy];
       const area = box.clip.width > 4 && box.clip.height > 4 ? box.clip : { x: 0, y: 0, width: vp.width, height: vp.height };
       if (!this.inside(area)) {
         await this.moveTo(area.x + area.width * rand(0.3, 0.7), area.y + area.height * rand(0.3, 0.7), cfg);
@@ -407,13 +400,19 @@ export class Human {
       }
       const before = [box.x, box.y];
       if (Math.abs(dy) >= 1) {
-        await this.wheelBurst(0, dy, cfg, deadline);
-        if (!overshot) {
-          overshot = true;
-          await this.overshoot(dy, cfg, deadline);
+        if (fineY) await this.raw.wheel(0, Math.round(dy));
+        else {
+          await this.wheelBurst(0, dy, cfg, deadline);
+          if (!overshot) {
+            overshot = true;
+            await this.overshoot(dy, cfg, deadline);
+          }
         }
       }
-      if (Math.abs(dx) >= 1) await this.wheelBurst(dx, 0, cfg, deadline);
+      if (Math.abs(dx) >= 1) {
+        if (fineX) await this.raw.wheel(Math.round(dx), 0);
+        else await this.wheelBurst(dx, 0, cfg, deadline);
+      }
       await sleepMs(Math.min(randRange(cfg.scroll_settle_delay), deadline.remaining()));
       box = await this.elementBox(r);
       const moved = Math.abs(box.x - before[0]) + Math.abs(box.y - before[1]);
@@ -468,38 +467,57 @@ export class Human {
   private async overshoot(dy: number, cfg: HumanConfig, deadline: Deadline): Promise<void> {
     if (Math.random() >= cfg.scroll_overshoot_chance || deadline.expired()) return;
     const sign = dy > 0 ? 1 : -1;
-    await this.wheelBurst(0, Math.round(randRange(cfg.scroll_overshoot_px)) * sign, cfg, deadline);
+    const notch = await this.notchPx(cfg);
+    const over = Math.max(1, Math.round(randRange(cfg.scroll_overshoot_px) / notch));
+    await this.wheelBurst(0, over * notch * sign, cfg, deadline);
     await sleepMs(Math.min(randRange(cfg.scroll_settle_delay), deadline.remaining()));
-    const corrections = randIntRange([1, 2]);
-    for (let i = 0; i < corrections && !deadline.expired(); i++) {
-      await this.wheelBurst(0, Math.round(rand(40, 80)) * -sign, cfg, deadline);
+    // Turn back in one or two flicks.
+    const first = over > 1 && Math.random() < 0.5 ? randIntRange([1, over]) : over;
+    for (const n of [first, over - first]) {
+      if (n <= 0 || deadline.expired()) continue;
+      await this.wheelBurst(0, n * notch * -sign, cfg, deadline);
       await sleepMs(Math.min(rand(100, 250), deadline.remaining()));
     }
   }
 
-  /** One logical scroll: accelerate -> cruise -> decelerate in wheel ticks. */
+  /** CSS pixels one wheel notch scrolls for the persona's platform: Chrome
+   * scrolls 100 px per notch on Windows (3 lines of 33.3 px), 40 on macOS and
+   * 120 on Linux, and reports `wheelDelta` 120 per notch. CDP always reports
+   * one notch per wheel event, so whole-notch events are the only ones whose
+   * `deltaY` and `wheelDeltaY` agree. */
+  async notchPx(cfg: HumanConfig): Promise<number> {
+    if (cfg.scroll_notch_px && cfg.scroll_notch_px > 0) return cfg.scroll_notch_px;
+    const plat = (await this.platform()).toLowerCase();
+    if (plat.startsWith('mac')) return 40;
+    if (plat.startsWith('win')) return 100;
+    return 120;
+  }
+
+  /** One logical scroll: flicks of a few wheel notches each, quicker in the
+   * middle of a flick, with short pauses between flicks. Every event is
+   * exactly one notch, so the page scrolls by the nearest whole number of
+   * notches (the caller re-measures and scrolls again when needed). */
   async wheelBurst(dx: number, dy: number, cfg: HumanConfig, deadline?: Deadline): Promise<void> {
     const total = dy ? Math.abs(dy) : Math.abs(dx);
     const sign = (dy || dx) > 0 ? 1 : -1;
+    const notch = await this.notchPx(cfg);
+    const notches = Math.max(1, Math.round(total / notch));
     const accel = randIntRange(cfg.scroll_accel_steps), decel = randIntRange(cfg.scroll_decel_steps);
-    const avg = (cfg.scroll_delta_base[0] + cfg.scroll_delta_base[1]) / 2;
-    const ticks = Math.max(1, Math.ceil(total / avg));
-    let sent = 0;
-    for (let i = 0; i < ticks; i++) {
-      if (sent >= total || deadline?.expired()) break;
-      const pause = (i < accel || i >= ticks - decel) ? randRange(cfg.scroll_pause_slow) : randRange(cfg.scroll_pause_fast);
-      const tick = Math.min(total - sent, randRange(cfg.scroll_delta_base) * (1 + (Math.random() - 0.5) * 2 * cfg.scroll_delta_variance));
-      // Split each tick into small wheel events like real inertia.
-      let left = tick;
-      while (left > 0.5) {
-        const chunk = Math.min(left, rand(20, 40));
-        const step = Math.round(chunk) * sign;
-        if (step) await this.raw.wheel(dx ? step : 0, dy ? step : 0);
-        left -= chunk;
-        await sleepMs(rand(8, 20));
+    let flick = randIntRange([2, 5]);
+    for (let i = 0; i < notches; i++) {
+      if (deadline?.expired()) break;
+      const step = notch * sign;
+      await this.raw.wheel(dx ? step : 0, dy ? step : 0);
+      if (i === notches - 1) break;
+      if (--flick <= 0) {
+        // A finger lifts and turns the wheel again.
+        flick = randIntRange([2, 5]);
+        await sleepMs(randRange(cfg.scroll_pause_slow) + rand(40, 120));
+      } else if (i < accel || i >= notches - decel) {
+        await sleepMs(randRange(cfg.scroll_pause_slow));
+      } else {
+        await sleepMs(randRange(cfg.scroll_pause_fast));
       }
-      sent += tick;
-      await sleepMs(pause);
     }
   }
 
@@ -675,9 +693,9 @@ export class Human {
   async caretToEnd(r: Resolved): Promise<void> {
     const info = await this.worlds.call(r.frame, 'info', r.id);
     if (info.tag === 'input') {
-      if (!(await this.worlds.call(r.frame, 'caretAtEnd', r.id))) await this.raw.keyPress('End');
+      if (!(await this.worlds.call(r.frame, 'caretAtEnd', r.id))) await this.pressKey('End');
     } else {
-      await this.raw.keyPress('Control+End');
+      await this.pressKey('Control+End');
     }
     await sleepMs(rand(20, 60));
   }
@@ -692,7 +710,7 @@ export class Human {
     await this.focusElement(target, opts, api, cfg, deadline, false);
     await sleepMs(rand(50, 150));
     const k = await this.keys(key);
-    await this.raw.keyPress(k, opts.delay !== undefined ? { delay: opts.delay } : undefined);
+    await this.pressKey(k, undefined, opts.delay);
   }
 
   async type(target: Target, text: string, opts: Opts, api = 'type'): Promise<void> {
@@ -732,16 +750,16 @@ export class Human {
     await sleepMs(rand(100, 250));
     info = await this.worlds.call(r.frame, 'info', r.id);
     if (info.value) {
-      await this.raw.keyPress(await this.selectAllKey());
+      await this.pressKey(await this.selectAllKey());
       await sleepMs(rand(30, 80));
-      await this.raw.keyPress('Backspace');
+      await this.pressKey('Backspace');
       await sleepMs(rand(50, 150));
       info = await this.worlds.call(r.frame, 'info', r.id);
       if (info.value) {
         // Some widgets ignore select-all; clear what is left by keys.
         await this.caretToEnd(r);
         for (let i = 0; i < info.value.length; i++) {
-          await this.raw.keyPress('Backspace');
+          await this.pressKey('Backspace');
           await sleepMs(rand(15, 40));
         }
       }
@@ -792,7 +810,7 @@ export class Human {
         // matching is unreliable, so step with the arrow keys.
         const diff = parseInt(parts.month, 10) - parseInt(current.month, 10);
         for (let k = 0; k < Math.abs(diff); k++) {
-          await this.raw.keyPress(diff > 0 ? 'ArrowUp' : 'ArrowDown');
+          await this.pressKey(diff > 0 ? 'ArrowUp' : 'ArrowDown');
           await sleepMs(rand(60, 140));
         }
       } else if (kind === 'ampm') {
@@ -804,11 +822,11 @@ export class Human {
           if (j < digits.length - 1) {
             // The editor forgets a partial entry after ~1 s without a key;
             // keep the gap inside a segment short.
-            await sleepMs(Math.min(450, Math.max(40, cfg.typing_delay + (Math.random() - 0.5) * 2 * cfg.typing_delay_spread)));
+            await sleepMs(Math.min(450, Math.max(40, keyGap(cfg, digits[j], digits[j + 1]) - keyHold(cfg))));
           }
         }
       }
-      if (i < segs.length - 1 && !fields.segmentAutoAdvances(kind, parts, inputType)) await this.raw.keyPress('ArrowRight');
+      if (i < segs.length - 1 && !fields.segmentAutoAdvances(kind, parts, inputType)) await this.pressKey('ArrowRight');
       await sleepMs(rand(60, 160));
     }
     const got = await this.worlds.call(r.frame, 'value', r.id);
@@ -833,7 +851,7 @@ export class Human {
       if (Math.abs(cur - want) < 1e-9 || (info.step && Math.abs(cur - want) < info.step / 2)) break;
       const up = cur < want;
       const key = !info.rtl ? (up ? 'ArrowRight' : 'ArrowLeft') : (up ? 'ArrowLeft' : 'ArrowRight');
-      await this.raw.keyPress(key);
+      await this.pressKey(key);
       await sleepMs(rand(40, 110));
       if ((await read()) === cur) break; // cannot move further (min/max reached)
     }
@@ -920,7 +938,7 @@ export class Human {
     let typed = false;
     for (const k of keys) {
       if (deadline.expired()) {
-        await this.raw.keyPress('Escape');
+        await this.pressKey('Escape');
         throw new errors.TimeoutError(`${api}: Timeout ${Math.round(deadline.timeout)}ms exceeded.\n`
           + `Call log:\n  - choosing an option of ${target.description}`);
       }
@@ -930,12 +948,12 @@ export class Human {
         this.typeAheadUntil = Date.now() + 1100;
         await sleepMs(rand(60, 160));
       } else {
-        await this.raw.keyPress(k);
+        await this.pressKey(k);
         await sleepMs(rand(90, 200));
       }
     }
     await sleepMs(rand(100, 250));
-    await this.raw.keyPress('Enter');
+    await this.pressKey('Enter');
     if (typed) this.typeAheadUntil = Date.now() + 1100;
     await sleepMs(rand(80, 160));
   }
@@ -949,7 +967,7 @@ export class Human {
     }
     const session: CDPSession = await this.worlds.session();
     await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, unmodifiedText: ch });
-    await sleepMs(randRange(cfg.key_hold));
+    await sleepMs(keyHold(cfg));
     await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
   }
 
@@ -1035,28 +1053,28 @@ export class Human {
   async typeText(text: string, cfg: HumanConfig, frame: Frame, info: any, delay: number | undefined): Promise<void> {
     const tag = info?.tag ?? null;
     const mistypes = cfg.mistype_chance > 0 && tag !== null && fields.allowsMistype(tag, info?.type ?? null);
-    const chars = [...text];
-    for (let i = 0; i < chars.length; i++) {
-      const ch = chars[i];
-      if (!isAscii(ch)) {
-        await sleepMs(randRange(cfg.key_hold));
-        await this.raw.insertText(ch);
-      } else {
-        if (mistypes && isAsciiAlnum(ch) && Math.random() < cfg.mistype_chance) await this.typo(ch, cfg, frame);
-        await this.typeChar(ch, cfg);
+    const typist = new Typist(this.typistKeys(), cfg, delay);
+    try {
+      for (const ch of [...text]) {
+        if (mistypes && isAsciiAlnum(ch) && Math.random() < cfg.mistype_chance) await this.typo(typist, ch, cfg, frame);
+        await typist.key(ch);
       }
-      if (i < chars.length - 1) await this.betweenKeys(cfg, delay);
+      await typist.finish();
+    } finally {
+      await typist.releaseAll();
     }
   }
 
-  private async typo(ch: string, cfg: HumanConfig, frame: Frame): Promise<void> {
+  private async typo(typist: Typist, ch: string, cfg: HumanConfig, frame: Frame): Promise<void> {
     const lower = ch.toLowerCase();
     const near = NEARBY_KEYS[lower];
     if (!near) return;
     let wrong = near[Math.floor(Math.random() * near.length)];
     if (isUpper(ch)) wrong = wrong.toUpperCase();
+    await typist.finish();
     const before = await this.activeValue(frame);
-    await this.typeChar(wrong, cfg);
+    await typist.key(wrong);
+    await typist.rest();
     await sleepMs(randRange(cfg.mistype_delay_notice));
     const after = await this.activeValue(frame);
     if (before !== null && after === before) {
@@ -1064,9 +1082,8 @@ export class Human {
       await sleepMs(randRange(cfg.mistype_delay_correct));
       return;
     }
-    await this.raw.keyDown('Backspace');
-    await sleepMs(randRange(cfg.key_hold));
-    await this.raw.keyUp('Backspace');
+    await typist.key('Backspace');
+    await typist.rest();
     await sleepMs(randRange(cfg.mistype_delay_correct));
   }
 
@@ -1074,39 +1091,32 @@ export class Human {
     try { return (await this.worlds.call(frame, 'activeValue'))?.value ?? null; } catch { return null; }
   }
 
+  /** One key on its own (date editors, type-ahead). */
   async typeChar(ch: string, cfg: HumanConfig): Promise<void> {
-    if (isUpper(ch)) {
-      await this.raw.keyDown('Shift');
-      await sleepMs(randRange(cfg.shift_down_delay));
-      await this.raw.keyDown(ch);
-      await sleepMs(randRange(cfg.key_hold));
-      await this.raw.keyUp(ch);
-      await sleepMs(randRange(cfg.shift_up_delay));
-      await this.raw.keyUp('Shift');
-    } else if (SHIFT_SYMBOLS.has(ch)) {
-      const session: CDPSession = await this.worlds.session();
-      const code = SHIFT_SYMBOL_CODES[ch] || '';
-      const vk = SHIFT_SYMBOL_KEYCODES[ch] || 0;
-      await this.raw.keyDown('Shift');
-      await sleepMs(randRange(cfg.shift_down_delay));
-      await session.send('Input.dispatchKeyEvent', {
-        type: 'keyDown', modifiers: 8, key: ch, code, windowsVirtualKeyCode: vk, text: ch, unmodifiedText: ch,
-      });
-      await sleepMs(randRange(cfg.key_hold));
-      await session.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 8, key: ch, code, windowsVirtualKeyCode: vk });
-      await sleepMs(randRange(cfg.shift_up_delay));
-      await this.raw.keyUp('Shift');
-    } else {
-      await this.raw.keyDown(ch);
-      await sleepMs(randRange(cfg.key_hold));
-      await this.raw.keyUp(ch);
+    const typist = new Typist(this.typistKeys(), cfg);
+    try {
+      await typist.key(ch);
+      await typist.finish();
+    } finally {
+      await typist.releaseAll();
     }
   }
 
-  private async betweenKeys(cfg: HumanConfig, delay: number | undefined): Promise<void> {
-    if (delay !== undefined && delay !== null) await sleepMs(delay);
-    else if (Math.random() < cfg.typing_pause_chance) await sleepMs(randRange(cfg.typing_pause_range));
-    else await sleepMs(Math.max(10, cfg.typing_delay + (Math.random() - 0.5) * 2 * cfg.typing_delay_spread));
+  /** Key primitives for a Typist: the page's raw keyboard, and CDP key
+   * events (shift symbols) through the isolated world's session. */
+  typistKeys(): TypistKeys {
+    return {
+      down: (k: string) => this.raw.keyDown(k),
+      up: (k: string) => this.raw.keyUp(k),
+      insertText: (t: string) => this.raw.insertText(t),
+      cdp: async (params: any) => { await (await this.worlds.session()).send('Input.dispatchKeyEvent', params); },
+    };
+  }
+
+  /** `keyboard.press` with a human key-down time (Playwright's own press
+   * releases the key in the same instant). */
+  async pressKey(key: string, cfg?: HumanConfig, delay?: number): Promise<void> {
+    await this.raw.keyPress(key, { delay: delay ?? keyHold(cfg ?? this.cfg) });
   }
 
   /** `page.keyboard.type`: no target; mistypes only where safe. */

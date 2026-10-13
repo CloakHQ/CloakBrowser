@@ -545,7 +545,7 @@ describe("Puppeteer: page.type accepts per-call human config override", () => {
       idle_between_actions: false,
       field_switch_delay: [0, 1],
     });
-    expect(cfg.typing_delay).toBe(70);
+    expect(cfg.typing_delay).toBe(150);
 
     let captured: any = null;
     const typeSpy = vi.spyOn(keyboardMod, "humanType").mockImplementation(
@@ -571,7 +571,7 @@ describe("Puppeteer: page.type accepts per-call human config override", () => {
 
     expect(captured.typing_delay).toBe(30);
     expect(captured.mistype_chance).toBe(0);
-    expect(cfg.typing_delay).toBe(70);
+    expect(cfg.typing_delay).toBe(150);
 
     typeSpy.mockRestore();
     scrollSpy.mockRestore();
@@ -915,21 +915,23 @@ describe("Puppeteer: mouse.wheel() smooth scroll", () => {
     expect(wheelCalls.length).toBeGreaterThan(1);
   });
 
-  it("smoothWheel never sends a zero step (sub-pixel tail folded in)", async () => {
+  it("smoothWheel sends whole notches only, never a zero step", async () => {
     const { smoothWheel } = await import("../src/human-puppeteer/scroll.js");
     const calls: [number, number][] = [];
     const raw: any = { wheel: async (dx: number, dy: number) => { calls.push([dx, dy]); } };
-    const cfg = resolveConfig("default");
-    let total = 0;
-    // A 21-40px delta is one or two chunks; a remainder under 0.5px used to
-    // round to a (0, 0) wheel event a few percent of the time.
-    for (let i = 0; i < 300; i++) {
-      const delta = 21 + (i % 20);
-      total += delta;
-      await smoothWheel(raw, delta, cfg);
+    const cfg = resolveConfig("default", { scroll_pause_fast: [0, 0], scroll_pause_slow: [0, 0] });
+    // CDP reports every wheel event as one notch (wheelDeltaY 120), so the
+    // pixel delta of each event must be one platform notch, never a chunk.
+    for (const notch of [40, 100, 120]) {
+      for (let i = 0; i < 20; i++) {
+        calls.length = 0;
+        const delta = (i % 2 ? -1 : 1) * (notch + 37 * i);
+        const done = await smoothWheel(raw, delta, cfg, "y", notch);
+        expect(calls.every(([dx, dy]) => dx === 0 && Math.abs(dy) === notch)).toBe(true);
+        expect(calls.reduce((a, [, dy]) => a + dy, 0)).toBe(done);
+        expect(Math.abs(done - delta)).toBeLessThanOrEqual(notch / 2);
+      }
     }
-    expect(calls.some(([dx, dy]) => dx === 0 && dy === 0)).toBe(false);
-    expect(calls.reduce((a, [, dy]) => a + dy, 0)).toBe(total);
   }, 30_000);
 
   it("mouse.wheel({deltaX: 200}) smooths horizontal scroll too", async () => {
