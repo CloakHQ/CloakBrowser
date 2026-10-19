@@ -393,6 +393,15 @@ describe("launchContext (unit)", () => {
     expect(mockBrowser.close).toHaveBeenCalledOnce();
   });
 
+  it("close() forwards the reason option", async () => {
+    const { launchContext } = await import("../src/playwright.js");
+    const ctx = await launchContext();
+
+    await ctx.close({ reason: "done" });
+    expect(mockContext._origClose).toHaveBeenCalledWith({ reason: "done" });
+    expect(mockBrowser.close).toHaveBeenCalledOnce();
+  });
+
   it("forwards contextOptions to newContext (storageState, etc.)", async () => {
     const { launchContext } = await import("../src/playwright.js");
     await launchContext({

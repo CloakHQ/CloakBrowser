@@ -299,8 +299,8 @@ export async function launchContext(
 
   // Patch close() to also close the browser
   const origClose = context.close.bind(context);
-  context.close = async () => {
-    await origClose();
+  context.close = async (closeOptions?: { reason?: string }) => {
+    await origClose(closeOptions);
     await browser.close();
   };
 
