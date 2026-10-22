@@ -8,6 +8,7 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+- **[wrapper]** `cloakserve --exit-after-idle=SECONDS` (or `CLOAKSERVE_EXIT_AFTER_IDLE`) shuts the server down with exit status 0 once no CDP connection has been open for that long, so a per-job container stops when its work is done (#572)
 - **[wrapper]** The first-launch Pro banner now names the current Pro major (v155) instead of v154. Python, JavaScript, and .NET.
 
 ## [0.6.3] — 2026-10-14
