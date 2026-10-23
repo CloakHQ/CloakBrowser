@@ -1074,20 +1074,32 @@ class Human:
             return r, res
 
         r, p = await self.retry(api, target, deadline, plan)
-        if not p["listbox"]:
-            await self._select_dropdown(target, r, p["targets"][0] if p["targets"] else None, p, opts, api,
-                                        cfg, deadline)
-        else:
-            await self._select_listbox(target, r, p, opts, api, cfg, deadline)
+
+        async def pick() -> List[str]:
+            if not p["listbox"]:
+                await self._select_dropdown(target, r, p["targets"][0] if p["targets"] else None, p, opts, api,
+                                            cfg, deadline)
+            else:
+                await self._select_listbox(target, r, p, opts, api, cfg, deadline)
+            try:
+                state = await self.worlds.call(r.frame, "selectState", r.id)
+            except StaleElement:
+                # The pick navigated the page (a form submitted on change): nothing
+                # left to read back, so report what was chosen, as Playwright does.
+                return p["values"]
+            if sorted(state["selected"]) != sorted(p["targets"]):
+                raise Error(f"{api}: Error: selection ended as {state['values']} instead of {p['values']}")
+            return state["values"]
+
+        # An onchange that stalls the page (a sync XHR, a navigation that never
+        # commits) leaves the CDP calls above waiting, so the deadline bounds them too.
+        left = deadline.remaining()
         try:
-            state = await self.worlds.call(r.frame, "selectState", r.id)
-        except StaleElement:
-            # The pick navigated the page (a form submitted on change): nothing
-            # left to read back, so report what was chosen, as Playwright does.
-            return p["values"]
-        if sorted(state["selected"]) != sorted(p["targets"]):
-            raise Error(f"{api}: Error: selection ended as {state['values']} instead of {p['values']}")
-        return state["values"]
+            return await asyncio.wait_for(pick(), None if math.isinf(left) else left / 1000)
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"{api}: Timeout {deadline.timeout:.0f}ms exceeded.\n"
+                               f"Call log:\n  - waiting for the page after choosing an option of "
+                               f"{target.description}") from None
 
     async def _select_dropdown(self, target: Target, r: Resolved, index: Optional[int], p: dict, opts: dict,
                                api: str, cfg: HumanConfig, deadline: _Deadline) -> None:
