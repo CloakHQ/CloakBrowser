@@ -274,6 +274,9 @@ _PAGES = {"/index.html": INDEX_HTML, "/frame.html": FRAME_HTML}
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/stall"):
+            time.sleep(8)  # longer than any timeout a test gives; no answer
+            return
         body = _PAGES.get(self.path.split("?")[0])
         self.send_response(200 if body else 404)
         self.send_header("content-type", "text/html; charset=utf-8")
@@ -859,6 +862,18 @@ def test_select_option_that_navigates_the_page(page):
         s.onchange = () => f.submit(); f.append(s); document.body.prepend(f); }""")
     assert page.select_option("#nav", "b") == ["b"]
     page.wait_for_url("**city=b")
+
+
+def test_select_option_timeout_bounds_a_stalled_onchange(page):
+    """#619: an onchange that blocks the page (a sync XHR with no answer) still times out."""
+    page.evaluate("""() => { const s = document.createElement('select'); s.id = 'stall';
+        for (const [l, v] of [['Amsterdam', 'a'], ['Berlin', 'b']]) s.add(new Option(l, v));
+        s.onchange = () => { const x = new XMLHttpRequest(); x.open('GET', '/stall', false); x.send(); };
+        document.body.prepend(s); }""")
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        page.select_option("#stall", "b", timeout=3000)
+    assert time.monotonic() - start < 6
 
 
 # --- frames and handles ------------------------------------------------------
