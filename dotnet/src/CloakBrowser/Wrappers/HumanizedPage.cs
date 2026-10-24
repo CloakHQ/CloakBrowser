@@ -216,7 +216,7 @@ public sealed partial class HumanizedPage : IPage
 
     // Locator options can change which element Playwright resolves. Preserve raw
     // selector metadata only when it completely describes the locator semantics.
-    public IFrameLocator FrameLocator(string selector) => Humanize.WrapFrameLocator(_inner.FrameLocator(selector), _cursor, _cfg);
+    public IFrameLocator FrameLocator(string? selector = null) => Humanize.WrapFrameLocator(_inner.FrameLocator(selector), _cursor, _cfg);
     public ILocator Locator(string selector, PageLocatorOptions? options = null) =>
         Wrap(_inner.Locator(selector, options), options == null ? selector : null);
     public ILocator GetByAltText(string text, PageGetByAltTextOptions? options = null) => Wrap(_inner.GetByAltText(text, options));

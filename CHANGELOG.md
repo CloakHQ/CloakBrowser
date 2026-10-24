@@ -9,6 +9,10 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 ## [Unreleased]
 
 - **[wrapper]** `cloakserve --exit-after-idle=SECONDS` (or `CLOAKSERVE_EXIT_AFTER_IDLE`) shuts the server down with exit status 0 once no CDP connection has been open for that long, so a per-job container stops when its work is done (#572)
+
+## [0.6.4] — 2026-10-23
+
+- **[wrapper]** .NET: the package is now built against Microsoft.Playwright 1.64.1 (was 1.49.0). The humanize wrappers are generated from the Playwright interfaces at build time, so with a newer Playwright loaded, `Humanize.PageAsync` and the humanized launches failed with `TypeLoadException: Method '...' does not have an implementation`. Your project needs Microsoft.Playwright 1.64.1 or newer. .NET only.
 - **[wrapper]** The first-launch Pro banner now names the current Pro major (v155) instead of v154. Python, JavaScript, and .NET.
 
 ## [0.6.3] — 2026-10-14

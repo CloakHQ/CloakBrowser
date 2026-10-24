@@ -112,7 +112,7 @@ public sealed partial class HumanizedFrame : IFrame
     // Locator-returning members - re-wrap.
     // -----------------------------------------------------------------------
 
-    public IFrameLocator FrameLocator(string selector) => Humanize.WrapFrameLocator(_inner.FrameLocator(selector), _cursor, _cfg);
+    public IFrameLocator FrameLocator(string? selector = null) => Humanize.WrapFrameLocator(_inner.FrameLocator(selector), _cursor, _cfg);
     public ILocator Locator(string selector, FrameLocatorOptions? options = null) => Wrap(_inner.Locator(selector, options));
     public ILocator GetByAltText(string text, FrameGetByAltTextOptions? options = null) => Wrap(_inner.GetByAltText(text, options));
     public ILocator GetByAltText(Regex text, FrameGetByAltTextOptions? options = null) => Wrap(_inner.GetByAltText(text, options));

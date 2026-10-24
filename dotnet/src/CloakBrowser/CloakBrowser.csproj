@@ -10,7 +10,7 @@
 
     <!-- NuGet packaging metadata -->
     <PackageId>CloakBrowser</PackageId>
-    <Version>0.6.3</Version>
+    <Version>0.6.4</Version>
     <Authors>CloakHQ</Authors>
     <Description>Stealth Chromium that passes every bot detection test. Drop-in Playwright (.NET) replacement with source-level fingerprint patches.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -28,7 +28,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Playwright" Version="1.49.0" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.64.1" />
     <PackageReference Include="MaxMind.GeoIP2" Version="5.2.0" />
     <!-- Ed25519 signature verification for downloaded binaries (.NET 8 has no
          built-in Ed25519). Mirrors Python's `cryptography` / JS's node:crypto. -->
