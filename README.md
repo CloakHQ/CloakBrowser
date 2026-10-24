@@ -217,7 +217,7 @@ It's also the fastest way to try the browser without writing any code: download,
 
 ## Test Results
 
-All tests verified against live detection services. Results below are for the latest Pro/current build unless noted. Last tested: Oct 2026 (Chromium 154).
+All tests verified against live detection services. Results below are for the latest Pro/current build unless noted. Last tested: Oct 2026 (Chromium 155).
 
 | Detection Service | Stock Playwright | CloakBrowser | Notes |
 |---|---|---|---|
