@@ -1060,6 +1060,8 @@ Supported query params: `fingerprint`, `timezone`, `locale`, `platform`, `platfo
 
 By default, per-seed processes stay alive until `cloakserve` exits; idle cleanup is disabled (`0`). If clients create many unique seeds, set `--idle-timeout=SECONDS` or `CLOAKSERVE_IDLE_TIMEOUT=SECONDS` to automatically terminate a seed's Chrome process after its last CDP WebSocket disconnects. `0`, `off`, `false`, `none`, or `disabled` disable idle cleanup. When cleanup runs, the seed's temporary profile directory under `--data-dir` is removed too. Check active processes at `GET /` (returns JSON with PIDs, ports, connection counts, idle timeout, and pending cleanup status).
 
+For a server that runs one job and goes away (e.g. a per-job container), set `--exit-after-idle=SECONDS` or `CLOAKSERVE_EXIT_AFTER_IDLE=SECONDS`: `cloakserve` shuts down with exit status 0 once no CDP WebSocket has been connected for that long, counted from startup if nobody connects. It is off by default and takes the same disable values as `--idle-timeout`.
+
 **Persistent profiles** — mount a volume to keep cookies and sessions across container restarts:
 
 ```bash
