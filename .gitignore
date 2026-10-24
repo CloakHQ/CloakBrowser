@@ -32,6 +32,7 @@ htmlcov/
 
 # Binary cache (downloaded chromium)
 .cloakbrowser/
+data/saas_accounts.sqlite3*
 
 # Claude Code (private project context)
 CLAUDE.md
