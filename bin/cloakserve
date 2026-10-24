@@ -669,6 +669,12 @@ async def handle_json_list(request: web.Request) -> web.Response:
 # WebSocket proxy
 # ---------------------------------------------------------------------------
 
+# Ping interval for client connections. A client that vanishes without closing
+# (crash, SIGKILL, network drop) is otherwise only noticed at the OS TCP timeout,
+# which keeps the connection refcount up and blocks --idle-timeout cleanup.
+WS_HEARTBEAT_SECONDS = 30
+
+
 async def proxy_cdp_websocket(
     client_ws: web.WebSocketResponse,
     target_url: str,
@@ -727,7 +733,7 @@ async def handle_ws_default(request: web.Request) -> web.StreamResponse:
 
     cp = await pool.get_or_launch(seed=None)
 
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(heartbeat=WS_HEARTBEAT_SECONDS)
     await ws.prepare(request)
 
     pool.connect("__default__")
@@ -751,7 +757,7 @@ async def handle_ws_seed(request: web.Request) -> web.StreamResponse:
 
     cp = await pool.get_or_launch(seed=seed)
 
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(heartbeat=WS_HEARTBEAT_SECONDS)
     await ws.prepare(request)
 
     pool.connect(seed)
