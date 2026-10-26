@@ -464,6 +464,117 @@ public class HumanEngineBrowserTests : IClassFixture<EngineFixture>, IAsyncLifet
         await p.WaitForURLAsync(new System.Text.RegularExpressions.Regex("city=b"));
     }
 
+    private const string SyncXhr = "var x = new XMLHttpRequest(); x.open('GET', '/hang', false); x.send();";
+
+    private static Task StallingSelect(IFrame f, string onchange) => f.EvaluateAsync(@"js => {
+        const s = document.createElement('select'); s.id = 'stall';
+        for (const [l, v] of [['-', ''], ['Alfa', 'a'], ['Bravo', 'b']]) s.add(new Option(l, v));
+        s.setAttribute('onchange', js); document.body.prepend(s); }", onchange);
+
+    [BrowserFact]
+    public async Task SelectOption_times_out_when_the_page_stops_answering()
+    {
+        // #619: the timeout holds even when a call to the page never returns.
+        var p = await Open();
+        await StallingSelect(p.MainFrame, SyncXhr);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var e = await Assert.ThrowsAsync<TimeoutException>(() => p.SelectOptionAsync("#stall", "b", new() { Timeout = 2000 }))
+            .WaitAsync(TimeSpan.FromSeconds(20));
+        Assert.Contains("Timeout 2000ms exceeded", e.Message);
+        Assert.True(sw.ElapsedMilliseconds < 5000, $"took {sw.ElapsedMilliseconds}ms");
+    }
+
+    [BrowserFact]
+    public async Task SelectOption_returns_when_its_navigation_never_commits()
+    {
+        // #619: the pick started a navigation the server never answers; Playwright returns at once.
+        var p = await Open();
+        await StallingSelect(p.MainFrame, "location.href = '/hang'");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Equal(new[] { "b" }, await p.SelectOptionAsync("#stall", "b", new() { Timeout = 5000 }).WaitAsync(TimeSpan.FromSeconds(20)));
+        Assert.True(sw.ElapsedMilliseconds < 4500, $"took {sw.ElapsedMilliseconds}ms");
+    }
+
+    [BrowserFact]
+    public async Task SelectOption_in_a_frame_that_navigates_the_top_page_returns()
+    {
+        // #619: a pick in an iframe that navigates the top page also counts as a navigation.
+        var p = await Open();
+        var f = await FrameOf(p);
+        await StallingSelect(f, "top.location.href = '/hang'");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Equal(new[] { "b" }, await f.SelectOptionAsync("#stall", "b", new() { Timeout = 5000 }).WaitAsync(TimeSpan.FromSeconds(20)));
+        Assert.True(sw.ElapsedMilliseconds < 4500, $"took {sw.ElapsedMilliseconds}ms");
+    }
+
+    [BrowserFact]
+    public async Task A_stall_leaves_no_modifier_key_held()
+    {
+        // #619: a click with modifiers on a page that stalls still releases every modifier
+        // (the page gets the releases once it answers again).
+        var p = await Open();
+        await p.EvaluateAsync(@"js => { const b = document.createElement('button'); b.id = 'stallbtn';
+            b.textContent = 'stall'; b.setAttribute('onclick', js); document.body.prepend(b); }",
+            "var x = new XMLHttpRequest(); x.open('GET', '/slow', false); x.send();");
+        var e = await Assert.ThrowsAsync<TimeoutException>(() => p.ClickAsync("#stallbtn",
+            new() { Modifiers = new[] { KeyboardModifier.Shift, KeyboardModifier.Alt }, Timeout = 1000 })).WaitAsync(TimeSpan.FromSeconds(20));
+        Assert.Contains("waiting for the page to respond", e.Message);
+        await p.EvaluateAsync("1"); // returns once the page answers again
+        await Reset(p);
+        await p.ClickAsync("#btn");
+        var down = await p.EvaluateAsync<JsonElement>("window.__log.filter(e => e.t === 'mousedown').at(-1)");
+        Assert.False(down.GetProperty("shift").GetBoolean());
+        Assert.False(down.GetProperty("alt").GetBoolean());
+    }
+
+    [BrowserFact]
+    public async Task Typing_times_out_when_the_page_stops_answering()
+    {
+        // #619: a field whose input handler stalls the page times out.
+        var p = await Open();
+        await p.EvaluateAsync(@"js => { const i = document.createElement('input'); i.id = 'stallin';
+            i.setAttribute('oninput', js); document.body.prepend(i); }", SyncXhr);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var e = await Assert.ThrowsAsync<TimeoutException>(() => p.FillAsync("#stallin", "abcdef", new() { Timeout = 2000 }))
+            .WaitAsync(TimeSpan.FromSeconds(20));
+        Assert.Contains("waiting for the page to respond", e.Message);
+        Assert.True(sw.ElapsedMilliseconds < 5000, $"took {sw.ElapsedMilliseconds}ms");
+    }
+
+    [BrowserFact]
+    public async Task Human_pauses_do_not_count_against_the_timeout()
+    {
+        // #619: only a browser call that gets no answer times out, not the deliberate pauses.
+        var p = await OpenWith(new() { ["field_switch_delay"] = new[] { 2500.0, 2500.0 } });
+        await p.FillAsync("#name", "ab", new() { Timeout = 1000 });
+        Assert.Equal("ab", await Value(p, "#name"));
+    }
+
+    [BrowserFact]
+    public async Task Long_fill_is_not_cut_off_by_the_timeout()
+    {
+        // #619: typing is slow by design; each key answers in time, so a long fill finishes.
+        var p = await OpenWith(new() { ["typing_delay"] = 60.0 });
+        var text = new string('x', 40);
+        await p.FillAsync("#name", text, new() { Timeout = 1000 });
+        Assert.Equal(text, await Value(p, "#name"));
+    }
+
+    [BrowserFact]
+    public async Task Click_times_out_when_the_page_stops_answering()
+    {
+        // #619: the timeout holds for every humanized action, not just SelectOption;
+        // releasing the held modifiers afterwards does not wait out the timeout again.
+        var p = await Open();
+        await p.EvaluateAsync(@"js => { const b = document.createElement('button'); b.id = 'stallbtn';
+            b.textContent = 'stall'; b.setAttribute('onclick', js); document.body.prepend(b); }", SyncXhr);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var e = await Assert.ThrowsAsync<TimeoutException>(() => p.ClickAsync("#stallbtn",
+            new() { Modifiers = new[] { KeyboardModifier.Shift, KeyboardModifier.Alt }, Timeout = 2000 })).WaitAsync(TimeSpan.FromSeconds(20));
+        Assert.Contains("waiting for the page to respond", e.Message);
+        Assert.True(sw.ElapsedMilliseconds < 3500, $"took {sw.ElapsedMilliseconds}ms"); // one wait of 2s, not one more per held modifier
+    }
+
     // --- frames / handles --------------------------------------------------
 
     [BrowserFact]

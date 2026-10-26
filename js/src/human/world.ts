@@ -14,6 +14,7 @@
  * Port of cloakbrowser/human/world.py.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CDPSession, Frame, Page } from 'playwright-core';
 import { GLOBAL, buildInstallJs, findInjectedLiteral } from './injected.js';
 import { HELPERS, HELPERS_JS } from './worldHelpers.js';
@@ -28,6 +29,63 @@ export class StealthWorldError extends Error {
 
 export class StaleElement extends Error {
   constructor() { super('element is not attached to the DOM'); this.name = 'StaleElement'; }
+}
+
+export const DEBUG = /\bcloakbrowser\b/.test(process.env.DEBUG ?? '');
+
+/** A browser call got no answer within the action's timeout: the page stopped
+ * answering, e.g. an onchange running a synchronous XHR (#619). Every catch that
+ * falls back or retries must rethrow it; the patch layer turns it into
+ * Playwright's TimeoutError. */
+export class PageStalled extends Error {
+  constructor() { super('the page stopped answering'); this.name = 'PageStalled'; }
+}
+
+/** The humanized action in progress: its timeout (ms, 0 = no limit) and whether
+ * the page stopped answering. */
+export interface Action { timeout: number; stalled: boolean; }
+export const ACTION = new AsyncLocalStorage<Action>();
+
+/** Await one browser call, bounded by the action's timeout: pauses and typing
+ * between calls never count, only a call the page does not answer. Once the page
+ * stopped answering, later calls (key / mouse releases on the way out) are still
+ * sent, but not waited on, and do not throw again. */
+export async function bounded<T>(call: Promise<T>): Promise<T> {
+  const act = ACTION.getStore();
+  // Beyond setTimeout's range (2^31-1 ms) Node would fire at once: treat it as no limit.
+  if (!act || !act.timeout || act.timeout > 2 ** 31 - 1) return call;
+  const STALLED = Symbol('stalled');
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const r = await Promise.race([call, new Promise<typeof STALLED>((res) => {
+      timer = setTimeout(res, act.stalled ? 0 : act.timeout, STALLED);
+      timer.unref(); // a pending bound never keeps Node alive on its own
+    })]);
+    if (r !== STALLED) return r as T;
+  } finally {
+    clearTimeout(timer);
+  }
+  // Abandoned: an answer that still comes arrives after the action gave up.
+  call.catch((e) => { if (DEBUG) console.debug(`[cloakbrowser] browser call failed after the page stalled: ${e}`); });
+  // The action already failed and is unwinding: this cleanup call was sent;
+  // nothing waits for it, and every release in a cleanup loop still goes out.
+  if (act.stalled) return undefined as T;
+  act.stalled = true;
+  throw new PageStalled();
+}
+
+/** `obj` with every method that returns a promise going through `bounded`. */
+export function boundedCalls<T extends object>(obj: T): T {
+  return new Proxy(obj, {
+    get(target, key, receiver) {
+      const v = Reflect.get(target, key, receiver);
+      if (typeof v !== 'function') return v;
+      return (...args: any[]) => {
+        const r = v.apply(target, args);
+        return r instanceof Promise ? bounded(r) : r;
+      };
+    },
+  });
 }
 
 export interface Rect { x: number; y: number; width: number; height: number; }
@@ -81,7 +139,7 @@ export function matchChild(frame: Frame, parent: Frame, kids: any[]): string | n
 }
 
 async function release(session: CDPSession, objectId: string): Promise<void> {
-  try { await session.send('Runtime.releaseObject', { objectId }); } catch { /* gone */ }
+  try { await session.send('Runtime.releaseObject', { objectId }); } catch (e) { if (e instanceof PageStalled) throw e; /* gone */ }
 }
 
 /** Isolated worlds for all frames of one Playwright page. */
@@ -105,7 +163,7 @@ export class Worlds {
 
   async session(): Promise<CDPSession> {
     if (this._session) return this._session;
-    if (!this._sessionP) this._sessionP = this.page.context().newCDPSession(this.page);
+    if (!this._sessionP) this._sessionP = bounded(this.page.context().newCDPSession(this.page)).then(boundedCalls);
     try {
       this._session = await this._sessionP;
     } finally {
@@ -146,8 +204,8 @@ export class Worlds {
   private async locateChild(frame: Frame, parent: Frame): Promise<FrameRec> {
     let own: CDPSession | null = null;
     try { // out-of-process iframe: it has its own target/session
-      own = await this.page.context().newCDPSession(frame);
-    } catch { own = null; }
+      own = boundedCalls(await bounded(this.page.context().newCDPSession(frame)));
+    } catch (e) { if (e instanceof PageStalled) throw e; own = null; }
     if (own) {
       const tree: any = await own.send('Page.getFrameTree');
       return { session: own, cdpId: tree.frameTree.frame.id, ctx: null };
@@ -163,7 +221,7 @@ export class Worlds {
 
   async frameForCdpId(parent: Frame, cdpId: string): Promise<Frame | null> {
     for (const child of parent.childFrames()) {
-      try { if ((await this.locate(child)).cdpId === cdpId) return child; } catch { /* skip */ }
+      try { if ((await this.locate(child)).cdpId === cdpId) return child; } catch (e) { if (e instanceof PageStalled) throw e; /* skip */ }
     }
     return null;
   }

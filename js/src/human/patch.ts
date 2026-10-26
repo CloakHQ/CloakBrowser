@@ -26,8 +26,10 @@
 
 import { createRequire } from 'node:module';
 import type { Browser, BrowserContext, ElementHandle, Frame, Page } from 'playwright-core';
+import { errors } from 'playwright-core';
 import { type HumanConfig, rand } from './config.js';
 import { CursorState, Human, RawFallback, Target, type Opts, type RawInput } from './engine.js';
+import { ACTION, PageStalled } from './world.js';
 
 type Kind = 'Page' | 'Frame' | 'Locator' | 'ElementHandle' | 'Mouse' | 'Keyboard';
 type Handler = (h: Human, self: any, args: any[]) => Promise<any>;
@@ -107,7 +109,7 @@ function target(kind: Kind, self: any, args: any[], o: Opts): { t: Target; rest:
  * Page / Frame). */
 const OPT_INDEX: Record<string, number> = {
   click: 0, dblclick: 0, hover: 0, tap: 0, check: 0, uncheck: 0, focus: 0, clear: 0, scrollIntoViewIfNeeded: 0,
-  fill: 1, type: 1, pressSequentially: 1, press: 1, setChecked: 1, selectOption: 1, dragTo: 1,
+  fill: 1, type: 1, pressSequentially: 1, press: 1, setChecked: 1, selectOption: 1, dragTo: 1, dragAndDrop: 1,
   inputValue: 0, textContent: 0, innerText: 0, innerHTML: 0, getAttribute: 1, dispatchEvent: 2,
 };
 
@@ -231,11 +233,31 @@ function wrap(kind: Kind, proto: any, name: string, handler: Handler): void {
   proto[name] = wrapper;
 }
 
+/** Run the action with its timeout bounding every browser call it makes, so a
+ * page that stops answering cannot block past `timeout` (#619). */
+function inAction(kind: Kind, name: string, handler: Handler): Handler {
+  const sel = kind === 'Page' || kind === 'Frame' ? 1 : 0;
+  return async (h, self, args) => {
+    const frame = kind === 'Page' || kind === 'Frame' ? frameOf(kind, self) : self._frame;
+    const timeout = h.timeout(frame, args[sel + OPT_INDEX[name]]?.timeout);
+    try {
+      return await ACTION.run({ timeout, stalled: false }, () => handler(h, self, args));
+    } catch (e) {
+      if (!(e instanceof PageStalled)) throw e;
+      throw new errors.TimeoutError(`${API_NAME[kind]}.${name}: Timeout ${Math.round(timeout)}ms exceeded.\n`
+        + 'Call log:\n  - waiting for the page to respond');
+    }
+  };
+}
+
 function patchProto(kind: Kind, proto: any): void {
   if (!proto || proto === Object.prototype || PATCHED.has(proto)) return;
   PATCHED.add(proto);
-  const table = kind === 'Mouse' || kind === 'Keyboard' ? INPUT_HANDLERS[kind] : handlers(kind);
-  for (const [name, handler] of Object.entries(table)) wrap(kind, proto, name, handler);
+  if (kind === 'Mouse' || kind === 'Keyboard') {
+    for (const [name, handler] of Object.entries(INPUT_HANDLERS[kind])) wrap(kind, proto, name, handler);
+    return;
+  }
+  for (const [name, handler] of Object.entries(handlers(kind))) wrap(kind, proto, name, inAction(kind, name, handler));
 }
 
 /** The unpatched Playwright method `name` of `obj`'s class. */

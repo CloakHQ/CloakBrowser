@@ -274,6 +274,14 @@ _PAGES = {"/index.html": INDEX_HTML, "/frame.html": FRAME_HTML}
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/hang"):
+            time.sleep(30)  # a server that never answers
+            return
+        if self.path.startswith("/slow"):
+            time.sleep(3)  # answers, late
+            self.send_response(204)
+            self.end_headers()
+            return
         body = _PAGES.get(self.path.split("?")[0])
         self.send_response(200 if body else 404)
         self.send_header("content-type", "text/html; charset=utf-8")
@@ -859,6 +867,105 @@ def test_select_option_that_navigates_the_page(page):
         s.onchange = () => f.submit(); f.append(s); document.body.prepend(f); }""")
     assert page.select_option("#nav", "b") == ["b"]
     page.wait_for_url("**city=b")
+
+
+SYNC_XHR = "var x = new XMLHttpRequest(); x.open('GET', '/hang', false); x.send();"
+
+
+def _stalling_select(target, onchange):
+    target.evaluate("""js => { const s = document.createElement('select'); s.id = 'stall';
+        for (const [l, v] of [['-', ''], ['Alfa', 'a'], ['Bravo', 'b']]) s.add(new Option(l, v));
+        s.setAttribute('onchange', js); document.body.prepend(s); }""", onchange)
+
+
+def test_select_option_times_out_when_the_page_stops_answering(page):
+    """#619: timeout= holds even when a call to the page never returns."""
+    _stalling_select(page, SYNC_XHR)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="Timeout 2000ms exceeded"):
+        page.select_option("#stall", "b", timeout=2000)
+    assert time.monotonic() - started < 5
+
+
+def test_select_option_returns_when_its_navigation_never_commits(page):
+    """#619: the pick started a navigation the server never answers; Playwright returns at once."""
+    _stalling_select(page, "location.href = '/hang'")
+    started = time.monotonic()
+    assert page.select_option("#stall", "b", timeout=5000) == ["b"]
+    assert time.monotonic() - started < 4.5  # returned, did not wait out the timeout
+
+
+def test_select_option_in_a_frame_that_navigates_the_top_page(page):
+    """#619: a pick in an iframe that navigates the top page also counts as a navigation."""
+    f = frame(page)
+    _stalling_select(f, "top.location.href = '/hang'")
+    started = time.monotonic()
+    assert f.select_option("#stall", "b", timeout=5000) == ["b"]
+    assert time.monotonic() - started < 4.5
+
+
+def test_click_times_out_when_the_page_stops_answering(page):
+    """#619: the timeout holds for every humanized action, not just select_option;
+    releasing the held modifiers afterwards does not wait out the timeout again."""
+    page.evaluate("""js => { const b = document.createElement('button'); b.id = 'stallbtn';
+        b.textContent = 'stall'; b.setAttribute('onclick', js); document.body.prepend(b); }""", SYNC_XHR)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="waiting for the page to respond"):
+        page.click("#stallbtn", modifiers=["Shift", "Alt"], timeout=2000)
+    assert time.monotonic() - started < 3.5  # one wait of 2s, not one more per held modifier
+
+
+def test_a_stall_leaves_no_modifier_key_held(page):
+    """#619: a click with modifiers on a page that stalls still releases every
+    modifier (the page gets the releases once it answers again)."""
+    page.evaluate("""js => { const b = document.createElement('button'); b.id = 'stallbtn';
+        b.textContent = 'stall'; b.setAttribute('onclick', js); document.body.prepend(b); }""",
+                  "var x = new XMLHttpRequest(); x.open('GET', '/slow', false); x.send();")
+    with pytest.raises(TimeoutError, match="waiting for the page to respond"):
+        page.click("#stallbtn", modifiers=["Shift", "Alt"], timeout=1000)
+    page.evaluate("1")  # returns once the page answers again
+    reset(page)
+    page.click("#btn")
+    down = events(page, "mousedown")[-1]
+    assert not down["shift"] and not down["alt"], down
+
+
+def test_typing_times_out_when_the_page_stops_answering(page):
+    """#619: a field whose input handler stalls the page times out."""
+    page.evaluate("""js => { const i = document.createElement('input'); i.id = 'stallin';
+        i.setAttribute('oninput', js); document.body.prepend(i); }""", SYNC_XHR)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="waiting for the page to respond"):
+        page.fill("#stallin", "abcdef", timeout=2000)
+    assert time.monotonic() - started < 5
+
+
+def test_human_pauses_do_not_count_against_the_timeout(page):
+    """#619: only a browser call that gets no answer times out, not the deliberate pauses."""
+    page.fill("#name", "ab", timeout=1000, human_config={"field_switch_delay": (2500, 2500)})
+    assert value(page, "#name") == "ab"
+
+
+def test_long_fill_is_not_cut_off_by_the_timeout(page):
+    """#619: typing is slow by design; each key answers in time, so a long fill finishes."""
+    text = "x" * 40
+    page.fill("#name", text, timeout=1000, human_config={"typing_delay": 60})
+    assert value(page, "#name") == text
+
+
+def test_bounded_calls_keep_the_idle_between_actions(page, monkeypatch):
+    """#619: bounding browser calls must not mark a top-level action as nested (nested calls skip the idle)."""
+    from cloakbrowser.human.engine import Human
+    calls = []
+    orig = Human.idle
+
+    async def spy(self, cfg):
+        calls.append(cfg)
+        await orig(self, cfg)
+
+    monkeypatch.setattr(Human, "idle", spy)
+    page.click("#btn")
+    assert calls
 
 
 # --- frames and handles ------------------------------------------------------
