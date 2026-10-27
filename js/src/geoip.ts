@@ -106,8 +106,13 @@ export async function resolveProxyGeo(
   // a DB hiccup would let WebRTC fall back to the real IP behind a proxy while
   // the connection shows the proxy IP — a real deanonymization.
   let ip = await resolveExitIp(proxyUrl, remainingMs(deadline));
-  // Hostname fallback only applies to a proxy; no proxy → echo services only
-  if (!ip && proxyUrl && !deadlineExpired(deadline)) ip = await resolveProxyIp(proxyUrl);
+  // Hostname fallback only applies to a proxy; no proxy → echo services only.
+  // A private address (a local forwarding proxy, a LAN gateway) is never the
+  // exit, so it would only produce a misleading lookup error.
+  if (!ip && proxyUrl && !deadlineExpired(deadline)) {
+    ip = await resolveProxyIp(proxyUrl);
+    if (ip && isPrivateIp(ip)) ip = null;
+  }
   if (!ip || deadlineExpired(deadline)) {
     if (deadlineExpired(deadline)) {
       throw new Error(`GeoIP resolution timed out after ${timeoutMs / 1000}s`);
@@ -185,6 +190,23 @@ export async function resolveProxyIp(
   } catch {
     return null;
   }
+}
+
+const PRIVATE_NETWORKS = new net.BlockList();
+PRIVATE_NETWORKS.addSubnet("10.0.0.0", 8, "ipv4");
+PRIVATE_NETWORKS.addSubnet("172.16.0.0", 12, "ipv4");
+PRIVATE_NETWORKS.addSubnet("192.168.0.0", 16, "ipv4");
+PRIVATE_NETWORKS.addSubnet("127.0.0.0", 8, "ipv4");
+PRIVATE_NETWORKS.addSubnet("169.254.0.0", 16, "ipv4");
+PRIVATE_NETWORKS.addAddress("::1", "ipv6");
+PRIVATE_NETWORKS.addSubnet("fc00::", 7, "ipv6");
+PRIVATE_NETWORKS.addSubnet("fe80::", 10, "ipv6");
+
+/** @internal Exported for testing. Private/internal, not routable on the internet. */
+export function isPrivateIp(ip: string): boolean {
+  const family = net.isIP(ip);
+  if (!family) return false;
+  return PRIVATE_NETWORKS.check(ip, family === 6 ? "ipv6" : "ipv4");
 }
 
 const IP_ECHO_URLS = [

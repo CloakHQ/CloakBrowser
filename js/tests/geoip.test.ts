@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   COUNTRY_LOCALE_MAP,
   DEFAULT_GEOIP_TIMEOUT_MS,
+  isPrivateIp,
   maybeResolveGeoip,
   resolveProxyGeo,
   resolveProxyIp,
@@ -55,6 +56,17 @@ describe("resolveProxyIp", () => {
   it("extracts IP after normalization (http:// prepended by maybeResolveGeoip)", async () => {
     expect(await resolveProxyIp("http://user:pass@10.50.96.5:8888")).toBe("10.50.96.5");
     expect(await resolveProxyIp("http://10.50.96.5:8888")).toBe("10.50.96.5");
+  });
+});
+
+describe("isPrivateIp", () => {
+  it("classifies loopback, private and link-local ranges", () => {
+    for (const ip of ["127.0.0.1", "10.0.0.1", "172.16.5.4", "192.168.1.1", "169.254.1.1", "::1", "fd00::1", "fe80::1"]) {
+      expect(isPrivateIp(ip), ip).toBe(true);
+    }
+    for (const ip of ["8.8.8.8", "172.32.0.1", "2001:4860:4860::8888", "not-an-ip"]) {
+      expect(isPrivateIp(ip), ip).toBe(false);
+    }
   });
 });
 
@@ -163,6 +175,25 @@ describe("maybeResolveGeoip", () => {
       .mockResolvedValue({ ok: true, text: async () => "5.6.7.8" } as Response);
 
     await expect(resolveProxyGeo(null)).rejects.toThrow("database is unavailable");
+  });
+
+  it("does not fall back to a private proxy address when the exit IP is unknown", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-private-proxy-"));
+    tempDirs.push(cacheDir);
+    const geoipDir = path.join(cacheDir, "geoip");
+    fs.mkdirSync(geoipDir, { recursive: true });
+    fs.writeFileSync(path.join(geoipDir, "GeoLite2-City.mmdb"), "stub");
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+
+    // A local forwarding proxy that is not listening: exit-IP discovery fails.
+    const server = http.createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    await expect(resolveProxyGeo(`http://127.0.0.1:${port}`)).rejects.toThrow(
+      "could not discover the egress IP"
+    );
   });
 
   it("throws when the GeoIP database lookup fails", async () => {
