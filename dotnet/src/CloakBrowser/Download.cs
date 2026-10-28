@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Formats.Tar;
 using System.IO.Compression;
-using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
@@ -44,9 +43,25 @@ public static class Download
     // Auto-update check interval (1 hour).
     private const int UpdateCheckInterval = 3600;
 
-    // Free-tier welcome banner re-show interval (3 days, seconds). Free users see
-    // the Pro upsell again after this gap; Pro users see it only once (see ShowWelcome).
-    internal const long WelcomeFreeInterval = 3L * 24 * 3600;
+    // Free-tier welcome banner re-show interval (1 day, seconds). Free users see
+    // the "get the latest free" invite again after this gap; Pro users see it only
+    // once (see ShowWelcome).
+    internal const long WelcomeFreeInterval = 24L * 3600;
+
+    // Attempts to rename an extraction into place while concurrent callers are
+    // replacing the same partial install (see ExtractArchive).
+    private const int InstallRenameAttempts = 5;
+
+    // Retries for a directory rename that Windows transiently denies (see
+    // MoveDirectoryWithRetry): about 2.5 seconds in total.
+    private const int TransientRenameAttempts = 10;
+    private const int TransientRenameDelayMs = 250;
+
+    // HRESULTs of the IOException Directory.Move throws on Windows for
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
+    private const int AccessDeniedHResult = unchecked((int)0x80070005);
+    private const int SharingViolationHResult = unchecked((int)0x80070020);
+    private const int LockViolationHResult = unchecked((int)0x80070021);
 
     private static readonly HttpClient Http = CreateHttpClient();
 
@@ -82,14 +97,8 @@ public static class Download
     // Pro Chromium major shown in the free-tier welcome banner. Bump at each Pro
     // major release (there is no local constant to derive it from - the live Pro
     // version comes from the network, which we don't call just to print a banner).
-    private const string ProMajor = "148";
+    private const string ProMajor = "155";
 
-    /// <summary>
-    /// Show the first-launch welcome banner once (gated by a marker file). The
-    /// Pro-upsell line is shown to free-tier users only; Pro users get a plain
-    /// banner (no "running free tier" message, which would be false for them).
-    /// Mirrors Python <c>_show_welcome(pro=...)</c>.
-    /// </summary>
     /// <summary>
     /// Whether the welcome banner should be shown now. Pro: once ever (only when
     /// the marker is absent). Free: re-show when the marker is absent or its
@@ -112,27 +121,64 @@ public static class Download
         }
     }
 
-    private static void ShowWelcome(bool pro = false)
+    private static bool _previewFallbackWarned;
+
+    /// <summary>Reset the once-per-process Preview-fallback notice. Test seam.</summary>
+    internal static void ResetPreviewFallbackWarned() => _previewFallbackWarned = false;
+
+    /// <summary>
+    /// Tell the user, once per process, that a requested Preview build does not exist
+    /// for this platform and the Stable build is being used instead.
+    /// </summary>
+    private static void WarnPreviewFallback()
+    {
+        if (_previewFallbackWarned) return;
+        _previewFallbackWarned = true;
+        Console.Error.WriteLine(
+            "[cloakbrowser] Preview channel requested, but no preview build is available for "
+            + $"{Config.GetPlatformTag()}; using the stable build.");
+    }
+
+    /// <summary>
+    /// Show the launch welcome banner. A marker file gates the cadence: a paid
+    /// (Pro) key shows once ever; free (keyless or a free GitHub key) re-shows
+    /// every <see cref="WelcomeFreeInterval"/>. Mirrors Python <c>_show_welcome(tier)</c>.
+    ///
+    /// <paramref name="tier"/>:
+    ///   "pro"     — a paid license key (Pro banner + support address)
+    ///   "free"    — a free GitHub key (latest binary, one concurrent session)
+    ///   "keyless" — no key, running the older free binary (invite the free login)
+    /// </summary>
+    internal static void ShowWelcome(string tier = "keyless")
     {
         var marker = Path.Combine(Config.GetCacheDir(), ".welcome_shown");
-        if (!WelcomeDue(marker, pro)) return;
+        if (!WelcomeDue(marker, tier == "pro")) return;
 
+        // ASCII-only banner: on a legacy Windows console a non-ASCII glyph can
+        // crash or mojibake the write, and this runs on the binary-download
+        // path. Keep the three wrappers byte-parallel.
         var sb = new System.Text.StringBuilder();
         sb.Append('\n');
         sb.Append("  CloakBrowser - stealth Chromium for automation\n");
         sb.Append("  https://github.com/CloakHQ/CloakBrowser\n");
         sb.Append('\n');
-        if (pro)
+        if (tier == "pro")
         {
             sb.Append($"  CloakBrowser Pro active (v{ProMajor}) - latest binary, newest patches.\n");
             sb.Append("  Pro support -> support@cloakbrowser.dev\n");
         }
+        else if (tier == "free")
+        {
+            sb.Append($"  CloakBrowser free (v{ProMajor}): the latest binary, 1 concurrent session.\n");
+            sb.Append("  For more than one concurrent session -> https://cloakbrowser.dev\n");
+        }
         else
         {
             var freeMajor = Config.GetChromiumVersion().Split('.')[0];
-            sb.Append($"  Running free tier (v{freeMajor}). " +
-                      $"Pro = latest binary (v{ProMajor}) + newest anti-bot patches.\n");
-            sb.Append("  Try Pro free for 7 days -> https://cloakbrowser.dev\n");
+            sb.Append($"  Running the free binary (v{freeMajor}). " +
+                      $"The latest binary (v{ProMajor}) is free too, with 1 concurrent session.\n");
+            sb.Append("  Get your key: run  cloakbrowser login  or visit https://cloakbrowser.dev/free\n");
+            sb.Append("  For more than one concurrent session -> https://cloakbrowser.dev\n");
         }
         sb.Append("  Star us if CloakBrowser helps your project!\n");
         sb.Append('\n');
@@ -163,8 +209,10 @@ public static class Download
     /// the platform default.
     /// </param>
     /// <param name="ct">Cancellation token.</param>
+    /// <param name="releaseChannel">Stable (default) or Preview binary channel.</param>
     public static async Task<string> EnsureBinaryAsync(
-        string? licenseKey = null, string? browserVersion = null, CancellationToken ct = default)
+        string? licenseKey = null, string? browserVersion = null,
+        CancellationToken ct = default, string? releaseChannel = null)
     {
         // Check for local override first.
         var localOverride = Config.GetLocalBinaryOverride();
@@ -187,16 +235,23 @@ public static class Download
 
         if (!string.IsNullOrEmpty(key))
         {
-            var info = License.ValidateLicense(key);
+            // Sync HTTP on a cache miss: run it off the caller's thread (e.g. a UI thread).
+            var info = await Task.Run(() => License.ValidateLicense(key)).ConfigureAwait(false);
             if (info != null && info.Valid)
             {
+                // Free tier always gets the latest build. Drop any version pin: the
+                // server force-serves latest to free keys, so fetching a pinned
+                // version's signed manifest would mismatch the served bytes and fail
+                // checksum verification. Paid keys keep pinning/rollback.
+                var proVersion = info.Plan == "free" ? null : requestedVersion;
                 // A valid license is entitled to Pro, so Pro failures surface loudly
                 // rather than silently substituting the older free binary. (A blip
                 // during a routine update never reaches here: EnsureProBinaryAsync
                 // returns the cached Pro binary and updates in the background.)
                 try
                 {
-                    return await EnsureProBinaryAsync(key, requestedVersion, ct).ConfigureAwait(false);
+                    return await EnsureProBinaryAsync(
+                        key, proVersion, info.Plan, ct, releaseChannel).ConfigureAwait(false);
                 }
                 catch (BinaryVerificationError)
                 {
@@ -215,11 +270,18 @@ public static class Download
             }
             else if (info != null)
             {
-                CloakLog.Warning("License validation failed (plan={0}), using free tier", info.Plan);
+                // Key supplied but rejected - abort, never downgrade to free.
+                throw new InvalidOperationException(
+                    $"CloakBrowser Pro: license key is invalid or expired (plan={info.Plan}). " +
+                    "Check CLOAKBROWSER_LICENSE_KEY, or unset it to use the free binary.");
             }
             else
             {
-                CloakLog.Warning("License validation unavailable, using free tier");
+                // Key supplied but unvalidatable (server down, no cache) - abort.
+                throw new InvalidOperationException(
+                    "CloakBrowser Pro: license could not be validated (server unreachable " +
+                    "and no cached validation). Retry in a moment, or unset " +
+                    "CLOAKBROWSER_LICENSE_KEY to use the free binary.");
             }
         }
 
@@ -292,8 +354,9 @@ public static class Download
     }
 
     /// <summary>Synchronous convenience wrapper around <see cref="EnsureBinaryAsync"/>.</summary>
-    public static string EnsureBinary(string? licenseKey = null, string? browserVersion = null) =>
-        EnsureBinaryAsync(licenseKey, browserVersion).GetAwaiter().GetResult();
+    public static string EnsureBinary(
+        string? licenseKey = null, string? browserVersion = null, string? releaseChannel = null) =>
+        EnsureBinaryAsync(licenseKey, browserVersion, releaseChannel: releaseChannel).GetAwaiter().GetResult();
 
     private static async Task DownloadAndExtractAsync(string? version, CancellationToken ct)
     {
@@ -343,15 +406,20 @@ public static class Download
 
     /// <summary>Ensure the Pro binary is downloaded and cached. Returns the binary path.</summary>
     private static async Task<string> EnsureProBinaryAsync(
-        string licenseKey, string? requestedVersion, CancellationToken ct)
+        string licenseKey, string? requestedVersion, string? plan,
+        CancellationToken ct, string? releaseChannel)
     {
+        // A validated free GitHub key routes here too (it downloads the latest binary),
+        // but its welcome banner is the "free" one, not the paid Pro banner.
+        var welcomeTier = plan == "free" ? "free" : "pro";
+
         if (requestedVersion != null)
         {
             var pinnedPath = Config.GetBinaryPath(requestedVersion, pro: true);
             if (File.Exists(pinnedPath) && IsExecutable(pinnedPath))
             {
                 CloakLog.Debug("Pinned Pro binary found in cache: {0} (version {1})", pinnedPath, requestedVersion);
-                ShowWelcome(pro: true);
+                ShowWelcome(welcomeTier);
                 return pinnedPath;
             }
 
@@ -365,12 +433,12 @@ public static class Download
 
             // Do NOT write the Pro version marker for a pinned download. A rollback
             // pin must not make future unpinned launches stick to the old build.
-            ShowWelcome(pro: true);
+            ShowWelcome(welcomeTier);
             return pinnedPath;
         }
 
-        // Unpinned: track the server's latest stable.
-        var effective = Config.GetEffectiveVersion(pro: true);
+        // Unpinned: track the server's latest selected channel.
+        var effective = Config.GetEffectiveVersion(pro: true, releaseChannel: releaseChannel);
 
         // Honor CLOAKBROWSER_AUTO_UPDATE=false the way the free path does: frozen AND a
         // cached Pro build present → keep it, skip the server check. With no cached build
@@ -381,13 +449,24 @@ public static class Download
             StringComparison.OrdinalIgnoreCase);
         if (frozen && ProBinaryReady(effective))
         {
-            ShowWelcome(pro: true);
+            ShowWelcome(welcomeTier);
             return Config.GetBinaryPath(effective, pro: true);
         }
 
         // GetProLatestVersion() is rate-limited to one network call per hour and returns a
         // cached string in between, so this foreground check stays cheap steady-state.
-        var latest = License.GetProLatestVersion();
+        var latest = await Task.Run(() => License.GetProLatestVersion(releaseChannel)).ConfigureAwait(false);
+
+        // Tell the user when they asked for Preview but the server has no preview build
+        // for this platform, so the Stable build is used instead. The lookup is a cache
+        // hit (GetProLatestVersion above already populated it), so this only touches the
+        // network on the once-an-hour refresh.
+        if (Config.NormalizeReleaseChannel(releaseChannel) == "preview")
+        {
+            var release = await Task.Run(() => License.GetProLatestRelease(releaseChannel)).ConfigureAwait(false);
+            if (release is { Fallback: true })
+                WarnPreviewFallback();
+        }
 
         // Prefer the server's latest when it is newer than — or replaces a missing — the
         // cached build. Otherwise stay on the cached Pro binary (fast, offline-ok).
@@ -416,9 +495,9 @@ public static class Download
             // so `info` (and a later server-outage launch) reflect the build we actually
             // launch — never a stale marker.
             if (version != effective)
-                WriteProVersionMarker(version);
+                WriteProVersionMarker(version, releaseChannel);
             CloakLog.Debug("Pro binary found in cache: {0} (version {1})", readyPath, version);
-            ShowWelcome(pro: true);
+            ShowWelcome(welcomeTier);
             return readyPath;
         }
 
@@ -440,7 +519,7 @@ public static class Download
             if (ProBinaryReady(effective))
             {
                 CloakLog.Warning("Pro update to {0} failed; launching cached Pro binary {1}", version, effective);
-                ShowWelcome(pro: true);
+                ShowWelcome(welcomeTier);
                 return Config.GetBinaryPath(effective, pro: true);
             }
             throw;
@@ -451,8 +530,8 @@ public static class Download
             throw new InvalidOperationException(
                 $"Pro download completed but binary not found at: {downloadedPath}");
 
-        WriteProVersionMarker(version);
-        ShowWelcome(pro: true);
+        WriteProVersionMarker(version, releaseChannel);
+        ShowWelcome(welcomeTier);
         return downloadedPath;
     }
 
@@ -582,16 +661,18 @@ public static class Download
         }
     }
 
-    private static void WriteProVersionMarker(string version)
+    private static void WriteProVersionMarker(string version, string? releaseChannel = null)
     {
-        var marker = Path.Combine(Config.GetCacheDir(), $"latest_pro_version_{Config.GetPlatformTag()}");
+        var markerPrefix = Config.NormalizeReleaseChannel(releaseChannel) == "preview"
+            ? "latest_pro_version_preview"
+            : "latest_pro_version";
+        var marker = Path.Combine(Config.GetCacheDir(), $"{markerPrefix}_{Config.GetPlatformTag()}");
         try
         {
             Directory.CreateDirectory(Config.GetCacheDir());
             var tmp = marker + ".tmp";
             File.WriteAllText(tmp, version);
-            if (File.Exists(marker)) File.Delete(marker);
-            File.Move(tmp, marker);
+            File.Move(tmp, marker, overwrite: true);
         }
         catch (IOException) { }
     }
@@ -897,106 +978,113 @@ public static class Download
     private static void ExtractArchive(string archivePath, string destDir, string? binaryPath)
     {
         CloakLog.Info("Extracting to {0}", destDir);
-
-        // Clean existing dir if partial download existed.
-        if (Directory.Exists(destDir))
-            Directory.Delete(destDir, recursive: true);
-
-        Directory.CreateDirectory(destDir);
-
-        if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-            ExtractZip(archivePath, destDir);
-        else
-            ExtractTar(archivePath, destDir);
-
-        // If extracted into a single subdirectory, flatten it (but never .app bundles).
-        FlattenSingleSubdir(destDir);
-
         var bp = binaryPath ?? Config.GetBinaryPath();
-        if (File.Exists(bp))
-            MakeExecutable(bp);
 
-        // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts.
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            RemoveQuarantine(destDir);
+        // Extract into a private sibling dir, then rename it into place. Concurrent
+        // first runs (in this process or others) each get their own staging dir, so
+        // none of them can see or delete another's half-written install.
+        var stagingDir = $"{destDir}.partial-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(stagingDir);
+        var staleDirs = new List<string>();
+        try
+        {
+            if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                ExtractZip(archivePath, stagingDir);
+            else
+                ExtractTar(archivePath, stagingDir);
+
+            // If extracted into a single subdirectory, flatten it (but never .app bundles).
+            FlattenSingleSubdir(stagingDir);
+
+            var stagedBinaryPath = Path.Combine(stagingDir, Path.GetRelativePath(destDir, bp));
+            if (File.Exists(stagedBinaryPath))
+                MakeExecutable(stagedBinaryPath);
+
+            // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts.
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                RemoveQuarantine(stagingDir);
+
+            for (var attempt = 1; attempt <= InstallRenameAttempts; attempt++)
+            {
+                try
+                {
+                    MoveDirectoryWithRetry(stagingDir, destDir);
+                    break;
+                }
+                catch (Exception err) when (err is IOException or UnauthorizedAccessException)
+                {
+                    // destDir is in the way. Keep it if another caller finished a complete
+                    // install; replace it if it is an incomplete leftover, such as an
+                    // interrupted in-place extraction from an older release.
+                    if (File.Exists(bp) && IsExecutable(bp)) break;
+                    if (attempt == InstallRenameAttempts) throw;
+                }
+                // Rename the leftover aside before deleting it. Deleting it in place races
+                // other callers renaming their extraction into destDir.
+                var staleDir = $"{destDir}.stale-{Guid.NewGuid():N}";
+                try
+                {
+                    MoveDirectoryWithRetry(destDir, staleDir);
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    continue; // another caller moved it aside first
+                }
+                staleDirs.Add(staleDir);
+            }
+        }
+        finally
+        {
+            // Best effort, so a cleanup failure never masks the exception being thrown.
+            foreach (var leftoverDir in staleDirs.Prepend(stagingDir))
+            {
+                try { if (Directory.Exists(leftoverDir)) Directory.Delete(leftoverDir, recursive: true); }
+                catch (Exception err) when (err is IOException or UnauthorizedAccessException) { }
+            }
+        }
 
         if (File.Exists(bp))
             CloakLog.Info("Binary ready: {0}", bp);
     }
 
-    /// <summary>
-    /// Resolves an archive entry to an absolute path under <paramref name="destinationDir"/>,
-    /// guarding against path-traversal / zip-slip. The combined path is normalized via
-    /// <see cref="Path.GetFullPath(string)"/> and must stay within the (also normalized)
-    /// destination directory - comparison accounts for a trailing directory separator and
-    /// uses <see cref="StringComparison.Ordinal"/>. Throws <see cref="InvalidOperationException"/>
-    /// (naming the offending entry) when the entry escapes the destination.
-    /// </summary>
-    internal static string ResolveSafeEntryPath(string destinationDir, string entryName)
-    {
-        var destFull = Path.GetFullPath(destinationDir);
-        // Ensure a trailing separator so a sibling like "<dest>foo" can't masquerade as
-        // being inside "<dest>".
-        var destPrefix = destFull.EndsWith(Path.DirectorySeparatorChar)
-            ? destFull
-            : destFull + Path.DirectorySeparatorChar;
-
-        var memberPath = Path.GetFullPath(Path.Combine(destFull, entryName));
-
-        if (!string.Equals(memberPath, destFull, StringComparison.Ordinal) &&
-            !memberPath.StartsWith(destPrefix, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException($"Archive contains path traversal: {entryName}");
-        }
-
-        return memberPath;
-    }
-
     private static void ExtractTar(string archivePath, string destDir)
     {
+        // Signature-verified before extraction, so unpack as-is (symlinks included:
+        // macOS .app bundles need them for the Framework layout).
         using var fileStream = File.OpenRead(archivePath);
         using var gzip = new GZipStream(fileStream, CompressionMode.Decompress);
-        using var reader = new TarReader(gzip);
+        TarFile.ExtractToDirectory(gzip, destDir, overwriteFiles: true);
+    }
 
-        TarEntry? entry;
-        while ((entry = reader.GetNextEntry()) != null)
+    /// <summary>Rename a directory, retrying while Windows reports it as in use.</summary>
+    private static void MoveDirectoryWithRetry(string source, string destination)
+    {
+        for (var attempt = 1; attempt <= TransientRenameAttempts; attempt++)
         {
-            // Allow symlinks - macOS .app bundles require them (Framework layout).
-            if (entry.EntryType is TarEntryType.SymbolicLink or TarEntryType.HardLink)
+            try
             {
-                var linkTarget = entry.LinkName;
-                if (Path.IsPathRooted(linkTarget) || linkTarget.Split('/').Contains(".."))
-                {
-                    CloakLog.Warning("Skipping suspicious symlink: {0} -> {1}", entry.Name, linkTarget);
-                    continue;
-                }
-                var linkPath = Path.Combine(destDir, entry.Name);
-                Directory.CreateDirectory(Path.GetDirectoryName(linkPath)!);
-                entry.ExtractToFile(linkPath, overwrite: true);
-                continue;
+                Directory.Move(source, destination);
+                return;
             }
-
-            var memberPath = ResolveSafeEntryPath(destDir, entry.Name);
-
-            if (entry.EntryType == TarEntryType.Directory)
+            catch (Exception err) when (err is IOException or UnauthorizedAccessException)
             {
-                Directory.CreateDirectory(memberPath);
-                continue;
+                // Windows antivirus briefly holds freshly written files open, which fails the
+                // move with access denied. An existing destination is not transient.
+                var accessDenied = err is UnauthorizedAccessException
+                    || err.HResult is AccessDeniedHResult or SharingViolationHResult or LockViolationHResult;
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                    || !accessDenied
+                    || attempt == TransientRenameAttempts
+                    || Directory.Exists(destination))
+                    throw;
+                Thread.Sleep(TransientRenameDelayMs);
             }
-
-            Directory.CreateDirectory(Path.GetDirectoryName(memberPath)!);
-            entry.ExtractToFile(memberPath, overwrite: true);
         }
     }
 
     private static void ExtractZip(string archivePath, string destDir)
     {
-        using var zf = ZipFile.OpenRead(archivePath);
-        foreach (var info in zf.Entries)
-        {
-            // Validate every entry up-front; throws on any zip-slip attempt.
-            ResolveSafeEntryPath(destDir, info.FullName);
-        }
+        // Signature-verified before extraction, so unpack as-is.
         ZipFile.ExtractToDirectory(archivePath, destDir, overwriteFiles: true);
     }
 
@@ -1083,14 +1171,16 @@ public static class Download
     /// effectively running the free binary, and the active key may differ from the
     /// cached one.
     /// </summary>
-    public static CloakBinaryInfo BinaryInfo(string? browserVersion = null)
+    public static CloakBinaryInfo BinaryInfo(
+        string? browserVersion = null, string? releaseChannel = null)
     {
         // browserVersion (or CLOAKBROWSER_VERSION) pins the reported version so the
         // info matches what a pinned launch actually runs, instead of latest.
         var requested = Config.NormalizeRequestedVersion(browserVersion);
         // Prefer Pro only if a Pro binary actually exists on disk. GetEffectiveVersion
         // returns null for Pro when nothing is cached (it never falls back to free).
-        var proVersion = requested ?? Config.GetEffectiveVersion(pro: true);
+        var proVersion = requested ?? Config.GetEffectiveVersion(
+            pro: true, releaseChannel: releaseChannel);
         var pro = ProBinaryReady(proVersion);
 
         string effective;
@@ -1115,7 +1205,7 @@ public static class Download
             BinaryPath: binaryPath,
             Installed: File.Exists(binaryPath),
             CacheDir: Config.GetBinaryDir(effective, pro: pro),
-            DownloadUrl: pro ? Config.GetProLatestDownloadUrl() : Config.GetDownloadUrl(effective));
+            DownloadUrl: pro ? Config.GetProLatestDownloadUrl(releaseChannel) : Config.GetDownloadUrl(effective));
     }
 
     // -----------------------------------------------------------------------
@@ -1149,17 +1239,18 @@ public static class Download
     public static string? CheckForUpdate() => CheckForUpdateAsync().GetAwaiter().GetResult();
 
     /// <summary>
-    /// Move a Pro install to the server's latest stable. Blocks until complete. Returns the
+    /// Move a Pro install to the selected channel's latest. Blocks until complete. Returns the
     /// new version when a newer Pro build is downloaded or an already-cached newer build is
     /// activated, else null (already up to date or the server could not be reached).
     /// Requires a valid Pro license key.
     /// </summary>
-    public static async Task<string?> CheckForProUpdateAsync(string licenseKey, CancellationToken ct = default)
+    public static async Task<string?> CheckForProUpdateAsync(
+        string licenseKey, CancellationToken ct = default, string? releaseChannel = null)
     {
-        var latest = License.GetProLatestVersion();
+        var latest = await Task.Run(() => License.GetProLatestVersion(releaseChannel)).ConfigureAwait(false);
         if (string.IsNullOrEmpty(latest)) return null;
 
-        var effective = Config.GetEffectiveVersion(pro: true);
+        var effective = Config.GetEffectiveVersion(pro: true, releaseChannel: releaseChannel);
         if (effective != null && !Config.VersionNewer(latest, effective) && ProBinaryReady(effective))
         {
             // Already on the latest cached Pro build.
@@ -1175,13 +1266,13 @@ public static class Download
                 throw new InvalidOperationException($"Pro download completed but binary not found at: {p}");
         }
 
-        WriteProVersionMarker(latest);
+        WriteProVersionMarker(latest, releaseChannel);
         return latest;
     }
 
     /// <summary>Synchronous convenience wrapper around <see cref="CheckForProUpdateAsync"/>.</summary>
-    public static string? CheckForProUpdate(string licenseKey) =>
-        CheckForProUpdateAsync(licenseKey).GetAwaiter().GetResult();
+    public static string? CheckForProUpdate(string licenseKey, string? releaseChannel = null) =>
+        CheckForProUpdateAsync(licenseKey, releaseChannel: releaseChannel).GetAwaiter().GetResult();
 
     private static bool ShouldCheckForUpdate()
     {

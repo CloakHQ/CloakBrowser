@@ -8,6 +8,7 @@ import {
   getBinaryDir,
   getDownloadUrl,
   getFallbackDownloadUrl,
+  normalizeReleaseChannel,
   normalizeRequestedVersion,
   binarySupportsHeadlessNoViewport,
   binarySupportsMaximizedWindow,
@@ -55,8 +56,16 @@ describe("config", () => {
   });
 
   it("getCacheDir returns ~/.cloakbrowser by default", () => {
-    const dir = getCacheDir();
-    expect(dir).toContain(".cloakbrowser");
+    // tests/setup.ts points the cache dir at a temp dir for isolation; drop it
+    // here to exercise the real default.
+    const prev = process.env.CLOAKBROWSER_CACHE_DIR;
+    delete process.env.CLOAKBROWSER_CACHE_DIR;
+    try {
+      expect(getCacheDir()).toContain(".cloakbrowser");
+    } finally {
+      if (prev === undefined) delete process.env.CLOAKBROWSER_CACHE_DIR;
+      else process.env.CLOAKBROWSER_CACHE_DIR = prev;
+    }
   });
 
   it("getBinaryDir includes platform version", () => {
@@ -70,6 +79,36 @@ describe("config", () => {
     expect(url).toContain("cloakbrowser-");
     expect(url).toContain(".tar.gz");
     expect(url).toContain("cloakbrowser.dev");
+  });
+});
+
+describe("release channel", () => {
+  it("defaults to stable", () => {
+    delete process.env.CLOAKBROWSER_RELEASE_CHANNEL;
+    expect(normalizeReleaseChannel()).toBe("stable");
+  });
+
+  it("normalizes preview case and whitespace", () => {
+    expect(normalizeReleaseChannel(" PREVIEW ")).toBe("preview");
+  });
+
+  it("reads the environment at call time", () => {
+    process.env.CLOAKBROWSER_RELEASE_CHANNEL = "preview";
+    try {
+      expect(normalizeReleaseChannel()).toBe("preview");
+    } finally {
+      delete process.env.CLOAKBROWSER_RELEASE_CHANNEL;
+    }
+  });
+
+  it("explicit stable overrides a preview environment", () => {
+    process.env.CLOAKBROWSER_RELEASE_CHANNEL = "preview";
+    try {
+      expect(normalizeReleaseChannel("stable")).toBe("stable");
+      expect(normalizeReleaseChannel("unknown")).toBe("stable");
+    } finally {
+      delete process.env.CLOAKBROWSER_RELEASE_CHANNEL;
+    }
   });
 });
 

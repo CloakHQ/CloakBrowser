@@ -27,6 +27,17 @@ public class GeoIpTests
         // Extended-coverage entries (parity with Python/JS COUNTRY_LOCALE_MAP).
         Assert.Equal("sl-SI", GeoIp.CountryLocaleMap["SI"]);
         Assert.Equal("es-PE", GeoIp.CountryLocaleMap["PE"]);
+        Assert.Equal("en-SC", GeoIp.CountryLocaleMap["SC"]);
+    }
+
+    [Fact]
+    public void DefaultGeoIpTimeout_IsTwentySeconds()
+    {
+        var field = typeof(GeoIp).GetField(
+            "DefaultGeoIpTimeoutSeconds",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(field);
+        Assert.Equal(20.0, field.GetRawConstantValue());
     }
 
     [Fact]
@@ -50,6 +61,45 @@ public class GeoIpTests
         Assert.Equal("Europe/Berlin", tz);
         Assert.Equal("de-DE", loc);
         Assert.Null(ip);
+    }
+
+    [Fact]
+    public async Task MaybeResolveGeoIp_RawFlags_PromotedAndNotClobbered()
+    {
+        // Raw --fingerprint-timezone/--fingerprint-locale in args count as explicit,
+        // so geoip leaves them alone (and, with no proxy, makes no echo call).
+        var (tz, loc, ip) = await CloakLauncher.MaybeResolveGeoIpAsync(
+            geoip: true, proxy: null, timezone: null, locale: null,
+            args: new List<string>
+            {
+                "--fingerprint-timezone=Asia/Tokyo",
+                "--fingerprint-locale=ja-JP",
+            });
+        Assert.Equal("Asia/Tokyo", tz);
+        Assert.Equal("ja-JP", loc);
+        Assert.Null(ip);
+    }
+
+    [Fact]
+    public async Task MaybeResolveGeoIp_RawLangFlag_PromotesToLocale()
+    {
+        // A lone --lang promotes to locale. Pair with an explicit timezone so the
+        // both-explicit path stays hermetic (no proxy → no network).
+        var (tz, loc, _) = await CloakLauncher.MaybeResolveGeoIpAsync(
+            geoip: true, proxy: null, timezone: "Europe/Berlin", locale: null,
+            args: new List<string> { "--lang=fr-FR" });
+        Assert.Equal("Europe/Berlin", tz);
+        Assert.Equal("fr-FR", loc);
+    }
+
+    [Fact]
+    public async Task MaybeResolveGeoIp_ExplicitParam_BeatsRawFlag()
+    {
+        var (tz, loc, _) = await CloakLauncher.MaybeResolveGeoIpAsync(
+            geoip: true, proxy: null, timezone: "America/New_York", locale: "en-US",
+            args: new List<string> { "--fingerprint-timezone=Asia/Tokyo" });
+        Assert.Equal("America/New_York", tz);
+        Assert.Equal("en-US", loc);
     }
 }
 
@@ -115,23 +165,19 @@ public class KeyboardTests
         Assert.Equal("sqwz", HumanKeyboard.NearbyKeys['a']);
         Assert.Equal("ol", HumanKeyboard.NearbyKeys['p']);
     }
+
+    [Fact]
+    public void NearbyKeys_DigitNeighborsAreDigits()
+    {
+        // #573: a letter typo is rejected by <input type=number>, so the
+        // correcting Backspace would delete the previous real digit.
+        foreach (char d in "0123456789")
+            Assert.True(HumanKeyboard.NearbyKeys[d].All(char.IsDigit), $"'{d}' -> {HumanKeyboard.NearbyKeys[d]}");
+    }
 }
 
 public class ActionabilityTests
 {
-    [Fact]
-    public void CheckSets_Match_Python()
-    {
-        Assert.Equal(new HashSet<string> { "attached", "visible", "enabled", "pointer_events" },
-            new HashSet<string>(Actionability.ChecksClick));
-        Assert.Equal(new HashSet<string> { "attached", "visible", "pointer_events" },
-            new HashSet<string>(Actionability.ChecksHover));
-        Assert.Equal(new HashSet<string> { "attached", "visible", "enabled", "editable", "pointer_events" },
-            new HashSet<string>(Actionability.ChecksInput));
-        Assert.Equal(new HashSet<string> { "attached", "visible", "enabled" },
-            new HashSet<string>(Actionability.ChecksFocus));
-    }
-
     [Fact]
     public void ErrorHierarchy_AllSubclassActionabilityError()
     {

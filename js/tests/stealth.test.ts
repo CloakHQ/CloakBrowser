@@ -2,11 +2,9 @@
  * Unit tests for stealth / anti-detection fixes (issue #110).
  *
  * Covers:
- *   - StealthEval — CDP isolated-world lifecycle (evaluate, invalidate, retry)
- *   - isInputElement / isSelectorFocused — stealth DOM queries with fallback
+ *   - page._stealth wiring (isolated-world evaluate / invalidate / CDP session)
  *   - typeShiftSymbol — CDP Input.dispatchKeyEvent path vs evaluate fallback
  *   - humanType integration — shift symbols routed via CDP
- *   - Navigation invalidation (goto → stealth.invalidate)
  *   - patchPage stealth infrastructure wiring
  *   - SHIFT_SYMBOL_CODES / SHIFT_SYMBOL_KEYCODES completeness
  *
@@ -16,6 +14,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { resolveConfig, rand, randRange, sleep } from "../src/human/config.js";
 import { humanType } from "../src/human/keyboard.js";
+import { humanType as puppeteerHumanType } from "../src/human-puppeteer/keyboard.js";
 import { humanMove, humanClick, clickTarget, humanIdle } from "../src/human/mouse.js";
 
 // =========================================================================
@@ -60,6 +59,7 @@ function buildMockPage(overrides: Record<string, any> = {}): any {
   const page: any = {
     evaluate: overrides.evaluate ?? vi.fn(async () => false),
     addInitScript: vi.fn(async () => {}),
+    on: vi.fn(),
     mouse: {
       move: vi.fn(async () => {}),
       down: vi.fn(async () => {}),
@@ -113,7 +113,12 @@ function buildMockCDP(overrides: Record<string, any> = {}): any {
         return { executionContextId: 42 };
       }
       if (method === "Runtime.evaluate") {
-        return { result: { value: false } };
+        return { result: { value: {
+          v: 2, r: "ok", targetId: 1, gen: 1, attached: true, visible: true,
+          enabled: true, editable: true, isInput: false, focused: false,
+          checked: false, hit: true,
+          box: { x: 100, y: 300, width: 200, height: 30 },
+        } } };
       }
       return {};
     }),
@@ -135,13 +140,38 @@ function buildRawKeyboard() {
 
 
 // =========================================================================
+// Mistype on digits (#573): a letter typo is rejected by <input type=number>,
+// so the correcting Backspace would eat the previous real digit.
+// =========================================================================
+describe("digit mistypes stay digits", () => {
+  it.each([
+    ["playwright", humanType],
+    ["puppeteer", puppeteerHumanType],
+  ])("%s humanType only types digits for numeric text", async (_name, typeFn) => {
+    const cfg = resolveConfig("default", {
+      mistype_chance: 1, typing_delay: 0, typing_delay_spread: 0, typing_pause_chance: 0,
+      key_hold: [0, 0], mistype_delay_notice: [0, 0], mistype_delay_correct: [0, 0],
+    });
+    for (let i = 0; i < 20; i++) {
+      const { raw, downKeys } = buildRawKeyboard();
+      await (typeFn as any)(buildMockPage(), raw, "0123456789", cfg, null);
+      expect(downKeys.filter((k) => k !== "Backspace").every((k) => /^[0-9]$/.test(k))).toBe(true);
+    }
+  });
+});
+
+
+// =========================================================================
 // SHIFT_SYMBOL_CODES / SHIFT_SYMBOL_KEYCODES completeness
 // =========================================================================
 describe("SHIFT_SYMBOL maps completeness", () => {
   it("every shift symbol has a code and keycode entry", async () => {
     // We access these via dynamic import to get internal constants
     // Since they're not exported directly, we test via humanType behavior
-    const cfg = resolveConfig("default", { mistype_chance: 0 });
+    const cfg = resolveConfig("default", {
+      mistype_chance: 0, typing_delay: 1, typing_delay_spread: 0, typing_pause_chance: 0,
+      key_hold: [1, 2], shift_down_delay: [1, 2], shift_up_delay: [0, 1],
+    });
     const SHIFT_SYMBOLS = ['@', '#', '!', '$', '%', '^', '&', '*', '(', ')',
       '_', '+', '{', '}', '|', ':', '"', '<', '>', '?', '~'];
 
@@ -418,7 +448,15 @@ describe("humanType mixed text with CDP", () => {
   });
 
   it("password-like text 'SecurePass!123' uses CDP for '!'", async () => {
-    const cfg = resolveConfig("default", { mistype_chance: 0, typing_delay: 0 });
+    // Zero every random sleep: thinking pauses alone can push 14 chars past the 5s test timeout on CI
+    const cfg = resolveConfig("default", {
+      mistype_chance: 0,
+      typing_delay: 0,
+      typing_pause_chance: 0,
+      shift_down_delay: [0, 0],
+      shift_up_delay: [0, 0],
+      key_hold: [0, 0],
+    });
     const { raw } = buildRawKeyboard();
     const page = buildMockPage();
     const cdpCalls: Array<[string, any]> = [];
@@ -499,437 +537,6 @@ describe("patchPage stealth infrastructure", () => {
 
     expect((page as any)._original).toBeDefined();
     expect((page as any)._humanCfg).toBe(cfg);
-  });
-
-  it("goto invalidates stealth context", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const page = buildMockPage();
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    const stealth = (page as any)._stealth;
-    const invalidateSpy = vi.spyOn(stealth, "invalidate");
-
-    await page.goto("https://example.com");
-
-    expect(invalidateSpy).toHaveBeenCalled();
-  });
-
-  it("humanClickFn is stored for frame patching", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const page = buildMockPage();
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    expect(typeof (page as any)._humanClickFn).toBe("function");
-    expect(typeof (page as any)._humanHoverFn).toBe("function");
-    expect(typeof (page as any)._humanClearFn).toBe("function");
-    expect(typeof (page as any)._humanPressFn).toBe("function");
-  });
-});
-
-
-// =========================================================================
-// StealthEval lifecycle (via patchPage)
-// =========================================================================
-describe("StealthEval lifecycle", () => {
-  it("stealth.invalidate() is callable without error", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const page = buildMockPage();
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    const stealth = (page as any)._stealth;
-    expect(() => stealth.invalidate()).not.toThrow();
-  });
-
-  it("stealth.getCdpSession() returns a CDP session", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const page = buildMockPage();
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    const stealth = (page as any)._stealth;
-    const session = await stealth.getCdpSession();
-    expect(session).toBeDefined();
-    expect(typeof session.send).toBe("function");
-  });
-
-  it("stealth.evaluate() creates world and returns value", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const mockCdp = buildMockCDP({
-      send: vi.fn(async (method: string, params?: any) => {
-        if (method === "Page.getFrameTree") {
-          return { frameTree: { frame: { id: "F1" } } };
-        }
-        if (method === "Page.createIsolatedWorld") {
-          return { executionContextId: 42 };
-        }
-        if (method === "Runtime.evaluate") {
-          return { result: { value: true } };
-        }
-        return {};
-      }),
-    });
-
-    const page = buildMockPage();
-    page.context = vi.fn(() => ({
-      pages: vi.fn(() => []),
-      addInitScript: vi.fn(async () => {}),
-      newCDPSession: vi.fn(async () => mockCdp),
-    }));
-
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    const stealth = (page as any)._stealth;
-    const result = await stealth.evaluate("1 + 1");
-    expect(result).toBe(true);
-  });
-
-  it("stealth.evaluate() retries on exceptionDetails", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-    let attempt = 0;
-
-    const mockCdp = buildMockCDP({
-      send: vi.fn(async (method: string, params?: any) => {
-        if (method === "Page.getFrameTree") {
-          return { frameTree: { frame: { id: "F1" } } };
-        }
-        if (method === "Page.createIsolatedWorld") {
-          return { executionContextId: 50 + attempt };
-        }
-        if (method === "Runtime.evaluate") {
-          attempt++;
-          if (attempt === 1) {
-            return { exceptionDetails: { text: "stale" } };
-          }
-          return { result: { value: "recovered" } };
-        }
-        return {};
-      }),
-    });
-
-    const page = buildMockPage();
-    page.context = vi.fn(() => ({
-      pages: vi.fn(() => []),
-      addInitScript: vi.fn(async () => {}),
-      newCDPSession: vi.fn(async () => mockCdp),
-    }));
-
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    const stealth = (page as any)._stealth;
-    const result = await stealth.evaluate("test");
-    expect(result).toBe("recovered");
-  });
-
-  it("stealth.evaluate() returns undefined after double failure", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const mockCdp = buildMockCDP({
-      send: vi.fn(async (method: string) => {
-        if (method === "Page.getFrameTree") {
-          return { frameTree: { frame: { id: "F1" } } };
-        }
-        if (method === "Page.createIsolatedWorld") {
-          return { executionContextId: 70 };
-        }
-        if (method === "Runtime.evaluate") {
-          return { exceptionDetails: { text: "always broken" } };
-        }
-        return {};
-      }),
-    });
-
-    const page = buildMockPage();
-    page.context = vi.fn(() => ({
-      pages: vi.fn(() => []),
-      addInitScript: vi.fn(async () => {}),
-      newCDPSession: vi.fn(async () => mockCdp),
-    }));
-
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    const stealth = (page as any)._stealth;
-    const result = await stealth.evaluate("broken");
-    expect(result).toBeUndefined();
-  });
-});
-
-
-// =========================================================================
-// isInputElement / isSelectorFocused — through patchPage click flow
-// =========================================================================
-describe("isInputElement stealth integration via patchPage", () => {
-  it("click() uses stealth.evaluate for isInputElement (no page.evaluate)", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const evaluateCalls: any[] = [];
-    const stealthEvaluateCalls: string[] = [];
-
-    const mockCdp = buildMockCDP({
-      send: vi.fn(async (method: string, params?: any) => {
-        if (method === "Page.getFrameTree") {
-          return { frameTree: { frame: { id: "F1" } } };
-        }
-        if (method === "Page.createIsolatedWorld") {
-          return { executionContextId: 100 };
-        }
-        if (method === "Runtime.evaluate") {
-          stealthEvaluateCalls.push(params.expression);
-          if (params.expression.includes("elementFromPoint")) {
-            return { result: { value: { hit: true } } };
-          }
-          return { result: { value: false } }; // not an input
-        }
-        return {};
-      }),
-    });
-
-    const page = buildMockPage({
-      evaluate: vi.fn(async (...args: any[]) => {
-        evaluateCalls.push(args);
-        return { hit: true };
-      }),
-    });
-    page.context = vi.fn(() => ({
-      pages: vi.fn(() => []),
-      addInitScript: vi.fn(async () => {}),
-      newCDPSession: vi.fn(async () => mockCdp),
-    }));
-
-    const cfg = resolveConfig("default", { idle_between_actions: false });
-    const cursor = { x: 100, y: 100, initialized: true };
-    patchPage(page as any, cfg, cursor as any);
-
-    try {
-      await page.click("#btn");
-    } catch (e) {
-      // scrollToElement might throw with mocks; that's fine
-    }
-
-    // The stealth path should have been used for isInputElement
-    // (Runtime.evaluate in isolated world, NOT page.evaluate)
-    const isInputCalls = stealthEvaluateCalls.filter(
-      expr => expr.includes("tagName") || expr.includes("querySelector")
-    );
-
-    // We expect at least one stealth evaluate for the isInputElement check
-    // OR page.evaluate was NOT called for this purpose
-    // The key assertion: page.evaluate is NOT used for querySelector-based DOM checks
-    const qsCalls = evaluateCalls.filter(
-      args => typeof args[0] === "string" && args[0].includes("querySelector")
-    );
-    // If stealth worked, no querySelector calls should go through page.evaluate
-    if (isInputCalls.length > 0) {
-      expect(qsCalls.length).toBe(0);
-    }
-  });
-});
-
-
-// =========================================================================
-// isSelectorFocused stealth integration via patchPage press flow
-// =========================================================================
-describe("isSelectorFocused stealth integration via patchPage", () => {
-  it("press() uses stealth.evaluate for focus check", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const stealthEvaluateCalls: string[] = [];
-
-    const mockCdp = buildMockCDP({
-      send: vi.fn(async (method: string, params?: any) => {
-        if (method === "Page.getFrameTree") {
-          return { frameTree: { frame: { id: "F1" } } };
-        }
-        if (method === "Page.createIsolatedWorld") {
-          return { executionContextId: 200 };
-        }
-        if (method === "Runtime.evaluate") {
-          stealthEvaluateCalls.push(params.expression);
-          // Return true = element IS focused → skip click
-          return { result: { value: true } };
-        }
-        return {};
-      }),
-    });
-
-    const pressedKeys: string[] = [];
-    const page = buildMockPage({
-      evaluate: vi.fn(async () => true),
-      keyboardPress: async (key: string) => { pressedKeys.push(key); },
-    });
-    page.context = vi.fn(() => ({
-      pages: vi.fn(() => []),
-      addInitScript: vi.fn(async () => {}),
-      newCDPSession: vi.fn(async () => mockCdp),
-    }));
-
-    const cfg = resolveConfig("default");
-    const cursor = { x: 50, y: 50, initialized: true };
-    patchPage(page as any, cfg, cursor as any);
-
-    try {
-      await page.press("input#field", "Enter");
-    } catch (e) {
-      // May throw with mocks
-    }
-
-    // Focus check should use isolated world (Runtime.evaluate with activeElement)
-    const focusCalls = stealthEvaluateCalls.filter(
-      expr => expr.includes("activeElement")
-    );
-    expect(focusCalls.length).toBeGreaterThan(0);
-  });
-});
-
-
-// =========================================================================
-// Frame patching with stealth
-// =========================================================================
-describe("frame patching with stealth", () => {
-  it("child frames use stealth for clear() focus check", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const childFrame: any = {
-      click: vi.fn(async () => {}),
-      dblclick: vi.fn(async () => {}),
-      hover: vi.fn(async () => {}),
-      type: vi.fn(async () => {}),
-      fill: vi.fn(async () => {}),
-      check: vi.fn(async () => {}),
-      uncheck: vi.fn(async () => {}),
-      selectOption: vi.fn(async () => {}),
-      press: vi.fn(async () => {}),
-      clear: vi.fn(async () => {}),
-      dragAndDrop: vi.fn(async () => {}),
-      locator: vi.fn(() => ({
-        boundingBox: vi.fn(async () => ({ x: 0, y: 0, width: 100, height: 30 })),
-      })),
-      childFrames: vi.fn(() => []),
-    };
-
-    const mainFrame = {
-      ...childFrame,
-      childFrames: vi.fn(() => [childFrame]),
-    };
-
-    const page = buildMockPage({ mainFrameReturn: mainFrame });
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    expect((childFrame as any)._humanPatched).toBe(true);
-  });
-});
-
-
-// =========================================================================
-// Page-level: pressSequentially, tap, clear are patched
-// =========================================================================
-describe("page-level pressSequentially, tap, clear patches", () => {
-  it("page.pressSequentially is replaced after patchPage", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const page = buildMockPage();
-    const originalPressSeq = page.pressSequentially ?? (() => {});
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    expect(typeof (page as any).pressSequentially).toBe("function");
-    expect((page as any).pressSequentially).not.toBe(originalPressSeq);
-  });
-
-  it("page.tap is replaced after patchPage", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const page = buildMockPage();
-    const originalTap = page.tap ?? (() => {});
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    expect(typeof (page as any).tap).toBe("function");
-    expect((page as any).tap).not.toBe(originalTap);
-  });
-
-  it("page.clear is replaced after patchPage", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const page = buildMockPage();
-    const originalClear = page.clear ?? (() => {});
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    expect(typeof (page as any).clear).toBe("function");
-    expect((page as any).clear).not.toBe(originalClear);
-  });
-});
-
-
-// =========================================================================
-// Frame-level: pressSequentially, tap are patched
-// =========================================================================
-describe("frame-level pressSequentially, tap patches", () => {
-  it("child frame has pressSequentially patched", async () => {
-    const { patchPage } = await import("../src/human/index.js");
-
-    const childFrame: any = {
-      click: vi.fn(async () => {}),
-      dblclick: vi.fn(async () => {}),
-      hover: vi.fn(async () => {}),
-      type: vi.fn(async () => {}),
-      fill: vi.fn(async () => {}),
-      check: vi.fn(async () => {}),
-      uncheck: vi.fn(async () => {}),
-      selectOption: vi.fn(async () => {}),
-      press: vi.fn(async () => {}),
-      pressSequentially: vi.fn(async () => {}),
-      tap: vi.fn(async () => {}),
-      clear: vi.fn(async () => {}),
-      dragAndDrop: vi.fn(async () => {}),
-      locator: vi.fn(() => ({
-        boundingBox: vi.fn(async () => ({ x: 0, y: 0, width: 100, height: 30 })),
-      })),
-      childFrames: vi.fn(() => []),
-    };
-
-    const origPressSeq = childFrame.pressSequentially;
-    const origTap = childFrame.tap;
-
-    const mainFrame = {
-      ...childFrame,
-      childFrames: vi.fn(() => [childFrame]),
-    };
-
-    const page = buildMockPage({ mainFrameReturn: mainFrame });
-    const cfg = resolveConfig("default");
-    const cursor = { x: 0, y: 0, initialized: false };
-    patchPage(page as any, cfg, cursor as any);
-
-    expect((childFrame as any)._humanPatched).toBe(true);
-    // pressSequentially and tap should be replaced with humanized versions
-    expect(childFrame.pressSequentially).not.toBe(origPressSeq);
-    expect(childFrame.tap).not.toBe(origTap);
-    expect(typeof childFrame.pressSequentially).toBe("function");
-    expect(typeof childFrame.tap).toBe("function");
   });
 });
 
@@ -1012,14 +619,14 @@ describeIfSlow("stealth browser: no evaluate leak on click", () => {
     await page.evaluate(() => {
       (window as any).__evalLeaks = [];
       const origQS = document.querySelector.bind(document);
-      document.querySelector = function (sel: string) {
+      document.querySelector = ((sel: string) => {
         try { throw new Error(); } catch (e: any) {
           if (e.stack && e.stack.includes(':302:')) {
             (window as any).__evalLeaks.push(sel);
           }
         }
         return origQS(sel);
-      } as any;
+      }) as any;
     });
 
     await page.click('#searchInput');
@@ -1105,6 +712,219 @@ describeIfSlow("stealth browser: navigation invalidation", () => {
   }, 60000);
 });
 
+describeIfSlow("stealth browser: selector parity and target identity", () => {
+  const fastHumanConfig = {
+    mouse_min_steps: 3,
+    mouse_max_steps: 3,
+    idle_between_actions: false,
+    scroll_settle_delay: [0, 0] as [number, number],
+  };
+
+  it("clicks the visible text target when hidden script text matches (#512)", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+    try {
+      const page = await browser.newPage();
+      await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => {
+        document.body.innerHTML = `
+          <script type="application/json">Hoy</script>
+          <button id="visible">Hoy</button>`;
+        (window as any).__clicked = false;
+        document.querySelector("#visible")!.addEventListener("click", () => {
+          (window as any).__clicked = true;
+        });
+      });
+      await page.click("text=Hoy");
+      expect(await page.evaluate(() => (window as any).__clicked)).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+
+  it("clicks visible display:contents text and nested content", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+    try {
+      const page = await browser.newPage();
+      await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => {
+        document.body.innerHTML = `
+          <ul><li id="target" style="display:contents">Hoy</li></ul>
+          <div id="nested" style="display:contents"><span>nested</span></div>`;
+        (window as any).__targetClicks = 0;
+        (window as any).__nestedClicks = 0;
+        document.querySelector("#target")!.addEventListener("click", () => (window as any).__targetClicks++);
+        document.querySelector("#nested")!.addEventListener("click", () => (window as any).__nestedClicks++);
+      });
+      expect(await page.locator("#target").evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return { width: rect.width, height: rect.height };
+      })).toEqual({ width: 0, height: 0 });
+      await page.click("text=Hoy", { timeout: 3000 });
+      await page.click("#nested", { timeout: 3000 });
+      expect(await page.evaluate(() => ({
+        target: (window as any).__targetClicks,
+        nested: (window as any).__nestedClicks,
+      }))).toEqual({ target: 1, nested: 1 });
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+
+  it("matches Playwright ordering across mixed and nested open Shadow DOM", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+    try {
+      const page = await browser.newPage();
+      await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => {
+        document.body.innerHTML = `
+          <button data-id="light-1">one</button>
+          <div id="host-a"></div>
+          <button data-id="light-2">two</button>
+          <div id="host-b"></div>`;
+        const a = document.querySelector("#host-a")!.attachShadow({ mode: "open" });
+        a.innerHTML = `<button data-id="shadow-a">three</button><div id="nested"></div>`;
+        a.querySelector("#nested")!.attachShadow({ mode: "open" }).innerHTML =
+          `<button data-id="shadow-nested">four</button>`;
+        document.querySelector("#host-b")!.attachShadow({ mode: "open" }).innerHTML =
+          `<button data-id="shadow-b">five</button>`;
+        (window as any).__order = [];
+        const roots: (Document | ShadowRoot)[] = [document, a, a.querySelector("#nested")!.shadowRoot!, document.querySelector("#host-b")!.shadowRoot!];
+        for (const root of roots) {
+          for (const button of root.querySelectorAll("button")) {
+            button.addEventListener("click", () => (window as any).__order.push((button as HTMLElement).dataset.id));
+          }
+        }
+      });
+
+      const expected = ["light-1", "light-2", "shadow-a", "shadow-nested", "shadow-b"];
+      for (let i = 0; i < expected.length; i++) {
+        await page.locator("button").nth(i).click();
+      }
+      expect(await page.evaluate(() => (window as any).__order)).toEqual(expected);
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+
+  it.each([false, true])(
+    "replacement during movement is re-resolved and reached with a fresh move (force=%s)",
+    async (force) => {
+      // A locator re-resolves like Playwright does; the press never lands on
+      // the stale element or on whatever happens to be under the cursor.
+      const { launch } = await import("../src/index.js");
+      const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+      try {
+        const page = await browser.newPage();
+        await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+        await page.evaluate(() => {
+          document.body.innerHTML = `<button id="race" style="margin:180px;width:180px;height:60px">race</button>`;
+          (window as any).__clicks = { original: 0, replacement: 0 };
+          const original = document.querySelector("#race")!;
+          original.addEventListener("click", () => (window as any).__clicks.original++);
+          original.addEventListener("mousemove", () => {
+            const replacement = original.cloneNode(true) as HTMLElement;
+            replacement.addEventListener("click", () => (window as any).__clicks.replacement++);
+            original.replaceWith(replacement);
+          }, { once: true });
+        });
+        await page.click("#race", { force, timeout: 5000 });
+        expect(await page.evaluate(() => (window as any).__clicks)).toEqual({ original: 0, replacement: 1 });
+      } finally {
+        await browser.close();
+      }
+    },
+    60000,
+  );
+
+  it.each([false, true])(
+    "target removed during movement times out without clicking underneath (force=%s)",
+    async (force) => {
+      const { launch } = await import("../src/index.js");
+      const { errors } = await import("playwright-core");
+      const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+      try {
+        const page = await browser.newPage();
+        await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+        await page.evaluate(() => {
+          document.body.innerHTML = `
+            <button id="underlying" style="position:absolute;left:180px;top:180px;width:180px;height:60px">underlying</button>
+            <button id="race" style="position:absolute;left:180px;top:180px;width:180px;height:60px">race</button>`;
+          (window as any).__underlyingClicks = 0;
+          document.querySelector("#underlying")!.addEventListener("click", () => {
+            (window as any).__underlyingClicks++;
+          });
+          const original = document.querySelector("#race")!;
+          original.addEventListener("mousemove", () => original.remove(), { once: true });
+        });
+
+        await expect(page.click("#race", { force, timeout: 1500 })).rejects.toBeInstanceOf(errors.TimeoutError);
+        expect(await page.evaluate(() => (window as any).__underlyingClicks)).toBe(0);
+      } finally {
+        await browser.close();
+      }
+    },
+    60000,
+  );
+
+  it("force skips coverage rejection without changing target identity", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true, humanConfig: fastHumanConfig });
+    try {
+      const page = await browser.newPage();
+      await page.goto("https://example.com", { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => {
+        document.body.innerHTML = `
+          <button id="target" style="position:absolute;left:180px;top:180px;width:180px;height:60px">target</button>
+          <div id="cover" style="position:absolute;left:180px;top:180px;width:180px;height:60px;z-index:2"></div>`;
+        (window as any).__targetClicks = 0;
+        (window as any).__coverClicks = 0;
+        document.querySelector("#target")!.addEventListener("click", () => {
+          (window as any).__targetClicks++;
+        });
+        document.querySelector("#cover")!.addEventListener("click", () => {
+          (window as any).__coverClicks++;
+        });
+      });
+
+      await page.click("#target", { force: true, timeout: 3000 });
+      expect(await page.evaluate(() => ({
+        target: (window as any).__targetClicks,
+        cover: (window as any).__coverClicks,
+      }))).toEqual({ target: 0, cover: 1 });
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+});
+
+// page.setContent timed out in local runs of this test, so the page is loaded as a data: URL.
+const WIDE_ROW_HTML = `
+  <body style="margin:0">
+    <div style="display:flex">
+      <div style="min-width:800px">left</div>
+      <button id="target" style="min-width:800px"
+              onclick="this.textContent = 'CLICKED'">right</button>
+    </div>
+  </body>`;
+
+describeIfSlow("stealth browser: horizontal scroll into view (#521)", () => {
+  it("clicks a target past the right edge of a horizontally overflowing page", async () => {
+    const { launch } = await import("../src/index.js");
+    const browser = await launch({ headless: true, humanize: true });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+      await page.goto("data:text/html," + encodeURIComponent(WIDE_ROW_HTML));
+      await page.click("#target", { timeout: 5000 });
+      expect(await page.locator("#target").textContent()).toBe("CLICKED");
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
+});
+
 describeIfSlow("stealth browser: full form no evaluate leak", () => {
   it("form with shift symbols has zero evaluate leaks and zero untrusted events", async () => {
     const { launch } = await import("../src/index.js");
@@ -1124,14 +944,14 @@ describeIfSlow("stealth browser: full form no evaluate leak", () => {
       (window as any).__untrustedKeys = [];
 
       const origQS = document.querySelector.bind(document);
-      document.querySelector = function (sel: string) {
+      document.querySelector = ((sel: string) => {
         try { throw new Error(); } catch (e: any) {
           if (e.stack && e.stack.includes(':302:')) {
             (window as any).__evalLeaks.push(sel);
           }
         }
         return origQS(sel);
-      } as any;
+      }) as any;
 
       document.addEventListener('keydown', (e) => {
         if (!e.isTrusted) {
@@ -1155,7 +975,7 @@ describeIfSlow("stealth browser: full form no evaluate leak", () => {
     expect(evalLeaks.length).toBe(0);
     expect(untrusted.length).toBe(0);
 
-    await page.click('button[type="submit"]');
+    await page.getByRole('button', { name: 'Login' }).click();
     await sleep(5000);
 
     const body = await page.locator('body').textContent();

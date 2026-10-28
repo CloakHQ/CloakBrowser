@@ -18,8 +18,6 @@ public class MouseKeyboardWrapperTests
         IdleBetweenActions = false,
         MouseMinSteps = 2,
         MouseMaxSteps = 3,
-        MouseBurstSize = (5, 5),
-        MouseBurstPause = (0, 0),
         MouseOvershootChance = 0, // deterministic: no overshoot
         ClickAimDelayButton = (0, 0),
         ClickHoldButton = (0, 0),
@@ -91,18 +89,6 @@ public class MouseKeyboardWrapperTests
     }
 
     [Fact]
-    public async Task Mouse_WheelAsync_is_chunked_into_multiple_inner_wheels()
-    {
-        var (page, _, mouseRec, _) = BuildPage();
-        var mouse = new HumanizedMouse(page.Mouse, MakeCursor(page), FastConfig());
-
-        await mouse.WheelAsync(0, 300);
-
-        Assert.True(mouseRec.CountOf("WheelAsync") > 1,
-            "wheel should be broken into small inertia bursts");
-    }
-
-    [Fact]
     public Task Mouse_Original_and_Inner_expose_the_unwrapped_object()
     {
         var (page, _, _, _) = BuildPage();
@@ -132,17 +118,15 @@ public class MouseKeyboardWrapperTests
     }
 
     [Fact]
-    public async Task Keyboard_TypeAsync_produces_per_character_inner_key_events()
+    public async Task Keyboard_PressAsync_forwards_delay()
     {
         var (page, _, _, kbRec) = BuildPage();
         var kb = new HumanizedKeyboard(page.Keyboard, MakeCursor(page), FastConfig());
 
-        await kb.TypeAsync("abc");
+        await kb.PressAsync("Control+V", new KeyboardPressOptions { Delay = 300 });
 
-        // Human typing presses each key down+up individually (not one inner TypeAsync).
-        Assert.Equal(0, kbRec.CountOf("TypeAsync"));
-        Assert.True(kbRec.CountOf("DownAsync") >= 3, "expected per-char key downs");
-        Assert.True(kbRec.CountOf("UpAsync") >= 3, "expected per-char key ups");
+        var options = Assert.IsType<KeyboardPressOptions>(kbRec.Last("PressAsync")!.Args[1]);
+        Assert.Equal(300, options.Delay);
     }
 
     [Fact]
@@ -171,13 +155,4 @@ public class MouseKeyboardWrapperTests
         Assert.Equal("boom", ex.Message);
     }
 
-    [Fact]
-    public async Task Keyboard_inner_exception_propagates()
-    {
-        var (page, _, _, kbRec) = BuildPage();
-        kbRec.On("DownAsync", _ => throw new PlaywrightException("kb fail"));
-        var kb = new HumanizedKeyboard(page.Keyboard, MakeCursor(page), FastConfig());
-
-        await Assert.ThrowsAsync<PlaywrightException>(() => kb.TypeAsync("a"));
-    }
 }

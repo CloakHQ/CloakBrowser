@@ -58,6 +58,12 @@ public class LaunchOptions
     public string? BrowserVersion { get; set; }
 
     /// <summary>
+    /// Binary release channel (<c>stable</c> or <c>preview</c>). Also read from the
+    /// <c>CLOAKBROWSER_RELEASE_CHANNEL</c> environment variable.
+    /// </summary>
+    public string? ReleaseChannel { get; set; }
+
+    /// <summary>
     /// Internal: suppress the auto <c>--start-maximized</c> flag. Set by the context
     /// launchers when the caller chose a viewport geometry, so the window is not also
     /// maximized. Mirrors Python <c>_suppress_maximize</c> / JS <c>explicitViewport</c>.

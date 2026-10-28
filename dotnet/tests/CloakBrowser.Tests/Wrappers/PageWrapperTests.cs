@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Text.Json;
 using CloakBrowser.Human;
 using CloakBrowser.Wrappers;
 using Microsoft.Playwright;
@@ -17,7 +19,6 @@ public class PageWrapperTests
         IdleBetweenActions = false,
         MouseMinSteps = 2,
         MouseMaxSteps = 3,
-        MouseBurstPause = (0, 0),
         MouseOvershootChance = 0,
         ClickAimDelayButton = (0, 0),
         ClickHoldButton = (0, 0),
@@ -34,7 +35,7 @@ public class PageWrapperTests
         InitialCursorY = (100, 100),
     };
 
-    /// <summary>Build a fake page whose Locator(...) returns an actionable fake locator.</summary>
+    /// <summary>Build a fake page (wrapping / delegation only; actions are browser-tested).</summary>
     private static (HumanizedPage human, FakeProxy pageRec, FakeProxy mouseRec) BuildHumanizedPage()
     {
         var (mouse, mouseRec) = Fake.Of<IMouse>();
@@ -43,6 +44,8 @@ public class PageWrapperTests
 
         var (locator, locRec) = Fake.Of<ILocator>();
         locRec.On("First", locator);
+        locRec.On("Last", locator);
+        locRec.On("Nth", locator);
         locRec.On("BoundingBoxAsync", Task.FromResult<LocatorBoundingBoxResult?>(
             new LocatorBoundingBoxResult { X = 100, Y = 200, Width = 80, Height = 30 }));
         locRec.On("IsVisibleAsync", Task.FromResult(true));
@@ -104,24 +107,56 @@ public class PageWrapperTests
         Assert.All(human.Frames, f => Assert.IsType<HumanizedFrame>(f));
     }
 
-    // -----------------------------------------------------------------------
-    // Selector action interception drives the humanize engine.
-    // -----------------------------------------------------------------------
-
-    [Fact]
-    public async Task ClickAsync_selector_runs_humanized_motion()
+    [Theory]
+    [InlineData("FrameAttached")]
+    [InlineData("FrameDetached")]
+    [InlineData("FrameNavigated")]
+    public void Frame_events_wrap_payload_and_unsubscribe_exact_delegate(string eventName)
     {
-        var (human, _, mouseRec) = BuildHumanizedPage();
+        var (mouse, _) = Fake.Of<IMouse>();
+        var (keyboard, _) = Fake.Of<IKeyboard>();
+        var (rawFrame, _) = Fake.Of<IFrame>();
+        var (page, pageRec) = Fake.Of<IPage>();
+        pageRec.On("Mouse", mouse);
+        pageRec.On("Keyboard", keyboard);
 
-        await human.ClickAsync("#submit");
+        var human = new HumanizedPage(page, new HumanCursor(page), FastConfig());
+        IFrame? observedFrame = null;
+        object? observedSender = null;
+        EventHandler<IFrame> handler = (sender, frame) =>
+        {
+            observedSender = sender;
+            observedFrame = frame;
+        };
 
-        Assert.True(mouseRec.CountOf("MoveAsync") >= 1);
-        Assert.Equal(1, mouseRec.CountOf("DownAsync"));
-        Assert.Equal(1, mouseRec.CountOf("UpAsync"));
+        switch (eventName)
+        {
+            case "FrameAttached": human.FrameAttached += handler; break;
+            case "FrameDetached": human.FrameDetached += handler; break;
+            case "FrameNavigated": human.FrameNavigated += handler; break;
+        }
+
+        var innerHandler = Assert.IsType<EventHandler<IFrame>>(
+            pageRec.Last($"add_{eventName}")!.Args[0]);
+        innerHandler(page, rawFrame);
+
+        Assert.Same(human, observedSender);
+        Assert.IsType<HumanizedFrame>(observedFrame);
+
+        switch (eventName)
+        {
+            case "FrameAttached": human.FrameAttached -= handler; break;
+            case "FrameDetached": human.FrameDetached -= handler; break;
+            case "FrameNavigated": human.FrameNavigated -= handler; break;
+        }
+
+        var removedHandler = Assert.IsType<EventHandler<IFrame>>(
+            pageRec.Last($"remove_{eventName}")!.Args[0]);
+        Assert.Same(innerHandler, removedHandler);
     }
 
     // -----------------------------------------------------------------------
-    // Delegation: non-interaction members forward to the inner page.
+    // Selector action interception drives the humanize engine.
     // -----------------------------------------------------------------------
 
     [Fact]
@@ -194,5 +229,70 @@ public class PageWrapperTests
         var human = new HumanizedPage(page, new HumanCursor(page), FastConfig());
 
         await Assert.ThrowsAsync<PlaywrightException>(() => human.ContentAsync());
+    }
+
+    // #549: locator-arg APIs must hand Playwright the raw locator, not our decorator.
+    private static (HumanizedPage human, FakeProxy pageRec) BuildBarePage()
+    {
+        var (mouse, _) = Fake.Of<IMouse>();
+        var (keyboard, _) = Fake.Of<IKeyboard>();
+        var (page, pageRec) = Fake.Of<IPage>();
+        pageRec.On("Mouse", mouse);
+        pageRec.On("Keyboard", keyboard);
+        return (new HumanizedPage(page, new HumanCursor(page), FastConfig()), pageRec);
+    }
+
+    private static HumanizedLocator WrapRaw(ILocator raw)
+    {
+        var (page, _) = Fake.Of<IPage>();
+        return new HumanizedLocator(raw, new HumanCursor(page), FastConfig());
+    }
+
+    [Fact]
+    public async Task AddAndRemoveLocatorHandler_unwrap_locator_arg()
+    {
+        var (human, pageRec) = BuildBarePage();
+        var (rawLoc, _) = Fake.Of<ILocator>();
+        var arg = WrapRaw(rawLoc);
+
+        await human.AddLocatorHandlerAsync(arg, () => Task.CompletedTask);
+        Assert.Same(rawLoc, pageRec.Last("AddLocatorHandlerAsync")!.Args[0]);
+
+        await human.RemoveLocatorHandlerAsync(arg);
+        Assert.Same(rawLoc, pageRec.Last("RemoveLocatorHandlerAsync")!.Args[0]);
+    }
+
+    [Fact]
+    public async Task AddLocatorHandler_rewraps_callback_locator()
+    {
+        var (mouse, _) = Fake.Of<IMouse>();
+        var (keyboard, _) = Fake.Of<IKeyboard>();
+        var (page, pageRec) = Fake.Of<IPage>();
+        pageRec.On("Mouse", mouse);
+        pageRec.On("Keyboard", keyboard);
+        var (rawCallbackLoc, _) = Fake.Of<ILocator>();
+        // Fake Playwright fires the registered handler with a raw matched locator.
+        pageRec.On("AddLocatorHandlerAsync", args => ((Func<ILocator, Task>)args[1]!)(rawCallbackLoc));
+        var human = new HumanizedPage(page, new HumanCursor(page), FastConfig());
+
+        var (rawLoc, _) = Fake.Of<ILocator>();
+        ILocator? received = null;
+        await human.AddLocatorHandlerAsync(WrapRaw(rawLoc), loc => { received = loc; return Task.CompletedTask; });
+
+        Assert.Same(rawLoc, pageRec.Last("AddLocatorHandlerAsync")!.Args[0]); // input unwrapped
+        Assert.IsType<HumanizedLocator>(received);                            // callback re-wrapped
+    }
+
+    [Fact]
+    public async Task Screenshot_unwraps_masked_locators()
+    {
+        var (human, pageRec) = BuildBarePage();
+        pageRec.On("ScreenshotAsync", Task.FromResult(System.Array.Empty<byte>()));
+        var (rawLoc, _) = Fake.Of<ILocator>();
+
+        await human.ScreenshotAsync(new PageScreenshotOptions { Mask = new[] { WrapRaw(rawLoc) } });
+
+        var opts = (PageScreenshotOptions)pageRec.Last("ScreenshotAsync")!.Args[0]!;
+        Assert.Same(rawLoc, opts.Mask!.First());
     }
 }

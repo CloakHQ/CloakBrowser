@@ -40,8 +40,14 @@ public static class Humanize
     public static IBrowserContext Context(IBrowserContext context, HumanConfig? config = null)
     {
         if (context is HumanizedBrowserContext) return context;
-        return new HumanizedBrowserContext(context, config ?? new HumanConfig());
+        // Memoize per raw context so page.Context returns a stable instance (Playwright's
+        // own context is a singleton); a fresh wrapper each access would break reference
+        // identity and dictionary-key use.
+        return ContextCache.GetValue(context, key => new HumanizedBrowserContext(key, config ?? new HumanConfig()));
     }
+
+    /// <summary>One humanized wrapper per raw context, so identity stays stable across accesses.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IBrowserContext, HumanizedBrowserContext> ContextCache = new();
 
     /// <summary>
     /// Wrap a raw Playwright <see cref="IBrowser"/> so every context/page it produces
@@ -54,12 +60,35 @@ public static class Humanize
         return new HumanizedBrowser(browser, config ?? new HumanConfig(), headless, headlessNoViewport);
     }
 
+    /// <summary>
+    /// Recover the raw Playwright <see cref="IPage"/> behind any CloakBrowser wrapper
+    /// (humanize decorator and/or license-guard proxy). Pass the result to Playwright APIs
+    /// that reject wrapped handles, e.g. <c>context.NewCDPSessionAsync(Humanize.Unwrap(page))</c>.
+    /// </summary>
+    public static IPage Unwrap(IPage page) => (IPage)LicenseGuard.Unwrap(page);
+
+    /// <summary>Recover the raw Playwright <see cref="IFrame"/> behind any CloakBrowser wrapper.</summary>
+    public static IFrame Unwrap(IFrame frame) => (IFrame)LicenseGuard.Unwrap(frame);
+
+    /// <summary>Recover the raw Playwright <see cref="IBrowserContext"/> behind any CloakBrowser wrapper.</summary>
+    public static IBrowserContext Unwrap(IBrowserContext context) => (IBrowserContext)LicenseGuard.Unwrap(context);
+
+    /// <summary>Recover the raw Playwright <see cref="IElementHandle"/> behind any CloakBrowser wrapper.</summary>
+    public static IElementHandle Unwrap(IElementHandle handle) => (IElementHandle)LicenseGuard.Unwrap(handle);
+
+    /// <summary>Recover the raw Playwright <see cref="ILocator"/> behind a CloakBrowser wrapper
+    /// (for APIs that down-cast their locator arg, e.g. <c>page.AddLocatorHandlerAsync</c>).</summary>
+    public static ILocator Unwrap(ILocator locator) => (ILocator)LicenseGuard.Unwrap(locator);
+
     // -----------------------------------------------------------------------
     // Internal re-wrap helpers (shared by the wrappers).
     // -----------------------------------------------------------------------
 
-    internal static ILocator WrapLocator(ILocator locator, HumanCursor cursor, HumanConfig cfg) =>
-        locator is HumanizedLocator ? locator : new HumanizedLocator(locator, cursor, cfg);
+    internal static ILocator WrapLocator(ILocator locator, HumanCursor cursor, HumanConfig cfg, string? selector = null) =>
+        locator is HumanizedLocator ? locator : new HumanizedLocator(locator, cursor, cfg, selector);
+
+    internal static IFrameLocator WrapFrameLocator(IFrameLocator frameLocator, HumanCursor cursor, HumanConfig cfg) =>
+        frameLocator is HumanizedFrameLocator ? frameLocator : new HumanizedFrameLocator(frameLocator, cursor, cfg);
 
     internal static IFrame WrapFrame(IFrame frame, HumanCursor cursor, HumanConfig cfg) =>
         frame is HumanizedFrame ? frame : new HumanizedFrame(frame, cursor, cfg);
@@ -75,6 +104,10 @@ public static class Humanize
 
     /// <summary>Per-page cursor cache so pages from a context/browser share state across re-wraps.</summary>
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IPage, HumanCursor> CursorCache = new();
+
+    /// <summary>The shared humanize state of an already-humanized raw page, if any.</summary>
+    internal static bool TryGetCursor(IPage page, out HumanCursor cursor) =>
+        CursorCache.TryGetValue(page, out cursor!);
 
     internal static async Task<IPage> WrapPageAsync(IPage page, HumanConfig cfg)
     {
@@ -96,20 +129,4 @@ public static class Humanize
             var cursor = CursorCache.GetValue(p, key => new HumanCursor(key));
             return (IPage)new HumanizedPage(p, cursor, cfg);
         }).ToList();
-}
-
-/// <summary>
-/// Shared helpers for reading Force/Timeout out of the per-action Playwright option
-/// objects, which all expose <c>Force</c> and <c>Timeout</c> but have no common base.
-/// </summary>
-internal static class OptionReader
-{
-    public static bool Force(object? options) =>
-        options?.GetType().GetProperty("Force")?.GetValue(options) is bool b && b;
-
-    public static double Timeout(object? options)
-    {
-        var v = options?.GetType().GetProperty("Timeout")?.GetValue(options);
-        return v is float f ? f : v is double d ? d : 30000;
-    }
 }

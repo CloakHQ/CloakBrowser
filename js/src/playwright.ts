@@ -13,10 +13,17 @@ import {
 import { buildArgs } from "./args.js";
 import { maybeWarnWindowsFonts } from "./fonts.js";
 import { ensureBinary } from "./download.js";
-import { resolveProxyConfig } from "./proxy.js";
+import { resolveProxyConfig, warnOnRequestClientUse } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
-import { buildLaunchEnv } from "./license.js";
+import {
+  buildLaunchEnv,
+  installLicenseGuard,
+  licenseErrorFrom,
+  mintDenialFile,
+  resolveLicenseKey,
+} from "./license.js";
 import { seedWidevineHint } from "./widevine.js";
+import { persistentSeedArgs } from "./profile-seed.js";
 
 /** @internal Accept both timezone and timezoneId — either works, no warning. Exported for testing. */
 export function resolveTimezone<T extends { timezone?: string; timezoneId?: string }>(options: T): T {
@@ -84,7 +91,11 @@ export function buildContextOptions(
   // deterministic. Explicit viewport (incl. null) is always honored.
   const headless = effectiveHeadless(options);
   const headlessNoViewport =
-    headless && binarySupportsHeadlessNoViewport(options.licenseKey, options.browserVersion);
+    headless && binarySupportsHeadlessNoViewport(
+      options.licenseKey,
+      options.browserVersion,
+      options.releaseChannel,
+    );
   const viewport =
     options.viewport !== undefined
       ? options.viewport
@@ -108,7 +119,8 @@ export function buildContextOptions(
  * wrapper that needs to call `chromium.launch()` itself.
  */
 export async function buildLaunchOptions(
-  options: LaunchOptions = {}
+  options: LaunchOptions = {},
+  statusFile?: string,
 ): Promise<PlaywrightLaunchOptions> {
   // Standalone callers may pass `timezoneId` (Playwright's field name) instead
   // of `timezone`. The launch* wrappers resolve this before delegating, but
@@ -118,9 +130,18 @@ export async function buildLaunchOptions(
   options = resolveTimezone(options);
   const binaryPath =
     process.env.CLOAKBROWSER_BINARY_PATH ||
-    (await ensureBinary(options.licenseKey, options.browserVersion));
+    (await ensureBinary(
+      options.licenseKey,
+      options.browserVersion,
+      options.releaseChannel,
+    ));
   const { exitIp, ...resolved } = await maybeResolveGeoip(options);
-  const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy, options.browserVersion);
+  const { proxyOption, proxyArgs } = resolveProxyConfig(
+    options.proxy,
+    options.browserVersion,
+    options.licenseKey,
+    options.releaseChannel,
+  );
   let resolvedArgs = await resolveWebrtcArgs(options);
   resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
   const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
@@ -131,6 +152,7 @@ export async function buildLaunchOptions(
   const launchEnv = buildLaunchEnv(
     options.licenseKey,
     userEnv as Record<string, string | undefined> | undefined,
+    statusFile,
   );
   const envResult = launchEnv !== undefined ? { env: launchEnv } : {};
 
@@ -178,7 +200,34 @@ export async function humanizeBrowser(
  */
 export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright-core");
-  const browser = await chromium.launch(await buildLaunchOptions(options));
+  const denialPath = resolveLicenseKey(options.licenseKey) ? mintDenialFile() : undefined;
+  let browser: Browser;
+  let launchOptions: PlaywrightLaunchOptions;
+  try {
+    launchOptions = await buildLaunchOptions(options, denialPath);
+    browser = await chromium.launch(launchOptions);
+  } catch (err) {
+    const lic = licenseErrorFrom(err, denialPath);
+    if (lic) throw lic;
+    throw err;
+  }
+  // Convert a post-handshake license denial into a clear error on first use.
+  // Installed before the wraps below so it sits closest to the real call. Stash
+  // the path so launchContext() can guard its context too. Mirrors Python launch().
+  if (denialPath) {
+    (browser as any).__cloakDenialPath = denialPath;
+    installLicenseGuard(browser, denialPath);
+  }
+  // Proxy went to Chrome as --proxy-server, so Playwright's request client has no
+  // proxy (#579). browser.newPage() and launchContext() both go through newContext.
+  if (options.proxy && !launchOptions.proxy) {
+    const origNewContext = browser.newContext.bind(browser);
+    (browser as any).newContext = async (opts?: Parameters<typeof origNewContext>[0]) => {
+      const context = await origNewContext(opts);
+      warnOnRequestClientUse(context);
+      return context;
+    };
+  }
   // Headed: a bare browser.newPage() would inherit Playwright's emulated 1280x720
   // viewport -> outerWidth < innerWidth (impossible window = bot tell). Default
   // newPage()/newContext() to viewport:null so the page tracks the real window.
@@ -186,7 +235,11 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   // older headless keeps Playwright's default viewport. Mirrors Python launch().
   if (
     !effectiveHeadless(options) ||
-    binarySupportsHeadlessNoViewport(options.licenseKey, options.browserVersion)
+    binarySupportsHeadlessNoViewport(
+      options.licenseKey,
+      options.browserVersion,
+      options.releaseChannel,
+    )
   ) {
     applyDefaultNoViewport(browser);
   }
@@ -257,6 +310,13 @@ export async function launchContext(
     await browser.close();
   };
 
+  // browser.newContext above is already guarded by launch(); also guard the
+  // context's newPage for a denial that lands after the context is created.
+  const denialPath = (browser as any).__cloakDenialPath as string | undefined;
+  if (denialPath) {
+    installLicenseGuard(context, denialPath);
+  }
+
   // Human-like behavioral patching
   if (options.humanize) {
     const { patchContext } = await import('./human/index.js');
@@ -300,38 +360,62 @@ export async function launchPersistentContext(
 
   const binaryPath =
     process.env.CLOAKBROWSER_BINARY_PATH ||
-    (await ensureBinary(options.licenseKey, options.browserVersion));
+    (await ensureBinary(
+      options.licenseKey,
+      options.browserVersion,
+      options.releaseChannel,
+    ));
   const { exitIp, ...resolved } = await maybeResolveGeoip(options);
-  const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy, options.browserVersion);
+  const { proxyOption, proxyArgs } = resolveProxyConfig(
+    options.proxy,
+    options.browserVersion,
+    options.licenseKey,
+    options.releaseChannel,
+  );
   let resolvedArgs = await resolveWebrtcArgs(options);
   resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
+  resolvedArgs = persistentSeedArgs(options.userDataDir, options.stealthArgs, resolvedArgs);
   const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
   maybeWarnWindowsFonts(args);
 
   seedWidevineHint(options.userDataDir, binaryPath);
 
   // Resolve env for the browser process (license key injection, if needed).
+  const denialPath = resolveLicenseKey(options.licenseKey) ? mintDenialFile() : undefined;
   const { env: userEnv, ...restLaunchOptions } = options.launchOptions ?? {};
   const launchEnv = buildLaunchEnv(
     options.licenseKey,
     userEnv as Record<string, string | undefined> | undefined,
+    denialPath,
   );
   const envResult = launchEnv !== undefined ? { env: launchEnv } : {};
 
   // locale and timezone are set via binary flags (--lang, --fingerprint-timezone)
   // — NOT via Playwright context kwargs which use detectable CDP emulation.
-  const context = await chromium.launchPersistentContext(options.userDataDir, {
-    executablePath: binaryPath,
-    headless: options.headless ?? true,
-    args,
-    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
-    ...(proxyOption ? { proxy: proxyOption } : {}),
-    ...buildContextOptions(options),
-    ...restLaunchOptions,
-    ...envResult,
-  });
+  let context: BrowserContext;
+  try {
+    context = await chromium.launchPersistentContext(options.userDataDir, {
+      executablePath: binaryPath,
+      headless: options.headless ?? true,
+      args,
+      ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
+      ...(proxyOption ? { proxy: proxyOption } : {}),
+      ...buildContextOptions(options),
+      ...restLaunchOptions,
+      ...envResult,
+    });
+  } catch (err) {
+    const lic = licenseErrorFrom(err, denialPath);
+    if (lic) throw lic;
+    throw err;
+  }
 
-  // Human-like behavioral patching
+  if (proxyArgs.length) warnOnRequestClientUse(context);
+
+  // Human-like behavioral patching. Applied BEFORE the license guard: the guard
+  // stores its wrapper on the page/context object (it carries this launch's denial
+  // path), and an own property shadows the prototype method humanize patches. Guarding
+  // first would capture Playwright's own methods and silently disable humanize.
   if (options.humanize) {
     const { patchContext } = await import('./human/index.js');
     const { resolveConfig } = await import('./human/config.js');
@@ -340,6 +424,18 @@ export async function launchPersistentContext(
       options.humanConfig,
     );
     patchContext(context, cfg);
+  }
+
+  // The persistent path hands back a context, so guard its newPage (see launch()).
+  if (denialPath) {
+    installLicenseGuard(context, denialPath);
+    // A persistent context arrives with a page already open, so the user
+    // navigates pages()[0] directly and never calls newPage. Guard the existing
+    // pages' navigation entry points too, or a post-handshake denial surfaces as
+    // a bare TargetClosedError on that first navigation. Mirrors Python.
+    for (const pg of context.pages()) {
+      installLicenseGuard(pg, denialPath);
+    }
   }
 
   return context;

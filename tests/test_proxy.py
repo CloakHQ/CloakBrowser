@@ -1,11 +1,15 @@
 """Tests for proxy URL parsing and credential extraction."""
 
-from unittest.mock import patch
+import asyncio
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from cloakbrowser.browser import (
     _is_socks_proxy,
     _parse_proxy_url,
     _resolve_proxy_config,
+    _warn_on_request_client_use,
     maybe_resolve_geoip,
 )
 
@@ -68,12 +72,12 @@ class TestBuildProxyKwargs:
         assert kwargs == {"proxy": proxy_dict}
         assert args == []
 
-    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.5")
     @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
-    def test_pinned_old_version_disables_inline_auth(self, *_):
-        # Pin a binary BELOW the inline-auth floor while the platform default is
-        # at/above it. The gate must read the pin (older = no preemptive auth),
-        # not the default — otherwise rolled-back binaries break proxy auth (#182).
+    def test_pinned_old_version_disables_inline_auth(self, _mock):
+        # Pin a binary BELOW the inline-auth floor (146.0.7680.177.5) on a
+        # platform that otherwise supports it. The gate must read the pin — an
+        # older binary lacks inline proxy auth — and fall back to Playwright's
+        # dict, else rolled-back binaries break proxy auth (#182).
         kwargs, args = _resolve_proxy_config(
             "http://user:pass@proxy:8080", browser_version="146.0.7680.177.3"
         )
@@ -178,11 +182,16 @@ class TestMaybeResolveGeoip:
         mock_geo.assert_called_once_with("socks5://proxy:1080")
 
     @patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip", return_value=("Europe/London", "en-GB", "1.1.1.1"))
-    def test_geoip_http_dict_does_not_inline_creds(self, mock_geo):
-        # HTTP dict: credentials stay separate, only server URL passed
-        proxy_dict = {"server": "http://proxy:8080", "username": "user", "password": "pass"}
+    def test_geoip_http_dict_without_credentials_uses_server(self, mock_geo):
+        proxy_dict = {"server": "http://proxy:8080"}
         tz, locale, ip = maybe_resolve_geoip(True, proxy_dict, None, None)
         mock_geo.assert_called_once_with("http://proxy:8080")
+
+    @patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip", return_value=("Europe/London", "en-GB", "1.1.1.1"))
+    def test_geoip_http_dict_reconstructs_credentials(self, mock_geo):
+        proxy_dict = {"server": "http://proxy:8080", "username": "user", "password": "pass"}
+        tz, locale, ip = maybe_resolve_geoip(True, proxy_dict, None, None)
+        mock_geo.assert_called_once_with("http://user:pass@proxy:8080")
 
 
 class TestBareProxyFormat:
@@ -465,14 +474,10 @@ class TestResolveProxyConfig:
         assert kwargs == {}
         assert args == ["--proxy-server=http://user:pass@proxy:8080"]
 
-    @patch("cloakbrowser.config.get_chromium_version", return_value="146.0.7680.177.3")
-    @patch("cloakbrowser.config.get_platform_tag", return_value="linux-x64")
-    def test_http_with_creds_old_version_falls_back(self, *_):
-        kwargs, args = _resolve_proxy_config("http://user:pass@proxy:8080")
-        assert "proxy" in kwargs
-        assert args == []
-
-    # --- HTTP with credentials on unsupported platform → fallback to Playwright ---
+    # --- HTTP with credentials on binaries without inline proxy auth → fallback ---
+    # Free macOS (145.x) and linux-arm64 (146.0.7680.177.3) predate the inline
+    # proxy-auth patch, so their credentialed HTTP proxies route through
+    # Playwright's proxy dict instead of --proxy-server.
 
     @patch("cloakbrowser.config.get_platform_tag", return_value="darwin-arm64")
     def test_http_string_with_creds_on_macos_falls_back(self, _mock):
@@ -494,6 +499,16 @@ class TestResolveProxyConfig:
         assert "proxy" in kwargs
         assert args == []
 
+    @patch("cloakbrowser.config.get_platform_tag", return_value="darwin-arm64")
+    def test_http_with_creds_on_macos_inline_when_pinned_new(self, _mock):
+        # A macOS binary at/above the floor (e.g. a pinned 148 build with the
+        # inline proxy-auth patch) uses --proxy-server, not the fallback.
+        kwargs, args = _resolve_proxy_config(
+            "http://user:pass@proxy:8080", browser_version="148.0.7778.215.3"
+        )
+        assert kwargs == {}
+        assert args == ["--proxy-server=http://user:pass@proxy:8080"]
+
     # --- HTTP without credentials (all platforms) ---
 
     def test_http_no_creds_returns_playwright_dict(self):
@@ -506,3 +521,75 @@ class TestResolveProxyConfig:
         kwargs, args = _resolve_proxy_config(proxy)
         assert kwargs == {"proxy": proxy}
         assert args == []
+
+
+class _FakeRequest:
+    """Stands in for playwright's impl APIRequestContext (method on the class)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def _inner_fetch(self, *args, **kwargs):
+        self.calls += 1
+        return "ok"
+
+
+class _FakeContext:
+    def __init__(self, options=None):
+        self._options = options or {}
+        self._request = _FakeRequest()
+
+
+class TestRequestClientProxyWarning:
+    """#579: Playwright's request client skips a proxy passed as --proxy-server."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_flag(self):
+        import cloakbrowser.browser as browser_mod
+        browser_mod._request_proxy_warned = False
+        yield
+        browser_mod._request_proxy_warned = False
+
+    def test_warns_once_on_first_use(self, capsys):
+        ctx = _FakeContext()
+        _warn_on_request_client_use(ctx)
+        assert "context.request" not in capsys.readouterr().err  # nothing until used
+
+        asyncio.run(ctx._request._inner_fetch(None, "https://x"))
+        asyncio.run(ctx._request._inner_fetch(None, "https://x"))
+        assert ctx._request.calls == 2
+        assert capsys.readouterr().err.count("context.request") == 1
+
+    def test_per_context_proxy_does_not_warn(self, capsys):
+        ctx = _FakeContext({"proxy": {"server": "http://ctx-proxy:8080"}})
+        _warn_on_request_client_use(ctx)
+        asyncio.run(ctx._request._inner_fetch(None, "https://x"))
+        assert "context.request" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize("proxy,hooked", [("socks5://u:p@h:1080", True), ("http://proxy:8080", False)])
+    @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+    @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
+    def test_launch_hooks_only_flag_path(self, _geoip, _bin, proxy, hooked):
+        pw_cm = MagicMock()
+        browser = pw_cm.start.return_value.chromium.launch.return_value
+        with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):
+            from cloakbrowser.browser import launch
+            launch(proxy=proxy)
+        calls = [c for c in browser._impl_obj.on.call_args_list if c.args == ("context", _warn_on_request_client_use)]
+        assert bool(calls) is hooked
+
+    @pytest.mark.parametrize("proxy,hooked", [("socks5://u:p@h:1080", True), ("http://proxy:8080", False)])
+    @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+    @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
+    @patch("cloakbrowser.browser.persistent_seed_args", side_effect=lambda _d, _s, a: a)
+    def test_persistent_hooks_only_flag_path(self, _seed, _geoip, _bin, proxy, hooked):
+        pw_cm = MagicMock()
+        context = pw_cm.start.return_value.chromium.launch_persistent_context.return_value
+        with patch("playwright.sync_api.sync_playwright", return_value=pw_cm), \
+                patch("cloakbrowser.browser._warn_on_request_client_use") as hook:
+            from cloakbrowser.browser import launch_persistent_context
+            launch_persistent_context("/tmp/profile", proxy=proxy)
+        if hooked:
+            hook.assert_called_once_with(context._impl_obj)
+        else:
+            hook.assert_not_called()

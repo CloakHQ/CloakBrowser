@@ -25,7 +25,7 @@ export { ensureBinary, clearCache, binaryInfo, checkForUpdate } from "./download
 export { CHROMIUM_VERSION, getDefaultStealthArgs } from "./config.js";
 
 // License
-export { validateLicense } from "./license.js";
+export { validateLicense, CloakBrowserLicenseError } from "./license.js";
 
 // Types
 export type { LaunchOptions, LaunchContextOptions, LaunchPersistentContextOptions, BinaryInfo } from "./types.js";

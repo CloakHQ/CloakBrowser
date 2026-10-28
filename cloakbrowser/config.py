@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import random
 import re
+import time
+import uuid
 from pathlib import Path
+
+logger = logging.getLogger("cloakbrowser")
 
 
 # ---------------------------------------------------------------------------
@@ -51,13 +56,109 @@ IGNORE_DEFAULT_ARGS = ["--enable-automation", "--enable-unsafe-swiftshader"]
 # Default stealth arguments passed to the patched Chromium binary.
 # These activate source-level fingerprint patches compiled into the binary.
 # ---------------------------------------------------------------------------
+SEED_MIN, SEED_MAX = 10000, 99999
+
+# Shared with the JS and .NET wrappers: decimal seed + newline, so a profile
+# keeps its seed whichever wrapper opens it.
+PROFILE_SEED_FILE = ".cloakbrowser-seed"
+
+
+def _random_seed() -> int:
+    return random.randint(SEED_MIN, SEED_MAX)
+
+
+def _read_profile_seed(path: Path) -> int | None:
+    """Stored seed, or None if the file is missing or corrupt (corrupt is removed)."""
+    try:
+        data = path.read_bytes()
+        # Empty = a concurrent launch's exclusive create (no-hard-link fallback)
+        # hasn't written yet; give it ~1s before calling the file corrupt.
+        for _ in range(20):
+            if data:
+                break
+            time.sleep(0.05)
+            data = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    text = data.strip()
+    if text.isdigit() and text.isascii() and SEED_MIN <= int(text) <= SEED_MAX:
+        return int(text)
+    # A corrupt file gets a fresh seed (= new identity), so say so loudly.
+    logger.warning("Corrupt fingerprint seed file %s (%r); generating a new seed", path, data[:32])
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass  # a concurrent launch already removed it
+    return None
+
+
+def _write_synced(path: Path, mode: str, content: str) -> None:
+    # newline="\n": same bytes as the JS/.NET wrappers (no \r\n on Windows)
+    with open(path, mode, encoding="ascii", newline="\n") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def persistent_seed_args(
+    user_data_dir: str | os.PathLike, stealth_args: bool, args: list[str] | None
+) -> list[str] | None:
+    """Pin a persistent profile's fingerprint seed in ``<user_data_dir>/.cloakbrowser-seed``.
+
+    The first launch creates the seed; later launches reuse it. Returned as a
+    user arg, so it overrides the random stealth default via build_args dedup.
+    An explicit ``--fingerprint`` in ``args`` (including ``=off``) or
+    ``stealth_args=False`` leaves the file alone.
+    """
+    if not stealth_args or not user_data_dir:
+        return args
+    if any(a.split("=", 1)[0] == "--fingerprint" for a in args or []):
+        return args
+
+    profile = Path(os.fspath(user_data_dir))
+    path = profile / PROFILE_SEED_FILE
+    seed = _read_profile_seed(path)
+    if seed is None:
+        profile.mkdir(parents=True, exist_ok=True)
+        tmp = profile / f"{PROFILE_SEED_FILE}.{uuid.uuid4().hex}.tmp"
+        content = f"{_random_seed()}\n"
+        try:
+            _write_synced(tmp, "w", content)
+            # Publish without replacing: concurrent first launches all end up
+            # with whichever seed was linked first.
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                pass
+            except OSError as e:
+                # No hard links (FAT/exFAT, some network mounts): exclusive create
+                # still never overwrites. ponytail: a concurrent reader can catch
+                # the file empty here and regenerate; link() avoids that window.
+                logger.debug("Hard link unsupported for %s (%s); using exclusive create", path, e)
+                try:
+                    _write_synced(path, "x", content)
+                except FileExistsError:
+                    pass
+        finally:
+            try:
+                tmp.unlink()
+            except OSError as e:
+                logger.warning("Failed to remove temp seed file %s: %s", tmp, e)
+        # ponytail: if the winner's file is corrupt here (only via a concurrent
+        # corrupt-file race), fail loudly rather than loop.
+        seed = _read_profile_seed(path)
+        if seed is None:
+            raise RuntimeError(f"Could not create fingerprint seed file {path}")
+    return [f"--fingerprint={seed}", *(args or [])]
+
+
 def get_default_stealth_args() -> list[str]:
     """Build stealth args with a random fingerprint seed per launch.
 
     On macOS, skips platform/GPU spoofing — runs as a native Mac browser.
     Spoofing Windows on Mac creates detectable mismatches (fonts, GPU, etc.).
     """
-    seed = random.randint(10000, 99999)
+    seed = _random_seed()
     system = platform.system()
 
     base = [
@@ -102,6 +203,16 @@ AVAILABLE_PLATFORMS: set[str] = set(PLATFORM_CHROMIUM_VERSIONS.keys())
 
 
 _VERSION_PIN_RE = re.compile(r"^[0-9]+(?:\.[0-9]+){3,4}$")
+
+
+def normalize_release_channel(release_channel: str | None = None) -> str:
+    """Return the requested release channel, defaulting to Stable."""
+    raw = (
+        release_channel
+        if release_channel is not None
+        else os.environ.get("CLOAKBROWSER_RELEASE_CHANNEL", "stable")
+    )
+    return "preview" if raw.strip().lower() == "preview" else "stable"
 
 
 def normalize_requested_version(version: str | None = None) -> str | None:
@@ -199,7 +310,9 @@ def check_platform_available() -> None:
         )
 
 
-def get_effective_version(pro: bool = False) -> str | None:
+def get_effective_version(
+    pro: bool = False, release_channel: str | None = None
+) -> str | None:
     """Return the best available version: auto-updated if available, else platform default.
 
     Reads a platform-scoped marker file from the cache directory.
@@ -214,7 +327,13 @@ def get_effective_version(pro: bool = False) -> str | None:
     cache = get_cache_dir()
 
     if pro:
-        marker = cache / f"latest_pro_version_{get_platform_tag()}"
+        channel = normalize_release_channel(release_channel)
+        marker_prefix = (
+            "latest_pro_version_preview"
+            if channel == "preview"
+            else "latest_pro_version"
+        )
+        marker = cache / f"{marker_prefix}_{get_platform_tag()}"
         if marker.exists():
             try:
                 version = marker.read_text().strip()
@@ -312,7 +431,9 @@ HEADLESS_NO_VIEWPORT_MIN_VERSION: str | None = "148.0.7778.215.4"
 
 
 def binary_supports_headless_no_viewport(
-    license_key: str | None = None, browser_version: str | None = None
+    license_key: str | None = None,
+    browser_version: str | None = None,
+    release_channel: str | None = None,
 ) -> bool:
     """Whether headless can launch with ``no_viewport`` on the resolved binary.
 
@@ -337,15 +458,85 @@ def binary_supports_headless_no_viewport(
         from .license import resolve_license_key
 
         pro = bool(resolve_license_key(license_key))
-        version = get_effective_version(pro=pro)
+        version = get_effective_version(pro=pro, release_channel=release_channel)
+    if version is None:
+        return False
     try:
         return not _version_newer(HEADLESS_NO_VIEWPORT_MIN_VERSION, version)
     except (ValueError, AttributeError):
         return False
 
 
+# ---------------------------------------------------------------------------
+# Inline HTTP proxy authentication by binary version
+# ---------------------------------------------------------------------------
+# First Chromium build, per platform, whose binary can take inline HTTP proxy
+# credentials (Chromium-native ``--proxy-server=http://user:pass@host``). Below
+# the floor the wrapper MUST route credentialed HTTP/HTTPS proxies through
+# Playwright's proxy dict instead — an older binary treats the ``user:pass@``
+# authority as an invalid proxy host and drops proxy auth (#182).
+#
+# A single global threshold (like HEADLESS_NO_VIEWPORT_MIN_VERSION) can't model
+# this: the capability landed in different build lineages at different points —
+# linux-x64/windows-x64 have it at 146.0.7680.177.5, but the free macOS (145.x)
+# and linux-arm64 (146.0.7680.177.3) floors predate it, so those only qualify
+# once they resolve to a Pro/newer build (148+). Platforms absent from this map
+# are treated as never-inline (unknown capability => safe fallback).
+HTTP_PROXY_INLINE_AUTH_MIN_VERSION: dict[str, str] = {
+    "linux-x64": "146.0.7680.177.5",
+    "windows-x64": "146.0.7680.177.5",
+    "linux-arm64": "148.0.7778.215.3",
+    "darwin-arm64": "148.0.7778.215.3",
+    "darwin-x64": "148.0.7778.215.3",
+}
+
+
+def binary_supports_http_proxy_inline_auth(
+    license_key: str | None = None,
+    browser_version: str | None = None,
+    release_channel: str | None = None,
+) -> bool:
+    """Whether the resolved binary accepts inline HTTP proxy credentials.
+
+    The capability is a function of the binary version; ``license_key`` only
+    resolves *which* version launches (Pro build vs free default), exactly like
+    ``binary_supports_headless_no_viewport``. A declared pin wins, else a valid
+    Pro license resolves to the Pro build (which ships the patch), else the free
+    per-platform default — then it compares to this platform's floor. Below the
+    floor, credentialed HTTP proxies fall back to Playwright's proxy dict. A
+    local override with no declared version is unknown-version, so stay on the
+    safe fallback. Python, JS and .NET mirror this gate.
+    """
+    floor = HTTP_PROXY_INLINE_AUTH_MIN_VERSION.get(get_platform_tag())
+    if floor is None:
+        return False
+    try:
+        declared = normalize_requested_version(browser_version)
+    except ValueError:
+        declared = None
+    if declared:
+        version = declared
+    elif get_local_binary_override():
+        return False
+    else:
+        from .license import resolve_license_key
+
+        pro = bool(resolve_license_key(license_key))
+        version = get_effective_version(pro=pro, release_channel=release_channel)
+    if version is None:
+        # Pro with no cached marker => resolve latest Pro from the server, which
+        # is >= the floor by construction and always ships the patch.
+        return True
+    try:
+        return not _version_newer(floor, version)
+    except (ValueError, AttributeError):
+        return False
+
+
 def binary_supports_maximized_window(
-    license_key: str | None = None, browser_version: str | None = None
+    license_key: str | None = None,
+    browser_version: str | None = None,
+    release_channel: str | None = None,
 ) -> bool:
     """Whether the wrapper may auto-add ``--start-maximized``.
 
@@ -357,4 +548,6 @@ def binary_supports_maximized_window(
     ``HEADLESS_NO_VIEWPORT_MIN_VERSION``; kept as its own name so the two can
     diverge later. Python, JS and .NET mirror this gate.
     """
-    return binary_supports_headless_no_viewport(license_key, browser_version)
+    return binary_supports_headless_no_viewport(
+        license_key, browser_version, release_channel
+    )

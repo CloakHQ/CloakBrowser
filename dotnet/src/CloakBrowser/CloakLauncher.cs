@@ -23,48 +23,75 @@ public static class CloakLauncher
     {
         options ??= new LaunchOptions();
 
-        string binaryPath = await Download.EnsureBinaryAsync(options.LicenseKey, options.BrowserVersion).ConfigureAwait(false);
+        string binaryPath = await Download.EnsureBinaryAsync(
+            options.LicenseKey, options.BrowserVersion,
+            releaseChannel: options.ReleaseChannel).ConfigureAwait(false);
         var (timezone, locale, exitIp) = await MaybeResolveGeoIpAsync(
-            options.GeoIp, options.Proxy, options.Timezone, options.Locale).ConfigureAwait(false);
-        var proxyResolution = ProxyResolver.Resolve(options.Proxy, options.BrowserVersion);
+            options.GeoIp, options.Proxy, options.Timezone, options.Locale, options.Args).ConfigureAwait(false);
+        var proxyResolution = ProxyResolver.Resolve(
+            options.Proxy, options.BrowserVersion, options.LicenseKey, options.ReleaseChannel);
         var args = await ResolveWebRtcArgsAsync(options.Args, options.Proxy).ConfigureAwait(false);
         args = MaybeAppendWebRtcExitIp(args, exitIp);
 
         var combined = new List<string>(args ?? new List<string>());
         combined.AddRange(proxyResolution.ExtraArgs);
         var chromeArgs = BuildArgs(options.StealthArgs, combined, timezone, locale, options.Headless, options.ExtensionPaths,
-            startMaximized: Config.BinarySupportsMaximizedWindow(options.LicenseKey, options.BrowserVersion)
+            startMaximized: Config.BinarySupportsMaximizedWindow(
+                options.LicenseKey, options.BrowserVersion, options.ReleaseChannel)
                 && !options.SuppressMaximize);
         MaybeWarnWindowsFonts(chromeArgs);
 
         CloakLog.Debug($"Launching stealth Chromium (headless={options.Headless}, args={chromeArgs.Count})");
 
+        // Per-launch denial file: the binary records a post-handshake license
+        // denial here so NewPage/NewContext can surface it (see LicenseGuard).
+        // Only when a key is in play — keyless runs the unenforced free binary.
+        var denialPath = License.ResolveLicenseKey(options.LicenseKey) != null
+            ? License.MintDenialFile()
+            : null;
+
         var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        // Only the launch is wrapped for license-error mapping (mirrors Python/JS).
+        IBrowser browser;
         try
         {
-            var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+            browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
                 ExecutablePath = binaryPath,
                 Headless = options.Headless,
                 Args = chromeArgs,
                 IgnoreDefaultArgs = Config.IgnoreDefaultArgs,
                 Proxy = proxyResolution.PlaywrightProxy,
-                Env = License.BuildLaunchEnv(options.LicenseKey),
+                Env = License.BuildLaunchEnv(options.LicenseKey, statusFile: denialPath),
             }).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            playwright.Dispose();
+            var lic = License.LicenseErrorFrom(ex, denialPath);
+            if (lic is not null) throw lic;
+            throw;
+        }
 
+        // Post-launch handle construction: a failure here is not a license issue,
+        // but the browser + Playwright still need tearing down.
+        try
+        {
             var humanCfg = options.Humanize
                 ? HumanConfigFactory.Resolve(options.HumanPreset, options.HumanConfig)
                 : null;
             // Pass headless so headed handles default new pages/contexts to NoViewport
             // (track the real window - see CloakBrowserHandle.ApplyDefaultNoViewport).
             // headlessNoViewport extends that default to headless on newer binaries.
-            bool headlessNoViewport =
-                Config.BinarySupportsHeadlessNoViewport(options.LicenseKey, options.BrowserVersion);
+            bool headlessNoViewport = Config.BinarySupportsHeadlessNoViewport(
+                options.LicenseKey, options.BrowserVersion, options.ReleaseChannel);
             return new CloakBrowserHandle(
-                playwright, browser, options.Humanize, humanCfg, options.Headless, headlessNoViewport);
+                playwright, browser, options.Humanize, humanCfg, options.Headless, headlessNoViewport, denialPath);
         }
         catch
         {
+            try { await browser.CloseAsync().ConfigureAwait(false); }
+            catch (Exception closeEx) { CloakLog.Warning($"browser cleanup after post-launch failure failed: {closeEx.Message}"); }
             playwright.Dispose();
             throw;
         }
@@ -81,7 +108,7 @@ public static class CloakLauncher
 
         // Resolve geoip before launch so resolved values flow to binary flags.
         var (timezone, locale, exitIp) = await MaybeResolveGeoIpAsync(
-            options.GeoIp, options.Proxy, options.Timezone, options.Locale).ConfigureAwait(false);
+            options.GeoIp, options.Proxy, options.Timezone, options.Locale, options.Args).ConfigureAwait(false);
         var args = options.Args;
         args = MaybeAppendWebRtcExitIp(args, exitIp);
 
@@ -96,6 +123,7 @@ public static class CloakLauncher
             ExtensionPaths = options.ExtensionPaths,
             LicenseKey = options.LicenseKey,
             BrowserVersion = options.BrowserVersion,
+            ReleaseChannel = options.ReleaseChannel,
             // geoip already resolved above; don't re-resolve.
             GeoIp = false,
             // Caller chose a viewport geometry → don't also auto-maximize the
@@ -106,7 +134,11 @@ public static class CloakLauncher
         try
         {
             var ctxOptions = BuildContextOptions(options);
-            var context = await browserHandle.Browser.NewContextAsync(ctxOptions).ConfigureAwait(false);
+            // Create the internal context through the RAW browser and let the returned
+            // CloakContextHandle license-guard it once (browserHandle.Browser is already
+            // guarded, so going through it would double-wrap). The handle's guarded Context
+            // surfaces a post-handshake denial on the first call through it.
+            var context = await browserHandle.RawBrowser.NewContextAsync(ctxOptions).ConfigureAwait(false);
 
             var humanCfg = options.Humanize
                 ? HumanConfigFactory.Resolve(options.HumanPreset, options.HumanConfig)
@@ -114,7 +146,8 @@ public static class CloakLauncher
 
             // The context handle owns the browser; reuse the same Playwright instance.
             return new CloakContextHandle(
-                GetPlaywright(browserHandle), browserHandle.Browser, context, options.Humanize, humanCfg);
+                GetPlaywright(browserHandle), browserHandle.Browser, context, options.Humanize, humanCfg,
+                browserHandle.DenialPath);
         }
         catch
         {
@@ -133,17 +166,22 @@ public static class CloakLauncher
     {
         options ??= new LaunchContextOptions();
 
-        string binaryPath = await Download.EnsureBinaryAsync(options.LicenseKey, options.BrowserVersion).ConfigureAwait(false);
+        string binaryPath = await Download.EnsureBinaryAsync(
+            options.LicenseKey, options.BrowserVersion,
+            releaseChannel: options.ReleaseChannel).ConfigureAwait(false);
         var (timezone, locale, exitIp) = await MaybeResolveGeoIpAsync(
-            options.GeoIp, options.Proxy, options.Timezone, options.Locale).ConfigureAwait(false);
-        var proxyResolution = ProxyResolver.Resolve(options.Proxy, options.BrowserVersion);
+            options.GeoIp, options.Proxy, options.Timezone, options.Locale, options.Args).ConfigureAwait(false);
+        var proxyResolution = ProxyResolver.Resolve(
+            options.Proxy, options.BrowserVersion, options.LicenseKey, options.ReleaseChannel);
         var args = await ResolveWebRtcArgsAsync(options.Args, options.Proxy).ConfigureAwait(false);
         args = MaybeAppendWebRtcExitIp(args, exitIp);
+        args = Config.PersistentSeedArgs(userDataDir, options.StealthArgs, args);
 
         var combined = new List<string>(args ?? new List<string>());
         combined.AddRange(proxyResolution.ExtraArgs);
         var chromeArgs = BuildArgs(options.StealthArgs, combined, timezone, locale, options.Headless, options.ExtensionPaths,
-            startMaximized: Config.BinarySupportsMaximizedWindow(options.LicenseKey, options.BrowserVersion)
+            startMaximized: Config.BinarySupportsMaximizedWindow(
+                options.LicenseKey, options.BrowserVersion, options.ReleaseChannel)
                 && !options.NoViewport && options.Viewport == null);
         MaybeWarnWindowsFonts(chromeArgs);
 
@@ -152,7 +190,13 @@ public static class CloakLauncher
         // Seed the Widevine CDM hint (Linux-only; no-op elsewhere).
         Widevine.SeedWidevineHint(userDataDir, binaryPath);
 
+        var denialPath = License.ResolveLicenseKey(options.LicenseKey) != null
+            ? License.MintDenialFile()
+            : null;
+
         var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        // Only the launch is wrapped for license-error mapping (mirrors Python/JS).
+        IBrowserContext context;
         try
         {
             var ctxLaunchOptions = new BrowserTypeLaunchPersistentContextOptions
@@ -162,20 +206,34 @@ public static class CloakLauncher
                 Args = chromeArgs,
                 IgnoreDefaultArgs = Config.IgnoreDefaultArgs,
                 Proxy = proxyResolution.PlaywrightProxy,
-                Env = License.BuildLaunchEnv(options.LicenseKey),
+                Env = License.BuildLaunchEnv(options.LicenseKey, statusFile: denialPath),
             };
             ApplyContextEmulation(ctxLaunchOptions, options);
 
-            var context = await playwright.Chromium.LaunchPersistentContextAsync(
+            context = await playwright.Chromium.LaunchPersistentContextAsync(
                 userDataDir, ctxLaunchOptions).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            playwright.Dispose();
+            var lic = License.LicenseErrorFrom(ex, denialPath);
+            if (lic is not null) throw lic;
+            throw;
+        }
 
+        // Post-launch handle construction: a failure here is not a license issue,
+        // but the context + Playwright still need tearing down.
+        try
+        {
             var humanCfg = options.Humanize
                 ? HumanConfigFactory.Resolve(options.HumanPreset, options.HumanConfig)
                 : null;
-            return new CloakContextHandle(playwright, null, context, options.Humanize, humanCfg);
+            return new CloakContextHandle(playwright, null, context, options.Humanize, humanCfg, denialPath);
         }
         catch
         {
+            try { await context.CloseAsync().ConfigureAwait(false); }
+            catch (Exception closeEx) { CloakLog.Warning($"context cleanup after post-launch failure failed: {closeEx.Message}"); }
             playwright.Dispose();
             throw;
         }
@@ -185,17 +243,35 @@ public static class CloakLauncher
     // GeoIP resolution
     // -----------------------------------------------------------------------
 
+    /// <summary>Return the value of the first <c>--key=value</c> flag found in args, else null.</summary>
+    private static string? GetFlagValue(List<string>? args, params string[] keys)
+    {
+        if (args == null)
+            return null;
+        foreach (var a in args)
+            foreach (var k in keys)
+                if (a.StartsWith(k + "=", StringComparison.Ordinal))
+                    return a.Substring(k.Length + 1);
+        return null;
+    }
+
     /// <summary>
     /// Auto-fill timezone/locale from the egress IP when geoip is enabled. Returns
     /// (timezone, locale, exitIp). The exit IP is a free bonus used for WebRTC spoofing.
     /// With a proxy the egress IP is the proxy's exit IP; with no proxy it is the
     /// machine's own public IP, so geoip works proxy-free too.
+    /// A timezone/locale set as a raw flag in args (--fingerprint-timezone, --lang,
+    /// --fingerprint-locale) counts as explicit and is promoted so geoip leaves it alone.
     /// </summary>
     public static async Task<(string? Timezone, string? Locale, string? ExitIp)> MaybeResolveGeoIpAsync(
-        bool geoip, object? proxy, string? timezone, string? locale)
+        bool geoip, object? proxy, string? timezone, string? locale, List<string>? args = null)
     {
         if (!geoip)
             return (timezone, locale, null);
+
+        // Promote raw flags to explicit values so geoip doesn't clobber them.
+        timezone ??= GetFlagValue(args, "--fingerprint-timezone");
+        locale ??= GetFlagValue(args, "--lang", "--fingerprint-locale");
 
         // null when no proxy -> echo services resolve the machine's own public IP.
         string? proxyUrl = proxy != null ? ProxyResolver.ExtractProxyUrl(proxy) : null;
@@ -212,7 +288,15 @@ public static class CloakLauncher
         }
 
         var (geoTz, geoLocale, exitIp) = await GeoIp.ResolveProxyGeoWithIpAsync(proxyUrl).ConfigureAwait(false);
-        return (timezone ?? geoTz, locale ?? geoLocale, exitIp);
+        timezone ??= geoTz;
+        locale ??= geoLocale;
+        var missing = new List<string>();
+        if (timezone == null) missing.Add("timezone");
+        if (locale == null) missing.Add("locale");
+        if (missing.Count > 0)
+            throw new InvalidOperationException(
+                $"GeoIP resolution failed: could not determine {string.Join(" and ", missing)}");
+        return (timezone, locale, exitIp);
     }
 
     // -----------------------------------------------------------------------
@@ -317,6 +401,24 @@ public static class CloakLauncher
                 Set(arg.Split('=', 2)[0], arg);
         }
 
+        // Playwright's default launch args switch off a browser feature that stock Chrome
+        // ships enabled. Re-enable it alongside the Windows font-metrics profile so the
+        // feature set matches a stock browser rather than a test harness. Merged into any
+        // existing --enable-features value rather than added as a second flag.
+        if (seen.ContainsKey("--fingerprint-windows-font-metrics"))
+        {
+            const string key = "--enable-features";
+            var current = seen.TryGetValue(key, out var existing)
+                ? existing.Split('=', 2).ElementAtOrDefault(1) ?? ""
+                : "";
+            var features = current.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
+            if (!features.Contains("MediaRouter"))
+            {
+                features.Add("MediaRouter");
+                Set(key, $"{key}={string.Join(",", features)}");
+            }
+        }
+
         if (!string.IsNullOrEmpty(timezone))
             Set("--fingerprint-timezone", $"--fingerprint-timezone={timezone}");
 
@@ -377,6 +479,20 @@ public static class CloakLauncher
         "MT Extra", "Century", "Century Gothic", "MS Reference Specialty",
         "Wingdings 2", "Wingdings 3", "Book Antiqua", "Bookshelf Symbol 7",
         "Monotype Corsiva", "Bookman Old Style",
+    };
+
+    // macOS OS fonts — the core set present on essentially every real Mac. Their
+    // absence on a macOS-spoofing Linux host degrades results, just as a Windows-
+    // spoofing host needs the Windows set above. Several entries (Arial, Georgia,
+    // Times New Roman, Courier New, Tahoma) also ship on a Windows box, so a
+    // partial count off-Mac is normal.
+    internal static readonly string[] MacFontTells =
+    {
+        "Apple Color Emoji", "Arial", "Arial Narrow", "Arial Unicode MS",
+        "Comic Sans MS", "Courier", "Courier New", "Georgia", "Gill Sans",
+        "Helvetica", "Helvetica Neue", "Impact", "Menlo", "Microsoft Sans Serif",
+        "Monaco", "Tahoma", "Times New Roman", "Trebuchet MS", "Webdings",
+        "Wingdings",
     };
 
     internal static bool _fontWarningChecked;
@@ -467,7 +583,7 @@ public static class CloakLauncher
             var present = WindowsFontsPresent();
             if (present != false) return; // true (full set) or null (undeterminable)
             CloakLog.Warning(
-                "[cloakbrowser] Incomplete Windows font set — installing the full " +
+                "[cloakbrowser] Incomplete Windows font set - installing the full " +
                 "set is strongly advised for best results when spoofing Windows on " +
                 "Linux. https://github.com/CloakHQ/cloakbrowser#font-setup-on-linux " +
                 "(silence: CLOAKBROWSER_SUPPRESS_FONT_WARNING=1)");
@@ -505,7 +621,8 @@ public static class CloakLauncher
         // Viewport unset: headed tracks the real window; headless on a newer binary also
         // tracks it (coherent dimensions natively), older headless gets the fixed default.
         bool headlessNoViewport = options.Headless
-            && Config.BinarySupportsHeadlessNoViewport(options.LicenseKey, options.BrowserVersion);
+            && Config.BinarySupportsHeadlessNoViewport(
+                options.LicenseKey, options.BrowserVersion, options.ReleaseChannel);
         return options.Headless && !headlessNoViewport
             ? new ViewportSize { Width = Config.DefaultViewportWidth, Height = Config.DefaultViewportHeight }
             : ViewportSize.NoViewport;

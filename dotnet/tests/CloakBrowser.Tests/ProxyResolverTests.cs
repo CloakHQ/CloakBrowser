@@ -66,21 +66,24 @@ public class ProxyResolverTests
     }
 
     [Fact]
-    public void Http_With_Creds_Parses_Into_PlaywrightFields_When_InlineAuth_Unsupported()
+    public void Http_With_Creds_Uses_InlineAuth_On_Binary_With_Patch()
     {
-        // On platforms NOT in the inline-auth set (e.g. linux-arm64, darwin-*),
-        // HTTP creds go to the Playwright proxy dict. On linux-x64/windows-x64 with
-        // a recent binary they go to --proxy-server. Accept either valid outcome.
-        var r = ProxyResolver.Resolve("http://user:pass@host:8080");
-        bool inlineArg = r.ExtraArgs.Any(a => a.StartsWith("--proxy-server="));
-        bool pwProxy = r.PlaywrightProxy != null;
-        Assert.True(inlineArg ^ pwProxy, "Exactly one of inline-arg or playwright-proxy should be set");
-        if (pwProxy)
-        {
-            Assert.Equal("http://host:8080", r.PlaywrightProxy!.Server);
-            Assert.Equal("user", r.PlaywrightProxy.Username);
-            Assert.Equal("pass", r.PlaywrightProxy.Password);
-        }
+        // Pin a version at/above every platform floor → inline on any host.
+        var r = ProxyResolver.Resolve("http://user:pass@host:8080", "148.0.7778.215.3");
+        Assert.Null(r.PlaywrightProxy);
+        Assert.Equal("--proxy-server=http://user:pass@host:8080", Assert.Single(r.ExtraArgs));
+    }
+
+    [Fact]
+    public void Http_With_Creds_Falls_Back_On_Binary_Without_Patch()
+    {
+        // Pin a version below every platform floor → Playwright proxy on any host.
+        var r = ProxyResolver.Resolve("http://user:pass@host:8080", "146.0.7680.177.3");
+        Assert.Empty(r.ExtraArgs);
+        Assert.NotNull(r.PlaywrightProxy);
+        Assert.Equal("http://host:8080", r.PlaywrightProxy!.Server);
+        Assert.Equal("user", r.PlaywrightProxy.Username);
+        Assert.Equal("pass", r.PlaywrightProxy.Password);
     }
 
     [Fact]
@@ -97,6 +100,16 @@ public class ProxyResolverTests
             Server = "socks5://host:1080", Username = "u", Password = "p",
         });
         Assert.Equal("socks5://u:p@host:1080", url);
+    }
+
+    [Fact]
+    public void ExtractProxyUrl_Http_Dict_Reconstructs_With_Creds()
+    {
+        var url = ProxyResolver.ExtractProxyUrl(new ProxySettings
+        {
+            Server = "host:8080", Username = "user@tenant", Password = "p:ss",
+        });
+        Assert.Equal("http://user%40tenant:p%3Ass@host:8080", url);
     }
 
     [Fact]

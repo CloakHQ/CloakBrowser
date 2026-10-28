@@ -5,7 +5,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { createHash, createPublicKey, verify as cryptoVerify } from "node:crypto";
+import { createHash, createPublicKey, randomUUID, verify as cryptoVerify } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createWriteStream } from "node:fs";
@@ -31,24 +31,32 @@ import {
   getFallbackDownloadUrl,
   getLocalBinaryOverride,
   getPlatformTag,
+  normalizeReleaseChannel,
   normalizeRequestedVersion,
   versionNewer,
 } from "./config.js";
-import { resolveLicenseKey, validateLicense, getProLatestVersion } from "./license.js";
+import { resolveLicenseKey, validateLicense, getProLatestVersion, getProLatestRelease } from "./license.js";
 
 const DOWNLOAD_TIMEOUT_MS = 600_000; // 10 minutes
 // Seconds, matching the Python/.NET `.last_update_check` marker format so the
 // three wrappers share one cache dir without corrupting each other's rate limit.
 const UPDATE_CHECK_INTERVAL_SEC = 3600; // 1 hour
-// Free-tier welcome banner re-show interval (3 days, in seconds). Free users see
-// the Pro upsell again after this gap; Pro users see it only once (see showWelcome).
+// Free-tier welcome banner re-show interval (1 day, in seconds). Free users see
+// the upsell again after this gap; Pro users see it only once (see showWelcome).
 // Seconds (not ms) so the shared marker is consistent with the Python/.NET wrappers.
 // @internal Exported for testing only.
-export const WELCOME_FREE_INTERVAL_SEC = 3 * 24 * 60 * 60;
+export const WELCOME_FREE_INTERVAL_SEC = 1 * 24 * 60 * 60;
 // Pro Chromium major shown in the welcome banner. Bump at each Pro major release
 // (no local constant to derive it from — the live Pro version comes from the
 // network, which we don't call just to print a banner). Mirrors download.py.
-const PRO_MAJOR = "148";
+const PRO_MAJOR = "155";
+// Attempts to rename an extraction into place while concurrent callers are
+// replacing the same partial install (see extractArchive).
+const INSTALL_RENAME_ATTEMPTS = 5;
+// Retries for a directory rename that Windows transiently denies (see
+// renameDirWithRetry): about 2.5 seconds in total.
+const TRANSIENT_RENAME_ATTEMPTS = 10;
+const TRANSIENT_RENAME_DELAY_MS = 250;
 
 /**
  * A downloaded binary could not be authenticated (bad/missing signature,
@@ -72,7 +80,11 @@ export class BinaryVerificationError extends Error {
  * Ensure the stealth Chromium binary is available. Download if needed.
  * Returns the path to the chrome executable.
  */
-export async function ensureBinary(licenseKey?: string, browserVersion?: string): Promise<string> {
+export async function ensureBinary(
+  licenseKey?: string,
+  browserVersion?: string,
+  releaseChannel?: string,
+): Promise<string> {
   // Check for local override
   const localOverride = getLocalBinaryOverride();
   if (localOverride) {
@@ -81,7 +93,7 @@ export async function ensureBinary(licenseKey?: string, browserVersion?: string)
         `CLOAKBROWSER_BINARY_PATH set to '${localOverride}' but file does not exist`
       );
     }
-    console.log(`[cloakbrowser] Using local binary override: ${localOverride}`);
+    console.error(`[cloakbrowser] Using local binary override: ${localOverride}`);
     return localOverride;
   }
 
@@ -93,12 +105,22 @@ export async function ensureBinary(licenseKey?: string, browserVersion?: string)
   if (effectiveKey) {
     const info = await validateLicense(effectiveKey);
     if (info?.valid) {
+      // Free tier always gets the latest build. Drop any version pin: the server
+      // force-serves latest to free keys, so fetching a pinned version's signed
+      // manifest would mismatch the served bytes and fail checksum verification.
+      // Paid keys keep pinning/rollback.
+      const proVersion = info.plan === "free" ? undefined : requestedVersion;
       // A valid license is entitled to Pro, so Pro failures surface loudly
       // rather than silently substituting the older free binary. (A blip during
       // a routine update never reaches here: ensureProBinary returns the cached
       // Pro binary and updates in the background.)
       try {
-        return await ensureProBinary(effectiveKey, requestedVersion);
+        return await ensureProBinary(
+          effectiveKey,
+          proVersion,
+          info.plan,
+          releaseChannel,
+        );
       } catch (e) {
         // Authenticity could not be confirmed — surface verbatim.
         if (e instanceof BinaryVerificationError) throw e;
@@ -112,9 +134,18 @@ export async function ensureBinary(licenseKey?: string, browserVersion?: string)
         );
       }
     } else if (info) {
-      console.log(`[cloakbrowser] License validation failed (plan=${info.plan}), using free tier`);
+      // Key supplied but rejected — abort, never downgrade to free.
+      throw new Error(
+        `CloakBrowser Pro: license key is invalid or expired (plan=${info.plan}). ` +
+          `Check CLOAKBROWSER_LICENSE_KEY, or unset it to use the free binary.`,
+      );
     } else {
-      console.log("[cloakbrowser] License validation unavailable, using free tier");
+      // Key supplied but unvalidatable (server down, no cache) — abort.
+      throw new Error(
+        "CloakBrowser Pro: license could not be validated (server unreachable " +
+          "and no cached validation). Retry in a moment, or unset " +
+          "CLOAKBROWSER_LICENSE_KEY to use the free binary.",
+      );
     }
   }
 
@@ -128,7 +159,7 @@ export async function ensureBinary(licenseKey?: string, browserVersion?: string)
       return binaryPath;
     }
 
-    console.log(
+    console.error(
       `[cloakbrowser] Stealth Chromium ${requestedVersion} not found. Downloading for ${getPlatformTag()}...`
     );
     await downloadAndExtract(requestedVersion);
@@ -165,7 +196,7 @@ export async function ensureBinary(licenseKey?: string, browserVersion?: string)
   }
 
   // Download platform's hardcoded version
-  console.log(
+  console.error(
     `[cloakbrowser] Stealth Chromium ${platformVersion} not found. Downloading for ${getPlatformTag()}...`
   );
   await downloadAndExtract();
@@ -188,7 +219,7 @@ export function clearCache(): void {
   const cacheDir = getCacheDir();
   if (fs.existsSync(cacheDir)) {
     fs.rmSync(cacheDir, { recursive: true, force: true });
-    console.log(`[cloakbrowser] Cache cleared: ${cacheDir}`);
+    console.error(`[cloakbrowser] Cache cleared: ${cacheDir}`);
   }
 }
 
@@ -200,13 +231,16 @@ export function clearCache(): void {
  * effectively running the free binary, and the active key may differ from the
  * cached one.
  */
-export function binaryInfo(browserVersion?: string): BinaryInfo {
+export function binaryInfo(
+  browserVersion?: string,
+  releaseChannel?: string,
+): BinaryInfo {
   // browserVersion (or CLOAKBROWSER_VERSION) pins the reported version so the
   // info matches what a pinned launch actually runs, instead of latest.
   const requested = normalizeRequestedVersion(browserVersion);
   // Prefer Pro only if a Pro binary actually exists on disk. getEffectiveVersion
   // returns null for Pro when nothing is cached (it never falls back to free).
-  const proVersion = requested ?? getEffectiveVersion(true);
+  const proVersion = requested ?? getEffectiveVersion(true, releaseChannel);
   const isPro = proBinaryReady(proVersion);
 
   const effective = isPro ? proVersion : (requested ?? getEffectiveVersion(false));
@@ -219,7 +253,9 @@ export function binaryInfo(browserVersion?: string): BinaryInfo {
     binaryPath,
     installed: fs.existsSync(binaryPath),
     cacheDir: getBinaryDir(effective, isPro),
-    downloadUrl: isPro ? `${DOWNLOAD_BASE_URL}/api/download/latest` : getDownloadUrl(effective),
+    downloadUrl: isPro
+      ? `${DOWNLOAD_BASE_URL}/api/download/latest${normalizeReleaseChannel(releaseChannel) === "preview" ? "?channel=preview" : ""}`
+      : getDownloadUrl(effective),
   };
 }
 
@@ -234,30 +270,33 @@ export async function checkForUpdate(): Promise<string | null> {
     return latest;
   }
 
-  console.log(`[cloakbrowser] Downloading Chromium ${latest}...`);
+  console.error(`[cloakbrowser] Downloading Chromium ${latest}...`);
   await downloadAndExtract(latest);
   writeVersionMarker(latest);
   return latest;
 }
 
 /**
- * Move a Pro install to the server's latest stable. Blocks until complete.
+ * Move a Pro install to the selected channel's latest. Blocks until complete.
  * Returns the new version when a newer Pro build is downloaded or an
  * already-cached newer build is activated, else null (already up to date or the
  * server could not be reached). Requires a valid Pro license key.
  */
-export async function checkForProUpdate(licenseKey: string): Promise<string | null> {
-  const latest = await getProLatestVersion();
+export async function checkForProUpdate(
+  licenseKey: string,
+  releaseChannel?: string,
+): Promise<string | null> {
+  const latest = await getProLatestVersion(releaseChannel);
   if (!latest) return null;
 
-  const effective = getEffectiveVersion(true);
+  const effective = getEffectiveVersion(true, releaseChannel);
   if (effective && !versionNewer(latest, effective) && proBinaryReady(effective)) {
     // Already on the latest cached Pro build.
     return null;
   }
 
   if (!proBinaryReady(latest)) {
-    console.log(`[cloakbrowser] Downloading Pro Chromium ${latest}...`);
+    console.error(`[cloakbrowser] Downloading Pro Chromium ${latest}...`);
     await downloadProBinary(latest, licenseKey);
     if (!fs.existsSync(getBinaryPath(latest, true))) {
       throw new Error(
@@ -266,7 +305,7 @@ export async function checkForProUpdate(licenseKey: string): Promise<string | nu
     }
   }
 
-  writeProVersionMarker(latest);
+  writeProVersionMarker(latest, releaseChannel);
   return latest;
 }
 
@@ -294,25 +333,70 @@ export function welcomeDue(marker: string, pro: boolean): boolean {
   }
 }
 
-function showWelcome(pro = false): void {
+/**
+ * Show welcome message on launch. A marker file gates the cadence: a paid (Pro)
+ * key shows once ever; free (keyless or a free GitHub key) re-shows every
+ * WELCOME_FREE_INTERVAL_SEC.
+ *
+ * tier:
+ *   "pro"     — a paid license key (Pro banner + support address)
+ *   "free"    — a free GitHub key (latest binary, one concurrent session)
+ *   "keyless" — no key, running the older free binary (invite the free login)
+ */
+let previewFallbackWarned = false;
+
+/** @internal Exported for testing only. */
+export function resetPreviewFallbackWarned(): void {
+  previewFallbackWarned = false;
+}
+
+/**
+ * Tell the user, once per process, that a requested Preview build does not exist
+ * for this platform and the Stable build is being used instead.
+ */
+function warnPreviewFallback(): void {
+  if (previewFallbackWarned) return;
+  previewFallbackWarned = true;
+  console.error(
+    `[cloakbrowser] Preview channel requested, but no preview build is available for ${getPlatformTag()}; using the stable build.`,
+  );
+}
+
+// Exported for tests only; not re-exported from the package index.
+export function showWelcome(tier = "keyless"): void {
   const marker = path.join(getCacheDir(), ".welcome_shown");
-  if (!welcomeDue(marker, pro)) return;
+  if (!welcomeDue(marker, tier === "pro")) return;
+  // ASCII-only banner: on a legacy Windows console a non-ASCII glyph can
+  // crash or mojibake the write, and this runs on the binary-download path
+  // Keep the three wrappers byte-parallel.
   console.error();
-  console.error("  CloakBrowser — stealth Chromium for automation");
+  console.error("  CloakBrowser - stealth Chromium for automation");
   console.error("  https://github.com/CloakHQ/CloakBrowser");
   console.error();
-  if (pro) {
+  if (tier === "pro") {
     console.error(
-      `  CloakBrowser Pro active (v${PRO_MAJOR}) — latest binary, newest patches.`,
+      `  CloakBrowser Pro active (v${PRO_MAJOR}) - latest binary, newest patches.`,
     );
-    console.error("  Pro support → support@cloakbrowser.dev");
+    console.error("  Pro support -> support@cloakbrowser.dev");
+  } else if (tier === "free") {
+    console.error(
+      `  CloakBrowser free (v${PRO_MAJOR}): the latest binary, 1 concurrent session.`,
+    );
+    console.error(
+      "  For more than one concurrent session -> https://cloakbrowser.dev",
+    );
   } else {
     const freeMajor = CHROMIUM_VERSION.split(".")[0];
     console.error(
-      `  Running free tier (v${freeMajor}). ` +
-        `Pro = latest binary (v${PRO_MAJOR}) + newest anti-bot patches.`,
+      `  Running the free binary (v${freeMajor}). ` +
+        `The latest binary (v${PRO_MAJOR}) is free too, with 1 concurrent session.`,
     );
-    console.error("  Try Pro free for 7 days → https://cloakbrowser.dev");
+    console.error(
+      "  Get your key: run  cloakbrowser login  or visit https://cloakbrowser.dev/free",
+    );
+    console.error(
+      "  For more than one concurrent session -> https://cloakbrowser.dev",
+    );
   }
   console.error("  Star us if CloakBrowser helps your project!");
   console.error();
@@ -340,7 +424,7 @@ async function downloadAndExtract(version?: string): Promise<void> {
   // Download to temp file (atomic — no partial downloads in cache)
   const tmpPath = path.join(
     path.dirname(binaryDir),
-    `_download_${Date.now()}${getArchiveExt()}`
+    `_download_${randomUUID()}${getArchiveExt()}`
   );
 
   try {
@@ -527,7 +611,7 @@ export function verifySignature(manifestBytes: Uint8Array, sigB64Bytes: Uint8Arr
     }
     try {
       if (cryptoVerify(null, manifestBytes, keyObject, signature)) {
-        console.log("[cloakbrowser] SHA256SUMS signature verified: Ed25519 OK");
+        console.error("[cloakbrowser] SHA256SUMS signature verified: Ed25519 OK");
         return;
       }
     } catch {
@@ -600,11 +684,11 @@ async function verifyChecksum(filePath: string, expectedHash: string): Promise<v
       `Please retry or report at https://github.com/CloakHQ/cloakbrowser/issues`
     );
   }
-  console.log("[cloakbrowser] Checksum verified: SHA-256 OK");
+  console.error("[cloakbrowser] Checksum verified: SHA-256 OK");
 }
 
 async function downloadFile(url: string, dest: string, headers?: Record<string, string>): Promise<void> {
-  console.log(`[cloakbrowser] Downloading from ${url}`);
+  console.error(`[cloakbrowser] Downloading from ${url}`);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
@@ -647,7 +731,7 @@ async function downloadFile(url: string, dest: string, headers?: Record<string, 
           lastLoggedPct = pct;
           const dlMB = Math.floor(downloaded / (1024 * 1024));
           const totalMB = Math.floor(total / (1024 * 1024));
-          console.log(
+          console.error(
             `[cloakbrowser] Download progress: ${pct}% (${dlMB}/${totalMB} MB)`
           );
         }
@@ -662,7 +746,7 @@ async function downloadFile(url: string, dest: string, headers?: Record<string, 
     });
 
     const sizeMB = Math.floor(fs.statSync(dest).size / (1024 * 1024));
-    console.log(`[cloakbrowser] Download complete: ${sizeMB} MB`);
+    console.error(`[cloakbrowser] Download complete: ${sizeMB} MB`);
   } catch (err) {
     // Ensure file stream is destroyed on error to release the handle
     if (!fileStream.destroyed) {
@@ -691,11 +775,15 @@ function proBinaryReady(version: string | null): version is string {
   return fs.existsSync(p) && isExecutable(p);
 }
 
-/** Atomically write the latest Pro version marker for this platform. */
-function writeProVersionMarker(version: string): void {
+/** Atomically write the selected channel's Pro version marker for this platform. */
+function writeProVersionMarker(version: string, releaseChannel?: string): void {
   const cacheDir = getCacheDir();
   fs.mkdirSync(cacheDir, { recursive: true });
-  const marker = path.join(cacheDir, `latest_pro_version_${getPlatformTag()}`);
+  const channel = normalizeReleaseChannel(releaseChannel);
+  const markerPrefix = channel === "preview"
+    ? "latest_pro_version_preview"
+    : "latest_pro_version";
+  const marker = path.join(cacheDir, `${markerPrefix}_${getPlatformTag()}`);
   const tmp = `${marker}.tmp`;
   fs.writeFileSync(tmp, version);
   fs.renameSync(tmp, marker);
@@ -706,16 +794,21 @@ function writeProVersionMarker(version: string): void {
 // thrown rather than silently launching the free tier.
 async function ensureProBinary(
   licenseKey: string,
-  requestedVersion?: string
+  requestedVersion?: string,
+  plan?: string,
+  releaseChannel?: string,
 ): Promise<string> {
+  // Banner tier: a free GitHub key gets the free banner, paid keys the Pro one.
+  const welcomeTier = plan === "free" ? "free" : "pro";
+
   // Pinned: launch the exact requested version, no server cross-check, no marker
   // write (a rollback pin must not stick future unpinned launches).
   if (requestedVersion) {
     if (proBinaryReady(requestedVersion)) {
-      showWelcome(true);
+      showWelcome(welcomeTier);
       return getBinaryPath(requestedVersion, true);
     }
-    console.log(
+    console.error(
       `[cloakbrowser] Downloading Pro Chromium ${requestedVersion} for ${getPlatformTag()}...`
     );
     await downloadProBinary(requestedVersion, licenseKey);
@@ -723,12 +816,12 @@ async function ensureProBinary(
     if (!fs.existsSync(p)) {
       throw new Error(`Pro download completed but binary not found at: ${p}`);
     }
-    showWelcome(true);
+    showWelcome(welcomeTier);
     return p;
   }
 
-  // Unpinned: track the server's latest stable.
-  const effective = getEffectiveVersion(true);
+  // Unpinned: track the server's latest selected channel.
+  const effective = getEffectiveVersion(true, releaseChannel);
 
   // Honor CLOAKBROWSER_AUTO_UPDATE=false the way the free path does: frozen AND a
   // cached Pro build present → keep it, skip the server check. With no cached build
@@ -737,13 +830,22 @@ async function ensureProBinary(
   const frozen =
     (process.env.CLOAKBROWSER_AUTO_UPDATE ?? "").toLowerCase() === "false";
   if (frozen && proBinaryReady(effective)) {
-    showWelcome(true);
+    showWelcome(welcomeTier);
     return getBinaryPath(effective, true);
   }
 
   // getProLatestVersion() is rate-limited to one network call per hour and returns
   // a cached string in between, so this foreground check stays cheap steady-state.
-  const latest = await getProLatestVersion();
+  const latest = await getProLatestVersion(releaseChannel);
+
+  // Tell the user when they asked for Preview but the server has no preview build
+  // for this platform, so the Stable build is used instead. The lookup is a cache
+  // hit (getProLatestVersion above already populated it), so this only touches the
+  // network on the once-an-hour refresh.
+  if (normalizeReleaseChannel(releaseChannel) === "preview") {
+    const release = await getProLatestRelease(releaseChannel);
+    if (release?.fallback) warnPreviewFallback();
+  }
 
   // Prefer the server's latest when it is newer than — or replaces a missing —
   // the cached build. Otherwise stay on the cached Pro binary (fast, offline-ok).
@@ -770,19 +872,19 @@ async function ensureProBinary(
     // launch — never a stale marker.
     if (version !== effective) {
       try {
-        writeProVersionMarker(version);
+        writeProVersionMarker(version, releaseChannel);
       } catch {
         // Non-fatal
       }
     }
-    showWelcome(true);
+    showWelcome(welcomeTier);
     return getBinaryPath(version, true);
   }
 
   // `version` (the server latest) needs downloading. On failure, fall back to a
   // cached Pro build if we have one — never the free binary.
   try {
-    console.log(
+    console.error(
       `[cloakbrowser] Downloading Pro Chromium ${version} for ${getPlatformTag()}...`
     );
     await downloadProBinary(version, licenseKey);
@@ -791,10 +893,10 @@ async function ensureProBinary(
     // cached-Pro fallback, which is only for transient download failures.
     if (err instanceof BinaryVerificationError) throw err;
     if (proBinaryReady(effective)) {
-      console.log(
+      console.error(
         `[cloakbrowser] Pro update to ${version} failed; launching cached Pro binary ${effective}`
       );
-      showWelcome(true);
+      showWelcome(welcomeTier);
       return getBinaryPath(effective, true);
     }
     throw err;
@@ -809,12 +911,12 @@ async function ensureProBinary(
 
   // Advance the marker so future unpinned launches use this build.
   try {
-    writeProVersionMarker(version);
+    writeProVersionMarker(version, releaseChannel);
   } catch {
     // Non-fatal
   }
 
-  showWelcome(true);
+  showWelcome(welcomeTier);
   return downloadedPath;
 }
 
@@ -831,7 +933,7 @@ export async function downloadProBinary(version: string, licenseKey: string): Pr
 
   const tmpPath = path.join(
     path.dirname(binaryDir),
-    `_download_${Date.now()}${getArchiveExt()}`
+    `_download_${randomUUID()}${getArchiveExt()}`
   );
 
   try {
@@ -934,54 +1036,95 @@ async function extractArchive(
   destDir: string,
   binaryPath?: string
 ): Promise<void> {
-  console.log(`[cloakbrowser] Extracting to ${destDir}`);
-
-  // Clean existing dir if partial download existed
-  if (fs.existsSync(destDir)) {
-    fs.rmSync(destDir, { recursive: true, force: true });
-  }
-  fs.mkdirSync(destDir, { recursive: true });
-
-  if (archivePath.endsWith(".zip")) {
-    await extractZip(archivePath, destDir);
-  } else {
-    await extractTar(archivePath, destDir);
-  }
-
-  // Flatten single subdirectory if needed
-  flattenSingleSubdir(destDir);
-
-  // Make binary executable (skip on Windows — no-op / AV lock risk)
+  console.error(`[cloakbrowser] Extracting to ${destDir}`);
   const bp = binaryPath || getBinaryPath();
-  if (process.platform !== "win32" && fs.existsSync(bp)) {
-    fs.chmodSync(bp, 0o755);
-  }
 
-  // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
-  if (process.platform === "darwin") {
-    removeQuarantine(destDir);
+  // Extract into a private sibling dir, then rename it into place. Concurrent
+  // first runs (in this process or others) each get their own staging dir, so
+  // none of them can see or delete another's half-written install.
+  const stagingDir = `${destDir}.partial-${randomUUID()}`;
+  fs.mkdirSync(stagingDir);
+  const staleDirs: string[] = [];
+  try {
+    if (archivePath.endsWith(".zip")) {
+      await extractZip(archivePath, stagingDir);
+    } else {
+      // Signature-verified before extraction, so unpack as-is.
+      await tarExtract({ file: archivePath, cwd: stagingDir, strip: 0 });
+    }
+
+    // Flatten single subdirectory if needed
+    flattenSingleSubdir(stagingDir);
+
+    // Make binary executable (skip on Windows: no-op / AV lock risk)
+    const stagedBinaryPath = path.join(stagingDir, path.relative(destDir, bp));
+    if (process.platform !== "win32" && fs.existsSync(stagedBinaryPath)) {
+      fs.chmodSync(stagedBinaryPath, 0o755);
+    }
+
+    // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
+    if (process.platform === "darwin") {
+      removeQuarantine(stagingDir);
+    }
+
+    for (let attempt = 1; attempt <= INSTALL_RENAME_ATTEMPTS; attempt++) {
+      try {
+        await renameDirWithRetry(stagingDir, destDir);
+        break;
+      } catch (err) {
+        // destDir is in the way. Keep it if another caller finished a complete
+        // install; replace it if it is an incomplete leftover, such as an
+        // interrupted in-place extraction from an older release.
+        if (fs.existsSync(bp) && isExecutable(bp)) break;
+        if (attempt === INSTALL_RENAME_ATTEMPTS) throw err;
+      }
+      // Rename the leftover aside before deleting it. Deleting it in place races
+      // other callers renaming their extraction into destDir.
+      const staleDir = `${destDir}.stale-${randomUUID()}`;
+      try {
+        await renameDirWithRetry(destDir, staleDir);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // another caller moved it aside first
+        throw err;
+      }
+      staleDirs.push(staleDir);
+    }
+  } finally {
+    for (const leftoverDir of [stagingDir, ...staleDirs]) {
+      try {
+        fs.rmSync(leftoverDir, { recursive: true, force: true });
+      } catch {
+        // Best effort, so a cleanup failure never masks the error being thrown.
+      }
+    }
   }
 
   if (fs.existsSync(bp)) {
-    console.log(`[cloakbrowser] Binary ready: ${bp}`);
+    console.error(`[cloakbrowser] Binary ready: ${bp}`);
   }
 }
 
-async function extractTar(archivePath: string, destDir: string): Promise<void> {
-  await tarExtract({
-    file: archivePath,
-    cwd: destDir,
-    strip: 0,
-    filter: (entryPath: string) => {
-      if (path.isAbsolute(entryPath) || entryPath.includes("..")) {
-        console.warn(
-          `[cloakbrowser] Skipping suspicious archive entry: ${entryPath}`
-        );
-        return false;
+/** Rename a directory, retrying while Windows reports it as in use. */
+async function renameDirWithRetry(source: string, destination: string): Promise<void> {
+  for (let attempt = 1; attempt <= TRANSIENT_RENAME_ATTEMPTS; attempt++) {
+    try {
+      fs.renameSync(source, destination);
+      return;
+    } catch (err) {
+      // Windows antivirus briefly holds freshly written files open, which fails the
+      // rename with EPERM/EACCES/EBUSY. An existing destination is not transient.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (
+        process.platform !== "win32" ||
+        !(code === "EPERM" || code === "EACCES" || code === "EBUSY") ||
+        attempt === TRANSIENT_RENAME_ATTEMPTS ||
+        fs.existsSync(destination)
+      ) {
+        throw err;
       }
-      return true;
-    },
-  });
+      await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RENAME_DELAY_MS));
+    }
+  }
 }
 
 async function extractZip(archivePath: string, destDir: string): Promise<void> {
@@ -1127,7 +1270,7 @@ export async function checkWrapperUpdate(): Promise<void> {
     const data = (await resp.json()) as { version: string };
     if (data.version && versionNewer(data.version, WRAPPER_VERSION)) {
       console.warn(
-        `[cloakbrowser] Update available: ${WRAPPER_VERSION} → ${data.version}. ` +
+        `[cloakbrowser] Update available: ${WRAPPER_VERSION} -> ${data.version}. ` +
         `Run: npm install cloakbrowser@latest`
       );
     }
@@ -1156,12 +1299,12 @@ async function checkAndDownloadUpdate(): Promise<void> {
       return;
     }
 
-    console.log(
+    console.error(
       `[cloakbrowser] Newer Chromium available: ${latest} (current: ${platformVersion}). Downloading in background...`
     );
     await downloadAndExtract(latest);
     writeVersionMarker(latest);
-    console.log(
+    console.error(
       `[cloakbrowser] Background update complete: Chromium ${latest} ready. Will use on next launch.`
     );
   } catch (err) {

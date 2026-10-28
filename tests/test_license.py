@@ -11,9 +11,13 @@ import pytest
 
 from cloakbrowser.download import BinaryVerificationError, ensure_binary
 from cloakbrowser.license import (
+    CloakBrowserLicenseError,
     LicenseInfo,
     build_launch_env,
+    get_active_session_count,
+    get_pro_latest_release,
     get_pro_latest_version,
+    get_session_seats,
     resolve_license_key,
     validate_license,
 )
@@ -31,10 +35,13 @@ class TestResolveLicenseKey:
         with patch.dict(os.environ, {"CLOAKBROWSER_LICENSE_KEY": "env-key"}):
             assert resolve_license_key() == "env-key"
 
-    def test_returns_none_when_absent(self):
+    def test_returns_none_when_absent(self, tmp_path):
+        # Clearing the env drops CLOAKBROWSER_CACHE_DIR too, so the lookup would
+        # fall back to the real ~/.cloakbrowser — patch the dir it reads.
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("CLOAKBROWSER_LICENSE_KEY", None)
-            assert resolve_license_key() is None
+            with patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path):
+                assert resolve_license_key() is None
 
     def test_empty_string_param_uses_env(self):
         with patch.dict(os.environ, {"CLOAKBROWSER_LICENSE_KEY": "env-key"}):
@@ -265,10 +272,142 @@ class TestGetProLatestVersion:
         mock_resp.raise_for_status = MagicMock()
 
         with patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path):
-            with patch("cloakbrowser.license.httpx.get", return_value=mock_resp):
+            with patch(
+                "cloakbrowser.license.httpx.get", return_value=mock_resp
+            ) as mock_get:
                 version = get_pro_latest_version()
 
         assert version == "147.0.1234.5"
+        assert mock_get.call_args.args[0] == "https://cloakbrowser.dev/api/download/version"
+
+    def test_preview_uses_preview_endpoint_and_marker(self, tmp_path):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "version": "150.0.7871.114.3",
+            "requested_channel": "preview",
+            "resolved_channel": "stable",
+            "fallback": True,
+        }
+        mock_resp.raise_for_status = MagicMock()
+
+        with (
+            patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path),
+            patch(
+                "cloakbrowser.license.get_platform_tag", return_value="linux-x64"
+            ),
+            patch(
+                "cloakbrowser.license.httpx.get", return_value=mock_resp
+            ) as mock_get,
+        ):
+            release = get_pro_latest_release("preview")
+
+        assert release is not None
+        assert release.version == "150.0.7871.114.3"
+        assert release.resolved_channel == "stable"
+        assert release.fallback is True
+        assert mock_get.call_args.args[0].endswith("?channel=preview")
+        assert (
+            tmp_path / ".last_pro_version_check_preview_linux-x64"
+        ).read_text() == "150.0.7871.114.3"
+        assert not (tmp_path / ".last_pro_version_check_linux-x64").exists()
+
+    def test_old_server_preview_response_is_reported_as_stable_fallback(self, tmp_path):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"version": "150.0.7871.114.3"}
+        mock_resp.raise_for_status = MagicMock()
+
+        with (
+            patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path),
+            patch("cloakbrowser.license.httpx.get", return_value=mock_resp),
+        ):
+            release = get_pro_latest_release("preview")
+
+        assert release is not None
+        assert release.resolved_channel == "stable"
+        assert release.fallback is True
+
+    def test_reads_legacy_javascript_camelcase_sidecar(self, tmp_path):
+        platform_tag = "linux-x64"
+        (tmp_path / f".last_pro_version_check_preview_{platform_tag}").write_text(
+            "150.0.7871.114.3"
+        )
+        (tmp_path / f".last_pro_version_resolution_preview_{platform_tag}").write_text(
+            json.dumps({
+                "version": "150.0.7871.114.3",
+                "requestedChannel": "preview",
+                "resolvedChannel": "stable",
+                "fallback": True,
+            })
+        )
+        with (
+            patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path),
+            patch("cloakbrowser.license.get_platform_tag", return_value=platform_tag),
+            patch("cloakbrowser.license.httpx.get") as mock_get,
+        ):
+            release = get_pro_latest_release("preview")
+
+        mock_get.assert_not_called()
+        assert release is not None
+        assert release.resolved_channel == "stable"
+        assert release.fallback is True
+
+    def test_sidecar_missing_fallback_defaults_to_requested_ne_resolved(self, tmp_path):
+        # A sidecar with no explicit "fallback" and requested == resolved must NOT
+        # be reported as a fallback — matches the JS and .NET default.
+        platform_tag = "linux-x64"
+        (tmp_path / f".last_pro_version_check_preview_{platform_tag}").write_text(
+            "151.0.7900.10.1"
+        )
+        (tmp_path / f".last_pro_version_resolution_preview_{platform_tag}").write_text(
+            json.dumps({
+                "version": "151.0.7900.10.1",
+                "requested_channel": "preview",
+                "resolved_channel": "preview",
+            })  # no "fallback" key
+        )
+        with (
+            patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path),
+            patch("cloakbrowser.license.get_platform_tag", return_value=platform_tag),
+            patch("cloakbrowser.license.httpx.get") as mock_get,
+        ):
+            release = get_pro_latest_release("preview")
+
+        mock_get.assert_not_called()
+        assert release is not None
+        assert release.resolved_channel == "preview"
+        assert release.fallback is False
+
+    def test_environment_selects_preview(self, tmp_path):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"version": "151.0.1234.5"}
+        mock_resp.raise_for_status = MagicMock()
+
+        with (
+            patch.dict(os.environ, {"CLOAKBROWSER_RELEASE_CHANNEL": "preview"}),
+            patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path),
+            patch(
+                "cloakbrowser.license.httpx.get", return_value=mock_resp
+            ) as mock_get,
+        ):
+            get_pro_latest_version()
+
+        assert mock_get.call_args.args[0].endswith("?channel=preview")
+
+    def test_explicit_stable_overrides_preview_environment(self, tmp_path):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"version": "150.0.1234.5"}
+        mock_resp.raise_for_status = MagicMock()
+
+        with (
+            patch.dict(os.environ, {"CLOAKBROWSER_RELEASE_CHANNEL": "preview"}),
+            patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path),
+            patch(
+                "cloakbrowser.license.httpx.get", return_value=mock_resp
+            ) as mock_get,
+        ):
+            get_pro_latest_version("stable")
+
+        assert mock_get.call_args.args[0] == "https://cloakbrowser.dev/api/download/version"
 
     def test_sends_platform_header(self, tmp_path):
         mock_resp = MagicMock()
@@ -290,6 +429,13 @@ class TestGetProLatestVersion:
     def test_rate_limited(self, tmp_path):
         marker = tmp_path / ".last_pro_version_check_darwin-arm64"
         marker.write_text("147.0.1234.5")
+        resolution = tmp_path / ".last_pro_version_resolution_darwin-arm64"
+        resolution.write_text(json.dumps({
+            "version": "147.0.1234.5",
+            "requested_channel": "stable",
+            "resolved_channel": "stable",
+            "fallback": False,
+        }))
 
         with patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path):
             with patch(
@@ -307,6 +453,228 @@ class TestGetProLatestVersion:
                 version = get_pro_latest_version()
 
         assert version is None
+
+    def test_offline_preview_preserves_sidecar_channel(self, tmp_path):
+        # Stale marker (rate-limit expired) forces the network path; the server is
+        # unreachable, so the offline branch must reuse the resolution sidecar
+        # instead of mislabeling a genuine preview build as a stable fallback.
+        platform_tag = "linux-x64"
+        marker = tmp_path / f".last_pro_version_check_preview_{platform_tag}"
+        marker.write_text("151.0.7900.10.1")
+        resolution = tmp_path / f".last_pro_version_resolution_preview_{platform_tag}"
+        resolution.write_text(json.dumps({
+            "version": "151.0.7900.10.1",
+            "requested_channel": "preview",
+            "resolved_channel": "preview",
+            "fallback": False,
+        }))
+        old = time.time() - 7200  # 2h ago → past the 1h rate-limit window
+        os.utime(marker, (old, old))
+
+        with (
+            patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path),
+            patch("cloakbrowser.license.get_platform_tag", return_value=platform_tag),
+            patch("cloakbrowser.license.httpx.get", side_effect=Exception("network")),
+        ):
+            release = get_pro_latest_release("preview")
+
+        assert release is not None
+        assert release.version == "151.0.7900.10.1"
+        assert release.resolved_channel == "preview"
+        assert release.fallback is False
+
+    def test_offline_preview_without_sidecar_falls_back_to_stable(self, tmp_path):
+        # No resolution sidecar (older wrapper) → conservative stable fallback.
+        platform_tag = "linux-x64"
+        marker = tmp_path / f".last_pro_version_check_preview_{platform_tag}"
+        marker.write_text("151.0.7900.10.1")
+        old = time.time() - 7200
+        os.utime(marker, (old, old))
+
+        with (
+            patch("cloakbrowser.license.get_cache_dir", return_value=tmp_path),
+            patch("cloakbrowser.license.get_platform_tag", return_value=platform_tag),
+            patch("cloakbrowser.license.httpx.get", side_effect=Exception("network")),
+        ):
+            release = get_pro_latest_release("preview")
+
+        assert release is not None
+        assert release.resolved_channel == "stable"
+        assert release.fallback is True
+
+
+# ── get_active_session_count ──────────────────────────
+
+
+class TestGetActiveSessionCount:
+    def _resp(self, payload, status=200):
+        mock_resp = MagicMock()
+        mock_resp.status_code = status
+        mock_resp.json.return_value = payload
+        mock_resp.raise_for_status = MagicMock()
+        return mock_resp
+
+    def test_returns_count(self):
+        with patch(
+            "cloakbrowser.license.httpx.post", return_value=self._resp({"valid": True, "active": 3})
+        ):
+            assert get_active_session_count("cb_key") == 3
+
+    def test_posts_the_key_in_the_body(self):
+        """POST, not GET: the key is a live credential and a query string would
+        land in the server's access log."""
+        with patch(
+            "cloakbrowser.license.httpx.post", return_value=self._resp({"valid": True, "active": 0})
+        ) as mock_post:
+            get_active_session_count("cb_key")
+
+        args, kwargs = mock_post.call_args
+        assert args[0] == "https://cloakbrowser.dev/api/license/session/count"
+        assert kwargs["json"] == {"license_key": "cb_key"}
+
+    def test_zero_seats_is_not_confused_with_unknown(self):
+        """0 is a real answer ("nothing running"), None means "couldn't tell" —
+        they print differently, so the falsy-vs-None distinction must survive."""
+        with patch(
+            "cloakbrowser.license.httpx.post", return_value=self._resp({"valid": True, "active": 0})
+        ):
+            assert get_active_session_count("cb_key") == 0
+
+    def test_server_reported_unavailable_returns_none(self):
+        """Leaseless mode on the server → {"active": null}, never a false 0."""
+        with patch(
+            "cloakbrowser.license.httpx.post",
+            return_value=self._resp({"valid": True, "active": None}),
+        ):
+            assert get_active_session_count("cb_key") is None
+
+    def test_network_error_returns_none(self):
+        """info is a diagnostic — a network failure degrades to "unavailable",
+        it never raises out of the command."""
+        with patch("cloakbrowser.license.httpx.post", side_effect=Exception("network")):
+            assert get_active_session_count("cb_key") is None
+
+    def test_is_never_cached(self):
+        """validate_license caches 24h; a cached seat count would be a wrong seat
+        count, so every call must hit the network."""
+        with patch(
+            "cloakbrowser.license.httpx.post", return_value=self._resp({"valid": True, "active": 2})
+        ) as mock_post:
+            get_active_session_count("cb_key")
+            get_active_session_count("cb_key")
+
+        assert mock_post.call_count == 2
+
+
+# ── get_session_seats ─────────────────────────────────
+
+
+class TestGetSessionSeats:
+    """The six failure paths that used to collapse into one bare None."""
+
+    def _resp(self, payload, status=200):
+        mock_resp = MagicMock()
+        mock_resp.status_code = status
+        mock_resp.json.return_value = payload
+        return mock_resp
+
+    def test_reports_count_and_limit(self):
+        with patch(
+            "cloakbrowser.license.httpx.post",
+            return_value=self._resp({"valid": True, "active": 8, "limit": 2000}),
+        ):
+            seats = get_session_seats("cb_key")
+
+        assert (seats.active, seats.limit, seats.state) == (8, 2000, "ok")
+
+    def test_missing_limit_is_none_not_an_error(self):
+        """A server predating the field still yields a usable count."""
+        with patch(
+            "cloakbrowser.license.httpx.post",
+            return_value=self._resp({"valid": True, "active": 8}),
+        ):
+            seats = get_session_seats("cb_key")
+
+        assert seats.state == "ok"
+        assert seats.active == 8
+        assert seats.limit is None
+
+    def test_null_limit_is_none(self):
+        """Unlimited licence or unrecognised plan — the server says so explicitly."""
+        with patch(
+            "cloakbrowser.license.httpx.post",
+            return_value=self._resp({"valid": True, "active": 3, "limit": None}),
+        ):
+            assert get_session_seats("cb_key").limit is None
+
+    def test_zero_seats_is_a_real_answer(self):
+        with patch(
+            "cloakbrowser.license.httpx.post",
+            return_value=self._resp({"valid": True, "active": 0, "limit": 5}),
+        ):
+            seats = get_session_seats("cb_key")
+
+        assert seats.state == "ok"
+        assert seats.active == 0
+
+    def test_network_failure_is_unreachable(self):
+        """info is a diagnostic — it degrades, it never raises out of the command."""
+        with patch("cloakbrowser.license.httpx.post", side_effect=Exception("network")):
+            seats = get_session_seats("cb_key")
+
+        assert seats.state == "unreachable"
+        assert seats.active is None
+
+    def test_denial_carries_the_server_reason(self):
+        with patch(
+            "cloakbrowser.license.httpx.post",
+            return_value=self._resp({"valid": False, "error": "license_inactive"}, status=403),
+        ):
+            seats = get_session_seats("cb_key")
+
+        assert seats.state == "denied"
+        assert seats.reason == "license_inactive"
+
+    def test_rate_limit_is_a_denial(self):
+        with patch(
+            "cloakbrowser.license.httpx.post",
+            return_value=self._resp({"valid": False, "error": "rate_limited"}, status=429),
+        ):
+            assert get_session_seats("cb_key").reason == "rate_limited"
+
+    def test_denial_without_a_body_falls_back_to_the_status(self):
+        resp = MagicMock()
+        resp.status_code = 500
+        resp.json.side_effect = ValueError("not json")
+        with patch("cloakbrowser.license.httpx.post", return_value=resp):
+            assert get_session_seats("cb_key").reason == "HTTP 500"
+
+    def test_server_reported_unavailable_is_unknown_not_denied(self):
+        """Leaseless mode: 200, key is fine, the server just cannot count. This is the
+        distinction the old single None destroyed."""
+        with patch(
+            "cloakbrowser.license.httpx.post",
+            return_value=self._resp({"valid": True, "active": None, "limit": None}),
+        ):
+            seats = get_session_seats("cb_key")
+
+        assert seats.state == "unknown"
+        assert seats.active is None
+
+    def test_unparseable_body_is_unknown(self):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.side_effect = ValueError("not json")
+        with patch("cloakbrowser.license.httpx.post", return_value=resp):
+            assert get_session_seats("cb_key").state == "unknown"
+
+    def test_old_helper_still_returns_the_bare_count(self):
+        """get_active_session_count is shipped public API — it must keep behaving."""
+        with patch(
+            "cloakbrowser.license.httpx.post",
+            return_value=self._resp({"valid": True, "active": 4, "limit": 20}),
+        ):
+            assert get_active_session_count("cb_key") == 4
 
 
 # ── Config pro parameter ──────────────────────────────
@@ -389,6 +757,27 @@ class TestBinaryInfoTier:
         assert info["tier"] == "pro"
         assert info["version"] == "147.0.5555.1"
 
+    def test_preview_pro_download_url_carries_channel(self, tmp_path):
+        from cloakbrowser.config import get_binary_path, get_platform_tag
+        from cloakbrowser.download import binary_info
+
+        with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}, clear=False):
+            tag = get_platform_tag()
+            # Same cached Pro binary satisfies both channels (version-keyed cache dir);
+            # only the reported download URL should differ by channel.
+            (tmp_path / f"latest_pro_version_preview_{tag}").write_text("151.0.7900.10.1")
+            (tmp_path / f"latest_pro_version_{tag}").write_text("151.0.7900.10.1")
+            bp = get_binary_path("151.0.7900.10.1", pro=True)
+            bp.parent.mkdir(parents=True, exist_ok=True)
+            bp.write_text("fake")
+            bp.chmod(0o755)
+            preview_info = binary_info(release_channel="preview")
+            stable_info = binary_info(release_channel="stable")
+
+        assert preview_info["download_url"].endswith("/api/download/latest?channel=preview")
+        assert stable_info["download_url"].endswith("/api/download/latest")
+        assert "channel=preview" not in stable_info["download_url"]
+
 
 # ── ensure_binary Pro routing (fail-closed vs fall-back) ──────────────────────
 
@@ -449,6 +838,35 @@ class TestEnsureBinaryProRouting:
              patch("cloakbrowser.download.check_platform_available",
                    side_effect=AssertionError("MUST NOT reach the free-tier path on macOS")):
             with pytest.raises(RuntimeError, match="Pro binary unavailable"):
+                ensure_binary("cb_x")
+
+    def test_invalid_key_aborts_not_free(self):
+        """A supplied key the server rejects (valid=False) must abort with a clear
+        license error — NOT silently downgrade to the free binary."""
+        with patch.dict(os.environ, {"CLOAKBROWSER_DOWNLOAD_URL": ""}, clear=False), \
+             patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
+             patch("cloakbrowser.license.resolve_license_key", return_value="cb_bad"), \
+             patch("cloakbrowser.license.validate_license",
+                   return_value=LicenseInfo(valid=False, plan="solo", expires=None)), \
+             patch("cloakbrowser.download._ensure_pro_binary",
+                   side_effect=AssertionError("MUST NOT reach the Pro path")), \
+             patch("cloakbrowser.download.check_platform_available",
+                   side_effect=AssertionError("MUST NOT reach the free-tier path")):
+            with pytest.raises(CloakBrowserLicenseError, match="invalid or expired"):
+                ensure_binary("cb_bad")
+
+    def test_unvalidatable_key_aborts_not_free(self):
+        """A supplied key that can't be validated (server unreachable, no cache →
+        validate_license returns None) must abort — NOT silently downgrade."""
+        with patch.dict(os.environ, {"CLOAKBROWSER_DOWNLOAD_URL": ""}, clear=False), \
+             patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
+             patch("cloakbrowser.license.resolve_license_key", return_value="cb_x"), \
+             patch("cloakbrowser.license.validate_license", return_value=None), \
+             patch("cloakbrowser.download._ensure_pro_binary",
+                   side_effect=AssertionError("MUST NOT reach the Pro path")), \
+             patch("cloakbrowser.download.check_platform_available",
+                   side_effect=AssertionError("MUST NOT reach the free-tier path")):
+            with pytest.raises(CloakBrowserLicenseError, match="could not be validated"):
                 ensure_binary("cb_x")
 
 
@@ -540,3 +958,38 @@ class TestBuildLaunchEnv:
         """Empty/whitespace key param treated as absent → None."""
         assert build_launch_env(license_key="") is None
         assert build_launch_env(license_key="   ") is None
+
+    def test_status_file_carried_on_inherit_path(self):
+        """status_file must reach the child even on an inherit-parent-env path.
+        Env source with no user_env would normally return None (inherit); with a
+        status_file it must become a full os.environ copy carrying both the key
+        and the status var (Playwright replaces, not merges)."""
+        from cloakbrowser.license import LICENSE_STATUS_FILE_ENV
+        with patch.dict(os.environ, {"CLOAKBROWSER_LICENSE_KEY": "cb_env"}):
+            result = build_launch_env(status_file="/tmp/denials/x.json")
+            assert result is not None
+            assert result[LICENSE_STATUS_FILE_ENV] == "/tmp/denials/x.json"
+            assert result["CLOAKBROWSER_LICENSE_KEY"] == "cb_env"
+            assert "HOME" in result  # seeded from parent env
+
+    def test_status_file_on_default_file_keeps_key_out_of_env(self, tmp_path):
+        """default_file source + status_file → the status var is injected but the
+        key stays out of the env (binary still reads the key file; HOME present)."""
+        from cloakbrowser.license import LICENSE_STATUS_FILE_ENV
+        home_dir = tmp_path / "home"
+        default_cache = home_dir / ".cloakbrowser"
+        default_cache.mkdir(parents=True)
+        (default_cache / "license.key").write_text("cb_file_key\n")
+        with patch.dict(os.environ, {"HOME": str(home_dir)}, clear=True), \
+             patch("cloakbrowser.license.get_cache_dir", return_value=default_cache), \
+             patch("pathlib.Path.home", return_value=home_dir):
+            result = build_launch_env(status_file="/tmp/denials/y.json")
+            assert result is not None
+            assert result[LICENSE_STATUS_FILE_ENV] == "/tmp/denials/y.json"
+            assert "CLOAKBROWSER_LICENSE_KEY" not in result
+            assert result["HOME"] == str(home_dir)
+
+    def test_no_status_file_unchanged(self):
+        """Omitting status_file preserves the original behavior exactly."""
+        with patch.dict(os.environ, {"CLOAKBROWSER_LICENSE_KEY": "cb_env"}):
+            assert build_launch_env() is None

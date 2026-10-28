@@ -10,12 +10,13 @@ namespace CloakBrowser;
 /// </summary>
 internal static class Diagnostics
 {
-    internal static Dictionary<string, object?> Collect(bool quick)
+    internal static Dictionary<string, object?> Collect(bool quick, string? proxy = null)
     {
         var diag = new Dictionary<string, object?>();
 
         var env = new Dictionary<string, object?>
         {
+            ["wrapper"] = CloakVersion.Version,
             ["dotnet"] = RuntimeInformation.FrameworkDescription,
             ["os"] = RuntimeInformation.OSDescription,
             ["arch"] = RuntimeInformation.OSArchitecture.ToString(),
@@ -25,6 +26,25 @@ internal static class Diagnostics
         // Resolve the license up front — it decides which binary actually
         // launches (EnsureBinary only uses the Pro binary when a key validates).
         var (license, entitledPro) = ResolveLicense();
+
+        // Live seat count — a Pro-only extra lookup, so gated exactly like the
+        // server latest-version check: --quick keeps `info` network-free, and a
+        // free tier holds no seats. Never cached (a cached count is a wrong count).
+        if (entitledPro && !quick)
+        {
+            string? sessionKey = License.ResolveLicenseKey();
+            if (!string.IsNullOrEmpty(sessionKey))
+            {
+                var seats = License.GetSessionSeats(sessionKey!);
+                license["sessions"] = new Dictionary<string, object?>
+                {
+                    ["active"] = seats.Active,
+                    ["limit"] = seats.Limit,
+                    ["state"] = seats.State,
+                    ["reason"] = seats.Reason,
+                };
+            }
+        }
 
         try { env["platform_tag"] = Config.GetPlatformTag(); }
         catch (Exception ex) { env["platform_tag"] = $"unavailable ({ex.Message})"; }
@@ -45,6 +65,15 @@ internal static class Diagnostics
         {
             diag["launch"] = new Dictionary<string, object?> { ["tested"] = false, ["reason"] = "binary not installed" };
         }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // Windows ignores --version and starts a real browser, which takes a
+            // license seat and never frees it. Read the version manifest instead.
+            string? manifest = Directory.EnumerateFiles(Path.GetDirectoryName(binPath!)!, "*.manifest").FirstOrDefault();
+            string reason = "not launched on Windows (it would take a license seat)";
+            if (manifest != null) reason += $"; binary {Path.GetFileNameWithoutExtension(manifest)}";
+            diag["launch"] = new Dictionary<string, object?> { ["tested"] = false, ["reason"] = reason };
+        }
         else
         {
             var (ok, version, error) = BinaryVersion(binPath!);
@@ -59,18 +88,22 @@ internal static class Diagnostics
             diag["launch"] = launch;
         }
 
-        // Windows-font probe — only meaningful on a Linux host spoofing Windows.
-        // Omitted entirely off Linux, where it carries no signal.
+        // Windows/macOS-font probe — only meaningful on a Linux host spoofing
+        // another OS. Omitted entirely off Linux, where it carries no signal.
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             // Strict count, not "any one present" — real font installs are atomic
             // (you have the whole pack or none), so report how complete the set is.
+            // Both sets are counted unconditionally: `info` has no persona flag, so
+            // we report each raw count and let the user read the one they spoof.
             int? winN = CloakLauncher.CountFontsPresent(CloakLauncher.WindowsFontTells);
             int? officeN = CloakLauncher.CountFontsPresent(CloakLauncher.OfficeFontTells);
+            int? macN = CloakLauncher.CountFontsPresent(CloakLauncher.MacFontTells);
             diag["fonts"] = new Dictionary<string, object?>
             {
                 ["windows"] = winN is null ? null : new[] { winN.Value, CloakLauncher.WindowsFontTells.Length },
                 ["office"] = officeN is null ? null : new[] { officeN.Value, CloakLauncher.OfficeFontTells.Length },
+                ["macos"] = macN is null ? null : new[] { macN.Value, CloakLauncher.MacFontTells.Length },
             };
         }
 
@@ -78,7 +111,29 @@ internal static class Diagnostics
 
         // GeoIP DB — presence only, never downloads.
         string dbPath = Path.Combine(Config.GetCacheDir(), "geoip", "GeoLite2-City.mmdb");
-        diag["geoip"] = new Dictionary<string, object?> { ["db_present"] = File.Exists(dbPath), ["path"] = dbPath };
+        var geoip = new Dictionary<string, object?> { ["db_present"] = File.Exists(dbPath), ["path"] = dbPath };
+        diag["geoip"] = geoip;
+
+        // Live resolution — only when a proxy is explicitly given. Mirrors
+        // LaunchAsync: resolves the exit IP and, computing tz/locale, caches the
+        // DB if absent. Never crashes `info` — failures land in ["error"].
+        if (!string.IsNullOrEmpty(proxy))
+        {
+            try
+            {
+                var (tz, locale, exitIp) = GeoIp.ResolveProxyGeoWithIpAsync(proxy).GetAwaiter().GetResult();
+                geoip["resolved"] = new Dictionary<string, object?>
+                {
+                    ["exit_ip"] = exitIp,
+                    ["timezone"] = tz,
+                    ["locale"] = locale,
+                };
+            }
+            catch (Exception ex)
+            {
+                geoip["resolved"] = new Dictionary<string, object?> { ["error"] = ex.Message };
+            }
+        }
 
         // Dependency assemblies — mirrors the Python/JS modules section. These are
         // hard NuGet references, so "missing" here means a broken deployment.
@@ -144,28 +199,49 @@ internal static class Diagnostics
             };
         }
         string? requested = Config.NormalizeRequestedVersion();
+        string requestedChannel = Config.NormalizeReleaseChannel();
 
         // For a Pro license, surface the server's latest separately from the version
         // that will actually launch, so `info` can never silently diverge from launch
         // (the divergence a customer hit: info showed latest, launch ran a stale cache).
         // --quick keeps `info` fully network-free (skip the server latest lookup).
-        string? latestVersion = (entitledPro && !quick) ? License.GetProLatestVersion() : null;
+        ProReleaseInfo? latestRelease = (entitledPro && !quick)
+            ? License.GetProLatestRelease(requestedChannel)
+            : null;
+        string? latestVersion = latestRelease?.Version;
 
         string? version;
+        string? installedVersion = null;
         if (!string.IsNullOrEmpty(requested))
             version = requested!;
         else if (entitledPro)
-            // "Will launch now" is the cached Pro build; if none is cached, the next
-            // launch downloads latestVersion. GetEffectiveVersion(true) returns null
-            // (never the free base) when nothing is cached.
-            version = Config.GetEffectiveVersion(true) ?? latestVersion;
+        {
+            // Mirror EnsureBinary: report what the next launch resolves to, while
+            // CLOAKBROWSER_AUTO_UPDATE=false retains an installed channel build.
+            installedVersion = Config.GetEffectiveVersion(true, requestedChannel);
+            var autoUpdate = (Environment.GetEnvironmentVariable("CLOAKBROWSER_AUTO_UPDATE") ?? "true").ToLowerInvariant();
+            bool updatesEnabled = autoUpdate != "false";
+            if (installedVersion != null && !updatesEnabled)
+                version = installedVersion;
+            else if (latestVersion != null && (installedVersion == null || Config.VersionNewer(latestVersion, installedVersion)))
+                version = latestVersion;
+            else
+                version = installedVersion ?? latestVersion;
+        }
         else
+        {
             version = Config.GetEffectiveVersion(false);
+            installedVersion = version;
+        }
         string? path = version != null ? Config.GetBinaryPath(version, entitledPro) : null;
         return new Dictionary<string, object?>
         {
             ["version"] = version,
             ["latest_version"] = latestVersion,
+            ["requested_channel"] = requestedChannel,
+            ["resolved_channel"] = latestRelease?.ResolvedChannel,
+            ["channel_fallback"] = latestRelease?.Fallback ?? false,
+            ["installed_version"] = installedVersion,
             ["pinned"] = !string.IsNullOrEmpty(requested),
             ["tier"] = entitledPro ? "pro" : "free",
             ["bundled_version"] = Config.ChromiumVersion,
@@ -177,21 +253,21 @@ internal static class Diagnostics
     }
 
     // Launch `<binary> --version` to prove it runs.
+    //
+    // POSIX only: Windows ignores --version and starts a browser instead.
     private static (bool ok, string version, string error) BinaryVersion(string binaryPath)
     {
         try
         {
-            using var proc = new Process
+            var startInfo = new ProcessStartInfo
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = binaryPath,
-                    Arguments = "--version",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                },
+                FileName = binaryPath,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
             };
+            startInfo.ArgumentList.Add("--version");
+            using var proc = new Process { StartInfo = startInfo };
             proc.Start();
             // Read both pipes asynchronously so a full pipe buffer can't deadlock
             // the parent, and so WaitForExit's timeout is the real wall-clock bound.
@@ -249,5 +325,44 @@ internal static class Diagnostics
         }
         catch { /* best-effort */ }
         return missing;
+    }
+
+    // Server error codes -> the words a customer can act on. Anything unrecognised is
+    // printed verbatim rather than swallowed, so a new server code still says something.
+    private static string HumaniseSeatDenial(string reason) => reason switch
+    {
+        "invalid_key" => "invalid key",
+        "license_inactive" => "license inactive",
+        "rate_limited" => "rate limited",
+        _ => reason,
+    };
+
+    /// <summary>
+    /// Render the seat lookup for the CLI's "Sessions:" line. Kept byte-identical to
+    /// the Python (_format_seats) and JS (formatSeats) renderers.
+    /// </summary>
+    /// <remarks>
+    /// Lives here rather than in the CLI because Program.cs uses top-level statements,
+    /// whose local functions cannot be reached from the test assembly.
+    /// </remarks>
+    internal static string FormatSeats(Dictionary<string, object?> sessions)
+    {
+        var state = sessions.GetValueOrDefault("state") as string ?? "ok";
+        if (state == "unreachable")
+            return "unavailable (cannot reach cloakbrowser.dev)";
+        if (state == "denied")
+        {
+            var reason = sessions.GetValueOrDefault("reason") as string;
+            return $"unavailable ({HumaniseSeatDenial(string.IsNullOrEmpty(reason) ? "refused" : reason)})";
+        }
+        if (state != "ok" || sessions.GetValueOrDefault("active") is not int active)
+            // The server is up and the key is fine - it just cannot count right now.
+            return "unavailable (server cannot report seats right now)";
+
+        if (sessions.GetValueOrDefault("limit") is not int limit)
+            // No cap to show (unlimited, unrecognised plan, or a server predating the
+            // field). Fall back to the bare count - never print "N/unknown".
+            return $"{active} seat{(active == 1 ? "" : "s")} in use";
+        return $"{active}/{limit} in use";
     }
 }

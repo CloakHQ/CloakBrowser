@@ -14,6 +14,8 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import os
 import sys
@@ -24,16 +26,183 @@ from .config import (
     DEFAULT_VIEWPORT,
     IGNORE_DEFAULT_ARGS,
     binary_supports_headless_no_viewport,
+    binary_supports_http_proxy_inline_auth,
     binary_supports_maximized_window,
     get_default_stealth_args,
-    normalize_requested_version,
+    persistent_seed_args,
 )
 from .download import ensure_binary
-from .license import build_launch_env
+from .license import (
+    CloakBrowserLicenseError,
+    build_launch_env,
+    license_error_for_code,
+    license_error_message,
+    mint_denial_file,
+    read_denial_file,
+    resolve_license_key,
+)
 from .human.config import HumanConfigOverrides, HumanPreset
 from .widevine import seed_widevine_hint
 
 logger = logging.getLogger("cloakbrowser")
+
+
+def _license_error(exc: BaseException) -> CloakBrowserLicenseError | None:
+    """Return a CloakBrowserLicenseError if a launch failure was a license deny.
+
+    The Pro binary exits with a distinct code (76-79) on a license problem;
+    Playwright embeds that code in the launch-failure text. Returns None for any
+    other failure so a genuine crash propagates unchanged.
+    """
+    msg = license_error_message(str(exc))
+    return CloakBrowserLicenseError(msg) if msg is not None else None
+
+
+# Factory methods whose return value is itself a handle the user drives (a page
+# or context handed back after launch). Guarding these *deeply* — guarding the
+# object they return — is what lets a denial that lands AFTER the handshake
+# surface on the returned page's first call, not only on a second new_page().
+_GUARD_FACTORY_METHODS = ("new_page", "new_context")
+
+# Never wrap these. ``close`` already carries teardown logic and must not be
+# turned into a license error mid-cleanup; the event-listener surface is called
+# internally by Playwright (event dispatch), so throwing a license error from
+# inside it would crash the driver rather than surface cleanly to the user.
+_GUARD_SKIP_METHODS = frozenset({
+    "close", "on", "once", "remove_listener",
+})
+
+
+class _Guarded:
+    """A non-descriptor callable that wraps the guard closure.
+
+    The guard is stored back on the target as a plain attribute, and humanize
+    copies it into a ``type("Originals", ...)()`` holder and reads it off that
+    *instance*. Anything with ``__get__`` (a bare function, or ``functools.partial``
+    on Python 3.14+, where partial became a method descriptor) would re-bind to the
+    holder and inject a spurious first positional arg. This class has no ``__get__``,
+    so it stays inert wherever it is stored — on any Python version. Works for both
+    the sync guard and the async guard: for the async case ``__call__`` returns the
+    coroutine the closure produces, which the caller awaits. (issue #488)
+    """
+
+    __slots__ = ("_fn",)
+
+    def __init__(self, fn: Any) -> None:
+        self._fn = fn
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._fn(*args, **kwargs)
+
+
+def _denial_license_error(denial_path: str) -> CloakBrowserLicenseError | None:
+    """Read the denial file and map it to a license error, or None."""
+    code = read_denial_file(denial_path)
+    return license_error_for_code(code) if code is not None else None
+
+
+def _guardable_method_names(target: Any) -> list[str]:
+    """Public, non-property callables on *target* — the methods that can raise a
+    TargetClosedError once the browser dies. Properties are skipped by name so
+    their getters are never triggered here; this covers every real method
+    without enumerating them by hand.
+    """
+    names = []
+    for name in dir(target):
+        if name.startswith("_") or name in _GUARD_SKIP_METHODS:
+            continue
+        if isinstance(getattr(type(target), name, None), property):
+            continue
+        try:
+            attr = getattr(target, name)
+        except Exception:
+            continue
+        if callable(attr) and not isinstance(attr, type):
+            names.append(name)
+    return names
+
+
+def _install_license_guard(target: Any, denial_path: str) -> None:
+    """Guard every public method of *target* (a browser, context, or page) so a
+    post-handshake license denial surfaces as CloakBrowserLicenseError on the
+    user's first failing call — whichever method that is.
+
+    A denial that lands after Playwright connected kills the browser without a
+    launch failure; the user's next call would otherwise raise a bare
+    TargetClosedError. Each wrapped method, on any exception, checks the denial
+    file the binary wrote and re-raises as CloakBrowserLicenseError when a
+    license code is present — otherwise the original error propagates unchanged,
+    so a genuine crash is never mislabelled. Factory methods (new_page/
+    new_context) additionally guard the object they return, so a page or context
+    obtained after launch is covered too.
+    """
+    for name in _guardable_method_names(target):
+        original = getattr(target, name)
+        deep = name in _GUARD_FACTORY_METHODS
+
+        def make(original: Any, deep: bool) -> Any:
+            def guarded(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    result = original(*args, **kwargs)
+                except Exception as exc:
+                    lic = _denial_license_error(denial_path)
+                    if lic is not None:
+                        raise lic from exc
+                    raise
+                # Even on success the browser may already be denied: the binary
+                # writes the denial file the instant it's over cap but keeps
+                # serving (blank) responses for ~1s before it exits. Check after
+                # every call so the denial surfaces on the first call that runs
+                # once the file exists, not only after the process has died.
+                lic = _denial_license_error(denial_path)
+                if lic is not None:
+                    raise lic
+                if deep and result is not None:
+                    _install_license_guard(result, denial_path)
+                return result
+            return guarded
+
+        # Wrap so the guard is NOT a descriptor. Playwright's real methods are
+        # bound methods; humanize copies them into a class attribute
+        # (type("Originals", ...)) and reads them back off an instance. A bare
+        # function — or a functools.partial on Python 3.14+, where partial became
+        # a method descriptor — would re-bind there and inject a spurious first
+        # positional arg. _Guarded has no __get__, so it stays inert. (issue #488)
+        setattr(target, name, _Guarded(make(original, deep)))
+
+
+def _install_license_guard_async(target: Any, denial_path: str) -> None:
+    """Async variant of :func:`_install_license_guard`. Only coroutine methods
+    are wrapped — sync helpers (``is_closed``, ``on`` …) never do a CDP round
+    trip and can't raise the disconnect error, and awaiting them would break.
+    """
+    for name in _guardable_method_names(target):
+        original = getattr(target, name)
+        if not inspect.iscoroutinefunction(original):
+            continue
+        deep = name in _GUARD_FACTORY_METHODS
+
+        def make(original: Any, deep: bool) -> Any:
+            async def guarded(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    result = await original(*args, **kwargs)
+                except Exception as exc:
+                    lic = _denial_license_error(denial_path)
+                    if lic is not None:
+                        raise lic from exc
+                    raise
+                # See the sync variant: a denial can land while calls still
+                # succeed, so check the file after every call, not just on error.
+                lic = _denial_license_error(denial_path)
+                if lic is not None:
+                    raise lic
+                if deep and result is not None:
+                    _install_license_guard_async(result, denial_path)
+                return result
+            return guarded
+
+        # Wrap so the guard is not a descriptor (see sync variant, issue #488).
+        setattr(target, name, _Guarded(make(original, deep)))
 
 
 # Sentinel to distinguish "viewport not provided" from "viewport=None" (disable emulation)
@@ -163,6 +332,7 @@ def launch(
     extension_paths: list[str] | None = None,
     license_key: str | None = None,
     browser_version: str | None = None,
+    release_channel: str | None = None,
     _suppress_maximize: bool = False,
     **kwargs: Any,
 ) -> Any:
@@ -204,47 +374,74 @@ def launch(
 
     from playwright.sync_api import sync_playwright
 
-    binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version)
+    binary_path = ensure_binary(license_key=license_key, browser_version=browser_version, release_channel=release_channel)
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
+    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
 
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version) and not _suppress_maximize)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and not _suppress_maximize)
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(chrome_args))
 
-    launch_env = build_launch_env(license_key, user_env=kwargs.pop("env", None))
+    denial_path = mint_denial_file() if resolve_license_key(license_key) else None
+    launch_env = build_launch_env(license_key, user_env=kwargs.pop("env", None), status_file=denial_path)
     env_kwargs = {} if launch_env is None else {"env": launch_env}
 
     pw = sync_playwright().start()
-    browser = pw.chromium.launch(
-        executable_path=binary_path,
-        headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **env_kwargs,
-        **proxy_kwargs,
-        **kwargs,
-    )
+    try:
+        browser = pw.chromium.launch(
+            executable_path=binary_path,
+            headless=headless,
+            args=chrome_args,
+            ignore_default_args=IGNORE_DEFAULT_ARGS,
+            **env_kwargs,
+            **proxy_kwargs,
+            **kwargs,
+        )
+    except Exception as exc:
+        lic = _license_error(exc)
+        try:
+            pw.stop()
+        except Exception as stop_exc:
+            logger.warning("Playwright cleanup after launch failure failed: %s", stop_exc)
+        if lic is None:
+            raise
+        raise lic from exc
 
     # Patch close() to also stop the Playwright instance
     _original_close = browser.close
 
-    def _close_with_cleanup() -> None:
+    def _close_with_cleanup(*, reason: str | None = None) -> None:
         try:
-            _original_close()
+            if reason is None:
+                _original_close()
+            else:
+                _original_close(reason=reason)
         finally:
             pw.stop()
 
     browser.close = _close_with_cleanup
 
+    # Convert a post-handshake license denial into a clear error on the user's
+    # first call. Installed before the wraps below so it sits closest to the
+    # real call. Stash the path so launch_context() can guard its context too.
+    if denial_path:
+        browser._cloak_denial_path = denial_path
+        _install_license_guard(browser, denial_path)
+
+    # Proxy went to Chrome as --proxy-server, so Playwright's request client has no
+    # proxy (#579). The impl "context" event fires for every new context,
+    # including the one new_page() and launch_context() create internally.
+    if proxy_extra_args:
+        browser._impl_obj.on("context", _warn_on_request_client_use)
+
     # Default new_page()/new_context() to no_viewport for headed (page tracks the
     # real window) and for headless on binaries that report coherent dimensions
     # natively; older headless binaries keep Playwright's default viewport. Apply
     # before humanize so the wraps compose.
-    if not headless or binary_supports_headless_no_viewport(license_key, browser_version):
+    if not headless or binary_supports_headless_no_viewport(license_key, browser_version, release_channel):
         _default_no_viewport(browser)
 
     # Human-like behavioral patching
@@ -271,6 +468,7 @@ async def launch_async(  # noqa: C901
     extension_paths: list[str] | None = None,
     license_key: str | None = None,
     browser_version: str | None = None,
+    release_channel: str | None = None,
     _suppress_maximize: bool = False,
     **kwargs: Any,
 ) -> Any:
@@ -310,44 +508,70 @@ async def launch_async(  # noqa: C901
 
     from playwright.async_api import async_playwright
 
-    binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version)
-    args = _resolve_webrtc_args(args, proxy)
+    # Blocking network calls (license/download, exit-IP lookups) run in a thread so
+    # they don't freeze the caller's event loop.
+    binary_path = await asyncio.to_thread(ensure_binary, license_key=license_key, browser_version=browser_version, release_channel=release_channel)
+    timezone, locale, exit_ip = await asyncio.to_thread(maybe_resolve_geoip, geoip, proxy, timezone, locale, args)
+    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
+    args = await asyncio.to_thread(_resolve_webrtc_args, args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version) and not _suppress_maximize)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and not _suppress_maximize)
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(chrome_args))
 
-    launch_env = build_launch_env(license_key, user_env=kwargs.pop("env", None))
+    denial_path = mint_denial_file() if resolve_license_key(license_key) else None
+    launch_env = build_launch_env(license_key, user_env=kwargs.pop("env", None), status_file=denial_path)
     env_kwargs = {} if launch_env is None else {"env": launch_env}
 
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        executable_path=binary_path,
-        headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **env_kwargs,
-        **proxy_kwargs,
-        **kwargs,
-    )
+    try:
+        browser = await pw.chromium.launch(
+            executable_path=binary_path,
+            headless=headless,
+            args=chrome_args,
+            ignore_default_args=IGNORE_DEFAULT_ARGS,
+            **env_kwargs,
+            **proxy_kwargs,
+            **kwargs,
+        )
+    except Exception as exc:
+        lic = _license_error(exc)
+        try:
+            await pw.stop()
+        except Exception as stop_exc:
+            logger.warning("Playwright cleanup after launch failure failed: %s", stop_exc)
+        if lic is None:
+            raise
+        raise lic from exc
 
     # Patch close() to also stop the Playwright instance
     _original_close = browser.close
 
-    async def _close_with_cleanup() -> None:
+    async def _close_with_cleanup(*, reason: str | None = None) -> None:
         try:
-            await _original_close()
+            if reason is None:
+                await _original_close()
+            else:
+                await _original_close(reason=reason)
         finally:
             await pw.stop()
 
     browser.close = _close_with_cleanup
 
+    # Convert a post-handshake license denial into a clear error on first use
+    # (see launch()). Stash the path for launch_context_async().
+    if denial_path:
+        browser._cloak_denial_path = denial_path
+        _install_license_guard_async(browser, denial_path)
+
+    # Warn on first use of Playwright's request client (see launch(), #579).
+    if proxy_extra_args:
+        browser._impl_obj.on("context", _warn_on_request_client_use)
+
     # Default new_page()/new_context() to no_viewport for headed and qualifying
     # headless binaries (see launch()).
-    if not headless or binary_supports_headless_no_viewport(license_key, browser_version):
+    if not headless or binary_supports_headless_no_viewport(license_key, browser_version, release_channel):
         _default_no_viewport_async(browser)
 
     # Human-like behavioral patching (async variant)
@@ -367,7 +591,7 @@ def launch_persistent_context(
     args: list[str] | None = None,
     stealth_args: bool = True,
     user_agent: str | None = None,
-    viewport: dict | None = _VIEWPORT_UNSET,
+    viewport: Any = _VIEWPORT_UNSET,
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
@@ -378,6 +602,7 @@ def launch_persistent_context(
     extension_paths: list[str] | None = None,
     license_key: str | None = None,
     browser_version: str | None = None,
+    release_channel: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser with a persistent profile and return a BrowserContext.
@@ -426,12 +651,13 @@ def launch_persistent_context(
 
     timezone = _resolve_timezone(timezone, kwargs)
 
-    binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version)
+    binary_path = ensure_binary(license_key=license_key, browser_version=browser_version, release_channel=release_channel)
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
+    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
+    args = persistent_seed_args(user_data_dir, stealth_args, args)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug(
@@ -447,7 +673,7 @@ def launch_persistent_context(
         context_kwargs["user_agent"] = user_agent
     context_kwargs.update(
         _resolve_context_viewport(
-            viewport, headless, binary_supports_headless_no_viewport(license_key, browser_version)
+            viewport, headless, binary_supports_headless_no_viewport(license_key, browser_version, release_channel)
         )
     )
     if color_scheme:
@@ -457,40 +683,72 @@ def launch_persistent_context(
 
     # Resolve env for the browser process (license key injection, if needed)
     user_env = context_kwargs.pop("env", None)
-    launch_env = build_launch_env(license_key, user_env=user_env)
+    denial_path = mint_denial_file() if resolve_license_key(license_key) else None
+    launch_env = build_launch_env(license_key, user_env=user_env, status_file=denial_path)
     if launch_env is not None:
         context_kwargs["env"] = launch_env
 
     seed_widevine_hint(user_data_dir, binary_path)
 
     pw = sync_playwright().start()
-    context = pw.chromium.launch_persistent_context(
-        user_data_dir=os.fspath(user_data_dir),
-        executable_path=binary_path,
-        headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **proxy_kwargs,
-        **context_kwargs,
-    )
+    try:
+        context = pw.chromium.launch_persistent_context(
+            user_data_dir=os.fspath(user_data_dir),
+            executable_path=binary_path,
+            headless=headless,
+            args=chrome_args,
+            ignore_default_args=IGNORE_DEFAULT_ARGS,
+            **proxy_kwargs,
+            **context_kwargs,
+        )
+    except Exception as exc:
+        lic = _license_error(exc)
+        try:
+            pw.stop()
+        except Exception as stop_exc:
+            logger.warning("Playwright cleanup after launch failure failed: %s", stop_exc)
+        if lic is None:
+            raise
+        raise lic from exc
 
     # Patch close() to also stop the Playwright instance
     _original_close = context.close
 
-    def _close_with_cleanup() -> None:
+    def _close_with_cleanup(*, reason: str | None = None) -> None:
         try:
-            _original_close()
+            if reason is None:
+                _original_close()
+            else:
+                _original_close(reason=reason)
         finally:
             pw.stop()
 
     context.close = _close_with_cleanup
 
-    # Human-like behavioral patching
+    # Warn on first use of Playwright's request client (see launch(), #579).
+    if proxy_extra_args:
+        _warn_on_request_client_use(context._impl_obj)
+
+    # Human-like behavioral patching. Applied BEFORE the license guard: the guard
+    # stores its wrapper on the page/context object itself (it needs this launch's
+    # denial path), and an object attribute shadows the class method humanize
+    # patches. Guarding first would therefore capture Playwright's own methods and
+    # silently disable humanize for every call on that page.
     if humanize:
         from .human import patch_context
         from .human.config import resolve_config
         cfg = resolve_config(human_preset, human_config)
         patch_context(context, cfg)
+
+    # The persistent path hands back a context, so guard it (new_page deep — see
+    # launch()). A persistent context also arrives with a page already open, so
+    # the user navigates pages[0] directly and never calls new_page — guard those
+    # existing pages too, or a post-handshake denial surfaces as a bare
+    # TargetClosedError on that first navigation.
+    if denial_path:
+        _install_license_guard(context, denial_path)
+        for _pg in context.pages:
+            _install_license_guard(_pg, denial_path)
 
     return context
 
@@ -502,7 +760,7 @@ async def launch_persistent_context_async(
     args: list[str] | None = None,
     stealth_args: bool = True,
     user_agent: str | None = None,
-    viewport: dict | None = _VIEWPORT_UNSET,
+    viewport: Any = _VIEWPORT_UNSET,
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
@@ -513,6 +771,7 @@ async def launch_persistent_context_async(
     extension_paths: list[str] | None = None,
     license_key: str | None = None,
     browser_version: str | None = None,
+    release_channel: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_persistent_context().
@@ -563,12 +822,14 @@ async def launch_persistent_context_async(
 
     timezone = _resolve_timezone(timezone, kwargs)
 
-    binary_path = ensure_binary(license_key=license_key, browser_version=browser_version)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
-    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version)
-    args = _resolve_webrtc_args(args, proxy)
+    # Blocking network calls run in a thread (see launch_async).
+    binary_path = await asyncio.to_thread(ensure_binary, license_key=license_key, browser_version=browser_version, release_channel=release_channel)
+    timezone, locale, exit_ip = await asyncio.to_thread(maybe_resolve_geoip, geoip, proxy, timezone, locale, args)
+    proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
+    args = await asyncio.to_thread(_resolve_webrtc_args, args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
-    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
+    args = persistent_seed_args(user_data_dir, stealth_args, args)
+    chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
     _maybe_warn_windows_fonts(chrome_args)
 
     logger.debug(
@@ -584,7 +845,7 @@ async def launch_persistent_context_async(
         context_kwargs["user_agent"] = user_agent
     context_kwargs.update(
         _resolve_context_viewport(
-            viewport, headless, binary_supports_headless_no_viewport(license_key, browser_version)
+            viewport, headless, binary_supports_headless_no_viewport(license_key, browser_version, release_channel)
         )
     )
     if color_scheme:
@@ -594,40 +855,70 @@ async def launch_persistent_context_async(
 
     # Resolve env for the browser process (license key injection, if needed)
     user_env = context_kwargs.pop("env", None)
-    launch_env = build_launch_env(license_key, user_env=user_env)
+    denial_path = mint_denial_file() if resolve_license_key(license_key) else None
+    launch_env = build_launch_env(license_key, user_env=user_env, status_file=denial_path)
     if launch_env is not None:
         context_kwargs["env"] = launch_env
 
     seed_widevine_hint(user_data_dir, binary_path)
 
     pw = await async_playwright().start()
-    context = await pw.chromium.launch_persistent_context(
-        user_data_dir=os.fspath(user_data_dir),
-        executable_path=binary_path,
-        headless=headless,
-        args=chrome_args,
-        ignore_default_args=IGNORE_DEFAULT_ARGS,
-        **proxy_kwargs,
-        **context_kwargs,
-    )
+    try:
+        context = await pw.chromium.launch_persistent_context(
+            user_data_dir=os.fspath(user_data_dir),
+            executable_path=binary_path,
+            headless=headless,
+            args=chrome_args,
+            ignore_default_args=IGNORE_DEFAULT_ARGS,
+            **proxy_kwargs,
+            **context_kwargs,
+        )
+    except Exception as exc:
+        lic = _license_error(exc)
+        try:
+            await pw.stop()
+        except Exception as stop_exc:
+            logger.warning("Playwright cleanup after launch failure failed: %s", stop_exc)
+        if lic is None:
+            raise
+        raise lic from exc
 
     # Patch close() to also stop the Playwright instance
     _original_close = context.close
 
-    async def _close_with_cleanup() -> None:
+    async def _close_with_cleanup(*, reason: str | None = None) -> None:
         try:
-            await _original_close()
+            if reason is None:
+                await _original_close()
+            else:
+                await _original_close(reason=reason)
         finally:
             await pw.stop()
 
     context.close = _close_with_cleanup
 
-    # Human-like behavioral patching (async variant)
+    # Warn on first use of Playwright's request client (see launch(), #579).
+    if proxy_extra_args:
+        _warn_on_request_client_use(context._impl_obj)
+
+    # Human-like behavioral patching (async variant). Applied BEFORE the license
+    # guard, for the same reason as the sync variant: the guard stores its wrapper
+    # on the page/context object, which shadows the class method humanize patches.
     if humanize:
         from .human import patch_context_async
         from .human.config import resolve_config
         cfg = resolve_config(human_preset, human_config)
         patch_context_async(context, cfg)
+
+    # The persistent path hands back a context, so guard it (new_page deep — see
+    # launch()). A persistent context also arrives with a page already open (see
+    # the sync variant): guard those existing pages so a post-handshake denial on
+    # pages[0] surfaces cleanly instead of as a bare TargetClosedError.
+    if denial_path:
+        context._cloak_denial_path = denial_path
+        _install_license_guard_async(context, denial_path)
+        for _pg in context.pages:
+            _install_license_guard_async(_pg, denial_path)
 
     return context
 
@@ -638,7 +929,7 @@ def launch_context(
     args: list[str] | None = None,
     stealth_args: bool = True,
     user_agent: str | None = None,
-    viewport: dict | None = _VIEWPORT_UNSET,
+    viewport: Any = _VIEWPORT_UNSET,
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
@@ -649,6 +940,7 @@ def launch_context(
     extension_paths: list[str] | None = None,
     license_key: str | None = None,
     browser_version: str | None = None,
+    release_channel: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Launch stealth browser and return a BrowserContext with common options pre-set.
@@ -684,7 +976,7 @@ def launch_context(
 
     # Resolve geoip BEFORE launch() to avoid double-resolution and ensure
     # resolved values flow to binary flags
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
     # Inject geoip exit IP for WebRTC spoofing (free — no extra HTTP call)
     args = _append_webrtc_exit_ip(args, exit_ip)
     # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
@@ -693,6 +985,7 @@ def launch_context(
     browser = launch(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
                      timezone=timezone, locale=locale, extension_paths=extension_paths,
                      license_key=license_key, browser_version=browser_version,
+                     release_channel=release_channel,
                      # Caller chose a viewport geometry → don't also auto-maximize
                      # the window (mirrors the persistent-context path + JS).
                      _suppress_maximize=(viewport is not _VIEWPORT_UNSET or "no_viewport" in kwargs))
@@ -702,7 +995,7 @@ def launch_context(
         context_kwargs["user_agent"] = user_agent
     context_kwargs.update(
         _resolve_context_viewport(
-            viewport, headless, binary_supports_headless_no_viewport(license_key, browser_version)
+            viewport, headless, binary_supports_headless_no_viewport(license_key, browser_version, release_channel)
         )
     )
     if color_scheme:
@@ -727,6 +1020,12 @@ def launch_context(
 
     context.close = _close_context_with_cleanup
 
+    # browser.new_context above is already guarded by launch(); also guard the
+    # context's new_page for a denial that lands after the context is created.
+    denial_path = getattr(browser, "_cloak_denial_path", None)
+    if denial_path:
+        _install_license_guard(context, denial_path)
+
     # Human-like behavioral patching
     if humanize:
         from .human import patch_context
@@ -743,7 +1042,7 @@ async def launch_context_async(
     args: list[str] | None = None,
     stealth_args: bool = True,
     user_agent: str | None = None,
-    viewport: dict | None = _VIEWPORT_UNSET,
+    viewport: Any = _VIEWPORT_UNSET,
     locale: str | None = None,
     timezone: str | None = None,
     color_scheme: Literal["light", "dark", "no-preference"] | None = None,
@@ -754,6 +1053,7 @@ async def launch_context_async(
     extension_paths: list[str] | None = None,
     license_key: str | None = None,
     browser_version: str | None = None,
+    release_channel: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Async version of launch_context().
@@ -808,8 +1108,8 @@ async def launch_context_async(
     timezone = _resolve_timezone(timezone, kwargs)
 
     # Resolve geoip BEFORE launch_async() to avoid double-resolution and ensure
-    # resolved values flow to binary flags
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale)
+    # resolved values flow to binary flags. Threaded: the lookup is blocking network I/O.
+    timezone, locale, exit_ip = await asyncio.to_thread(maybe_resolve_geoip, geoip, proxy, timezone, locale, args)
     args = _append_webrtc_exit_ip(args, exit_ip)
     # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
     # so it applies to ALL contexts, not just the default one.
@@ -817,6 +1117,7 @@ async def launch_context_async(
     browser = await launch_async(headless=headless, proxy=proxy, args=args, stealth_args=stealth_args,
                                  timezone=timezone, locale=locale, extension_paths=extension_paths,
                                  license_key=license_key, browser_version=browser_version,
+                                 release_channel=release_channel,
                                  # Caller chose a viewport geometry → don't also auto-maximize
                                  # the window (mirrors the persistent-context path + JS).
                                  _suppress_maximize=(viewport is not _VIEWPORT_UNSET or "no_viewport" in kwargs))
@@ -826,7 +1127,7 @@ async def launch_context_async(
         context_kwargs["user_agent"] = user_agent
     context_kwargs.update(
         _resolve_context_viewport(
-            viewport, headless, binary_supports_headless_no_viewport(license_key, browser_version)
+            viewport, headless, binary_supports_headless_no_viewport(license_key, browser_version, release_channel)
         )
     )
     if color_scheme:
@@ -856,6 +1157,12 @@ async def launch_context_async(
             await browser.close()
 
     context.close = _close_context_with_cleanup
+
+    # browser.new_context above is already guarded by launch_async(); also guard
+    # the context's new_page for a denial that lands after context creation.
+    denial_path = getattr(browser, "_cloak_denial_path", None)
+    if denial_path:
+        _install_license_guard_async(context, denial_path)
 
     # Human-like behavioral patching (async variant)
     if humanize:
@@ -978,8 +1285,8 @@ def _normalize_socks_string_url(url: str) -> str:
 def _extract_proxy_url(proxy: str | ProxySettings | None) -> str | None:
     """Extract and normalize proxy URL string from proxy param.
 
-    For SOCKS5 dicts with separate username/password fields, reconstructs
-    the full URL with inline credentials so SOCKS5 auth works.
+    For proxy dicts with separate username/password fields, reconstructs
+    the full URL with inline credentials so proxy auth works.
     """
     if proxy is None:
         return None
@@ -987,10 +1294,22 @@ def _extract_proxy_url(proxy: str | ProxySettings | None) -> str | None:
         server = proxy.get("server", "")
         if not server:
             return None
-        if _is_socks_proxy(proxy):
-            return _reconstruct_socks_url(proxy)
+        if proxy.get("username"):
+            return (
+                _reconstruct_socks_url(proxy) if _is_socks_proxy(proxy)
+                else _reconstruct_http_url(proxy)
+            )
         return _ensure_proxy_scheme(server)
     return _ensure_proxy_scheme(proxy)
+
+
+def _get_flag_value(args: list[str] | None, *keys: str) -> str | None:
+    """Return the value of the first ``--key=value`` flag found in *args*, else None."""
+    for a in args or []:
+        for k in keys:
+            if a.startswith(k + "="):
+                return a.split("=", 1)[1]
+    return None
 
 
 def maybe_resolve_geoip(
@@ -998,6 +1317,7 @@ def maybe_resolve_geoip(
     proxy: str | ProxySettings | None,
     timezone: str | None,
     locale: str | None,
+    args: list[str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Auto-fill timezone/locale from the egress IP when geoip is enabled.
 
@@ -1006,9 +1326,20 @@ def maybe_resolve_geoip(
 
     With a proxy the egress IP is the proxy's exit IP; with no proxy it is
     the machine's own public IP, so geoip works proxy-free too.
+
+    A timezone/locale set as a raw flag in *args* (``--fingerprint-timezone``,
+    ``--lang``, ``--fingerprint-locale``) counts as explicit: it is promoted to
+    the param so geoip leaves it alone, mirroring the ``timezone=``/``locale=``
+    override path.
     """
     if not geoip:
         return timezone, locale, None
+
+    # Promote raw flags to explicit params so geoip doesn't clobber them.
+    if timezone is None:
+        timezone = _get_flag_value(args, "--fingerprint-timezone")
+    if locale is None:
+        locale = _get_flag_value(args, "--lang", "--fingerprint-locale")
 
     from .geoip import resolve_proxy_exit_ip, resolve_proxy_geo_with_ip
 
@@ -1027,6 +1358,11 @@ def maybe_resolve_geoip(
         timezone = geo_tz
     if locale is None:
         locale = geo_locale
+    missing = [name for name, value in (("timezone", timezone), ("locale", locale)) if value is None]
+    if missing:
+        raise RuntimeError(
+            "GeoIP resolution failed: could not determine " + " and ".join(missing)
+        )
     return timezone, locale, exit_ip
 
 
@@ -1123,6 +1459,18 @@ def build_args(
                 logger.debug("Arg override: %s -> %s", seen[key], arg)
             seen[key] = arg
 
+    # Playwright's default launch args switch off a browser feature that stock Chrome
+    # ships enabled. Re-enable it alongside the Windows font-metrics profile so the
+    # feature set matches a stock browser rather than a test harness. Merged into any
+    # existing --enable-features value rather than added as a second flag.
+    if "--fingerprint-windows-font-metrics" in seen:
+        key = "--enable-features"
+        current = seen[key].split("=", 1)[-1] if key in seen else ""
+        features = [f for f in current.split(",") if f]
+        if "MediaRouter" not in features:
+            features.append("MediaRouter")
+            seen[key] = f"{key}={','.join(features)}"
+
     # Timezone/locale flags are independent of stealth_args — always inject when set
     if timezone:
         key = "--fingerprint-timezone"
@@ -1203,6 +1551,34 @@ _OFFICE_FONT_TELLS = (
     "Bookman Old Style",
 )
 
+# macOS OS fonts — the core set present on essentially every real Mac. Their
+# absence on a macOS-spoofing Linux host degrades results, just as a Windows-
+# spoofing host needs the Windows set above. Several entries (Arial, Georgia,
+# Times New Roman, Courier New, Tahoma) also ship on a Windows-provisioned box,
+# so a partial count on a non-Mac host is normal, not a fault.
+_MAC_FONT_TELLS = (
+    "Apple Color Emoji",
+    "Arial",
+    "Arial Narrow",
+    "Arial Unicode MS",
+    "Comic Sans MS",
+    "Courier",
+    "Courier New",
+    "Georgia",
+    "Gill Sans",
+    "Helvetica",
+    "Helvetica Neue",
+    "Impact",
+    "Menlo",
+    "Microsoft Sans Serif",
+    "Monaco",
+    "Tahoma",
+    "Times New Roman",
+    "Trebuchet MS",
+    "Webdings",
+    "Wingdings",
+)
+
 _font_warning_checked = False
 
 
@@ -1266,16 +1642,21 @@ def _maybe_warn_windows_fonts(chrome_args: list[str]) -> None:
         if marker.exists():
             return
         present = _windows_fonts_present()
-        if present is None or present is True:
+        if present is None or present:
             return  # full set present, or can't determine — don't warn
         # Write straight to stderr (like the welcome banner and the JS/.NET
-        # wrappers) so an app's logging config can't silence it.
-        sys.stderr.write(
-            "[cloakbrowser] Incomplete Windows font set — installing the full "
-            "set is strongly advised for best results when spoofing Windows on "
-            "Linux. https://github.com/CloakHQ/cloakbrowser#font-setup-on-linux "
-            "(silence: CLOAKBROWSER_SUPPRESS_FONT_WARNING=1)\n"
-        )
+        # wrappers) so an app's logging config can't silence it. ASCII-only and
+        # swallow-everything: on a legacy Windows console stderr is cp1252/strict
+        # and this write is on the launch path.
+        try:
+            sys.stderr.write(
+                "[cloakbrowser] Incomplete Windows font set - installing the full "
+                "set is strongly advised for best results when spoofing Windows on "
+                "Linux. https://github.com/CloakHQ/cloakbrowser#font-setup-on-linux "
+                "(silence: CLOAKBROWSER_SUPPRESS_FONT_WARNING=1)\n"
+            )
+        except Exception:
+            pass
         try:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text("")
@@ -1379,26 +1760,6 @@ def _normalize_http_string_url(url: str) -> str:
     return result
 
 
-_HTTP_PROXY_INLINE_AUTH_MIN_VERSION = "146.0.7680.177.5"
-_HTTP_PROXY_INLINE_AUTH_PLATFORMS = {"linux-x64", "windows-x64"}
-
-
-def _supports_http_proxy_inline_auth(version: str | None = None) -> bool:
-    """Check if the running binary supports HTTP proxy inline credentials.
-
-    Requires both a supported platform AND a binary version with preemptive proxy
-    auth. ``version`` is the pinned/resolved Chromium version actually being
-    launched; when None it falls back to the platform default. Passing the pin
-    matters because a rollback can run a binary older than the default (#182).
-    """
-    from .config import get_platform_tag, get_chromium_version, _version_tuple
-    tag = get_platform_tag()
-    if tag not in _HTTP_PROXY_INLINE_AUTH_PLATFORMS:
-        return False
-    effective = version or get_chromium_version()
-    return _version_tuple(effective) >= _version_tuple(_HTTP_PROXY_INLINE_AUTH_MIN_VERSION)
-
-
 def _is_socks_proxy(proxy: str | ProxySettings | None) -> bool:
     """Check if the proxy uses SOCKS5 protocol."""
     if proxy is None:
@@ -1407,15 +1768,58 @@ def _is_socks_proxy(proxy: str | ProxySettings | None) -> bool:
     return url.lower().startswith(("socks5://", "socks5h://"))
 
 
+_request_proxy_warned = False
+
+
+def _warn_on_request_client_use(impl_context: Any) -> None:
+    """Warn once, on first use, that Playwright's request client does not use a
+    proxy we passed as --proxy-server (#579).
+
+    Playwright only proxies ``context.request`` when it owns the proxy. Its
+    get/post/fetch, ``page.request`` and ``route.fetch()`` all funnel through the
+    impl ``APIRequestContext._inner_fetch`` (shared by the sync and async APIs),
+    so one instance wrap catches every path.
+    """
+    # A per-context proxy does reach the request client, so nothing leaks there.
+    if (getattr(impl_context, "_options", None) or {}).get("proxy"):
+        return
+    request = getattr(impl_context, "_request", None)
+    original = getattr(request, "_inner_fetch", None)
+    # Private Playwright API: if it is ever renamed, skip rather than break.
+    if original is None:
+        return
+
+    async def _inner_fetch(*args: Any, **kwargs: Any) -> Any:
+        global _request_proxy_warned
+        # Self-remove so only the first call runs through us. pop() because two
+        # concurrent first calls can both land here.
+        vars(request).pop("_inner_fetch", None)
+        if not _request_proxy_warned:
+            _request_proxy_warned = True
+            # Straight to stderr so an app's logging config can't silence it.
+            sys.stderr.write(
+                "[cloakbrowser] context.request / page.request / route.fetch() do not use "
+                "this proxy (it is set on the browser, not Playwright) and will send from "
+                "your real IP. Use page.evaluate('fetch(...)') for proxied requests.\n"
+            )
+        return await original(*args, **kwargs)
+
+    request._inner_fetch = _inner_fetch
+
+
 def _resolve_proxy_config(
     proxy: str | ProxySettings | None,
     browser_version: str | None = None,
+    license_key: str | None = None,
+    release_channel: str | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Resolve proxy into Playwright kwargs and Chrome args.
 
-    Proxies with credentials (SOCKS5 or HTTP/HTTPS) are passed via Chrome's
-    --proxy-server flag with inline credentials, bypassing Playwright's CDP
-    auth interceptor which breaks on some proxies and Google domains (#182).
+    Proxies with credentials (SOCKS5 always; HTTP/HTTPS only on binaries that
+    support inline proxy auth) are passed via Chrome's --proxy-server flag with
+    inline credentials, bypassing Playwright's CDP auth interceptor which breaks
+    on some proxies and Google domains (#182). HTTP/HTTPS creds on older binaries
+    fall back to Playwright's proxy dict.
 
     Returns:
         (proxy_kwargs, extra_chrome_args) — one or both will be empty.
@@ -1429,23 +1833,25 @@ def _resolve_proxy_config(
         if isinstance(proxy, dict):
             url = _reconstruct_socks_url(proxy)
             extra_args = [f"--proxy-server={url}"]
-            if proxy.get("bypass"):
-                extra_args.append(f"--proxy-bypass-list={proxy['bypass']}")
+            bypass = proxy.get("bypass")
+            if bypass:
+                extra_args.append(f"--proxy-bypass-list={bypass}")
             return {}, extra_args
         # String URL — re-encode creds to work around Chromium parser truncating
         # passwords at '=' and other special chars (#157).
         return {}, [f"--proxy-server={_normalize_socks_string_url(proxy)}"]
 
-    # HTTP/HTTPS with credentials on supported platforms: use Chrome's native
-    # proxy authentication path instead of Playwright's CDP auth interceptor
-    # (#182).
-    requested_version = normalize_requested_version(browser_version)
-    if _has_credentials(proxy) and _supports_http_proxy_inline_auth(requested_version):
+    # HTTP/HTTPS with credentials, only on binaries that ship inline proxy auth:
+    # use Chrome's native proxy authentication path instead of Playwright's CDP
+    # auth interceptor (#182). Older binaries (free macOS/linux-arm64) can't parse
+    # inline credentials, so they fall through to the Playwright proxy dict below.
+    if _has_credentials(proxy) and binary_supports_http_proxy_inline_auth(license_key, browser_version, release_channel):
         if isinstance(proxy, dict):
             url = _reconstruct_http_url(proxy)
             extra_args = [f"--proxy-server={url}"]
-            if proxy.get("bypass"):
-                extra_args.append(f"--proxy-bypass-list={proxy['bypass']}")
+            bypass = proxy.get("bypass")
+            if bypass:
+                extra_args.append(f"--proxy-bypass-list={bypass}")
             return {}, extra_args
         return {}, [f"--proxy-server={_normalize_http_string_url(proxy)}"]
 

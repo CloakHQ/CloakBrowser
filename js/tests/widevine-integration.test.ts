@@ -8,6 +8,9 @@ vi.mock("../src/widevine.js", () => ({
   seedWidevineHint: vi.fn(),
   resolveWidevineCdmDir: vi.fn(),
 }));
+vi.mock("../src/profile-seed.js", () => ({
+  persistentSeedArgs: (_d: any, _s: any, a: any) => a,
+}));
 vi.mock("../src/download.js", () => ({
   ensureBinary: vi.fn().mockResolvedValue("/fake/chrome"),
 }));

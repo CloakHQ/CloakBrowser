@@ -180,6 +180,49 @@ public class ConfigTests
     }
 }
 
+[Collection("env-serial")]
+public class ReleaseChannelConfigTests
+{
+    [Fact]
+    public void NormalizeReleaseChannel_defaults_to_stable()
+    {
+        var previous = Environment.GetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL");
+        try
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL", null);
+            Assert.Equal("stable", Config.NormalizeReleaseChannel());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL", previous);
+        }
+    }
+
+    [Theory]
+    [InlineData(" preview ", "preview")]
+    [InlineData("PREVIEW", "preview")]
+    [InlineData("stable", "stable")]
+    [InlineData("unknown", "stable")]
+    public void NormalizeReleaseChannel_normalizes_values(string input, string expected)
+        => Assert.Equal(expected, Config.NormalizeReleaseChannel(input));
+
+    [Fact]
+    public void NormalizeReleaseChannel_explicit_stable_overrides_environment()
+    {
+        var previous = Environment.GetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL");
+        try
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL", "preview");
+            Assert.Equal("preview", Config.NormalizeReleaseChannel());
+            Assert.Equal("stable", Config.NormalizeReleaseChannel("stable"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL", previous);
+        }
+    }
+}
+
 /// <summary>
 /// Config.BinarySupportsHeadlessNoViewport() — parity-critical: Python and JS mirror
 /// this gate. Threshold is an unshipped version, so the resolved-version path is a

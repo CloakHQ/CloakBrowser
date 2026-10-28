@@ -18,7 +18,32 @@ import platform
 import subprocess
 import sys
 
-UPGRADE_HINT = "→ Try the latest Pro binary (Chromium 148) free for 7 days: https://cloakbrowser.dev"
+
+def _console_glyph(glyph: str, fallback: str) -> str:
+    """Return an ASCII stand-in when the console can't encode `glyph`.
+
+    Windows consoles default to cp850/cp1252, which carry none of the marks
+    below — printing one there raises UnicodeEncodeError and aborts the report
+    partway through. UTF-8 consoles keep the glyph.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        glyph.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return fallback
+    return glyph
+
+
+MARK_OK = _console_glyph("✓", "OK")
+MARK_FAIL = _console_glyph("✗", "x")
+ARROW = _console_glyph("→", "->")
+DASH = _console_glyph("—", "-")
+
+UPGRADE_HINT = f"For more than one concurrent session {ARROW} https://cloakbrowser.dev"
+FREE_LATEST_HINT = (
+    f"Get the latest binary free {ARROW} run 'cloakbrowser login' "
+    "or https://cloakbrowser.dev/free"
+)
 
 
 def _setup_logging() -> None:
@@ -48,7 +73,10 @@ def _module_available(module: str) -> bool:
 
 
 def _binary_version(binary_path: str) -> tuple[bool, str, str]:
-    """Launch `<binary> --version` to prove it runs. Returns (ok, version, err)."""
+    """Launch `<binary> --version` to prove it runs. Returns (ok, version, err).
+
+    POSIX only: Windows ignores --version and starts a browser instead.
+    """
     try:
         result = subprocess.run(
             [binary_path, "--version"],
@@ -119,10 +147,12 @@ def _effective_binary(entitled_pro: bool, quick: bool = False) -> dict:
     """
     from .config import (
         CHROMIUM_VERSION,
+        _version_newer,
         get_binary_dir,
         get_binary_path,
         get_effective_version,
         get_local_binary_override,
+        normalize_release_channel,
         normalize_requested_version,
     )
 
@@ -141,31 +171,55 @@ def _effective_binary(entitled_pro: bool, quick: bool = False) -> dict:
         }
 
     requested = normalize_requested_version(None)
+    requested_channel = normalize_release_channel(None)
 
     # For a Pro license, surface the server's latest separately from the version
     # that will actually launch, so `info` can never silently diverge from launch
     # (the divergence a customer hit: info showed latest, launch ran a stale cache).
     # --quick keeps `info` fully network-free (skip the server latest lookup).
     latest_version = None
+    resolved_channel = None
+    channel_fallback = False
     if entitled_pro and not quick:
-        from .license import get_pro_latest_version
+        from .license import get_pro_latest_release
 
-        latest_version = get_pro_latest_version()
+        latest_release = get_pro_latest_release(requested_channel)
+        if latest_release:
+            latest_version = latest_release.version
+            resolved_channel = latest_release.resolved_channel
+            channel_fallback = latest_release.fallback
 
+    installed_version = None
     if requested:
         version = requested
     elif entitled_pro:
-        # "Will launch now" is the cached Pro build; if none is cached, the next
-        # launch downloads latest_version. get_effective_version(pro=True) returns
-        # None (never the free base) when nothing is cached.
-        version = get_effective_version(pro=True) or latest_version
+        # Mirror ensure_binary: Preview/Stable resolution picks what the next
+        # launch will run, while AUTO_UPDATE=false keeps an installed channel build.
+        installed_version = get_effective_version(
+            pro=True, release_channel=requested_channel
+        )
+        auto_update = os.environ.get("CLOAKBROWSER_AUTO_UPDATE", "true").lower()
+        updates_enabled = auto_update != "false"
+        if installed_version and not updates_enabled:
+            version = installed_version
+        elif latest_version and (
+            not installed_version or _version_newer(latest_version, installed_version)
+        ):
+            version = latest_version
+        else:
+            version = installed_version or latest_version
     else:
         version = get_effective_version()
+        installed_version = version
 
     path = get_binary_path(version, pro=entitled_pro) if version else None
     return {
         "version": version,
         "latest_version": latest_version,
+        "requested_channel": requested_channel,
+        "resolved_channel": resolved_channel,
+        "channel_fallback": channel_fallback,
+        "installed_version": installed_version,
         "pinned": bool(requested),
         "tier": "pro" if entitled_pro else "free",
         "bundled_version": CHROMIUM_VERSION,
@@ -176,11 +230,19 @@ def _effective_binary(entitled_pro: bool, quick: bool = False) -> dict:
     }
 
 
-def _collect_diagnostics(quick: bool) -> dict:
-    """Gather environment + binary diagnostics without triggering a download."""
+def _collect_diagnostics(quick: bool, proxy: str | None = None) -> dict:
+    """Gather environment + binary diagnostics.
+
+    Does not trigger a download unless ``proxy`` is given: with a proxy, the
+    exit IP + timezone + locale a launch would apply are resolved (which caches
+    the GeoIP DB if absent, exactly like a real launch).
+    """
     diag: dict = {}
 
+    from ._version import __version__
+
     diag["environment"] = {
+        "wrapper": __version__,
         "python": sys.version.split()[0],
         "os": platform.system(),
         "arch": platform.machine(),
@@ -190,6 +252,22 @@ def _collect_diagnostics(quick: bool) -> dict:
     # (ensure_binary only uses the Pro binary when a key validates). Computed
     # before the binary section, displayed after it.
     license_info, entitled_pro = _resolve_license()
+
+    # Live seat count — a Pro-only extra lookup, so gated exactly like the server
+    # latest-version check below: --quick keeps `info` network-free, and a free
+    # tier holds no seats. Never cached (a cached count is a wrong count).
+    if entitled_pro and not quick:
+        from .license import get_session_seats, resolve_license_key
+
+        key = resolve_license_key(None)
+        if key:
+            seats = get_session_seats(key)
+            license_info["sessions"] = {
+                "active": seats.active,
+                "limit": seats.limit,
+                "state": seats.state,
+                "reason": seats.reason,
+            }
 
     from .config import get_platform_tag
 
@@ -210,6 +288,16 @@ def _collect_diagnostics(quick: bool) -> dict:
         diag["launch"] = {"tested": False, "reason": "skipped (--quick)"}
     elif not binary or not (installed or (binary and os.path.isfile(binary))):
         diag["launch"] = {"tested": False, "reason": "binary not installed"}
+    elif platform.system() == "Windows":
+        # Windows ignores --version and starts a real browser, which takes a
+        # license seat and never frees it. Read the version manifest instead.
+        manifest = next(
+            (f for f in os.listdir(os.path.dirname(binary)) if f.endswith(".manifest")), ""
+        )
+        reason = "not launched on Windows (it would take a license seat)"
+        if manifest:
+            reason += f"; binary {manifest[: -len('.manifest')]}"
+        diag["launch"] = {"tested": False, "reason": reason}
     else:
         ok, version, err = _binary_version(binary)
         diag["launch"] = {"tested": True, "ok": ok, "version": version, "error": err}
@@ -220,6 +308,7 @@ def _collect_diagnostics(quick: bool) -> dict:
     # Omitted entirely off Linux, where it carries no signal.
     if platform.system() == "Linux":
         from .browser import (
+            _MAC_FONT_TELLS,
             _OFFICE_FONT_TELLS,
             _WINDOWS_FONT_TELLS,
             _count_fonts_present,
@@ -227,11 +316,16 @@ def _collect_diagnostics(quick: bool) -> dict:
 
         # Strict count, not "any one present" — real font installs are atomic
         # (you have the whole pack or none), so report how complete the set is.
+        # Both Windows and macOS sets are counted unconditionally: `info` has no
+        # persona flag, so we report each raw count and let the user read the one
+        # for the persona they spoof.
         win_n = _count_fonts_present(_WINDOWS_FONT_TELLS)
         office_n = _count_fonts_present(_OFFICE_FONT_TELLS)
+        mac_n = _count_fonts_present(_MAC_FONT_TELLS)
         diag["fonts"] = {
             "windows": None if win_n is None else [win_n, len(_WINDOWS_FONT_TELLS)],
             "office": None if office_n is None else [office_n, len(_OFFICE_FONT_TELLS)],
+            "macos": None if mac_n is None else [mac_n, len(_MAC_FONT_TELLS)],
         }
 
     diag["license"] = license_info
@@ -241,6 +335,23 @@ def _collect_diagnostics(quick: bool) -> dict:
 
     db_path = _get_geoip_dir() / GEOIP_DB_FILENAME
     diag["geoip"] = {"db_present": db_path.exists(), "path": str(db_path)}
+
+    # Live resolution — only when a proxy is explicitly given. Mirrors launch():
+    # resolves the exit IP and, computing tz/locale, caches the DB if absent.
+    if proxy:
+        try:
+            from .geoip import resolve_proxy_geo_with_ip
+
+            tz, locale, exit_ip = resolve_proxy_geo_with_ip(proxy)
+            diag["geoip"]["resolved"] = {
+                "exit_ip": exit_ip,
+                "timezone": tz,
+                "locale": locale,
+            }
+        except ImportError:
+            diag["geoip"]["resolved"] = {"error": "geoip2 not installed"}
+        except Exception as exc:  # network/proxy failure — never crash `info`
+            diag["geoip"]["resolved"] = {"error": str(exc)}
 
     # Optional Python modules.
     diag["modules"] = {
@@ -256,10 +367,41 @@ def _collect_diagnostics(quick: bool) -> dict:
     return diag
 
 
+# Server error codes → the words a customer can act on. Anything unrecognised is
+# printed verbatim rather than swallowed, so a new server code still says something.
+_SEAT_DENIAL_REASONS = {
+    "invalid_key": "invalid key",
+    "license_inactive": "license inactive",
+    "rate_limited": "rate limited",
+}
+
+
+def _format_seats(sessions: dict) -> str:
+    """Render the seat lookup. Kept identical in the JS and .NET wrappers."""
+    state = sessions.get("state", "ok")
+    if state == "unreachable":
+        return "unavailable (cannot reach cloakbrowser.dev)"
+    if state == "denied":
+        reason = sessions.get("reason") or "refused"
+        return f"unavailable ({_SEAT_DENIAL_REASONS.get(reason, reason)})"
+    if state != "ok" or sessions.get("active") is None:
+        # The server is up and the key is fine — it just cannot count right now.
+        return "unavailable (server cannot report seats right now)"
+
+    active = sessions["active"]
+    limit = sessions.get("limit")
+    if limit is None:
+        # No cap to show (unlimited, unrecognised plan, or a server predating the
+        # field). Fall back to the bare count — never print "N/unknown".
+        return f"{active} seat{'' if active == 1 else 's'} in use"
+    return f"{active}/{limit} in use"
+
+
 def _print_diagnostics(diag: dict) -> None:
     """Render the diagnostics dict as a human-readable report."""
     env = diag["environment"]
     print("CloakBrowser diagnostics")
+    print(f"Wrapper:   {env['wrapper']}")
     print(f"Python:    {env['python']}")
     print(f"OS:        {env['os']} {env['arch']}")
     print(f"Platform:  {env.get('platform_tag', 'unknown')}")
@@ -271,25 +413,38 @@ def _print_diagnostics(diag: dict) -> None:
         if binary["tier"] == "override":
             print("Version:   set via CLOAKBROWSER_BINARY_PATH (see Launch line)")
         else:
+            requested_channel = binary.get("requested_channel", "stable")
+            resolved_channel = binary.get("resolved_channel")
+            if binary.get("channel_fallback"):
+                print(f"Channel:   Preview {ARROW} Stable fallback")
+            elif resolved_channel:
+                print(f"Channel:   {resolved_channel.capitalize()}")
+            else:
+                print(f"Channel:   {requested_channel.capitalize()}")
             latest = binary.get("latest_version")
             if latest:
                 # Pro: show what launches now AND the server's latest, so the two
                 # can never silently diverge.
-                print(f"Version:   {binary['version']} ({binary['tier']}) — will launch")
-                if latest == binary["version"]:
+                print(f"Version:   {binary['version']} ({binary['tier']}) {DASH} next launch")
+                if latest == binary["version"] and binary.get("installed"):
                     print(f"Latest:    {latest} (up to date)")
+                elif latest == binary["version"]:
+                    print(f"Latest:    {latest} (downloads on next launch)")
                 elif binary.get("pinned"):
                     print(
-                        f"Latest:    {latest} (available — pinned; unset "
+                        f"Latest:    {latest} (available {DASH} pinned; unset "
                         "CLOAKBROWSER_VERSION to upgrade)"
                     )
                 else:
-                    print(f"Latest:    {latest} (available — next launch upgrades)")
+                    print(f"Latest:    {latest} (server-resolved; installed build retained)")
+                installed_version = binary.get("installed_version")
+                if installed_version and installed_version != binary["version"]:
+                    print(f"Installed: {installed_version}")
             elif binary["version"] is None:
                 # Pro with no cached build and no server answer (e.g. offline).
                 print(
                     f"Version:   not downloaded yet ({binary['tier']}) "
-                    "— next launch downloads the latest"
+                    f"{DASH} next launch downloads the latest"
                 )
             else:
                 print(f"Version:   {binary['version']} ({binary['tier']})")
@@ -304,13 +459,14 @@ def _print_diagnostics(diag: dict) -> None:
     if not launch.get("tested"):
         print(f"Launch:    {launch['reason']}")
     elif launch["ok"]:
-        print(f"Launch:    ✓ {launch['version']}")
+        # Windows prints nothing, so say it ran rather than show an empty version.
+        print(f"Launch:    {MARK_OK} {launch['version'] or 'runs (no version reported on Windows)'}")
     else:
-        print(f"Launch:    ✗ failed — {launch['error']}")
+        print(f"Launch:    {MARK_FAIL} failed {DASH} {launch['error']}")
         for lib in launch.get("missing_libs", []):
             print(f"           missing: {lib}")
         if launch.get("missing_libs"):
-            print("           → install the missing system libraries (e.g. apt-get install)")
+            print(f"           {ARROW} install the missing system libraries (e.g. apt-get install)")
 
     if "fonts" in diag:
         win = diag["fonts"]["windows"]
@@ -321,7 +477,7 @@ def _print_diagnostics(diag: dict) -> None:
             verdict = "ok" if n == total else "missing" if n == 0 else "partial"
             print(f"Win fonts: {verdict} ({n}/{total})")
             if n < total:
-                print("           → incomplete Windows font set; copy real Windows fonts (Segoe UI, Calibri, Consolas)")
+                print(f"           {ARROW} incomplete Windows font set; copy real Windows fonts (Segoe UI, Calibri, Consolas)")
         office = diag["fonts"].get("office")
         if office is not None:
             n, total = office
@@ -329,19 +485,50 @@ def _print_diagnostics(diag: dict) -> None:
             # persona (~53% of real machines have none), so no install nudge.
             verdict = "ok" if n == total else "absent" if n == 0 else "partial"
             print(f"Office fonts: {verdict} ({n}/{total})")
+        mac = diag["fonts"].get("macos")
+        if mac is None:
+            print("Mac fonts: unknown (fc-list unavailable)")
+        else:
+            n, total = mac
+            verdict = "ok" if n == total else "missing" if n == 0 else "partial"
+            print(f"Mac fonts: {verdict} ({n}/{total})")
+            if n < total:
+                # Phrased conditionally: some Mac fonts also ship on a Windows box,
+                # so a partial count is expected unless macOS is the intended persona.
+                print(f"           {ARROW} if spoofing macOS on this host, copy the real Mac fonts (Helvetica Neue, Menlo, SF/Apple system fonts)")
 
     lic = diag["license"]
     tier = lic["tier"]
-    if tier == "free":
-        print("License:   Free")
+    if tier == "free" and lic.get("valid"):
+        # Validated free-tier key (GitHub login): the latest binary, 1 session.
+        print("License:   Free (latest binary, 1 concurrent session)")
+        print(f"           {UPGRADE_HINT}")
+    elif tier == "free":
+        # Keyless: running the older free binary — invite the free-latest login.
+        print("License:   Free (no key)")
+        print(f"           {FREE_LATEST_HINT}")
         print(f"           {UPGRADE_HINT}")
     elif "error" in lic:
         print(f"License:   {tier} ({lic['error']})")
     else:
         print(f"License:   {tier}")
 
+    if "sessions" in lic:
+        print(f"Sessions:  {_format_seats(lic['sessions'])}")
+
     geoip = diag["geoip"]
-    print(f"GeoIP DB:  {'present' if geoip['db_present'] else 'not downloaded (optional)'}")
+    db_line = "present" if geoip["db_present"] else "not downloaded (optional)"
+    resolved = geoip.get("resolved")
+    if resolved is None:
+        db_line += "  (pass --proxy <url> to resolve exit IP + timezone/locale)"
+    print(f"GeoIP DB:  {db_line}")
+    if resolved is not None:
+        if resolved.get("error"):
+            print(f"Exit IP:   (could not resolve — {resolved['error']})")
+        else:
+            print(f"Exit IP:   {resolved.get('exit_ip') or '(unknown)'}")
+            print(f"Timezone:  {resolved.get('timezone') or '(unknown)'}")
+            print(f"Locale:    {resolved.get('locale') or '(unknown)'}")
 
     print("Modules:")
     for label, available in diag["modules"].items():
@@ -350,7 +537,7 @@ def _print_diagnostics(diag: dict) -> None:
 
 def cmd_info(args: argparse.Namespace) -> None:
     quick = getattr(args, "quick", False)
-    diag = _collect_diagnostics(quick=quick)
+    diag = _collect_diagnostics(quick=quick, proxy=getattr(args, "proxy", None))
     if getattr(args, "json", False):
         import json
 
@@ -370,7 +557,10 @@ def cmd_update(args: argparse.Namespace) -> None:
     if entitled_pro:
         from .license import resolve_license_key
 
-        new_version = check_for_pro_update(resolve_license_key(None))
+        key = resolve_license_key(None)
+        if not key:
+            raise RuntimeError("Pro license key disappeared during update")
+        new_version = check_for_pro_update(key)
         label = "Pro Chromium"
     else:
         new_version = check_for_update()
@@ -393,6 +583,101 @@ def cmd_clear_cache(args: argparse.Namespace) -> None:
     print("Cache cleared.")
 
 
+FREE_LOGIN_URL = "https://cloakbrowser.dev/api/license/free/github/start"
+
+
+def _save_license_key(key: str) -> None:
+    """Persist a validated key to ~/.cloakbrowser/license.key (0600)."""
+    from .config import get_cache_dir
+
+    cache_dir = get_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key_file = cache_dir / "license.key"
+    key_file.write_text(key.strip() + "\n")
+    try:
+        key_file.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _prompt_free_github_login() -> str:
+    """Open the GitHub free-key page and read back the emailed key."""
+    import webbrowser
+
+    print(f"Opening GitHub sign-in: {FREE_LOGIN_URL}")
+    try:
+        webbrowser.open(FREE_LOGIN_URL)
+    except Exception:
+        pass
+    print("If your browser did not open, visit the URL above and authorize with GitHub.")
+    print("We'll email your free CloakBrowser key to your GitHub email.")
+    try:
+        return input("Paste the key from that email here: ").strip()
+    except EOFError:
+        return ""
+
+
+def cmd_login(args: argparse.Namespace) -> None:
+    """Activate any key. `login <key>` saves a pasted key; bare `login` prompts
+    to paste a key or press ENTER to get a free key via GitHub."""
+    from .license import validate_license
+
+    key = (getattr(args, "key", None) or "").strip()
+
+    if not key:
+        if not sys.stdin.isatty():
+            print(
+                "Usage: cloakbrowser login <key>  (or run it interactively for a free key).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        try:
+            entered = input(
+                "Paste your license key, or press ENTER to get a free key via GitHub: "
+            ).strip()
+        except EOFError:
+            entered = ""
+        key = entered or _prompt_free_github_login()
+
+    if not key:
+        print("No key entered. Nothing saved.", file=sys.stderr)
+        sys.exit(1)
+
+    info = validate_license(key)
+    if info is None:
+        print(
+            "Could not reach the license server to verify the key. Check your connection and retry.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not info.valid:
+        print("That license key is invalid or expired. Nothing was saved.", file=sys.stderr)
+        sys.exit(1)
+
+    _save_license_key(key)
+    if info.plan == "free":
+        print("Saved. Free tier active: latest binary, 1 concurrent session (one browser at a time).")
+        print("Need to run more at once? See the plans at https://cloakbrowser.dev")
+    else:
+        print(f"Saved. {info.plan.capitalize()} key active: latest binary, full plan limits.")
+
+
+def cmd_logout(args: argparse.Namespace) -> None:
+    """Remove the saved license key (revert to the free v146 binary)."""
+    from .config import get_cache_dir
+
+    key_file = get_cache_dir() / "license.key"
+    if key_file.exists():
+        try:
+            key_file.unlink()
+        except OSError as e:
+            print(f"Could not remove {key_file}: {e}", file=sys.stderr)
+            sys.exit(1)
+        print("Logged out. Removed the saved key; launches revert to the free binary.")
+    else:
+        print("No saved license key found.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="cloakbrowser",
@@ -411,11 +696,27 @@ def main() -> None:
             help="Skip the binary launch test (faster; the license is still validated)",
         )
         p.add_argument("--json", action="store_true", help="Emit diagnostics as JSON")
+        p.add_argument(
+            "--proxy",
+            metavar="URL",
+            help=(
+                "Resolve the exit IP, timezone, and locale a launch would apply "
+                "through this proxy (downloads the GeoIP DB if not cached)"
+            ),
+        )
 
     _add_info_flags(sub.add_parser("info", help="Environment + binary diagnostics"))
     _add_info_flags(sub.add_parser("doctor", help="Alias for info"))
     sub.add_parser("update", help="Check for and download a newer binary")
     sub.add_parser("clear-cache", help="Remove all cached binaries")
+
+    login_p = sub.add_parser(
+        "login", help="Save a license key (or get a free key via GitHub)"
+    )
+    login_p.add_argument(
+        "key", nargs="?", help="License key to save. Omit to enter it interactively."
+    )
+    sub.add_parser("logout", help="Remove the saved license key (revert to free binary)")
 
     args = parser.parse_args()
     if not args.command:
@@ -430,6 +731,8 @@ def main() -> None:
         "doctor": cmd_info,
         "update": cmd_update,
         "clear-cache": cmd_clear_cache,
+        "login": cmd_login,
+        "logout": cmd_logout,
     }
 
     try:

@@ -8,7 +8,7 @@ using Xunit;
 namespace CloakBrowser.Tests;
 
 /// <summary>
-/// Welcome-banner cadence (Download.WelcomeDue): free re-shows every 3 days,
+/// Welcome-banner cadence (Download.WelcomeDue): free re-shows every day,
 /// Pro shows once ever. Pure function over a marker file — fully deterministic.
 /// </summary>
 public class WelcomeCadenceTests
@@ -55,6 +55,45 @@ public class WelcomeCadenceTests
             Assert.False(Download.WelcomeDue(marker, pro: true)); // pro: existence = already shown
         }
         finally { if (File.Exists(marker)) File.Delete(marker); }
+    }
+}
+
+/// <summary>
+/// The welcome banner runs on the binary-download path. On a legacy Windows
+/// console a non-ASCII glyph can crash or mojibake the write, so
+/// the banner must be pure ASCII. Mirrors the Python/JS welcome tests.
+/// Serialized: mutates CLOAKBROWSER_CACHE_DIR and Console.Error.
+/// </summary>
+[Collection("env-serial")]
+public class WelcomeBannerAsciiTests
+{
+    [Theory]
+    [InlineData("keyless")]
+    [InlineData("free")]
+    [InlineData("pro")]
+    public void Banner_is_ascii_only(string tier)
+    {
+        var prev = Environment.GetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR");
+        var tmp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tmp);
+        var origErr = Console.Error;
+        var buf = new StringWriter();
+        try
+        {
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", tmp);
+            Console.SetError(buf);
+            Download.ShowWelcome(tier); // marker absent -> shows
+            var outText = buf.ToString();
+            Assert.NotEqual("", outText);
+            foreach (var c in outText)
+                Assert.True(c <= 0x7F, $"non-ASCII U+{(int)c:X4} in {tier} banner");
+        }
+        finally
+        {
+            Console.SetError(origErr);
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", prev);
+            try { Directory.Delete(tmp, recursive: true); } catch { /* best-effort */ }
+        }
     }
 }
 
@@ -151,6 +190,41 @@ public class FontWarningTests
             Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", prev);
             CloakLauncher._fontWarningChecked = false;
             try { Directory.Delete(tmp, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public void MacFontTells_is_the_20_font_mac_core_set()
+    {
+        Assert.Equal(20, CloakLauncher.MacFontTells.Length);
+        Assert.Contains("Helvetica Neue", CloakLauncher.MacFontTells);
+    }
+
+    [Fact]
+    public void CountFontsPresent_counts_the_mac_set_from_fc_list()
+    {
+        // Shim an "fc-list" on PATH that lists only 2 of the mac tells (POSIX only).
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        var shim = Path.Combine(dir, "fc-list");
+        File.WriteAllText(shim, "#!/bin/sh\necho '/x/Menlo.ttc: Menlo:style=Regular'\necho '/x/Monaco.ttf: Monaco:style=Regular'\n");
+        using (var chmod = Process.Start(new ProcessStartInfo("chmod", $"+x \"{shim}\"") { UseShellExecute = false }))
+        {
+            chmod!.WaitForExit();
+        }
+
+        var prevPath = Environment.GetEnvironmentVariable("PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PATH", dir + Path.PathSeparator + prevPath);
+            Assert.Equal(2, CloakLauncher.CountFontsPresent(CloakLauncher.MacFontTells));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", prevPath);
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
         }
     }
 }

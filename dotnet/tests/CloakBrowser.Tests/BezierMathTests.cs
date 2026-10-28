@@ -18,7 +18,6 @@ public class BezierMathTests
     private static HumanConfig Cfg() => new()
     {
         MouseOvershootChance = 0,   // deterministic so the end-point assertion is stable
-        MouseBurstPause = (0, 0),
     };
 
     [Fact]

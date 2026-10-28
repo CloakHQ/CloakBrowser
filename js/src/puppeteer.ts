@@ -10,15 +10,25 @@ import {
   DEFAULT_VIEWPORT,
   IGNORE_DEFAULT_ARGS,
   binarySupportsHeadlessNoViewport,
+  binarySupportsHttpProxyInlineAuth,
 } from "./config.js";
 import { buildArgs } from "./args.js";
 import { maybeWarnWindowsFonts } from "./fonts.js";
 import { resolveTimezone } from "./playwright.js";
 import { ensureBinary } from "./download.js";
-import { isSocksProxy, normalizeHttpStringUrl, parseProxyUrl, reconstructHttpUrl, resolveProxyConfig, supportsHttpProxyInlineAuth } from "./proxy.js";
+import { isSocksProxy, normalizeHttpStringUrl, parseProxyUrl, reconstructHttpUrl, resolveProxyConfig } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
-import { buildLaunchEnv } from "./license.js";
+import {
+  buildLaunchEnv,
+  installLicenseGuard,
+  licenseErrorFrom,
+  mintDenialFile,
+  resolveLicenseKey,
+} from "./license.js";
 import { seedWidevineHint } from "./widevine.js";
+import { persistentSeedArgs } from "./profile-seed.js";
+
+export { CloakBrowserLicenseError } from "./license.js";
 
 /**
  * Resolve Puppeteer's defaultViewport. Headed -> null (track the real window so
@@ -38,14 +48,23 @@ function resolveDefaultViewport(options: LaunchOptions): { width: number; height
   const headless = options.headless ?? true;
   // Headed and newer headless binaries: null (no emulation, coherent dimensions).
   // Older headless binaries: a fixed viewport keeps dimensions coherent.
-  if (!headless || binarySupportsHeadlessNoViewport(options.licenseKey, options.browserVersion)) {
+  if (
+    !headless ||
+    binarySupportsHeadlessNoViewport(
+      options.licenseKey,
+      options.browserVersion,
+      options.releaseChannel,
+    )
+  ) {
     return null;
   }
   return DEFAULT_VIEWPORT;
 }
 
 /** Resolve binary path, geoip, webrtc, and build final Chrome args. */
-async function resolveArgs(options: LaunchOptions): Promise<{ binaryPath: string; args: string[] }> {
+async function resolveArgs(
+  options: LaunchOptions & { userDataDir?: string },
+): Promise<{ binaryPath: string; args: string[] }> {
   // Map Playwright's `timezoneId` onto `timezone` before buildArgs, which only
   // reads `timezone` to emit --fingerprint-timezone. Every puppeteer entry
   // point (launch/launchContext/launchPersistentContext) funnels through here,
@@ -53,11 +72,17 @@ async function resolveArgs(options: LaunchOptions): Promise<{ binaryPath: string
   options = resolveTimezone(options);
   const binaryPath =
     process.env.CLOAKBROWSER_BINARY_PATH ||
-    (await ensureBinary(options.licenseKey, options.browserVersion));
+    (await ensureBinary(
+      options.licenseKey,
+      options.browserVersion,
+      options.releaseChannel,
+    ));
   const { exitIp, ...resolved } = (await maybeResolveGeoip(options)) ?? {};
   let resolvedArgs = (await resolveWebrtcArgs(options)) ?? options.args;
 
   resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
+  // Only launchPersistentContext passes userDataDir; plain launch() stays random.
+  resolvedArgs = persistentSeedArgs(options.userDataDir, options.stealthArgs, resolvedArgs);
   const args = buildArgs({ ...options, ...resolved, args: resolvedArgs });
   maybeWarnWindowsFonts(args);
   return { binaryPath, args };
@@ -66,20 +91,32 @@ async function resolveArgs(options: LaunchOptions): Promise<{ binaryPath: string
 /**
  * Resolve proxy into Chrome CLI args and optional HTTP auth credentials.
  * SOCKS5: Chrome handles inline credentials natively (RFC 1929 auth).
- * HTTP on supported platforms: inline credentials via --proxy-server.
- * HTTP on unsupported platforms: strip credentials, use page.authenticate() fallback.
+ * HTTP on binaries with inline proxy auth: inline credentials via --proxy-server.
+ * HTTP on older binaries (free macOS/linux-arm64): strip credentials, use
+ * page.authenticate() fallback.
  */
 function resolveProxy(options: LaunchOptions, args: string[]): { username: string; password: string } | undefined {
   if (!options.proxy) return undefined;
 
   if (isSocksProxy(options.proxy)) {
-    const { proxyArgs } = resolveProxyConfig(options.proxy, options.browserVersion);
+    const { proxyArgs } = resolveProxyConfig(
+      options.proxy,
+      options.browserVersion,
+      options.licenseKey,
+      options.releaseChannel,
+    );
     args.push(...proxyArgs);
     return undefined;
   }
 
-  // On supported platforms: pass full URL with inline creds to --proxy-server
-  if (supportsHttpProxyInlineAuth()) {
+  // On binaries that ship inline proxy auth: pass full URL with inline creds.
+  if (
+    binarySupportsHttpProxyInlineAuth(
+      options.licenseKey,
+      options.browserVersion,
+      options.releaseChannel,
+    )
+  ) {
     if (typeof options.proxy === "string") {
       args.push(`--proxy-server=${normalizeHttpStringUrl(options.proxy)}`);
       return undefined;
@@ -94,7 +131,7 @@ function resolveProxy(options: LaunchOptions, args: string[]): { username: strin
     return undefined;
   }
 
-  // Unsupported platform: strip credentials, fall back to page.authenticate()
+  // Older binary: strip credentials, fall back to page.authenticate()
   if (typeof options.proxy === "string") {
     const { server, username, password } = parseProxyUrl(options.proxy);
     args.push(`--proxy-server=${server}`);
@@ -111,7 +148,7 @@ function resolveProxy(options: LaunchOptions, args: string[]): { username: strin
   return username ? { username, password: password ?? "" } : undefined;
 }
 
-/** Apply proxy auth fallback (unsupported platforms) and humanize patching. */
+/** Apply proxy auth fallback (older binaries) and humanize patching. */
 async function applyPostLaunch(
   browser: Browser,
   options: LaunchOptions,
@@ -158,23 +195,40 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const proxyAuth = resolveProxy(options, args);
 
   // Resolve env for the browser process (license key injection, if needed).
+  const denialPath = resolveLicenseKey(options.licenseKey) ? mintDenialFile() : undefined;
   const { env: userEnv, ...restLaunchOptions } = options.launchOptions ?? {};
   const launchEnv = buildLaunchEnv(
     options.licenseKey,
     userEnv as Record<string, string | undefined> | undefined,
+    denialPath,
   );
   const envResult = launchEnv !== undefined ? { env: launchEnv } : {};
 
-  const browser = await puppeteer.default.launch({
-    ...restLaunchOptions,
-    executablePath: binaryPath,
-    headless: options.headless ?? true,
-    args,
-    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
-    defaultViewport: resolveDefaultViewport(options),
-    ...envResult,
-  });
+  let browser;
+  try {
+    browser = await puppeteer.default.launch({
+      ...restLaunchOptions,
+      executablePath: binaryPath,
+      headless: options.headless ?? true,
+      args,
+      ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
+      defaultViewport: resolveDefaultViewport(options),
+      ...envResult,
+    });
+  } catch (err) {
+    const lic = licenseErrorFrom(err, denialPath);
+    if (lic) throw lic;
+    throw err;
+  }
 
+  // Convert a post-handshake license denial into a clear error on first use.
+  // Installed before applyPostLaunch so it sits closest to the real call.
+  if (denialPath) {
+    // Guarding the browser deeply covers newPage AND the context factories
+    // (createBrowserContext) and every page/context they hand back — so a user
+    // who creates their own context is covered too.
+    installLicenseGuard(browser, denialPath);
+  }
   await applyPostLaunch(browser, options, proxyAuth);
   return browser;
 }
@@ -207,24 +261,43 @@ export async function launchPersistentContext(
   seedWidevineHint(options.userDataDir, binaryPath);
 
   // Resolve env for the browser process (license key injection, if needed).
+  const denialPath = resolveLicenseKey(options.licenseKey) ? mintDenialFile() : undefined;
   const { env: userEnv, ...restLaunchOptions } = options.launchOptions ?? {};
   const launchEnv = buildLaunchEnv(
     options.licenseKey,
     userEnv as Record<string, string | undefined> | undefined,
+    denialPath,
   );
   const envResult = launchEnv !== undefined ? { env: launchEnv } : {};
 
-  const browser = await puppeteer.default.launch({
-    ...restLaunchOptions,
-    executablePath: binaryPath,
-    headless: options.headless ?? true,
-    args,
-    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
-    userDataDir: options.userDataDir,
-    defaultViewport: resolveDefaultViewport(options),
-    ...envResult,
-  });
+  let browser;
+  try {
+    browser = await puppeteer.default.launch({
+      ...restLaunchOptions,
+      executablePath: binaryPath,
+      headless: options.headless ?? true,
+      args,
+      ignoreDefaultArgs: IGNORE_DEFAULT_ARGS,
+      userDataDir: options.userDataDir,
+      defaultViewport: resolveDefaultViewport(options),
+      ...envResult,
+    });
+  } catch (err) {
+    const lic = licenseErrorFrom(err, denialPath);
+    if (lic) throw lic;
+    throw err;
+  }
 
+  // Guard the browser deeply for a post-handshake denial (see launch()).
+  if (denialPath) {
+    installLicenseGuard(browser, denialPath);
+    // A persistent browser arrives with a page already open, so the user drives
+    // pages()[0] directly and never calls newPage. Guard those existing pages
+    // too. Mirrors Python / Playwright wrapper.
+    for (const pg of await browser.pages()) {
+      installLicenseGuard(pg, denialPath);
+    }
+  }
   await applyPostLaunch(browser, options, proxyAuth);
   return browser;
 }

@@ -1,9 +1,18 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import * as http from "node:http";
+import type { AddressInfo } from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import {
-  CHROMIUM_VERSION,
+  binarySupportsHeadlessNoViewport,
+  binarySupportsHttpProxyInlineAuth,
+  binarySupportsMaximizedWindow,
   getChromiumVersion,
+  getBinaryDir,
+  getBinaryPath,
   getDownloadUrl,
   getEffectiveVersion,
   getPlatformTag,
@@ -11,7 +20,7 @@ import {
   versionNewer,
 } from "../src/config.js";
 import {
-  binaryInfo,
+  checkForProUpdate,
   checkForUpdate,
   checkWrapperUpdate,
   clearCache,
@@ -20,6 +29,7 @@ import {
   getLatestChromiumVersion,
   parseChecksums,
   resetWrapperUpdateChecked,
+  resetPreviewFallbackWarned,
 } from "../src/download.js";
 
 describe("version comparison", () => {
@@ -85,8 +95,6 @@ describe("download URL", () => {
 });
 
 describe("latest version (platform-aware)", () => {
-  const platformTarball = `cloakbrowser-${getPlatformTag()}.tar.gz`;
-
   function makeAssets(platforms: string[]) {
     return platforms.map((p) => ({ name: `cloakbrowser-${p}.tar.gz` }));
   }
@@ -114,7 +122,7 @@ describe("latest version (platform-aware)", () => {
   });
 
   it("skips release without platform asset", async () => {
-    const spy = mockFetch([
+    mockFetch([
       {
         tag_name: "chromium-v145.0.7718.0",
         draft: false,
@@ -332,7 +340,7 @@ describe("effective version", () => {
     }
   });
 
-  // Ticket 431 Fix 4: a valid Pro license must NEVER fall back to the free binary.
+  // A valid Pro license must NEVER fall back to the free binary.
   it("returns null for Pro when nothing is cached (never the free base)", () => {
     const orig = process.env.CLOAKBROWSER_CACHE_DIR;
     process.env.CLOAKBROWSER_CACHE_DIR = `/tmp/cloakbrowser-test-${Date.now()}-pro`;
@@ -363,6 +371,203 @@ describe("effective version", () => {
       if (orig) process.env.CLOAKBROWSER_CACHE_DIR = orig;
       else delete process.env.CLOAKBROWSER_CACHE_DIR;
     }
+  });
+});
+
+describe("preview Pro selection", () => {
+  let cacheDir: string;
+  let originalCacheDir: string | undefined;
+
+  function createProBinary(version: string): string {
+    const binaryPath = getBinaryPath(version, true);
+    fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
+    fs.writeFileSync(binaryPath, "fake");
+    fs.chmodSync(binaryPath, 0o755);
+    return binaryPath;
+  }
+
+  beforeEach(() => {
+    originalCacheDir = process.env.CLOAKBROWSER_CACHE_DIR;
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloakbrowser-preview-"));
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+    delete process.env.CLOAKBROWSER_BINARY_PATH;
+    delete process.env.CLOAKBROWSER_RELEASE_CHANNEL;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+    if (originalCacheDir === undefined) delete process.env.CLOAKBROWSER_CACHE_DIR;
+    else process.env.CLOAKBROWSER_CACHE_DIR = originalCacheDir;
+    delete process.env.CLOAKBROWSER_RELEASE_CHANNEL;
+  });
+
+  it("uses the selected channel for binary capability gates", () => {
+    const stable = "145.0.1000.1";
+    const preview = "148.0.7778.215.4";
+    createProBinary(stable);
+    createProBinary(preview);
+    fs.writeFileSync(
+      path.join(cacheDir, `latest_pro_version_${getPlatformTag()}`),
+      stable,
+    );
+    fs.writeFileSync(
+      path.join(cacheDir, `latest_pro_version_preview_${getPlatformTag()}`),
+      preview,
+    );
+
+    expect(binarySupportsHeadlessNoViewport("cb_test", undefined, "stable")).toBe(false);
+    expect(binarySupportsHeadlessNoViewport("cb_test", undefined, "preview")).toBe(true);
+    expect(binarySupportsMaximizedWindow("cb_test", undefined, "preview")).toBe(true);
+    expect(binarySupportsHttpProxyInlineAuth("cb_test", undefined, "stable")).toBe(false);
+    expect(binarySupportsHttpProxyInlineAuth("cb_test", undefined, "preview")).toBe(true);
+  });
+
+  it("keeps a pinned preview launch isolated from latest markers", async () => {
+    const pinned = "151.0.1000.1";
+    const binaryPath = createProBinary(pinned);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ valid: true, plan: "solo", expires: null }),
+    } as Response);
+
+    await expect(ensureBinary("cb_test", pinned, "preview")).resolves.toBe(binaryPath);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0]![0])).toContain("/api/license/validate");
+    expect(
+      fs.existsSync(path.join(cacheDir, `latest_pro_version_preview_${getPlatformTag()}`)),
+    ).toBe(false);
+    expect(
+      fs.existsSync(path.join(cacheDir, `latest_pro_version_${getPlatformTag()}`)),
+    ).toBe(false);
+  });
+
+  it("uses preview latest without changing the stable marker", async () => {
+    const stable = "150.0.1000.1";
+    const preview = "151.0.1000.1";
+    createProBinary(stable);
+    const previewPath = createProBinary(preview);
+    const stableMarker = path.join(cacheDir, `latest_pro_version_${getPlatformTag()}`);
+    fs.writeFileSync(stableMarker, stable);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/license/validate")) {
+        return {
+          ok: true,
+          json: async () => ({ valid: true, plan: "solo", expires: null }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({ version: preview }),
+      } as Response;
+    });
+
+    await expect(ensureBinary("cb_test", undefined, "preview")).resolves.toBe(previewPath);
+
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).endsWith("?channel=preview"))).toBe(true);
+    expect(fs.readFileSync(stableMarker, "utf-8")).toBe(stable);
+    expect(
+      fs.readFileSync(
+        path.join(cacheDir, `latest_pro_version_preview_${getPlatformTag()}`),
+        "utf-8",
+      ),
+    ).toBe(preview);
+  });
+
+  it("manual preview update advances only the preview marker", async () => {
+    const stable = "150.0.1000.1";
+    const preview = "151.0.1000.1";
+    createProBinary(stable);
+    createProBinary(preview);
+    const stableMarker = path.join(cacheDir, `latest_pro_version_${getPlatformTag()}`);
+    fs.writeFileSync(stableMarker, stable);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: preview }),
+    } as Response);
+
+    await expect(checkForProUpdate("cb_test", "preview")).resolves.toBe(preview);
+
+    expect(fs.readFileSync(stableMarker, "utf-8")).toBe(stable);
+    expect(
+      fs.readFileSync(
+        path.join(cacheDir, `latest_pro_version_preview_${getPlatformTag()}`),
+        "utf-8",
+      ),
+    ).toBe(preview);
+  });
+
+  it("warns when preview falls back to stable (no preview build for platform)", async () => {
+    resetPreviewFallbackWarned();
+    const stable = "150.0.1000.1";
+    createProBinary(stable); // stable-fallback build already cached → no download
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/api/license/validate")) {
+        return { ok: true, json: async () => ({ valid: true, plan: "solo", expires: null }) } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          version: stable,
+          requested_channel: "preview",
+          resolved_channel: "stable",
+          fallback: true,
+        }),
+      } as Response;
+    });
+
+    await ensureBinary("cb_test", undefined, "preview");
+
+    expect(
+      errSpy.mock.calls.some((c) => String(c[0]).includes("no preview build is available")),
+    ).toBe(true);
+  });
+
+  it("does not warn for a genuine preview build", async () => {
+    resetPreviewFallbackWarned();
+    const preview = "151.0.1000.1";
+    createProBinary(preview);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/api/license/validate")) {
+        return { ok: true, json: async () => ({ valid: true, plan: "solo", expires: null }) } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          version: preview,
+          requested_channel: "preview",
+          resolved_channel: "preview",
+          fallback: false,
+        }),
+      } as Response;
+    });
+
+    await ensureBinary("cb_test", undefined, "preview");
+
+    expect(
+      errSpy.mock.calls.some((c) => String(c[0]).includes("no preview build is available")),
+    ).toBe(false);
+  });
+
+  it("aborts (never free) when the server rejects the key", async () => {
+    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ valid: false, plan: "solo", expires: null }),
+    } as Response);
+
+    await expect(ensureBinary("cb_bad")).rejects.toThrow(/invalid or expired/);
+  });
+
+  it("aborts (never free) when the key cannot be validated (server down, no cache)", async () => {
+    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
+
+    await expect(ensureBinary("cb_test")).rejects.toThrow(/could not be validated/);
   });
 });
 
@@ -458,4 +663,187 @@ describe("welcome banner cadence", () => {
     expect(welcomeDue(marker, false)).toBe(true); // unparseable -> free re-shows
     expect(welcomeDue(marker, true)).toBe(false); // pro: existence = already shown
   });
+});
+
+describe("concurrent first-run download", () => {
+  const CALLERS = 4;
+  const FILLER_FILES = 300;
+  const PARTIAL_INSTALL_FILES = 2000;
+  const binaryBytes = Buffer.from("#!/bin/sh\necho fake-chrome\n");
+  let cacheDir: string;
+  let archiveBytes: Buffer;
+  let originalCacheDir: string | undefined;
+
+  beforeEach(async () => {
+    const { create: tarCreate } = await import("tar");
+    originalCacheDir = process.env.CLOAKBROWSER_CACHE_DIR;
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloakbrowser-concurrent-"));
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+    process.env.CLOAKBROWSER_DOWNLOAD_URL = "https://mirror.invalid";
+    process.env.CLOAKBROWSER_SKIP_CHECKSUM = "true";
+    delete process.env.CLOAKBROWSER_BINARY_PATH;
+    delete process.env.CLOAKBROWSER_VERSION;
+
+    // A small archive with the platform's binary layout plus enough filler
+    // files that concurrent extractions overlap in time.
+    const staging = fs.mkdtempSync(path.join(os.tmpdir(), "cloakbrowser-archive-"));
+    const binaryRelPath = path.relative(getBinaryDir(), getBinaryPath());
+    fs.mkdirSync(path.join(staging, path.dirname(binaryRelPath)), { recursive: true });
+    fs.writeFileSync(path.join(staging, binaryRelPath), binaryBytes, { mode: 0o755 });
+    fs.mkdirSync(path.join(staging, "lib"));
+    for (let i = 0; i < FILLER_FILES; i++) {
+      fs.writeFileSync(path.join(staging, "lib", `part-${i}.bin`), Buffer.alloc(16 * 1024, i));
+    }
+    const archivePath = path.join(staging, "..", `${path.basename(staging)}.tar.gz`);
+    await tarCreate({ gzip: true, file: archivePath, cwd: staging }, fs.readdirSync(staging));
+    archiveBytes = fs.readFileSync(archivePath);
+    fs.rmSync(staging, { recursive: true, force: true });
+    fs.rmSync(archivePath, { force: true });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+    if (originalCacheDir === undefined) delete process.env.CLOAKBROWSER_CACHE_DIR;
+    else process.env.CLOAKBROWSER_CACHE_DIR = originalCacheDir;
+    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
+    delete process.env.CLOAKBROWSER_SKIP_CHECKSUM;
+  });
+
+  // Reads the install the way a launch would. Returns what is wrong with it, or "complete".
+  function inspectInstall(): string {
+    try {
+      const binaryPath = getBinaryPath();
+      if (!fs.readFileSync(binaryPath).equals(binaryBytes)) return "binary content differs";
+      if ((fs.statSync(binaryPath).mode & 0o111) === 0) return "binary not executable";
+      const fillerCount = fs.readdirSync(path.join(getBinaryDir(), "lib")).length;
+      return fillerCount === FILLER_FILES ? "complete" : `lib has ${fillerCount} files`;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code ?? String(err);
+    }
+  }
+
+  it.skipIf(process.platform === "win32")(
+    "an install stays complete while other first-run callers finish",
+    async () => {
+      // Caller 0 downloads at once. The others have already seen an empty
+      // cache but their downloads are held until caller 0 has returned, which
+      // is the state a batch of simultaneous cold launches ends up in.
+      let releaseHeldDownloads!: () => void;
+      const heldDownloads = new Promise<void>((resolve) => (releaseHeldDownloads = resolve));
+      let fetchCount = 0;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        if (fetchCount++ > 0) await heldDownloads;
+        return new Response(archiveBytes);
+      });
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const callers = Array.from({ length: CALLERS }, () => ensureBinary());
+      const firstBinaryPath = await callers[0];
+      expect(firstBinaryPath).toBe(getBinaryPath());
+
+      // Caller 0 would now exec its binary. Keep reading the install while
+      // the held callers download and extract.
+      releaseHeldDownloads();
+      const observedStates = new Set<string>([inspectInstall()]);
+      const otherCallers = Promise.allSettled(callers.slice(1));
+      let otherCallersDone = false;
+      otherCallers.then(() => (otherCallersDone = true));
+      while (!otherCallersDone) {
+        observedStates.add(inspectInstall());
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      observedStates.add(inspectInstall());
+
+      for (const outcome of await otherCallers) {
+        expect(outcome).toEqual({ status: "fulfilled", value: getBinaryPath() });
+      }
+      expect([...observedStates]).toEqual(["complete"]);
+      expect(fs.readdirSync(cacheDir).filter((name) => !name.startsWith("."))).toEqual([
+        path.basename(getBinaryDir()),
+      ]);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "replaces a partial install left by an interrupted extraction",
+    async () => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(archiveBytes));
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      fs.mkdirSync(path.join(getBinaryDir(), "lib"), { recursive: true });
+      fs.writeFileSync(path.join(getBinaryDir(), "lib", "part-0.bin"), "truncated");
+
+      expect(await ensureBinary()).toBe(getBinaryPath());
+      expect(inspectInstall()).toBe("complete");
+    },
+  );
+
+  // MCP stdio servers use stdout as their JSON-RPC channel; status lines there break them.
+  it.skipIf(process.platform === "win32")(
+    "first-run download writes nothing to stdout",
+    async () => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(archiveBytes));
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+      const stdoutWrite = vi.spyOn(process.stdout, "write");
+
+      expect(await ensureBinary()).toBe(getBinaryPath());
+      expect(inspectInstall()).toBe("complete");
+      expect(consoleLog).not.toHaveBeenCalled();
+      expect(stdoutWrite).not.toHaveBeenCalled();
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "concurrent processes replace a partial install left by an interrupted extraction",
+    async () => {
+      // Enough files that deleting the partial install overlaps other callers.
+      fs.mkdirSync(path.join(getBinaryDir(), "lib"), { recursive: true });
+      for (let i = 0; i < PARTIAL_INSTALL_FILES; i++) {
+        fs.writeFileSync(path.join(getBinaryDir(), "lib", `part-${i}.bin`), "truncated");
+      }
+
+      // Answer only once every caller is downloading, so all of them find the
+      // partial install in the way when they move their extraction into place.
+      const heldResponses: http.ServerResponse[] = [];
+      const mirror = http.createServer((_request, response) => {
+        heldResponses.push(response);
+        if (heldResponses.length === CALLERS) {
+          for (const heldResponse of heldResponses) heldResponse.end(archiveBytes);
+        }
+      });
+      await new Promise<void>((resolve) => mirror.listen(0, "127.0.0.1", resolve));
+      const mirrorUrl = `http://127.0.0.1:${(mirror.address() as AddressInfo).port}`;
+
+      // Callers in one process cannot interleave inside extractArchive's
+      // synchronous rename and cleanup, so each caller is a separate process
+      // running the built dist/ (npm run build first, as CI does).
+      const downloadModuleUrl = new URL("../dist/download.js", import.meta.url).href;
+      const callerScript =
+        `const { ensureBinary } = await import(${JSON.stringify(downloadModuleUrl)});` +
+        `console.log("BINARY_PATH=" + (await ensureBinary()));`;
+      try {
+        const callers = await Promise.allSettled(
+          Array.from({ length: CALLERS }, () =>
+            promisify(execFile)(process.execPath, ["--input-type=module", "-e", callerScript], {
+              env: { ...process.env, CLOAKBROWSER_DOWNLOAD_URL: mirrorUrl },
+            }),
+          ),
+        );
+        const outcomes = callers.map((caller) =>
+          caller.status === "fulfilled"
+            ? caller.value.stdout.trim().split("\n").at(-1)
+            : String(caller.reason),
+        );
+        expect(outcomes).toEqual(Array(CALLERS).fill(`BINARY_PATH=${getBinaryPath()}`));
+      } finally {
+        mirror.close();
+      }
+      expect(inspectInstall()).toBe("complete");
+      expect(fs.readdirSync(cacheDir).filter((name) => !name.startsWith("."))).toEqual([
+        path.basename(getBinaryDir()),
+      ]);
+    },
+  );
 });

@@ -29,8 +29,12 @@ GEOIP_DB_URL = (
 )
 GEOIP_DB_FILENAME = "GeoLite2-City.mmdb"
 GEOIP_UPDATE_INTERVAL = 30 * 86_400  # 30 days
-DEFAULT_GEOIP_TIMEOUT_SECONDS = 5.0
+DEFAULT_GEOIP_TIMEOUT_SECONDS = 20.0
 GEOIP_TIMEOUT_ENV = "CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS"
+
+# Serializes GeoIP DB downloads within a process so N concurrent launches
+# don't each fetch the same ~70 MB file (issue #458). Per-process only.
+_GEOIP_DOWNLOAD_LOCK = threading.Lock()
 
 # Country ISO code → BCP 47 locale (covers ~90 % of proxy traffic)
 COUNTRY_LOCALE_MAP: dict[str, str] = {
@@ -70,14 +74,15 @@ COUNTRY_LOCALE_MAP: dict[str, str] = {
     "CM": "fr-CM", "AO": "pt-AO", "MZ": "pt-MZ", "ZM": "en-ZM", "ZW": "en-ZW",
     "HN": "es-HN", "NI": "es-NI", "SV": "es-SV", "PA": "es-PA", "JM": "en-JM",
     "TT": "en-TT", "PR": "es-PR",
+    "SC": "en-SC",
 }
 
 
 def resolve_proxy_geo(proxy_url: str | None) -> tuple[str | None, str | None]:
     """Resolve timezone and locale from a proxy's IP address.
 
-    Returns ``(timezone, locale)`` — either or both may be ``None`` on
-    failure (missing dep, DB download error, lookup miss).  Never raises.
+    Returns ``(timezone, locale)``. Raises when the exit IP, database, or
+    database lookup cannot be resolved.
 
     When *proxy_url* is falsy, the machine's own public IP is used instead
     (direct HTTP to the echo services, no proxy).
@@ -102,7 +107,7 @@ def resolve_proxy_geo_with_ip(
     except ImportError:
         raise ImportError(
             "geoip2 is required for geoip=True. Install it with:\n"
-            "  pip install cloakbrowser[geoip]"
+            "  pip install 'cloakbrowser[geoip]'"
         ) from None
 
     # Ensure the DB first — the download must NOT be bounded by the resolution
@@ -123,12 +128,11 @@ def resolve_proxy_geo_with_ip(
         ip = _resolve_proxy_ip(proxy_url)
     if ip is None or _deadline_expired(deadline):
         if deadline is not None and _deadline_expired(deadline):
-            logger.warning("GeoIP resolution timed out after %.1fs; continuing without GeoIP", timeout)
-        return None, None, None
+            raise RuntimeError(f"GeoIP resolution timed out after {timeout:.1f}s")
+        raise RuntimeError("GeoIP resolution failed: could not discover the egress IP")
 
-    # DB only drives tz/locale; a missing/failed DB still returns the exit IP.
     if db_path is None:
-        return None, None, ip
+        raise RuntimeError("GeoIP resolution failed: GeoIP database is unavailable")
 
     try:
         with geoip2.database.Reader(str(db_path)) as reader:
@@ -136,14 +140,17 @@ def resolve_proxy_geo_with_ip(
             timezone = resp.location.time_zone
             country = resp.country.iso_code
             locale = COUNTRY_LOCALE_MAP.get(country) if country else None
+            if locale is None:
+                # Map gap, not a lookup failure — don't abort the launch over it
+                logger.warning("GeoIP: no locale for country %s (IP %s), using en-US", country, ip)
+                locale = "en-US"
             logger.debug(
                 "GeoIP: %s → tz=%s, country=%s, locale=%s",
                 ip, timezone, country, locale,
             )
             return timezone, locale, ip
     except Exception as exc:
-        logger.warning("GeoIP lookup failed for %s: %s", ip, exc)
-        return None, None, ip
+        raise RuntimeError(f"GeoIP lookup failed for {ip}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +250,7 @@ def resolve_proxy_exit_ip(proxy_url: str | None) -> str | None:
     deadline = _deadline_from_timeout(timeout)
     ip = _resolve_exit_ip(proxy_url, timeout=timeout)
     if ip is None and _deadline_expired(deadline):
-        logger.warning("GeoIP resolution timed out after %.1fs; continuing without GeoIP", timeout)
+        logger.warning("Proxy exit-IP resolution timed out after %.1fs", timeout)
     return ip
 
 
@@ -272,7 +279,7 @@ def _resolve_exit_ip(proxy_url: str | None, timeout: float | None = None) -> str
             return ip
         except httpx.UnsupportedProtocol:
             logger.warning(
-                "SOCKS5 proxy requires socksio: pip install cloakbrowser[geoip]"
+                "SOCKS5 proxy requires socksio: pip install 'cloakbrowser[geoip]'"
             )
             return None
         except Exception:
@@ -300,12 +307,17 @@ def _ensure_geoip_db() -> Path | None:
         _maybe_trigger_update(db_path)
         return db_path
 
-    try:
-        _download_geoip_db(db_path)
-        return db_path
-    except Exception as exc:
-        logger.warning("Failed to download GeoIP database: %s", exc)
-        return None
+    # Serialize concurrent first-use downloads: only one launch fetches the
+    # shared file, the rest wait and reuse it.
+    with _GEOIP_DOWNLOAD_LOCK:
+        if db_path.exists():  # another launch finished while we waited
+            return db_path
+        try:
+            _download_geoip_db(db_path)
+            return db_path
+        except Exception as exc:
+            logger.warning("Failed to download GeoIP database: %s", exc)
+            return None
 
 
 def _download_geoip_db(dest: Path) -> None:
@@ -335,7 +347,7 @@ def _download_geoip_db(dest: Path) -> None:
                             last_pct = pct
                             logger.info("GeoIP download: %d %%", pct)
 
-        tmp_path.rename(dest)
+        os.replace(tmp_path, dest)  # atomic overwrite (Windows-safe, unlike rename)
         logger.info("GeoIP database ready: %s", dest)
     except Exception:
         tmp_path.unlink(missing_ok=True)
@@ -352,9 +364,14 @@ def _maybe_trigger_update(db_path: Path) -> None:
         return
 
     def _bg() -> None:
+        # Skip if a download (initial or refresh) is already running.
+        if not _GEOIP_DOWNLOAD_LOCK.acquire(blocking=False):
+            return
         try:
             _download_geoip_db(db_path)
         except Exception:
             logger.debug("Background GeoIP update failed", exc_info=True)
+        finally:
+            _GEOIP_DOWNLOAD_LOCK.release()
 
     threading.Thread(target=_bg, daemon=True).start()

@@ -7,10 +7,6 @@ namespace CloakBrowser;
 /// </summary>
 internal static class ProxyResolver
 {
-    private const string HttpProxyInlineAuthMinVersion = "146.0.7680.177.5";
-    private static readonly IReadOnlySet<string> HttpProxyInlineAuthPlatforms =
-        new HashSet<string> { "linux-x64", "windows-x64" };
-
     /// <summary>Result of resolving a proxy: Playwright proxy (or null) plus extra Chrome args.</summary>
     public sealed record ProxyResolution(Microsoft.Playwright.Proxy? PlaywrightProxy, List<string> ExtraArgs);
 
@@ -267,28 +263,6 @@ internal static class ProxyResolver
         return result;
     }
 
-    private static bool SupportsHttpProxyInlineAuth(string? version = null)
-    {
-        string tag = Config.GetPlatformTag();
-        if (!HttpProxyInlineAuthPlatforms.Contains(tag))
-            return false;
-        return Compare(version ?? Config.GetChromiumVersion(), HttpProxyInlineAuthMinVersion) >= 0;
-    }
-
-    private static int Compare(string a, string b)
-    {
-        var ta = Config.VersionTuple(a);
-        var tb = Config.VersionTuple(b);
-        int n = Math.Max(ta.Length, tb.Length);
-        for (int i = 0; i < n; i++)
-        {
-            int va = i < ta.Length ? ta[i] : 0;
-            int vb = i < tb.Length ? tb[i] : 0;
-            if (va != vb) return va.CompareTo(vb);
-        }
-        return 0;
-    }
-
     /// <summary>Extract a normalized proxy URL string from a string or dict proxy (for geoip / webrtc).</summary>
     public static string? ExtractProxyUrl(object? proxy)
     {
@@ -298,7 +272,9 @@ internal static class ProxyResolver
                 return null;
             case ProxySettings ps:
                 if (string.IsNullOrEmpty(ps.Server)) return null;
-                return IsSocksProxy(ps) ? ReconstructSocksUrl(ps) : EnsureProxyScheme(ps.Server);
+                return IsSocksProxy(ps)
+                    ? ReconstructSocksUrl(ps)
+                    : EnsureProxyScheme(ReconstructHttpUrl(ps));
             case string s:
                 return EnsureProxyScheme(s);
             default:
@@ -307,7 +283,9 @@ internal static class ProxyResolver
     }
 
     /// <summary>Resolve a proxy into Playwright options + extra Chrome args (one or both empty).</summary>
-    public static ProxyResolution Resolve(object? proxy, string? browserVersion = null)
+    public static ProxyResolution Resolve(
+        object? proxy, string? browserVersion = null, string? licenseKey = null,
+        string? releaseChannel = null)
     {
         if (proxy == null)
             return new ProxyResolution(null, new List<string>());
@@ -333,15 +311,17 @@ internal static class ProxyResolver
             return new ProxyResolution(null, new List<string> { $"--proxy-server={NormalizeSocksStringUrl(sUrl)}" });
         }
 
-        // HTTP/HTTPS with credentials on supported platforms: inline creds via --proxy-server.
+        // HTTP/HTTPS with credentials, only on binaries that ship inline proxy auth:
+        // inline creds via --proxy-server. Older binaries (free macOS/linux-arm64)
+        // can't parse inline credentials, so they fall through to Playwright's proxy.
         bool hasCreds = proxy switch
         {
             ProxySettings ps => HasCredentials(ps),
             string s => HasCredentials(s),
             _ => false,
         };
-        var requestedVersion = Config.NormalizeRequestedVersion(browserVersion);
-        if (hasCreds && SupportsHttpProxyInlineAuth(requestedVersion))
+        if (hasCreds && Config.BinarySupportsHttpProxyInlineAuth(
+            licenseKey, browserVersion, releaseChannel))
         {
             if (proxy is ProxySettings psd)
             {

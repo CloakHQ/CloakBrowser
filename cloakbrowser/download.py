@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -42,6 +43,7 @@ from .config import (
     get_fallback_download_url,
     get_local_binary_override,
     get_platform_tag,
+    normalize_release_channel,
     normalize_requested_version,
 )
 
@@ -65,14 +67,24 @@ DOWNLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
 # Auto-update check interval (1 hour)
 UPDATE_CHECK_INTERVAL = 3600
 
-# Free-tier welcome banner re-show interval (3 days). Free users see the Pro
-# upsell again after this gap; Pro users see it only once (see _show_welcome).
-WELCOME_FREE_INTERVAL = 3 * 24 * 3600
+# Free-tier welcome banner re-show interval (1 day). Free users see the
+# "get the latest free" invite again after this gap; Pro users see it only once
+# (see _show_welcome).
+WELCOME_FREE_INTERVAL = 24 * 3600
 
 # Pro Chromium major shown in the free-tier welcome banner. Bump at each Pro
 # major release (there is no local constant to derive it from — the live Pro
 # version comes from the network, which we don't call just to print a banner).
-PRO_MAJOR = "148"
+PRO_MAJOR = "155"
+
+# Attempts to rename an extraction into place while concurrent callers are
+# replacing the same partial install (see _extract_archive).
+INSTALL_RENAME_ATTEMPTS = 5
+
+# Retries for a directory rename that Windows transiently denies (see
+# _rename_dir_with_retry): about 2.5 seconds in total.
+TRANSIENT_RENAME_ATTEMPTS = 10
+TRANSIENT_RENAME_DELAY = 0.25
 
 
 def _welcome_due(marker: Path, pro: bool) -> bool:
@@ -93,34 +105,85 @@ def _welcome_due(marker: Path, pro: bool) -> bool:
     return (time.time() - last) >= WELCOME_FREE_INTERVAL
 
 
-def _show_welcome(pro: bool = False) -> None:
-    """Show welcome message on launch. A marker file gates the cadence:
-    Pro shows once ever; free re-shows every WELCOME_FREE_INTERVAL.
+_preview_fallback_warned = False
 
-    The Pro-upsell line is shown to free-tier users only; Pro users get a plain
-    banner (no "running free tier" message, which would be false for them).
+
+def _warn_preview_fallback() -> None:
+    """Tell the user, once per process, that a requested Preview build does not
+    exist for this platform and the Stable build is being used instead."""
+    global _preview_fallback_warned
+    if _preview_fallback_warned:
+        return
+    _preview_fallback_warned = True
+    # Write straight to stderr (like the welcome banner) so an app's logging
+    # config can't silence it.
+    sys.stderr.write(
+        "[cloakbrowser] Preview channel requested, but no preview build is "
+        f"available for {get_platform_tag()}; using the stable build.\n"
+    )
+
+
+def _emit(text: str) -> None:
+    """Write a cosmetic line to stderr, swallowing any error.
+
+    On a legacy Windows console sys.stderr is cp1252/strict; an unencodable
+    glyph raises UnicodeEncodeError. Because the welcome banner runs on the
+    binary-download path, that would abort the whole launch.
+    A banner is decoration - never let it propagate.
+    """
+    try:
+        sys.stderr.write(text)
+    except Exception:
+        pass
+
+
+def _show_welcome(tier: str = "keyless") -> None:
+    """Show welcome message on launch. A marker file gates the cadence: a paid
+    (Pro) key shows once ever; free (keyless or a free GitHub key) re-shows every
+    WELCOME_FREE_INTERVAL.
+
+    tier:
+      "pro"     — a paid license key (Pro banner + support address)
+      "free"    — a free GitHub key (latest binary, one concurrent session)
+      "keyless" — no key, running the older free binary (invite the free login)
     """
     marker = get_cache_dir() / ".welcome_shown"
-    if not _welcome_due(marker, pro):
+    if not _welcome_due(marker, pro=(tier == "pro")):
         return
-    sys.stderr.write("\n")
-    sys.stderr.write("  CloakBrowser — stealth Chromium for automation\n")
-    sys.stderr.write("  https://github.com/CloakHQ/CloakBrowser\n")
-    sys.stderr.write("\n")
-    if pro:
-        sys.stderr.write(
-            f"  CloakBrowser Pro active (v{PRO_MAJOR}) — latest binary, newest patches.\n"
+    # ASCII-only banner + a swallow-everything writer: on a legacy Windows
+    # console sys.stderr is cp1252/strict, so a non-ASCII glyph (or any IO
+    # error) here would raise and abort the whole binary-download path. A
+    # cosmetic banner must never be able to kill a launch.
+    _emit("\n")
+    _emit("  CloakBrowser - stealth Chromium for automation\n")
+    _emit("  https://github.com/CloakHQ/CloakBrowser\n")
+    _emit("\n")
+    if tier == "pro":
+        _emit(
+            f"  CloakBrowser Pro active (v{PRO_MAJOR}) - latest binary, newest patches.\n"
         )
-        sys.stderr.write("  Pro support → support@cloakbrowser.dev\n")
+        _emit("  Pro support -> support@cloakbrowser.dev\n")
+    elif tier == "free":
+        _emit(
+            f"  CloakBrowser free (v{PRO_MAJOR}): the latest binary, 1 concurrent session.\n"
+        )
+        _emit(
+            "  For more than one concurrent session -> https://cloakbrowser.dev\n"
+        )
     else:
         free_major = CHROMIUM_VERSION.split(".")[0]
-        sys.stderr.write(
-            f"  Running free tier (v{free_major}). "
-            f"Pro = latest binary (v{PRO_MAJOR}) + newest anti-bot patches.\n"
+        _emit(
+            f"  Running the free binary (v{free_major}). "
+            f"The latest binary (v{PRO_MAJOR}) is free too, with 1 concurrent session.\n"
         )
-        sys.stderr.write("  Try Pro free for 7 days → https://cloakbrowser.dev\n")
-    sys.stderr.write("  Star us if CloakBrowser helps your project!\n")
-    sys.stderr.write("\n")
+        _emit(
+            "  Get your key: run  cloakbrowser login  or visit https://cloakbrowser.dev/free\n"
+        )
+        _emit(
+            "  For more than one concurrent session -> https://cloakbrowser.dev\n"
+        )
+    _emit("  Star us if CloakBrowser helps your project!\n")
+    _emit("\n")
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(str(int(time.time())))
@@ -131,6 +194,7 @@ def _show_welcome(pro: bool = False) -> None:
 def ensure_binary(
     license_key: str | None = None,
     browser_version: str | None = None,
+    release_channel: str | None = None,
 ) -> str:
     """Ensure the stealth Chromium binary is available. Download if needed.
 
@@ -139,6 +203,7 @@ def ensure_binary(
     Args:
         license_key: Pro license key. Also reads from CLOAKBROWSER_LICENSE_KEY env var.
         browser_version: Exact Chromium version pin. Also reads from CLOAKBROWSER_VERSION.
+        release_channel: Stable (default) or Preview binary channel.
 
     Set CLOAKBROWSER_BINARY_PATH to skip download and use a local build.
     """
@@ -156,7 +221,11 @@ def ensure_binary(
     requested_version = normalize_requested_version(browser_version)
 
     # Pro license key check (custom download URL overrides Pro path)
-    from .license import resolve_license_key, validate_license
+    from .license import (
+        CloakBrowserLicenseError,
+        resolve_license_key,
+        validate_license,
+    )
 
     key = resolve_license_key(license_key)
     if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
@@ -165,12 +234,23 @@ def ensure_binary(
     if key:
         info = validate_license(key)
         if info and info.valid:
+            # Free tier always gets the latest build. Drop any version pin: the
+            # server force-serves latest to free keys, so fetching a pinned
+            # version's signed manifest would mismatch the served bytes and fail
+            # checksum verification. Paid keys keep pinning/rollback.
+            if info.plan == "free":
+                requested_version = None
             # A valid license is entitled to Pro, so Pro failures surface loudly
             # rather than silently substituting the older free binary. (A blip
             # during a routine update never reaches here: _ensure_pro_binary
             # returns the cached Pro binary and updates in the background.)
             try:
-                return _ensure_pro_binary(key, requested_version=requested_version)
+                return _ensure_pro_binary(
+                    key,
+                    requested_version=requested_version,
+                    plan=info.plan,
+                    release_channel=release_channel,
+                )
             except BinaryVerificationError:
                 # Authenticity could not be confirmed — surface verbatim.
                 raise
@@ -184,11 +264,19 @@ def ensure_binary(
                     f"CLOAKBROWSER_LICENSE_KEY."
                 ) from e
         elif info:
-            logger.warning(
-                "License validation failed (plan=%s), using free tier", info.plan
+            # Key supplied but rejected — abort, never downgrade to free.
+            raise CloakBrowserLicenseError(
+                f"CloakBrowser Pro: license key is invalid or expired "
+                f"(plan={info.plan}). Check CLOAKBROWSER_LICENSE_KEY, or unset it "
+                f"to use the free binary."
             )
         else:
-            logger.warning("License validation unavailable, using free tier")
+            # Key supplied but unvalidatable (server down, no cache) — abort.
+            raise CloakBrowserLicenseError(
+                "CloakBrowser Pro: license could not be validated (server "
+                "unreachable and no cached validation). Retry in a moment, or "
+                "unset CLOAKBROWSER_LICENSE_KEY to use the free binary."
+            )
 
     # Fail fast if no binary available for this platform
     check_platform_available()
@@ -315,14 +403,20 @@ def _pro_binary_ready(version: str | None) -> bool:
 def _ensure_pro_binary(
     license_key: str,
     requested_version: str | None = None,
+    plan: str | None = None,
+    release_channel: str | None = None,
 ) -> str:
-    """Ensure the Pro binary is downloaded and cached. Returns the binary path.
+    """Ensure the latest (keyed) binary is downloaded and cached. Returns its path.
 
-    A valid Pro license NEVER falls back to the free binary. If the latest Pro
-    build cannot be resolved or downloaded and no cached Pro binary exists, the
-    error is raised rather than silently launching the free tier.
+    Used for both free-tier GitHub keys (plan="free") and paid keys — both fetch
+    the same latest build; the server enforces the concurrency cap. A valid key
+    NEVER falls back to the older free binary: if the latest build cannot be
+    resolved or downloaded and none is cached, the error is raised.
     """
-    from .license import get_pro_latest_version
+    from .license import get_pro_latest_release, get_pro_latest_version
+
+    # Banner tier: a free GitHub key gets the free banner, paid keys the Pro one.
+    welcome_tier = "free" if plan == "free" else "pro"
 
     # --- Pinned: launch the exact requested version, no server cross-check, no
     # marker write (a rollback pin must not stick future unpinned launches). ---
@@ -334,7 +428,7 @@ def _ensure_pro_binary(
                 binary_path,
                 requested_version,
             )
-            _show_welcome(pro=True)
+            _show_welcome(welcome_tier)
             return str(binary_path)
         logger.info(
             "Downloading Pro Chromium %s for %s...", requested_version, get_platform_tag()
@@ -345,11 +439,11 @@ def _ensure_pro_binary(
             raise RuntimeError(
                 f"Pro download completed but binary not found at: {binary_path}"
             )
-        _show_welcome(pro=True)
+        _show_welcome(welcome_tier)
         return str(binary_path)
 
-    # --- Unpinned: track the server's latest stable. ---
-    effective = get_effective_version(pro=True)
+    # --- Unpinned: track the server's latest selected channel. ---
+    effective = get_effective_version(pro=True, release_channel=release_channel)
 
     # Honor CLOAKBROWSER_AUTO_UPDATE=false the way the free path does: if the user
     # froze updates AND a Pro build is already cached, keep it and skip the server
@@ -358,18 +452,28 @@ def _ensure_pro_binary(
     frozen = os.environ.get("CLOAKBROWSER_AUTO_UPDATE", "").lower() == "false"
     if frozen and _pro_binary_ready(effective):
         logger.debug("Pro auto-update disabled; using cached %s", effective)
-        _show_welcome(pro=True)
+        _show_welcome(welcome_tier)
         return str(get_binary_path(effective, pro=True))
 
     # get_pro_latest_version() is rate-limited to one network call per hour and
     # returns a cached string in between, so this foreground check stays cheap on
-    # steady-state launches while still landing new stable after a version gap.
-    latest = get_pro_latest_version()
+    # steady-state launches while still landing the selected release after a version gap.
+    latest = get_pro_latest_version(release_channel)
+
+    # Tell the user when they asked for Preview but the server has no preview
+    # build for this platform, so the Stable build is used instead. The lookup is
+    # a cache hit (get_pro_latest_version above already populated it), so this
+    # only touches the network on the once-an-hour refresh.
+    if normalize_release_channel(release_channel) == "preview":
+        release = get_pro_latest_release(release_channel)
+        if release is not None and release.fallback:
+            _warn_preview_fallback()
 
     # Prefer the server's latest when it is newer than — or replaces a missing —
     # the cached build. Otherwise stay on the cached Pro binary (fast, offline-ok).
     if latest and (
-        not _pro_binary_ready(effective)  # also covers effective is None
+        effective is None
+        or not _pro_binary_ready(effective)
         or _version_newer(latest, effective)
     ):
         version: str | None = latest
@@ -388,11 +492,11 @@ def _ensure_pro_binary(
         # launch — never a stale marker.
         if version != effective:
             try:
-                _write_pro_version_marker(version)
+                _write_pro_version_marker(version, release_channel)
             except OSError:
                 pass
         logger.debug("Pro binary found in cache: %s (version %s)", binary_path, version)
-        _show_welcome(pro=True)
+        _show_welcome(welcome_tier)
         return str(binary_path)
 
     # `version` (the server latest) needs downloading. On failure, fall back to a
@@ -413,7 +517,7 @@ def _ensure_pro_binary(
                 version,
                 effective,
             )
-            _show_welcome(pro=True)
+            _show_welcome(welcome_tier)
             return str(get_binary_path(effective, pro=True))
         raise
 
@@ -425,11 +529,11 @@ def _ensure_pro_binary(
 
     # Advance the marker so future unpinned launches use this build.
     try:
-        _write_pro_version_marker(version)
+        _write_pro_version_marker(version, release_channel)
     except OSError:
         pass
 
-    _show_welcome(pro=True)
+    _show_welcome(welcome_tier)
     return str(binary_path)
 
 
@@ -736,9 +840,13 @@ def _parse_checksums(text: str) -> dict[str, str]:
 def _verify_checksum(file_path: Path, expected_hash: str) -> None:
     """Verify SHA-256 of a file. Raises RuntimeError on mismatch."""
     sha256 = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha256.update(chunk)
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256.update(chunk)
+    except OSError:
+        logger.error("Failed to read downloaded file for checksum: %s", file_path)
+        raise
     actual = sha256.hexdigest().lower()
     if actual != expected_hash:
         raise RuntimeError(
@@ -764,26 +872,33 @@ def _download_file(url: str, dest: Path, headers: dict[str, str] | None = None) 
     ) as response:
         response.raise_for_status()
 
-        total = int(response.headers.get("content-length", 0))
+        try:
+            total = int(response.headers.get("content-length", 0))
+        except (TypeError, ValueError):
+            total = 0
         downloaded = 0
         last_logged_pct = -1
 
-        with open(dest, "wb") as f:
-            for chunk in response.iter_bytes(chunk_size=8192):
-                f.write(chunk)
-                downloaded += len(chunk)
+        try:
+            with open(dest, "wb") as f:
+                for chunk in response.iter_bytes(chunk_size=8192):
+                    f.write(chunk)
+                    downloaded += len(chunk)
 
-                if total > 0:
-                    pct = int(downloaded / total * 100)
-                    # Log every 10%
-                    if pct >= last_logged_pct + 10:
-                        last_logged_pct = pct
-                        logger.info(
-                            "Download progress: %d%% (%d/%d MB)",
-                            pct,
-                            downloaded // (1024 * 1024),
-                            total // (1024 * 1024),
-                        )
+                    if total > 0:
+                        pct = downloaded * 100 // total
+                        # Log every 10%
+                        if pct >= last_logged_pct + 10:
+                            last_logged_pct = pct
+                            logger.info(
+                                "Download progress: %d%% (%d/%d MB)",
+                                pct,
+                                downloaded // (1024 * 1024),
+                                total // (1024 * 1024),
+                            )
+        except OSError:
+            logger.error("Failed to write downloaded file: %s", dest)
+            raise
 
     logger.info("Download complete: %d MB", dest.stat().st_size // (1024 * 1024))
 
@@ -793,71 +908,97 @@ def _extract_archive(
 ) -> None:
     """Extract tar.gz or zip archive to destination directory."""
     logger.info("Extracting to %s", dest_dir)
-
-    # Clean existing dir if partial download existed
-    if dest_dir.exists():
-        shutil.rmtree(dest_dir)
-
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    if str(archive_path).endswith(".zip"):
-        _extract_zip(archive_path, dest_dir)
-    else:
-        _extract_tar(archive_path, dest_dir)
-
-    # If extracted into a single subdirectory, flatten it
-    # (e.g. fingerprint-chromium-142-custom-v2/chrome → chrome)
-    # But never flatten .app bundles — macOS needs the bundle structure intact
-    _flatten_single_subdir(dest_dir)
-
-    # Make binary executable
     bp = binary_path or get_binary_path()
-    if bp.exists():
-        _make_executable(bp)
 
-    # macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
-    if platform.system() == "Darwin":
-        _remove_quarantine(dest_dir)
+    # Extract into a private sibling dir, then rename it into place. Concurrent
+    # first runs (in this process or others) each get their own staging dir, so
+    # none of them can see or delete another's half-written install.
+    staging_dir = dest_dir.with_name(f"{dest_dir.name}.partial-{uuid.uuid4().hex}")
+    staging_dir.mkdir()
+    stale_dirs: list[Path] = []
+    try:
+        if str(archive_path).endswith(".zip"):
+            _extract_zip(archive_path, staging_dir)
+        else:
+            _extract_tar(archive_path, staging_dir)
+
+        # If extracted into a single subdirectory, flatten it
+        # (e.g. fingerprint-chromium-142-custom-v2/chrome → chrome)
+        # But never flatten .app bundles: macOS needs the bundle structure intact
+        _flatten_single_subdir(staging_dir)
+
+        # Make binary executable
+        staged_binary_path = staging_dir / bp.relative_to(dest_dir)
+        if staged_binary_path.exists():
+            _make_executable(staged_binary_path)
+
+        # macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
+        if platform.system() == "Darwin":
+            _remove_quarantine(staging_dir)
+
+        for attempt in range(1, INSTALL_RENAME_ATTEMPTS + 1):
+            try:
+                _rename_dir_with_retry(staging_dir, dest_dir)
+                break
+            except OSError:
+                # dest_dir is in the way. Keep it if another caller finished a complete
+                # install; replace it if it is an incomplete leftover, such as an
+                # interrupted in-place extraction from an older release.
+                if bp.exists() and _is_executable(bp):
+                    break
+                if attempt == INSTALL_RENAME_ATTEMPTS:
+                    raise
+            # Rename the leftover aside before deleting it. Deleting it in place races
+            # other callers renaming their extraction into dest_dir.
+            stale_dir = dest_dir.with_name(f"{dest_dir.name}.stale-{uuid.uuid4().hex}")
+            try:
+                _rename_dir_with_retry(dest_dir, stale_dir)
+            except FileNotFoundError:
+                continue  # another caller moved it aside first
+            stale_dirs.append(stale_dir)
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        for stale_dir in stale_dirs:
+            shutil.rmtree(stale_dir, ignore_errors=True)
 
     if bp.exists():
         logger.info("Binary ready: %s", bp)
 
 
-def _extract_tar(archive_path: Path, dest_dir: Path) -> None:
-    """Extract tar.gz archive with path traversal protection."""
-    with tarfile.open(archive_path, "r:gz") as tar:
-        safe_members = []
-        for member in tar.getmembers():
-            # Allow symlinks — macOS .app bundles require them (Framework layout)
-            if member.issym() or member.islnk():
-                link_target = member.linkname
-                if os.path.isabs(link_target) or ".." in link_target.split("/"):
-                    logger.warning(
-                        "Skipping suspicious symlink: %s -> %s",
-                        member.name,
-                        link_target,
-                    )
-                    continue
-            else:
-                member_path = (dest_dir / member.name).resolve()
-                if not str(member_path).startswith(str(dest_dir.resolve())):
-                    raise RuntimeError(
-                        f"Archive contains path traversal: {member.name}"
-                    )
-            safe_members.append(member)
+def _rename_dir_with_retry(source: Path, destination: Path) -> None:
+    """Rename a directory, retrying while Windows reports it as in use."""
+    for attempt in range(1, TRANSIENT_RENAME_ATTEMPTS + 1):
+        try:
+            source.rename(destination)
+            return
+        except PermissionError:
+            # Windows antivirus briefly holds freshly written files open, which fails the
+            # rename with access denied. An existing destination is not transient.
+            if (
+                platform.system() != "Windows"
+                or attempt == TRANSIENT_RENAME_ATTEMPTS
+                or destination.exists()
+            ):
+                raise
+            time.sleep(TRANSIENT_RENAME_DELAY)
 
-        tar.extractall(dest_dir, members=safe_members)
+
+def _extract_tar(archive_path: Path, dest_dir: Path) -> None:
+    """Extract tar.gz. Archive is signature-verified before extraction, so unpack
+    as-is. filter="fully_trusted" pins legacy behavior (3.14 defaults to "data",
+    which mangles macOS .app symlinks/perms); fallback covers Python < 3.12."""
+    with tarfile.open(archive_path, "r:gz") as tar:
+        try:
+            tar.extractall(dest_dir, filter="fully_trusted")
+        except TypeError:
+            tar.extractall(dest_dir)
 
 
 def _extract_zip(archive_path: Path, dest_dir: Path) -> None:
-    """Extract zip archive with path traversal protection."""
+    """Extract zip. Signature-verified before extraction, so unpack as-is."""
     import zipfile
 
     with zipfile.ZipFile(archive_path, "r") as zf:
-        for info in zf.infolist():
-            member_path = (dest_dir / info.filename).resolve()
-            if not str(member_path).startswith(str(dest_dir.resolve())):
-                raise RuntimeError(f"Archive contains path traversal: {info.filename}")
         zf.extractall(dest_dir)
 
 
@@ -875,14 +1016,22 @@ def _flatten_single_subdir(dest_dir: Path) -> None:
             logger.debug("Keeping .app bundle intact: %s", subdir.name)
             return
         logger.debug("Flattening single subdirectory: %s", subdir.name)
-        for item in subdir.iterdir():
-            shutil.move(str(item), str(dest_dir / item.name))
-        subdir.rmdir()
+        try:
+            for item in subdir.iterdir():
+                shutil.move(str(item), str(dest_dir / item.name))
+            subdir.rmdir()
+        except OSError:
+            logger.error("Failed to flatten extracted directory: %s", subdir)
+            raise
 
 
 def _is_executable(path: Path) -> bool:
     """Check if a file is executable."""
-    return os.access(path, os.X_OK)
+    try:
+        return os.access(path, os.X_OK)
+    except OSError:
+        logger.error("Failed to check executable permissions: %s", path)
+        return False
 
 
 def _make_executable(path: Path) -> None:
@@ -912,11 +1061,18 @@ def clear_cache() -> None:
 
     cache_dir = get_cache_dir()
     if cache_dir.exists():
-        shutil.rmtree(cache_dir)
+        try:
+            shutil.rmtree(cache_dir)
+        except OSError:
+            logger.error("Failed to clear cache: %s", cache_dir)
+            raise
         logger.info("Cache cleared: %s", cache_dir)
 
 
-def binary_info(browser_version: str | None = None) -> dict:
+def binary_info(
+    browser_version: str | None = None,
+    release_channel: str | None = None,
+) -> dict:
     """Return info about the current binary installation.
 
     tier reflects what is actually installed on disk, not merely whether a
@@ -930,7 +1086,9 @@ def binary_info(browser_version: str | None = None) -> dict:
     requested = normalize_requested_version(browser_version)
     # Prefer Pro only if a Pro binary actually exists on disk. get_effective_version
     # returns None for Pro when nothing is cached (it never falls back to free).
-    pro_version = requested or get_effective_version(pro=True)
+    pro_version = requested or get_effective_version(
+        pro=True, release_channel=release_channel
+    )
     pro = _pro_binary_ready(pro_version)  # already false for a None version
 
     if pro:
@@ -939,11 +1097,12 @@ def binary_info(browser_version: str | None = None) -> dict:
     else:
         effective = requested or get_effective_version()
         binary_path = get_binary_path(effective)
-    download_url = (
-        f"{DOWNLOAD_BASE_URL}/api/download/latest"
-        if pro
-        else get_download_url(effective)
-    )
+    if pro:
+        download_url = f"{DOWNLOAD_BASE_URL}/api/download/latest"
+        if normalize_release_channel(release_channel) == "preview":
+            download_url += "?channel=preview"
+    else:
+        download_url = get_download_url(effective)
     return {
         "version": effective,
         "tier": "pro" if pro else "free",
@@ -985,8 +1144,10 @@ def check_for_update() -> str | None:
     return latest
 
 
-def check_for_pro_update(license_key: str) -> str | None:
-    """Move a Pro install to the server's latest stable. Blocks until complete.
+def check_for_pro_update(
+    license_key: str, release_channel: str | None = None
+) -> str | None:
+    """Move a Pro install to the selected channel's latest. Blocks until complete.
 
     Returns the new version when a newer Pro build is downloaded or an
     already-cached newer build is activated, else None (already up to date or the
@@ -994,11 +1155,11 @@ def check_for_pro_update(license_key: str) -> str | None:
     """
     from .license import get_pro_latest_version
 
-    latest = get_pro_latest_version()
+    latest = get_pro_latest_version(release_channel)
     if not latest:
         return None
 
-    effective = get_effective_version(pro=True)
+    effective = get_effective_version(pro=True, release_channel=release_channel)
     if effective and not _version_newer(latest, effective) and _pro_binary_ready(
         effective
     ):
@@ -1014,7 +1175,7 @@ def check_for_pro_update(license_key: str) -> str | None:
                 f"Pro download completed but binary not found at: {binary_path}"
             )
 
-    _write_pro_version_marker(latest)
+    _write_pro_version_marker(latest, release_channel)
     return latest
 
 
@@ -1071,11 +1232,19 @@ def _write_version_marker(version: str) -> None:
     tmp.rename(marker)
 
 
-def _write_pro_version_marker(version: str) -> None:
-    """Atomically write the latest Pro version marker for this platform."""
+def _write_pro_version_marker(
+    version: str, release_channel: str | None = None
+) -> None:
+    """Atomically write the selected channel's Pro version marker."""
     cache_dir = get_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    marker = cache_dir / f"latest_pro_version_{get_platform_tag()}"
+    channel = normalize_release_channel(release_channel)
+    marker_prefix = (
+        "latest_pro_version_preview"
+        if channel == "preview"
+        else "latest_pro_version"
+    )
+    marker = cache_dir / f"{marker_prefix}_{get_platform_tag()}"
     tmp = marker.with_suffix(".tmp")
     tmp.write_text(version)
     os.replace(str(tmp), str(marker))
@@ -1103,7 +1272,7 @@ def _check_wrapper_update() -> None:
         latest = resp.json()["info"]["version"]
         if _version_newer(latest, _wrapper_version):
             logger.warning(
-                "Update available: cloakbrowser %s → %s. "
+                "Update available: cloakbrowser %s -> %s. "
                 "Run: pip install --upgrade cloakbrowser",
                 _wrapper_version,
                 latest,

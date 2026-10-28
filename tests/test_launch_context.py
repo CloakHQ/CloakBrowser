@@ -1,6 +1,6 @@
 """Unit tests for launch_context() — context kwargs, viewport defaults, close cleanup."""
 
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -31,6 +31,19 @@ def test_default_viewport(mock_launch, _mock_bin):
 
     ctx_kwargs = browser.new_context.call_args
     assert ctx_kwargs[1]["viewport"] == DEFAULT_VIEWPORT
+
+
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch")
+def test_release_channel_forwarded(mock_launch, _mock_bin):
+    browser, _ = _make_mock_browser()
+    mock_launch.return_value = browser
+
+    from cloakbrowser.browser import launch_context
+
+    launch_context(release_channel="preview")
+
+    assert mock_launch.call_args.kwargs["release_channel"] == "preview"
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")

@@ -62,6 +62,137 @@ public static class Config
 
     private static readonly Random _rng = new();
 
+    public const int SeedMin = 10000;
+    public const int SeedMax = 99999;
+
+    /// <summary>
+    /// Per-profile seed file, shared with the Python and JS wrappers (decimal seed +
+    /// newline), so a profile keeps its seed whichever wrapper opens it.
+    /// </summary>
+    public const string ProfileSeedFile = ".cloakbrowser-seed";
+
+    internal static int RandomSeed()
+    {
+        lock (_rng) { return _rng.Next(SeedMin, SeedMax + 1); }
+    }
+
+    /// <summary>Stored seed, or null if the file is missing or corrupt (corrupt is removed).</summary>
+    private static int? ReadProfileSeed(string file)
+    {
+        byte[] data;
+        try
+        {
+            data = File.ReadAllBytes(file);
+            // Empty = a concurrent launch's exclusive create (no-hard-link fallback)
+            // hasn't written yet; give it ~1s before calling the file corrupt.
+            for (int i = 0; i < 20 && data.Length == 0; i++)
+            {
+                Thread.Sleep(50);
+                data = File.ReadAllBytes(file);
+            }
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null; // DirectoryNotFound: the profile dir doesn't exist yet
+        }
+        var text = System.Text.Encoding.Latin1.GetString(data).Trim();
+        if (text.Length > 0 && text.All(c => c is >= '0' and <= '9')
+            && int.TryParse(text, out var seed) && seed is >= SeedMin and <= SeedMax)
+            return seed;
+        // A corrupt file gets a fresh seed (= new identity), so say so loudly.
+        CloakLog.Warning("Corrupt fingerprint seed file {0} ({1}); generating a new seed",
+            file, text.Length > 32 ? text[..32] : text);
+        File.Delete(file); // no-op if a concurrent launch already removed it
+        return null;
+    }
+
+    [DllImport("libc", EntryPoint = "link", SetLastError = true)]
+    private static extern int PosixLink(string oldPath, string newPath);
+
+    private const int EEXIST = 17; // same value on Linux and macOS
+
+    /// <summary>
+    /// Atomically create <paramref name="file"/> from <paramref name="tmp"/>, keeping an
+    /// existing file. On Unix, File.Move(overwrite: false) checks then renames, so
+    /// concurrent callers can replace each other (seen on macOS); POSIX link() fails
+    /// atomically with EEXIST instead. Windows MoveFileEx without REPLACE_EXISTING is atomic.
+    /// </summary>
+    private static void PublishNoReplace(string tmp, string file, byte[] content)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            try { File.Move(tmp, file, overwrite: false); }
+            catch (IOException) when (File.Exists(file)) { }
+            return;
+        }
+        if (PosixLink(tmp, file) == 0)
+            return;
+        int errno = Marshal.GetLastPInvokeError();
+        if (errno == EEXIST)
+            return;
+        // No hard links (FAT/exFAT, some network mounts): exclusive create still
+        // never overwrites. ponytail: a concurrent reader can catch the file empty
+        // here and regenerate; link() avoids that window.
+        CloakLog.Debug("Hard link unsupported for {0} (errno {1}); using exclusive create", file, errno);
+        try { WriteSynced(file, content); }
+        catch (IOException) when (File.Exists(file)) { }
+    }
+
+    /// <summary>Create <paramref name="file"/> exclusively (throws if present), write, flush to disk.</summary>
+    private static void WriteSynced(string file, byte[] content)
+    {
+        using var fs = new FileStream(file, FileMode.CreateNew, FileAccess.Write);
+        fs.Write(content, 0, content.Length);
+        fs.Flush(flushToDisk: true);
+    }
+
+    /// <summary>
+    /// Prepend the persistent profile's stored <c>--fingerprint=&lt;seed&gt;</c> to
+    /// <paramref name="args"/>, creating it on first launch. It is a user arg, so it
+    /// overrides the random stealth default via BuildArgs dedup. An explicit
+    /// <c>--fingerprint</c> (including <c>=off</c>) or <c>stealthArgs: false</c>
+    /// leaves the file alone. Mirrors Python <c>config.persistent_seed_args</c>.
+    /// </summary>
+    internal static List<string>? PersistentSeedArgs(string userDataDir, bool stealthArgs, List<string>? args)
+    {
+        if (!stealthArgs || string.IsNullOrEmpty(userDataDir))
+            return args;
+        if (args != null && args.Any(a => a.Split('=', 2)[0] == "--fingerprint"))
+            return args;
+
+        var file = Path.Combine(userDataDir, ProfileSeedFile);
+        var seed = ReadProfileSeed(file);
+        if (seed == null)
+        {
+            Directory.CreateDirectory(userDataDir);
+            var tmp = Path.Combine(userDataDir, $"{ProfileSeedFile}.{Guid.NewGuid():N}.tmp");
+            try
+            {
+                var content = System.Text.Encoding.ASCII.GetBytes($"{RandomSeed()}\n");
+                WriteSynced(tmp, content);
+                // Publish without replacing: concurrent first launches all end up
+                // with whichever seed was published first.
+                PublishNoReplace(tmp, file, content);
+            }
+            finally
+            {
+                try
+                {
+                    File.Delete(tmp);
+                }
+                catch (Exception e)
+                {
+                    CloakLog.Warning("Failed to remove temp seed file {0}: {1}", tmp, e.Message);
+                }
+            }
+            seed = ReadProfileSeed(file)
+                ?? throw new IOException($"Could not create fingerprint seed file {file}");
+        }
+        var result = new List<string> { $"--fingerprint={seed}" };
+        if (args != null) result.AddRange(args);
+        return result;
+    }
+
     /// <summary>
     /// Build stealth args with a random fingerprint seed per launch.
     /// On macOS, skips platform/GPU spoofing - runs as a native Mac browser.
@@ -69,8 +200,7 @@ public static class Config
     /// </summary>
     public static List<string> GetDefaultStealthArgs()
     {
-        int seed;
-        lock (_rng) { seed = _rng.Next(10000, 100000); }
+        int seed = RandomSeed();
 
         var baseArgs = new List<string>
         {
@@ -115,6 +245,17 @@ public static class Config
     private static readonly Regex VersionPinRe = new(
         @"^[0-9]+(?:\.[0-9]+){3,4}$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>Return the requested release channel, defaulting to Stable.</summary>
+    public static string NormalizeReleaseChannel(string? releaseChannel = null)
+    {
+        var raw = releaseChannel
+            ?? Environment.GetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL")
+            ?? "stable";
+        return string.Equals(raw.Trim(), "preview", StringComparison.OrdinalIgnoreCase)
+            ? "preview"
+            : "stable";
+    }
 
     /// <summary>
     /// Return an explicit Chromium version pin from arg/env, or null.
@@ -248,14 +389,17 @@ public static class Config
     /// back to the free binary, so there is deliberately no free-version fallback for Pro —
     /// callers treat <c>null</c> as "resolve the latest Pro version from the server".
     /// </summary>
-    public static string? GetEffectiveVersion(bool pro = false)
+    public static string? GetEffectiveVersion(bool pro = false, string? releaseChannel = null)
     {
         var baseVersion = GetChromiumVersion();
         var cache = GetCacheDir();
 
         if (pro)
         {
-            var proMarker = Path.Combine(cache, $"latest_pro_version_{GetPlatformTag()}");
+            var markerPrefix = NormalizeReleaseChannel(releaseChannel) == "preview"
+                ? "latest_pro_version_preview"
+                : "latest_pro_version";
+            var proMarker = Path.Combine(cache, $"{markerPrefix}_{GetPlatformTag()}");
             if (File.Exists(proMarker))
             {
                 try
@@ -373,8 +517,10 @@ public static class Config
         $"{DownloadBaseUrl}/releases/pro/chromium-v{version}";
 
     /// <summary>Return the "latest Pro" display download URL (shown by binary_info for Pro installs).</summary>
-    public static string GetProLatestDownloadUrl() =>
-        $"{DownloadBaseUrl}/api/download/latest";
+    public static string GetProLatestDownloadUrl(string? releaseChannel = null) =>
+        NormalizeReleaseChannel(releaseChannel) == "preview"
+            ? $"{DownloadBaseUrl}/api/download/latest?channel=preview"
+            : $"{DownloadBaseUrl}/api/download/latest";
 
     // -----------------------------------------------------------------------
     // Local binary override (skip download, use your own build)
@@ -399,7 +545,8 @@ public static class Config
     /// ones keep the fixed default viewport. A local override binary
     /// (<c>CLOAKBROWSER_BINARY_PATH</c>) is unknown-version, so stay on the safe path.
     /// </summary>
-    public static bool BinarySupportsHeadlessNoViewport(string? licenseKey = null, string? browserVersion = null)
+    public static bool BinarySupportsHeadlessNoViewport(
+        string? licenseKey = null, string? browserVersion = null, string? releaseChannel = null)
     {
         if (HeadlessNoViewportMinVersion == null)
             return false;
@@ -427,7 +574,7 @@ public static class Config
         else
         {
             bool pro = !string.IsNullOrEmpty(License.ResolveLicenseKey(licenseKey));
-            version = GetEffectiveVersion(pro);
+            version = GetEffectiveVersion(pro, releaseChannel);
         }
         // No cached Pro build resolvable (GetEffectiveVersion returned null) → fail safe.
         if (version == null) return false;
@@ -450,6 +597,85 @@ public static class Config
     /// Shares <see cref="HeadlessNoViewportMinVersion"/>; own name so the two can
     /// diverge later. Python, JS and .NET mirror this gate.
     /// </summary>
-    public static bool BinarySupportsMaximizedWindow(string? licenseKey = null, string? browserVersion = null)
-        => BinarySupportsHeadlessNoViewport(licenseKey, browserVersion);
+    public static bool BinarySupportsMaximizedWindow(
+        string? licenseKey = null, string? browserVersion = null, string? releaseChannel = null)
+        => BinarySupportsHeadlessNoViewport(licenseKey, browserVersion, releaseChannel);
+
+    // First Chromium build, per platform, whose binary can take inline HTTP proxy
+    // credentials (Chromium-native --proxy-server=http://user:pass@host). Below the
+    // floor the wrapper MUST route credentialed HTTP/HTTPS proxies through
+    // Playwright's proxy object — an older binary treats the user:pass@ authority as
+    // an invalid proxy host and drops proxy auth (#182). A single global threshold
+    // can't model this: the capability landed in different build lineages at different
+    // points (linux-x64/windows-x64 at 146.0.7680.177.5, but the free macOS 145.x and
+    // linux-arm64 146.0.7680.177.3 floors predate it, qualifying only once they resolve
+    // to a Pro/newer 148+ build). Platforms absent from this map are never-inline.
+    public static readonly IReadOnlyDictionary<string, string> HttpProxyInlineAuthMinVersion =
+        new Dictionary<string, string>
+        {
+            ["linux-x64"] = "146.0.7680.177.5",
+            ["windows-x64"] = "146.0.7680.177.5",
+            ["linux-arm64"] = "148.0.7778.215.3",
+            ["darwin-arm64"] = "148.0.7778.215.3",
+            ["darwin-x64"] = "148.0.7778.215.3",
+        };
+
+    /// <summary>
+    /// Whether the resolved binary accepts inline HTTP proxy credentials. The
+    /// capability is a function of the binary version; <paramref name="licenseKey"/>
+    /// only resolves which version launches (Pro build vs free default), exactly like
+    /// <see cref="BinarySupportsHeadlessNoViewport"/>. A declared pin wins, else a valid
+    /// Pro license resolves to the Pro build (which ships the patch), else the free
+    /// per-platform default — then it compares to this platform's floor. Below the
+    /// floor, credentialed HTTP proxies fall back to Playwright's proxy object. A local
+    /// override with no declared version is unknown-version, so stay on the safe
+    /// fallback. Python, JS and .NET mirror this gate.
+    /// </summary>
+    public static bool BinarySupportsHttpProxyInlineAuth(
+        string? licenseKey = null, string? browserVersion = null, string? releaseChannel = null)
+    {
+        string tag;
+        try
+        {
+            tag = GetPlatformTag();
+        }
+        catch
+        {
+            return false;
+        }
+        if (!HttpProxyInlineAuthMinVersion.TryGetValue(tag, out var floor))
+            return false;
+        string? declared;
+        try
+        {
+            declared = NormalizeRequestedVersion(browserVersion);
+        }
+        catch
+        {
+            declared = null;
+        }
+        string? version;
+        if (!string.IsNullOrEmpty(declared))
+        {
+            version = declared!;
+        }
+        else if (GetLocalBinaryOverride() != null)
+        {
+            return false;
+        }
+        else
+        {
+            bool pro = !string.IsNullOrEmpty(License.ResolveLicenseKey(licenseKey));
+            version = GetEffectiveVersion(pro, releaseChannel);
+        }
+        if (version == null) return false;
+        try
+        {
+            return !VersionNewer(floor, version);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }

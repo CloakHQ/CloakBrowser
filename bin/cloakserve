@@ -407,6 +407,8 @@ class ChromePool:
                 self._default = cp
 
             logger.info("Chrome ready (seed=%s, port=%d, pid=%d)", actual_seed, port, process.pid)
+            if self._connections.get(seed_key, 0) == 0:
+                self._schedule_idle_cleanup(seed_key)
             return cp
 
     async def _cleanup_process(self, key: str) -> None:
@@ -426,6 +428,22 @@ class ChromePool:
             self._default = None
         self._locks.pop(key, None)
         self._connections.pop(key, None)
+
+    async def terminate_seed(self, seed: str) -> bool:
+        """Terminate one seed's Chrome on demand, freeing its slot immediately.
+
+        Returns True if a process was running and got torn down, False if there
+        was nothing to terminate. The persistent profile is preserved: teardown
+        goes through _cleanup_process, whose _safe_rmtree the persistent pool
+        overrides to a no-op, so reopening the same seed later restores identity.
+        """
+        if not seed or not SAFE_SEED_RE.match(seed) or seed in RESERVED_SEEDS:
+            return False
+        async with self._get_lock(seed):
+            if seed not in self._processes:
+                return False
+            await self._cleanup_process(seed)
+            return True
 
     async def shutdown(self) -> None:
         """Terminate all Chrome processes."""
@@ -525,6 +543,18 @@ def _external_host(request: web.Request) -> str:
         if public_host:
             return public_host
     return fallback_host
+
+
+async def handle_close(request: web.Request) -> web.Response:
+    """Terminate one seed's browser on demand, freeing its slot immediately.
+
+    Idempotent: closing a seed that is not running returns terminated=false, 200.
+    The persistent profile is kept, so reopening the seed restores its identity.
+    """
+    pool: ChromePool = request.app["pool"]
+    seed = request.match_info.get("seed", "")
+    terminated = await pool.terminate_seed(seed)
+    return web.json_response({"seed": seed, "terminated": terminated})
 
 
 async def handle_root(request: web.Request) -> web.Response:
@@ -860,6 +890,7 @@ def main() -> None:
     app.router.add_get("/json/", handle_json_list)
 
     # WebSocket routes — seed-specific (must be before default to match first)
+    app.router.add_post("/fingerprint/{seed}/close", handle_close)
     app.router.add_get("/fingerprint/{seed}/devtools/{path:.+}", handle_ws_seed)
     # WebSocket routes — default (no seed)
     app.router.add_get("/devtools/{path:.+}", handle_ws_default)

@@ -1,6 +1,7 @@
 """Unit tests for GeoIP-based timezone/locale detection."""
 
 from unittest.mock import MagicMock, patch
+import threading
 import time
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from cloakbrowser.browser import maybe_resolve_geoip
 from cloakbrowser.geoip import (
     COUNTRY_LOCALE_MAP,
+    DEFAULT_GEOIP_TIMEOUT_SECONDS,
     _is_private_ip,
     _resolve_exit_ip,
     _resolve_proxy_ip,
@@ -57,6 +59,23 @@ def test_locale_map_has_common_countries():
         assert code in COUNTRY_LOCALE_MAP, f"Missing {code}"
 
 
+def test_resolve_geo_seychelles_exit_gets_locale():
+    """GeoLite2 places some datacenter exits in Seychelles (issue #591)."""
+    resp = MagicMock()
+    resp.location.time_zone = "Indian/Mahe"
+    resp.country.iso_code = "SC"
+    reader = MagicMock()
+    reader.return_value.__enter__.return_value.city.return_value = resp
+    mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": reader})})()
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
+            with patch("cloakbrowser.geoip._resolve_exit_ip", return_value="178.20.213.254"):
+                from cloakbrowser.geoip import resolve_proxy_geo_with_ip
+                assert resolve_proxy_geo_with_ip("http://10.50.96.5:8888") == (
+                    "Indian/Mahe", "en-SC", "178.20.213.254",
+                )
+
+
 def test_locale_map_values_are_bcp47():
     """All locales should be language-REGION format."""
     for code, locale in COUNTRY_LOCALE_MAP.items():
@@ -71,41 +90,71 @@ def test_locale_map_values_are_bcp47():
 # ---------------------------------------------------------------------------
 
 
+def test_default_geoip_timeout_is_twenty_seconds():
+    assert DEFAULT_GEOIP_TIMEOUT_SECONDS == 20.0
+
+
 def test_resolve_geo_raises_when_geoip2_missing():
     """Should raise ImportError with install instructions when geoip2 not installed."""
     with patch.dict("sys.modules", {"geoip2": None, "geoip2.database": None}):
         from importlib import reload
         import cloakbrowser.geoip as geoip_mod
         reload(geoip_mod)
-        with pytest.raises(ImportError, match="pip install cloakbrowser"):
+        with pytest.raises(ImportError, match=r"pip install 'cloakbrowser\[geoip\]'"):
             geoip_mod.resolve_proxy_geo("http://10.50.96.5:8888")
         # Restore
         reload(geoip_mod)
 
 
-def test_resolve_geo_returns_none_when_db_missing():
-    """Should return (None, None) when DB file doesn't exist."""
+def test_resolve_geo_raises_when_exit_ip_missing():
+    """Requested GeoIP must fail instead of launching without resolved values."""
     mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()
     with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
-        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=None):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
             with patch("cloakbrowser.geoip._resolve_exit_ip", return_value=None):
                 from cloakbrowser.geoip import resolve_proxy_geo
-                assert resolve_proxy_geo("http://10.50.96.5:8888") == (None, None)
+                with pytest.raises(RuntimeError, match="could not discover the egress IP"):
+                    resolve_proxy_geo(None)
 
 
-def test_resolve_geo_keeps_exit_ip_when_db_missing():
-    """DB missing but IP resolvable → still return the exit IP for WebRTC spoofing.
-
-    Resolving the egress IP does not need the GeoIP DB, so a DB download failure
-    must not drop it — otherwise WebRTC could fall back to the real IP behind a
-    proxy while the connection shows the proxy IP (a deanonymization).
-    """
+def test_resolve_geo_raises_when_db_missing():
+    """A database failure must abort requested GeoIP resolution."""
     mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()
     with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
         with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=None):
             with patch("cloakbrowser.geoip._resolve_exit_ip", return_value="9.8.7.6"):
                 from cloakbrowser.geoip import resolve_proxy_geo_with_ip
-                assert resolve_proxy_geo_with_ip("http://10.50.96.5:8888") == (None, None, "9.8.7.6")
+                with pytest.raises(RuntimeError, match="database is unavailable"):
+                    resolve_proxy_geo_with_ip("http://10.50.96.5:8888")
+
+
+def test_resolve_geo_unmapped_country_falls_back_to_en_us():
+    """A country missing from COUNTRY_LOCALE_MAP must not abort the launch (#591)."""
+    resp = MagicMock()
+    resp.location.time_zone = "Indian/Mahe"
+    resp.country.iso_code = "XX"
+    reader = MagicMock()
+    reader.return_value.__enter__.return_value.city.return_value = resp
+    mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": reader})})()
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
+            with patch("cloakbrowser.geoip._resolve_exit_ip", return_value="9.8.7.6"):
+                from cloakbrowser.geoip import resolve_proxy_geo_with_ip
+                assert resolve_proxy_geo_with_ip("http://10.50.96.5:8888") == (
+                    "Indian/Mahe", "en-US", "9.8.7.6",
+                )
+
+
+def test_resolve_geo_raises_when_lookup_fails():
+    """A corrupt or unreadable database must abort requested GeoIP resolution."""
+    reader = MagicMock(side_effect=ValueError("corrupt database"))
+    mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": reader})})()
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
+            with patch("cloakbrowser.geoip._resolve_exit_ip", return_value="9.8.7.6"):
+                from cloakbrowser.geoip import resolve_proxy_geo_with_ip
+                with pytest.raises(RuntimeError, match="corrupt database"):
+                    resolve_proxy_geo_with_ip("http://10.50.96.5:8888")
 
 
 # ---------------------------------------------------------------------------
@@ -201,18 +250,85 @@ def test_maybe_resolve_fills_both():
         assert ip == "5.6.7.8"
 
 
-def test_maybe_resolve_geoip_timeout_returns_existing_values(monkeypatch):
-    """A stalled proxy lookup should not block launch indefinitely."""
+def test_maybe_resolve_raw_timezone_flag_wins_over_geoip():
+    """A raw --fingerprint-timezone in args counts as explicit; geoip must not clobber it."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = maybe_resolve_geoip(
+            True, "http://proxy:8080", None, None,
+            ["--fingerprint-timezone=Asia/Tokyo"],
+        )
+    assert tz == "Asia/Tokyo"  # user's raw flag survives
+    assert loc == "de-DE"  # not raw-flagged → geoip fills it
+    assert ip == "5.6.7.8"
+
+
+def test_maybe_resolve_raw_lang_flag_wins_over_geoip():
+    """A raw --lang in args counts as explicit locale; geoip must not clobber it."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = maybe_resolve_geoip(
+            True, "http://proxy:8080", None, None, ["--lang=fr-FR"],
+        )
+    assert tz == "Europe/Berlin"  # not raw-flagged → geoip fills it
+    assert loc == "fr-FR"  # user's raw flag survives
+
+
+def test_maybe_resolve_raw_flags_both_skip_geo_lookup():
+    """Both tz+locale raw-flagged → treated as fully explicit, only exit IP resolved."""
+    with patch("cloakbrowser.geoip.resolve_proxy_geo_with_ip") as geo, patch(
+        "cloakbrowser.geoip._resolve_exit_ip", return_value="1.2.3.4"
+    ):
+        tz, loc, ip = maybe_resolve_geoip(
+            True, "http://proxy:8080", None, None,
+            ["--fingerprint-timezone=Asia/Tokyo", "--fingerprint-locale=ja-JP"],
+        )
+    geo.assert_not_called()
+    assert tz == "Asia/Tokyo"
+    assert loc == "ja-JP"
+    assert ip == "1.2.3.4"
+
+
+def test_maybe_resolve_param_beats_raw_flag():
+    """An explicit timezone= param takes precedence over a differing raw flag."""
+    with patch("cloakbrowser.geoip._resolve_exit_ip", return_value="1.2.3.4"), patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+        return_value=("Europe/Berlin", "de-DE", "5.6.7.8"),
+    ):
+        tz, loc, ip = maybe_resolve_geoip(
+            True, "http://proxy:8080", "America/New_York", None,
+            ["--fingerprint-timezone=Asia/Tokyo"],
+        )
+    assert tz == "America/New_York"  # param wins over raw flag
+    assert loc == "de-DE"
+
+
+def test_maybe_resolve_geoip_timeout_aborts_launch(monkeypatch):
+    """A stalled requested GeoIP lookup should fail within its timeout budget."""
     mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()
     monkeypatch.setenv("CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS", "0.05")
     with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
         with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
             start = time.monotonic()
-            tz, loc, ip = maybe_resolve_geoip(True, "http://203.0.113.10:8080", None, "fr-FR")
+            with pytest.raises(RuntimeError, match="GeoIP resolution"):
+                maybe_resolve_geoip(True, "http://203.0.113.10:8080", None, "fr-FR")
             elapsed = time.monotonic() - start
 
-    assert (tz, loc, ip) == (None, "fr-FR", None)
     assert elapsed < 0.5
+
+
+def test_maybe_resolve_geoip_rejects_incomplete_result():
+    """A partial result must not silently leave Chromium defaults in use."""
+    with patch(
+        "cloakbrowser.geoip.resolve_proxy_geo_with_ip",
+        return_value=("Europe/Berlin", None, "5.6.7.8"),
+    ):
+        with pytest.raises(RuntimeError, match="could not determine locale"):
+            maybe_resolve_geoip(True, "http://proxy:8080", None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -233,3 +349,71 @@ def test_private_ip_rfc1918():
 def test_private_ip_public():
     assert _is_private_ip("8.8.8.8") is False
     assert _is_private_ip("64.176.168.43") is False
+
+
+# ---------------------------------------------------------------------------
+# GeoIP DB download: atomic replace + concurrency guard (issue #458)
+# ---------------------------------------------------------------------------
+
+
+def test_download_overwrites_existing_db(tmp_path):
+    """os.replace must overwrite a pre-existing DB (Windows rename would fail)."""
+    from cloakbrowser import geoip
+
+    dest = tmp_path / "GeoLite2-City.mmdb"
+    dest.write_bytes(b"old")
+
+    def fake_stream(*_a, **_k):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def raise_for_status(self):
+                pass
+
+            headers = {"content-length": "3"}
+
+            def iter_bytes(self, chunk_size=0):
+                yield b"new"
+
+        return _Resp()
+
+    with patch("httpx.stream", fake_stream):
+        geoip._download_geoip_db(dest)
+
+    assert dest.read_bytes() == b"new"
+
+
+def test_ensure_db_downloads_once_under_concurrency(tmp_path):
+    """Concurrent first-use launches must trigger only one download."""
+    from cloakbrowser import geoip
+
+    dest = tmp_path / "GeoLite2-City.mmdb"
+    calls = []
+    barrier = threading.Barrier(5)
+
+    def fake_download(path):
+        calls.append(path)
+        time.sleep(0.05)  # hold the lock so others queue behind it
+        path.write_bytes(b"db")
+
+    with patch.object(geoip, "_get_geoip_dir", return_value=tmp_path), patch.object(
+        geoip, "_download_geoip_db", side_effect=fake_download
+    ):
+        results = []
+
+        def worker():
+            barrier.wait()
+            results.append(geoip._ensure_geoip_db())
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert len(calls) == 1  # only one thread actually downloaded
+    assert all(r == dest for r in results)

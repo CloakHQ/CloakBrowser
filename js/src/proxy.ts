@@ -2,7 +2,7 @@
  * Shared proxy URL parsing for Playwright and Puppeteer wrappers.
  */
 
-import { getChromiumVersion, getPlatformTag, normalizeRequestedVersion, parseVersion } from "./config.js";
+import { binarySupportsHttpProxyInlineAuth } from "./config.js";
 
 export interface ParsedProxy {
   server: string;
@@ -74,7 +74,7 @@ function assembleSocksUrl(
  * bare ``%`` not followed by two hex digits is left as a literal ``%``.
  */
 function lenientDecodeURIComponent(s: string): string {
-  return s.replace(/%([0-9A-Fa-f]{2})|%/g, (match, hex) =>
+  return s.replace(/%([0-9A-Fa-f]{2})|%/g, (_match, hex) =>
     hex ? String.fromCharCode(parseInt(hex, 16)) : "%",
   );
 }
@@ -154,25 +154,6 @@ export function normalizeSocksStringUrl(urlStr: string): string {
   } catch (e) {
     console.warn(`[cloakbrowser] Could not normalize SOCKS5 proxy URL, passing through unchanged: ${(e as Error).message}`);
     return urlStr;
-  }
-}
-
-const HTTP_PROXY_INLINE_AUTH_MIN_VERSION = "146.0.7680.177.5";
-const HTTP_PROXY_INLINE_AUTH_PLATFORMS = new Set(["linux-x64", "windows-x64"]);
-
-export function supportsHttpProxyInlineAuth(version?: string): boolean {
-  try {
-    const tag = getPlatformTag();
-    if (!HTTP_PROXY_INLINE_AUTH_PLATFORMS.has(tag)) return false;
-    const current = parseVersion(version ?? getChromiumVersion());
-    const minimum = parseVersion(HTTP_PROXY_INLINE_AUTH_MIN_VERSION);
-    for (let i = 0; i < Math.max(current.length, minimum.length); i++) {
-      if ((current[i] ?? 0) > (minimum[i] ?? 0)) return true;
-      if ((current[i] ?? 0) < (minimum[i] ?? 0)) return false;
-    }
-    return true; // equal = supported
-  } catch {
-    return false;
   }
 }
 
@@ -260,7 +241,9 @@ export function normalizeHttpStringUrl(urlStr: string): string {
  */
 export function resolveProxyConfig(
   proxy: string | ProxyDict | undefined,
-  browserVersion?: string
+  browserVersion?: string,
+  licenseKey?: string,
+  releaseChannel?: string,
 ): ProxyConfig {
   if (!proxy) return { proxyArgs: [] };
 
@@ -277,11 +260,14 @@ export function resolveProxyConfig(
     return { proxyArgs: args };
   }
 
-  // HTTP/HTTPS with credentials on supported platforms: use Chrome's native
-  // proxy authentication path instead of Playwright's CDP auth interceptor
-  // (#182).
-  const requestedVersion = normalizeRequestedVersion(browserVersion);
-  if (hasCredentials(proxy) && supportsHttpProxyInlineAuth(requestedVersion)) {
+  // HTTP/HTTPS with credentials, only on binaries that ship inline proxy auth:
+  // use Chrome's native proxy authentication path instead of Playwright's CDP
+  // auth interceptor (#182). Older binaries (free macOS/linux-arm64) can't parse
+  // inline credentials, so they fall through to the Playwright proxy dict below.
+  if (
+    hasCredentials(proxy) &&
+    binarySupportsHttpProxyInlineAuth(licenseKey, browserVersion, releaseChannel)
+  ) {
     if (typeof proxy === "string") {
       return { proxyArgs: [`--proxy-server=${normalizeHttpStringUrl(proxy)}`] };
     }
@@ -326,4 +312,40 @@ export function parseProxyUrl(proxy: string): ParsedProxy {
   }
 
   return result;
+}
+
+let requestProxyWarned = false;
+
+/** @internal Exported for testing only. */
+export function resetRequestProxyWarned(): void {
+  requestProxyWarned = false;
+}
+
+/**
+ * Warn once, on first use, that Playwright's request client does not use a proxy
+ * we passed as --proxy-server (#579). Playwright only proxies context.request when
+ * it owns the proxy. get/post/fetch, page.request and route.fetch() all funnel
+ * through context.request._innerFetch, so one instance wrap catches every path.
+ */
+export function warnOnRequestClientUse(context: unknown): void {
+  const ctx = context as any;
+  // A per-context proxy does reach the request client, so nothing leaks there.
+  if (ctx?._options?.proxy) return;
+  const req = ctx?.request;
+  // Private Playwright API: if it is ever renamed, skip rather than break.
+  if (typeof req?._innerFetch !== "function") return;
+  req._innerFetch = function (...args: unknown[]) {
+    // Self-remove so only the first call runs through us (keeps Playwright's
+    // API-call naming in traces intact for every later call).
+    delete req._innerFetch;
+    if (!requestProxyWarned) {
+      requestProxyWarned = true;
+      console.warn(
+        "[cloakbrowser] context.request / page.request / route.fetch() do not use this proxy " +
+          "(it is set on the browser, not Playwright) and will send from your real IP. " +
+          "Use page.evaluate(() => fetch(...)) for proxied requests.",
+      );
+    }
+    return req._innerFetch(...args);
+  };
 }

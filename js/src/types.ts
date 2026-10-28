@@ -31,6 +31,8 @@ export interface LaunchOptions {
   licenseKey?: string;
   /** Exact Chromium version pin. Also reads from CLOAKBROWSER_VERSION env var. */
   browserVersion?: string;
+  /** Binary release channel. Also reads from CLOAKBROWSER_RELEASE_CHANNEL env var. */
+  releaseChannel?: "stable" | "preview";
   /** Raw options passed directly to playwright/puppeteer launch(). */
   launchOptions?: Record<string, unknown>;
   /** Enable human-like mouse, keyboard, and scroll behavior. */

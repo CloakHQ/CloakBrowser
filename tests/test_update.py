@@ -552,12 +552,22 @@ class TestEnsureBinary:
                     fake_binary.write_bytes(b"binary")
                     fake_binary.chmod(0o755)
 
-                with patch(
-                    "cloakbrowser.download._download_pro_binary",
-                    side_effect=fake_pro_download,
+                with (
+                    patch(
+                        "cloakbrowser.download._download_pro_binary",
+                        side_effect=fake_pro_download,
+                    ),
+                    patch(
+                        "cloakbrowser.license.get_pro_latest_version"
+                    ) as mock_latest,
                 ):
-                    result = _ensure_pro_binary("cb_key", requested_version=requested)
+                    result = _ensure_pro_binary(
+                        "cb_key",
+                        requested_version=requested,
+                        release_channel="preview",
+                    )
                     assert result == str(fake_binary)
+                    mock_latest.assert_not_called()
                     assert not marker.exists()
 
     @patch("cloakbrowser.download._maybe_trigger_update_check")
@@ -613,7 +623,7 @@ def _make_pro_binary(version: str):
 
 
 class TestUnpinnedProUpgrade:
-    """Ticket 431: an unpinned Pro launch must track the server's latest stable,
+    """An unpinned Pro launch must track the server's latest stable,
     never roll down to a stale cached build, and never fall back to the free binary."""
 
     OLD = "148.0.7778.215.3"
@@ -645,6 +655,88 @@ class TestUnpinnedProUpgrade:
                 mock_dl.assert_called_once()
                 assert result == str(get_binary_path(self.NEW, pro=True))
                 assert marker.read_text() == self.NEW  # marker advanced, not stuck
+
+    def test_preview_uses_server_version_and_preview_marker(self, tmp_path):
+        stable_marker = tmp_path / f"latest_pro_version_{get_platform_tag()}"
+        preview_marker = (
+            tmp_path / f"latest_pro_version_preview_{get_platform_tag()}"
+        )
+        with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}):
+            stable_marker.write_text(self.OLD)
+            _make_pro_binary(self.OLD)
+
+            with (
+                patch(
+                    "cloakbrowser.license.get_pro_latest_version",
+                    return_value=self.NEW,
+                ) as mock_latest,
+                patch(
+                    "cloakbrowser.download._download_pro_binary",
+                    side_effect=lambda version, key: _make_pro_binary(version),
+                ) as mock_dl,
+            ):
+                from cloakbrowser.config import get_binary_path
+
+                result = _ensure_pro_binary(
+                    "cb_key", release_channel="preview"
+                )
+                expected_path = str(get_binary_path(self.NEW, pro=True))
+
+        mock_latest.assert_called_once_with("preview")
+        mock_dl.assert_called_once_with(self.NEW, "cb_key")
+        assert result == expected_path
+        assert preview_marker.read_text() == self.NEW
+        assert stable_marker.read_text() == self.OLD
+
+    def test_preview_with_no_preview_build_warns_stable_fallback(self, tmp_path, capsys):
+        """Preview requested but the server has no preview for this platform (fallback
+        to stable) → print a one-line notice at launch."""
+        import cloakbrowser.download as dl
+        from cloakbrowser.license import ProReleaseInfo
+
+        dl._preview_fallback_warned = False  # reset once-per-process guard
+        with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}):
+            _make_pro_binary(self.NEW)  # stable-fallback build already cached → no download
+
+            with (
+                patch(
+                    "cloakbrowser.license.get_pro_latest_version",
+                    return_value=self.NEW,
+                ),
+                patch(
+                    "cloakbrowser.license.get_pro_latest_release",
+                    return_value=ProReleaseInfo(self.NEW, "preview", "stable", True),
+                ),
+                patch("cloakbrowser.download._download_pro_binary") as mock_dl,
+            ):
+                _ensure_pro_binary("cb_key", release_channel="preview")
+
+        mock_dl.assert_not_called()
+        assert "no preview build is available" in capsys.readouterr().err
+
+    def test_genuine_preview_does_not_warn(self, tmp_path, capsys):
+        """A real preview build (no fallback) prints no fallback notice."""
+        import cloakbrowser.download as dl
+        from cloakbrowser.license import ProReleaseInfo
+
+        dl._preview_fallback_warned = False
+        with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}):
+            _make_pro_binary(self.NEW)
+
+            with (
+                patch(
+                    "cloakbrowser.license.get_pro_latest_version",
+                    return_value=self.NEW,
+                ),
+                patch(
+                    "cloakbrowser.license.get_pro_latest_release",
+                    return_value=ProReleaseInfo(self.NEW, "preview", "preview", False),
+                ),
+                patch("cloakbrowser.download._download_pro_binary"),
+            ):
+                _ensure_pro_binary("cb_key", release_channel="preview")
+
+        assert "no preview build is available" not in capsys.readouterr().err
 
     def test_cached_newer_build_advances_marker_no_download(self, tmp_path):
         """Marker names an OLD build but a NEWER build is already cached (the customer's
@@ -815,7 +907,7 @@ class TestUnpinnedProUpgrade:
 
 
 class TestCheckForProUpdate:
-    """`cloakbrowser update` for Pro installs (ticket 431 Fix 1)."""
+    """`cloakbrowser update` for Pro installs."""
 
     OLD = "148.0.7778.215.3"
     NEW = "148.0.7778.215.5"
@@ -867,7 +959,7 @@ class TestCheckForProUpdate:
 
 class TestEffectiveVersionProNoFreeFallback:
     """get_effective_version(pro=True) must return None — never the free base —
-    when no cached Pro binary matches the marker (ticket 431 Fix 4)."""
+    when no cached Pro binary matches the marker."""
 
     def test_none_when_no_cached_pro_binary(self, tmp_path):
         with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}):

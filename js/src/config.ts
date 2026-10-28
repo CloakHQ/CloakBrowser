@@ -67,6 +67,11 @@ const AVAILABLE_PLATFORMS = new Set(Object.keys(PLATFORM_CHROMIUM_VERSIONS));
 
 const VERSION_PIN_RE = /^[0-9]+(?:\.[0-9]+){3,4}$/;
 
+export function normalizeReleaseChannel(releaseChannel?: string): "stable" | "preview" {
+  const raw = releaseChannel ?? process.env.CLOAKBROWSER_RELEASE_CHANNEL ?? "stable";
+  return raw.trim().toLowerCase() === "preview" ? "preview" : "stable";
+}
+
 export function normalizeRequestedVersion(version?: string): string | undefined {
   const raw = version ?? process.env.CLOAKBROWSER_VERSION;
   if (raw == null) return undefined;
@@ -176,9 +181,9 @@ export function getFallbackDownloadUrl(version?: string): string {
   return `${GITHUB_DOWNLOAD_BASE_URL}/chromium-v${v}/${getArchiveName()}`;
 }
 
-export function getEffectiveVersion(pro?: false): string;
-export function getEffectiveVersion(pro: boolean): string | null;
-export function getEffectiveVersion(pro = false): string | null {
+export function getEffectiveVersion(pro?: false, releaseChannel?: string): string;
+export function getEffectiveVersion(pro: boolean, releaseChannel?: string): string | null;
+export function getEffectiveVersion(pro = false, releaseChannel?: string): string | null {
   const base = getChromiumVersion();
   const cacheDir = getCacheDir();
 
@@ -186,7 +191,11 @@ export function getEffectiveVersion(pro = false): string | null {
     // A valid Pro license must NEVER fall back to the free binary, so there is
     // deliberately no free-version fallback here — return null when no cached Pro
     // binary matches the marker; callers resolve the latest Pro version instead.
-    const marker = path.join(cacheDir, `latest_pro_version_${getPlatformTag()}`);
+    const channel = normalizeReleaseChannel(releaseChannel);
+    const markerPrefix = channel === "preview"
+      ? "latest_pro_version_preview"
+      : "latest_pro_version";
+    const marker = path.join(cacheDir, `${markerPrefix}_${getPlatformTag()}`);
     try {
       if (fs.existsSync(marker)) {
         const version = fs.readFileSync(marker, "utf-8").trim();
@@ -270,6 +279,7 @@ export const HEADLESS_NO_VIEWPORT_MIN_VERSION: string | null = "148.0.7778.215.4
 export function binarySupportsHeadlessNoViewport(
   licenseKey?: string,
   browserVersion?: string,
+  releaseChannel?: string,
 ): boolean {
   if (HEADLESS_NO_VIEWPORT_MIN_VERSION === null) return false;
   // A declared version (browserVersion arg OR CLOAKBROWSER_VERSION env) wins even
@@ -290,7 +300,7 @@ export function binarySupportsHeadlessNoViewport(
     // Full resolution (param > env > ~/.cloakbrowser/license.key) — mirrors Python
     // and .NET; a bare env/param check would miss file-based Pro keys.
     const pro = Boolean(resolveLicenseKey(licenseKey));
-    version = getEffectiveVersion(pro);
+    version = getEffectiveVersion(pro, releaseChannel);
   }
   // No cached Pro build resolvable (getEffectiveVersion returned null) → fail safe.
   if (version === null) return false;
@@ -316,8 +326,78 @@ export function binarySupportsHeadlessNoViewport(
 export function binarySupportsMaximizedWindow(
   licenseKey?: string,
   browserVersion?: string,
+  releaseChannel?: string,
 ): boolean {
-  return binarySupportsHeadlessNoViewport(licenseKey, browserVersion);
+  return binarySupportsHeadlessNoViewport(licenseKey, browserVersion, releaseChannel);
+}
+
+// ---------------------------------------------------------------------------
+// Inline HTTP proxy authentication by binary version
+// ---------------------------------------------------------------------------
+// First Chromium build, per platform, whose binary can take inline HTTP proxy
+// credentials (Chromium-native `--proxy-server=http://user:pass@host`). Below
+// the floor the wrapper MUST route credentialed HTTP/HTTPS proxies through
+// Playwright's proxy dict / page.authenticate — an older binary treats the
+// `user:pass@` authority as an invalid proxy host and drops proxy auth (#182).
+// A single global threshold can't model this: the capability landed in
+// different build lineages at different points (linux-x64/windows-x64 at
+// 146.0.7680.177.5, but the free macOS 145.x and linux-arm64 146.0.7680.177.3
+// floors predate it, qualifying only once they resolve to a Pro/newer 148+
+// build). Platforms absent from this map are treated as never-inline.
+export const HTTP_PROXY_INLINE_AUTH_MIN_VERSION: Record<string, string> = {
+  "linux-x64": "146.0.7680.177.5",
+  "windows-x64": "146.0.7680.177.5",
+  "linux-arm64": "148.0.7778.215.3",
+  "darwin-arm64": "148.0.7778.215.3",
+  "darwin-x64": "148.0.7778.215.3",
+};
+
+/**
+ * Whether the resolved binary accepts inline HTTP proxy credentials. The
+ * capability is a function of the binary version; `licenseKey` only resolves
+ * which version launches (Pro build vs free default), exactly like
+ * binarySupportsHeadlessNoViewport. A declared pin wins, else a valid Pro
+ * license resolves to the Pro build (which ships the patch), else the free
+ * per-platform default — then it compares to this platform's floor. Below the
+ * floor, credentialed HTTP proxies fall back to Playwright's proxy dict. A
+ * local override with no declared version is unknown-version, so fail safe.
+ * Python, JS and .NET mirror this gate.
+ */
+export function binarySupportsHttpProxyInlineAuth(
+  licenseKey?: string,
+  browserVersion?: string,
+  releaseChannel?: string,
+): boolean {
+  let tag: string;
+  try {
+    tag = getPlatformTag();
+  } catch {
+    return false;
+  }
+  const floor = HTTP_PROXY_INLINE_AUTH_MIN_VERSION[tag];
+  if (!floor) return false;
+  let declared: string | undefined;
+  try {
+    declared = normalizeRequestedVersion(browserVersion);
+  } catch {
+    declared = undefined;
+  }
+  let version: string | null;
+  if (declared) {
+    version = declared;
+  } else if (getLocalBinaryOverride()) {
+    return false;
+  } else {
+    const pro = Boolean(resolveLicenseKey(licenseKey));
+    version = getEffectiveVersion(pro, releaseChannel);
+  }
+  if (version === null) return false;
+  try {
+    if (parseVersion(version).some(Number.isNaN)) return false;
+    return !versionNewer(floor, version);
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,8 +418,15 @@ export const IGNORE_DEFAULT_ARGS = ["--enable-automation", "--enable-unsafe-swif
 // innerHeight=947 (minus ~85px Chrome UI: tabs + address bar + bookmarks).
 export const DEFAULT_VIEWPORT = { width: 1920, height: 947 };
 
+export const SEED_MIN = 10000;
+export const SEED_MAX = 99999;
+
+export function randomSeed(): number {
+  return Math.floor(Math.random() * (SEED_MAX - SEED_MIN + 1)) + SEED_MIN;
+}
+
 export function getDefaultStealthArgs(): string[] {
-  const seed = Math.floor(Math.random() * 90000) + 10000; // 10000-99999
+  const seed = randomSeed();
   const isMac = process.platform === "darwin";
 
   const base = [

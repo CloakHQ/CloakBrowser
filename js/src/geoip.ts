@@ -15,14 +15,15 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import { getCacheDir } from "./config.js";
 import type { LaunchOptions } from "./types.js";
-import { ensureProxyScheme, isSocksProxy, reconstructSocksUrl, type ProxyDict } from "./proxy.js";
+import { ensureProxyScheme, isSocksProxy, reconstructHttpUrl, reconstructSocksUrl, type ProxyDict } from "./proxy.js";
 
 // P3TERX mirror of MaxMind GeoLite2-City — no license key needed
 const GEOIP_DB_URL =
   "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb";
 const GEOIP_DB_FILENAME = "GeoLite2-City.mmdb";
 const GEOIP_UPDATE_INTERVAL_MS = 30 * 86_400_000; // 30 days
-const DEFAULT_GEOIP_TIMEOUT_MS = 5_000;
+/** @internal Exported for parity testing. */
+export const DEFAULT_GEOIP_TIMEOUT_MS = 20_000;
 
 /** Country ISO code → BCP 47 locale (covers ~90% of proxy traffic). */
 export const COUNTRY_LOCALE_MAP: Record<string, string> = {
@@ -62,6 +63,7 @@ export const COUNTRY_LOCALE_MAP: Record<string, string> = {
   CM: "fr-CM", AO: "pt-AO", MZ: "pt-MZ", ZM: "en-ZM", ZW: "en-ZW",
   HN: "es-HN", NI: "es-NI", SV: "es-SV", PA: "es-PA", JM: "en-JM",
   TT: "en-TT", PR: "es-PR",
+  SC: "en-SC",
 };
 
 export interface GeoResult {
@@ -72,8 +74,8 @@ export interface GeoResult {
 
 /**
  * Resolve timezone and locale from a proxy's IP address.
- * Returns `{ timezone, locale }` — either may be null on failure.
- * Never throws.
+ * Returns `{ timezone, locale }`. Throws when the exit IP, database, or
+ * database lookup cannot be resolved.
  *
  * When `proxyUrl` is falsy, the machine's own public IP is used instead
  * (echo services queried directly, no proxy), so geoip works proxy-free.
@@ -108,13 +110,14 @@ export async function resolveProxyGeo(
   if (!ip && proxyUrl && !deadlineExpired(deadline)) ip = await resolveProxyIp(proxyUrl);
   if (!ip || deadlineExpired(deadline)) {
     if (deadlineExpired(deadline)) {
-      console.warn(`[cloakbrowser] GeoIP resolution timed out after ${timeoutMs}ms; continuing without GeoIP`);
+      throw new Error(`GeoIP resolution timed out after ${timeoutMs / 1000}s`);
     }
-    return { timezone: null, locale: null, exitIp: null };
+    throw new Error("GeoIP resolution failed: could not discover the egress IP");
   }
 
-  // DB only drives tz/locale; a missing/failed DB still returns the exit IP.
-  if (!dbPath) return { timezone: null, locale: null, exitIp: ip };
+  if (!dbPath) {
+    throw new Error("GeoIP resolution failed: GeoIP database is unavailable");
+  }
 
   try {
     const buf = fs.readFileSync(dbPath);
@@ -122,11 +125,17 @@ export async function resolveProxyGeo(
     const result = reader.get(ip) as any;
     const timezone: string | null = result?.location?.time_zone ?? null;
     const countryCode: string | null = result?.country?.iso_code ?? null;
-    const locale =
+    let locale =
       countryCode ? (COUNTRY_LOCALE_MAP[countryCode] ?? null) : null;
+    if (locale === null) {
+      // Map gap, not a lookup failure — don't abort the launch over it
+      console.warn(`[cloakbrowser] GeoIP: no locale for country ${countryCode} (IP ${ip}), using en-US`);
+      locale = "en-US";
+    }
     return { timezone, locale, exitIp: ip };
-  } catch {
-    return { timezone: null, locale: null, exitIp: ip };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`GeoIP lookup failed for ${ip}: ${detail}`, { cause: error });
   }
 }
 
@@ -218,7 +227,7 @@ async function resolveExitIp(proxyUrl: string | null | undefined, timeoutMs?: nu
     try {
       ({ SocksProxyAgent } = await import("socks-proxy-agent"));
     } catch {
-      console.warn("[cloakbrowser] socks-proxy-agent not installed — cannot resolve exit IP through SOCKS5 proxy. Install it: npm install socks-proxy-agent");
+      console.warn("[cloakbrowser] socks-proxy-agent not installed - cannot resolve exit IP through SOCKS5 proxy. Install it: npm install socks-proxy-agent");
       return null;
     }
     const { default: https } = await import("node:https");
@@ -261,20 +270,24 @@ async function resolveExitIp(proxyUrl: string | null | undefined, timeoutMs?: nu
       try {
         const ip = await new Promise<string | null>((resolve, reject) => {
           const targetUrl = new URL(echoUrl);
+          // Host must name the tunnel target, not the proxy (RFC 9110 §7.2).
+          // Node derives Host from `host` (the proxy) unless set explicitly;
+          // strict proxies (e.g. Oxylabs backconnect) reject the mismatch.
+          const authority = `${targetUrl.hostname}:443`;
+          const headers: Record<string, string> = { Host: authority };
+          if (proxyUrlObj.username) {
+            headers["Proxy-Authorization"] =
+              "Basic " +
+              Buffer.from(
+                `${decodeURIComponent(proxyUrlObj.username)}:${decodeURIComponent(proxyUrlObj.password || "")}`
+              ).toString("base64");
+          }
           const connectReq = http.request({
             host: proxyUrlObj.hostname,
             port: parseInt(proxyUrlObj.port || "80", 10),
             method: "CONNECT",
-            path: `${targetUrl.hostname}:443`,
-            headers: proxyUrlObj.username
-              ? {
-                  "Proxy-Authorization":
-                    "Basic " +
-                    Buffer.from(
-                      `${decodeURIComponent(proxyUrlObj.username)}:${decodeURIComponent(proxyUrlObj.password || "")}`
-                    ).toString("base64"),
-                }
-              : {},
+            path: authority,
+            headers,
             timeout: Math.min(10_000, remaining ?? 10_000),
           });
 
@@ -282,7 +295,12 @@ async function resolveExitIp(proxyUrl: string | null | undefined, timeoutMs?: nu
             const innerRemaining = remainingMs(deadline);
             const req = https.request(
               echoUrl,
-              { socket, timeout: Math.min(5_000, innerRemaining ?? 5_000) } as any,
+              // agent:false is load-bearing. The global agent pools by target
+              // (api.ipify.org:443), which is identical for every proxy, so it
+              // reuses an earlier proxy's pooled socket and silently discards
+              // the tunnel just built here — a second launch in the same process
+              // would inherit the first proxy's exit IP, timezone and locale.
+              { socket, agent: false, timeout: Math.min(5_000, innerRemaining ?? 5_000) } as any,
               (res) => {
                 let data = "";
                 res.on("data", (chunk: Buffer) => (data += chunk.toString()));
@@ -324,6 +342,18 @@ function getGeoipDir(): string {
   return path.join(getCacheDir(), "geoip");
 }
 
+// Shared in-flight download so N concurrent launches don't each fetch the
+// same ~70 MB file (issue #458). Per-process only.
+let geoipDownloadPromise: Promise<void> | null = null;
+
+function runGuardedDownload(dbPath: string): Promise<void> {
+  if (geoipDownloadPromise) return geoipDownloadPromise;
+  geoipDownloadPromise = downloadGeoipDb(dbPath).finally(() => {
+    geoipDownloadPromise = null;
+  });
+  return geoipDownloadPromise;
+}
+
 async function ensureGeoipDb(): Promise<string | null> {
   const dir = getGeoipDir();
   const dbPath = path.join(dir, GEOIP_DB_FILENAME);
@@ -334,8 +364,9 @@ async function ensureGeoipDb(): Promise<string | null> {
   }
 
   try {
-    await downloadGeoipDb(dbPath);
-    return dbPath;
+    await runGuardedDownload(dbPath);
+    // Another concurrent launch may have owned the download; reuse its result.
+    return fs.existsSync(dbPath) ? dbPath : null;
   } catch {
     return null;
   }
@@ -344,7 +375,7 @@ async function ensureGeoipDb(): Promise<string | null> {
 async function downloadGeoipDb(dest: string): Promise<void> {
   const dir = path.dirname(dest);
   fs.mkdirSync(dir, { recursive: true });
-  console.log("[cloakbrowser] Downloading GeoIP database (~70 MB)…");
+  console.error("[cloakbrowser] Downloading GeoIP database (~70 MB)…");
 
   const tmpPath = `${dest}.tmp.${Date.now()}`;
   try {
@@ -370,7 +401,7 @@ async function downloadGeoipDb(dest: string): Promise<void> {
     });
 
     fs.renameSync(tmpPath, dest);
-    console.log(`[cloakbrowser] GeoIP database ready: ${dest}`);
+    console.error(`[cloakbrowser] GeoIP database ready: ${dest}`);
   } catch (err) {
     if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     throw err;
@@ -384,24 +415,35 @@ function maybeTriggerUpdate(dbPath: string): void {
   } catch {
     return;
   }
-  // Fire-and-forget background update
-  downloadGeoipDb(dbPath).catch(() => {});
+  // Fire-and-forget background update — skip if a download is already running.
+  if (geoipDownloadPromise) return;
+  runGuardedDownload(dbPath).catch(() => {});
 }
 
 /**
  * Extract a usable proxy URL from LaunchOptions.proxy.
- * For SOCKS5 dicts with separate credentials, reconstructs the full URL
- * with inline credentials so SOCKS5 auth works.
+ * For proxy dicts with separate credentials, reconstructs the full URL
+ * with inline credentials so proxy auth works.
  */
 function extractProxyUrl(proxy: string | ProxyDict | undefined): string | null {
   if (!proxy) return null;
   if (typeof proxy === "string") return ensureProxyScheme(proxy);
   const p = proxy as ProxyDict;
   if (!p.server) return null;
-  if (p.username && isSocksProxy(p)) {
-    return reconstructSocksUrl(p);
+  if (p.username) {
+    return isSocksProxy(p) ? reconstructSocksUrl(p) : reconstructHttpUrl(p);
   }
   return ensureProxyScheme(p.server);
+}
+
+/** Return the value of the first `--key=value` flag found in args, else undefined. */
+function getFlagValue(args: string[] | undefined, ...keys: string[]): string | undefined {
+  for (const a of args ?? []) {
+    for (const k of keys) {
+      if (a.startsWith(k + "=")) return a.slice(k.length + 1);
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -410,11 +452,19 @@ function extractProxyUrl(proxy: string | ProxyDict | undefined): string | null {
  *
  * With a proxy the egress IP is the proxy's exit IP; with no proxy it is
  * the machine's own public IP, so geoip works proxy-free too.
+ *
+ * A timezone/locale set as a raw flag in `args` (--fingerprint-timezone, --lang,
+ * --fingerprint-locale) counts as explicit: it is promoted to the option so geoip
+ * leaves it alone, mirroring the `timezone`/`locale` option override path.
  */
 export async function maybeResolveGeoip(
   options: LaunchOptions
 ): Promise<{ timezone?: string; locale?: string; exitIp?: string }> {
   if (!options.geoip) return { timezone: options.timezone, locale: options.locale };
+
+  // Promote raw flags to explicit values so geoip doesn't clobber them.
+  const timezone = options.timezone ?? getFlagValue(options.args, "--fingerprint-timezone");
+  const locale = options.locale ?? getFlagValue(options.args, "--lang", "--fingerprint-locale");
 
   // null when no proxy → echo services resolve the machine's own public IP
   const proxyUrl = options.proxy ? extractProxyUrl(options.proxy) : null;
@@ -422,19 +472,27 @@ export async function maybeResolveGeoip(
   // When both tz/locale are explicit, resolve the exit IP for WebRTC — but only
   // with a proxy. With no proxy the WebRTC IP would just be the real connection
   // IP the site already sees (a no-op), so skip the third-party echo call.
-  if (options.timezone && options.locale) {
-    if (!proxyUrl) return { timezone: options.timezone, locale: options.locale };
+  if (timezone && locale) {
+    if (!proxyUrl) return { timezone, locale };
     const timeoutMs = getGeoipTimeoutMs();
     const exitIp = await resolveExitIp(proxyUrl, timeoutMs) ?? undefined;
-    return { timezone: options.timezone, locale: options.locale, exitIp };
+    return { timezone, locale, exitIp };
   }
 
   const { timezone: geoTz, locale: geoLocale, exitIp: geoExitIp } = await resolveProxyGeo(proxyUrl);
-  const exitIp = geoExitIp ?? undefined;
+  const resolvedTimezone = timezone ?? geoTz ?? undefined;
+  const resolvedLocale = locale ?? geoLocale ?? undefined;
+  const missing = [
+    resolvedTimezone ? null : "timezone",
+    resolvedLocale ? null : "locale",
+  ].filter((value): value is string => value !== null);
+  if (missing.length > 0) {
+    throw new Error(`GeoIP resolution failed: could not determine ${missing.join(" and ")}`);
+  }
   return {
-    timezone: options.timezone ?? geoTz ?? undefined,
-    locale: options.locale ?? geoLocale ?? undefined,
-    exitIp,
+    timezone: resolvedTimezone,
+    locale: resolvedLocale,
+    exitIp: geoExitIp ?? undefined,
   };
 }
 
