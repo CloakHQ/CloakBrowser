@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import os
@@ -28,6 +29,7 @@ from .config import (
     binary_supports_http_proxy_inline_auth,
     binary_supports_maximized_window,
     get_default_stealth_args,
+    persistent_seed_args,
 )
 from .download import ensure_binary
 from .license import (
@@ -483,6 +485,10 @@ def launch(
         **kwargs,
     )
 
+    # build_launch_options() folded proxy_extra_args into the args; recompute them
+    # for the request-client warning below (#579).
+    _, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
+
     logger.debug("Launching stealth Chromium (headless=%s, args=%d)", headless, len(launch_options["args"]))
 
     pw = sync_playwright().start()
@@ -518,6 +524,12 @@ def launch(
     if denial_path:
         browser._cloak_denial_path = denial_path
         _install_license_guard(browser, denial_path)
+
+    # Proxy went to Chrome as --proxy-server, so Playwright's request client has no
+    # proxy (#579). The impl "context" event fires for every new context,
+    # including the one new_page() and launch_context() create internally.
+    if proxy_extra_args:
+        browser._impl_obj.on("context", _warn_on_request_client_use)
 
     # Default new_page()/new_context() to no_viewport for headed (page tracks the
     # real window) and for headless on binaries that report coherent dimensions
@@ -588,7 +600,10 @@ async def launch_async(  # noqa: C901
     from playwright.async_api import async_playwright
 
     denial_path = mint_denial_file() if resolve_license_key(license_key) else None
-    launch_options = build_launch_options(
+    # Blocking network calls (license/download, exit-IP lookups) run in a thread so
+    # they don't freeze the caller's event loop.
+    launch_options = await asyncio.to_thread(
+        build_launch_options,
         headless=headless,
         proxy=proxy,
         args=args,
@@ -604,6 +619,10 @@ async def launch_async(  # noqa: C901
         _status_file=denial_path,
         **kwargs,
     )
+
+    # build_launch_options() folded proxy_extra_args into the args; recompute them
+    # for the request-client warning below (#579).
+    _, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
 
     logger.debug("Launching stealth Chromium async (headless=%s, args=%d)", headless, len(launch_options["args"]))
 
@@ -639,6 +658,10 @@ async def launch_async(  # noqa: C901
     if denial_path:
         browser._cloak_denial_path = denial_path
         _install_license_guard_async(browser, denial_path)
+
+    # Warn on first use of Playwright's request client (see launch(), #579).
+    if proxy_extra_args:
+        browser._impl_obj.on("context", _warn_on_request_client_use)
 
     # Default new_page()/new_context() to no_viewport for headed and qualifying
     # headless binaries (see launch()).
@@ -724,6 +747,7 @@ def launch_persistent_context(
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
+    args = persistent_seed_args(user_data_dir, stealth_args, args)
     chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
     _maybe_warn_windows_fonts(chrome_args)
 
@@ -792,6 +816,21 @@ def launch_persistent_context(
 
     context.close = _close_with_cleanup
 
+    # Warn on first use of Playwright's request client (see launch(), #579).
+    if proxy_extra_args:
+        _warn_on_request_client_use(context._impl_obj)
+
+    # Human-like behavioral patching. Applied BEFORE the license guard: the guard
+    # stores its wrapper on the page/context object itself (it needs this launch's
+    # denial path), and an object attribute shadows the class method humanize
+    # patches. Guarding first would therefore capture Playwright's own methods and
+    # silently disable humanize for every call on that page.
+    if humanize:
+        from .human import patch_context
+        from .human.config import resolve_config
+        cfg = resolve_config(human_preset, human_config)
+        patch_context(context, cfg)
+
     # The persistent path hands back a context, so guard it (new_page deep — see
     # launch()). A persistent context also arrives with a page already open, so
     # the user navigates pages[0] directly and never calls new_page — guard those
@@ -801,13 +840,6 @@ def launch_persistent_context(
         _install_license_guard(context, denial_path)
         for _pg in context.pages:
             _install_license_guard(_pg, denial_path)
-
-    # Human-like behavioral patching
-    if humanize:
-        from .human import patch_context
-        from .human.config import resolve_config
-        cfg = resolve_config(human_preset, human_config)
-        patch_context(context, cfg)
 
     return context
 
@@ -881,11 +913,13 @@ async def launch_persistent_context_async(
 
     timezone = _resolve_timezone(timezone, kwargs)
 
-    binary_path = ensure_binary(license_key=license_key, browser_version=browser_version, release_channel=release_channel)
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
+    # Blocking network calls run in a thread (see launch_async).
+    binary_path = await asyncio.to_thread(ensure_binary, license_key=license_key, browser_version=browser_version, release_channel=release_channel)
+    timezone, locale, exit_ip = await asyncio.to_thread(maybe_resolve_geoip, geoip, proxy, timezone, locale, args)
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
-    args = _resolve_webrtc_args(args, proxy)
+    args = await asyncio.to_thread(_resolve_webrtc_args, args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
+    args = persistent_seed_args(user_data_dir, stealth_args, args)
     chrome_args = build_args(stealth_args, (args or []) + proxy_extra_args, timezone=timezone, locale=locale, headless=headless, extension_paths=extension_paths, start_maximized=binary_supports_maximized_window(license_key, browser_version, release_channel) and viewport is _VIEWPORT_UNSET and "viewport" not in kwargs and "no_viewport" not in kwargs)
     _maybe_warn_windows_fonts(chrome_args)
 
@@ -954,21 +988,28 @@ async def launch_persistent_context_async(
 
     context.close = _close_with_cleanup
 
-    # The persistent path hands back a context, so guard it (new_page deep — see
-    # launch()). A persistent context also arrives with a page already open (see
-    # the sync variant): guard those existing pages so a post-handshake denial on
-    # pages[0] surfaces cleanly instead of as a bare TargetClosedError.
-    if denial_path:
-        _install_license_guard_async(context, denial_path)
-        for _pg in context.pages:
-            _install_license_guard_async(_pg, denial_path)
+    # Warn on first use of Playwright's request client (see launch(), #579).
+    if proxy_extra_args:
+        _warn_on_request_client_use(context._impl_obj)
 
-    # Human-like behavioral patching (async variant)
+    # Human-like behavioral patching (async variant). Applied BEFORE the license
+    # guard, for the same reason as the sync variant: the guard stores its wrapper
+    # on the page/context object, which shadows the class method humanize patches.
     if humanize:
         from .human import patch_context_async
         from .human.config import resolve_config
         cfg = resolve_config(human_preset, human_config)
         patch_context_async(context, cfg)
+
+    # The persistent path hands back a context, so guard it (new_page deep — see
+    # launch()). A persistent context also arrives with a page already open (see
+    # the sync variant): guard those existing pages so a post-handshake denial on
+    # pages[0] surfaces cleanly instead of as a bare TargetClosedError.
+    if denial_path:
+        context._cloak_denial_path = denial_path
+        _install_license_guard_async(context, denial_path)
+        for _pg in context.pages:
+            _install_license_guard_async(_pg, denial_path)
 
     return context
 
@@ -1158,8 +1199,8 @@ async def launch_context_async(
     timezone = _resolve_timezone(timezone, kwargs)
 
     # Resolve geoip BEFORE launch_async() to avoid double-resolution and ensure
-    # resolved values flow to binary flags
-    timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
+    # resolved values flow to binary flags. Threaded: the lookup is blocking network I/O.
+    timezone, locale, exit_ip = await asyncio.to_thread(maybe_resolve_geoip, geoip, proxy, timezone, locale, args)
     args = _append_webrtc_exit_ip(args, exit_ip)
     # --fingerprint-timezone is process-wide (reads CommandLine in renderer),
     # so it applies to ALL contexts, not just the default one.
@@ -1408,6 +1449,11 @@ def maybe_resolve_geoip(
         timezone = geo_tz
     if locale is None:
         locale = geo_locale
+    missing = [name for name, value in (("timezone", timezone), ("locale", locale)) if value is None]
+    if missing:
+        raise RuntimeError(
+            "GeoIP resolution failed: could not determine " + " and ".join(missing)
+        )
     return timezone, locale, exit_ip
 
 
@@ -1596,6 +1642,34 @@ _OFFICE_FONT_TELLS = (
     "Bookman Old Style",
 )
 
+# macOS OS fonts — the core set present on essentially every real Mac. Their
+# absence on a macOS-spoofing Linux host degrades results, just as a Windows-
+# spoofing host needs the Windows set above. Several entries (Arial, Georgia,
+# Times New Roman, Courier New, Tahoma) also ship on a Windows-provisioned box,
+# so a partial count on a non-Mac host is normal, not a fault.
+_MAC_FONT_TELLS = (
+    "Apple Color Emoji",
+    "Arial",
+    "Arial Narrow",
+    "Arial Unicode MS",
+    "Comic Sans MS",
+    "Courier",
+    "Courier New",
+    "Georgia",
+    "Gill Sans",
+    "Helvetica",
+    "Helvetica Neue",
+    "Impact",
+    "Menlo",
+    "Microsoft Sans Serif",
+    "Monaco",
+    "Tahoma",
+    "Times New Roman",
+    "Trebuchet MS",
+    "Webdings",
+    "Wingdings",
+)
+
 _font_warning_checked = False
 
 
@@ -1662,13 +1736,18 @@ def _maybe_warn_windows_fonts(chrome_args: list[str]) -> None:
         if present is None or present:
             return  # full set present, or can't determine — don't warn
         # Write straight to stderr (like the welcome banner and the JS/.NET
-        # wrappers) so an app's logging config can't silence it.
-        sys.stderr.write(
-            "[cloakbrowser] Incomplete Windows font set — installing the full "
-            "set is strongly advised for best results when spoofing Windows on "
-            "Linux. https://github.com/CloakHQ/cloakbrowser#font-setup-on-linux "
-            "(silence: CLOAKBROWSER_SUPPRESS_FONT_WARNING=1)\n"
-        )
+        # wrappers) so an app's logging config can't silence it. ASCII-only and
+        # swallow-everything: on a legacy Windows console stderr is cp1252/strict
+        # and this write is on the launch path.
+        try:
+            sys.stderr.write(
+                "[cloakbrowser] Incomplete Windows font set - installing the full "
+                "set is strongly advised for best results when spoofing Windows on "
+                "Linux. https://github.com/CloakHQ/cloakbrowser#font-setup-on-linux "
+                "(silence: CLOAKBROWSER_SUPPRESS_FONT_WARNING=1)\n"
+            )
+        except Exception:
+            pass
         try:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text("")
@@ -1778,6 +1857,45 @@ def _is_socks_proxy(proxy: str | ProxySettings | None) -> bool:
         return False
     url = proxy.get("server", "") if isinstance(proxy, dict) else proxy
     return url.lower().startswith(("socks5://", "socks5h://"))
+
+
+_request_proxy_warned = False
+
+
+def _warn_on_request_client_use(impl_context: Any) -> None:
+    """Warn once, on first use, that Playwright's request client does not use a
+    proxy we passed as --proxy-server (#579).
+
+    Playwright only proxies ``context.request`` when it owns the proxy. Its
+    get/post/fetch, ``page.request`` and ``route.fetch()`` all funnel through the
+    impl ``APIRequestContext._inner_fetch`` (shared by the sync and async APIs),
+    so one instance wrap catches every path.
+    """
+    # A per-context proxy does reach the request client, so nothing leaks there.
+    if (getattr(impl_context, "_options", None) or {}).get("proxy"):
+        return
+    request = getattr(impl_context, "_request", None)
+    original = getattr(request, "_inner_fetch", None)
+    # Private Playwright API: if it is ever renamed, skip rather than break.
+    if original is None:
+        return
+
+    async def _inner_fetch(*args: Any, **kwargs: Any) -> Any:
+        global _request_proxy_warned
+        # Self-remove so only the first call runs through us. pop() because two
+        # concurrent first calls can both land here.
+        vars(request).pop("_inner_fetch", None)
+        if not _request_proxy_warned:
+            _request_proxy_warned = True
+            # Straight to stderr so an app's logging config can't silence it.
+            sys.stderr.write(
+                "[cloakbrowser] context.request / page.request / route.fetch() do not use "
+                "this proxy (it is set on the browser, not Playwright) and will send from "
+                "your real IP. Use page.evaluate('fetch(...)') for proxied requests.\n"
+            )
+        return await original(*args, **kwargs)
+
+    request._inner_fetch = _inner_fetch
 
 
 def _resolve_proxy_config(

@@ -27,6 +27,17 @@ public class GeoIpTests
         // Extended-coverage entries (parity with Python/JS COUNTRY_LOCALE_MAP).
         Assert.Equal("sl-SI", GeoIp.CountryLocaleMap["SI"]);
         Assert.Equal("es-PE", GeoIp.CountryLocaleMap["PE"]);
+        Assert.Equal("en-SC", GeoIp.CountryLocaleMap["SC"]);
+    }
+
+    [Fact]
+    public void DefaultGeoIpTimeout_IsTwentySeconds()
+    {
+        var field = typeof(GeoIp).GetField(
+            "DefaultGeoIpTimeoutSeconds",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(field);
+        Assert.Equal(20.0, field.GetRawConstantValue());
     }
 
     [Fact]
@@ -154,23 +165,19 @@ public class KeyboardTests
         Assert.Equal("sqwz", HumanKeyboard.NearbyKeys['a']);
         Assert.Equal("ol", HumanKeyboard.NearbyKeys['p']);
     }
+
+    [Fact]
+    public void NearbyKeys_DigitNeighborsAreDigits()
+    {
+        // #573: a letter typo is rejected by <input type=number>, so the
+        // correcting Backspace would delete the previous real digit.
+        foreach (char d in "0123456789")
+            Assert.True(HumanKeyboard.NearbyKeys[d].All(char.IsDigit), $"'{d}' -> {HumanKeyboard.NearbyKeys[d]}");
+    }
 }
 
 public class ActionabilityTests
 {
-    [Fact]
-    public void CheckSets_Match_Python()
-    {
-        Assert.Equal(new HashSet<string> { "attached", "visible", "enabled", "pointer_events" },
-            new HashSet<string>(Actionability.ChecksClick));
-        Assert.Equal(new HashSet<string> { "attached", "visible", "pointer_events" },
-            new HashSet<string>(Actionability.ChecksHover));
-        Assert.Equal(new HashSet<string> { "attached", "visible", "enabled", "editable", "pointer_events" },
-            new HashSet<string>(Actionability.ChecksInput));
-        Assert.Equal(new HashSet<string> { "attached", "visible", "enabled" },
-            new HashSet<string>(Actionability.ChecksFocus));
-    }
-
     [Fact]
     public void ErrorHierarchy_AllSubclassActionabilityError()
     {

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any, Protocol, Tuple
+from typing import Any, Callable, List, Optional, Protocol, Tuple
 
-from .config import HumanConfig, rand, rand_range, rand_int_range, sleep_ms
+from .config import HumanConfig, rand, rand_lognormal, rand_range, rand_int_range, sleep_ms
 
 
 class RawMouse(Protocol):
@@ -41,18 +41,126 @@ def _bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: float) -> Point:
     )
 
 
-def _random_control_points(start: Point, end: Point) -> Tuple[Point, Point]:
+def _random_control_points(start: Point, end: Point, curvature: float = 0.3) -> Tuple[Point, Point]:
     dx = end.x - start.x
     dy = end.y - start.y
     dist = math.hypot(dx, dy) or 1
     px = -dy / dist
     py = dx / dist
-    bias1 = rand(-0.3, 0.3) * dist
-    bias2 = rand(-0.3, 0.3) * dist
+    # Both control points bend the same way more often than not: a hand
+    # sweeps an arc, it rarely draws an S.
+    bias1 = rand(-curvature, curvature) * dist
+    bias2 = bias1 * rand(0.2, 1.2) if random.random() < 0.8 else rand(-curvature, curvature) * dist
     return (
         Point(start.x + dx * 0.25 + px * bias1, start.y + dy * 0.25 + py * bias1),
         Point(start.x + dx * 0.75 + px * bias2, start.y + dy * 0.75 + py * bias2),
     )
+
+
+# ---------------------------------------------------------------------------
+# Stroke planning (shared by the humanize engine and human_move)
+# ---------------------------------------------------------------------------
+#
+# A pointing movement is a fast main stroke whose speed peaks early, then a
+# slow approach to the target, often finished by a short corrective stroke
+# (Meyer's optimised sub-movements; Plamondon's log-normal strokes). How long
+# it takes grows with log2 of the distance (Fitts' law) and varies a lot from
+# one move to the next. A mouse reports its position at a steady rate and
+# only when it actually moved.
+
+FRAME_MS = 1000 / 60  # pointer events arrive about once per display frame
+_PEAK = (0.22, 0.38)  # where the speed peaks, as a fraction of the stroke time
+
+
+def _progress_curve(peak: float) -> "Callable[[float], float]":
+    """Smooth 0->1 distance curve whose speed peaks at ``peak`` of the time
+    (a time-warped minimum-jerk profile: fast early, long slow tail)."""
+    k = math.log(0.5) / math.log(peak)  # u = t**k puts the mid point at peak
+
+    def f(t: float) -> float:
+        u = t ** k
+        return u * u * u * (10 - 15 * u + 6 * u * u)
+
+    return f
+
+
+def stroke_duration(dist: float, cfg: HumanConfig) -> float:
+    """Milliseconds for a ``dist`` px stroke (Fitts' law, log-normal spread)."""
+    median = cfg.mouse_time_base + cfg.mouse_time_per_bit * math.log2(1 + dist / 8)
+    return max(FRAME_MS * 2, rand_lognormal(median, cfg.mouse_time_spread))
+
+
+def plan_stroke(sx: float, sy: float, ex: float, ey: float, cfg: HumanConfig,
+                duration: Optional[float] = None) -> List[Tuple[float, float, float]]:
+    """Points of one stroke as ``(x, y, ms_since_previous)``; the last point is
+    exactly ``(ex, ey)``. Consecutive points always differ (a real mouse does
+    not report a move without movement)."""
+    dist = math.hypot(ex - sx, ey - sy)
+    if dist < 0.5:
+        return []
+    total = duration if duration is not None else stroke_duration(dist, cfg)
+    n = int(max(cfg.mouse_min_steps, min(cfg.mouse_max_steps, round(total / FRAME_MS))))
+    n = max(1, n)
+    start, end = Point(sx, sy), Point(ex, ey)
+    cp1, cp2 = _random_control_points(start, end, 0.12)
+    curve = _progress_curve(rand(*_PEAK))
+    # Low-frequency sideways drift (a hand is not a ruler), zero at both ends.
+    ux, uy = (ex - sx) / dist, (ey - sy) / dist
+    amp = min(cfg.mouse_wobble_max, dist * 0.02) * rand(-1, 1)
+    waves = rand(0.5, 1.5)
+    phase = rand(0, math.pi)
+    out: List[Tuple[float, float, float]] = []
+    lx, ly = sx, sy
+    t_prev = 0.0
+    for i in range(1, n + 1):
+        # Frame timing jitters a little; the final event lands on the target.
+        t = min(1.0, (i + (rand(-0.2, 0.2) if i < n else 0)) / n)
+        if i == n:
+            x, y = ex, ey
+            if abs(x - lx) < 1 and abs(y - ly) < 1:
+                if not out:
+                    break  # already there (sub-pixel move): nothing to report
+                # The last frame already got there: land exactly on it instead.
+                _, _, pdt = out.pop()
+                out.append((x, y, pdt + (t - t_prev) * total))
+                break
+        else:
+            p = _bezier(start, cp1, cp2, end, curve(t))
+            w = amp * math.sin(math.pi * t) * math.sin(phase + 2 * math.pi * waves * t)
+            x, y = round(p.x - uy * w), round(p.y + ux * w)
+            if abs(x - lx) < 1 and abs(y - ly) < 1:
+                continue
+        dt = (t - t_prev) * total
+        t_prev = t
+        out.append((x, y, dt))
+        lx, ly = x, y
+    return out
+
+
+def plan_move(sx: float, sy: float, ex: float, ey: float,
+              cfg: HumanConfig) -> List[Tuple[float, float, float]]:
+    """A whole move: main stroke, and sometimes a miss near the target plus a
+    short corrective stroke onto it."""
+    dist = math.hypot(ex - sx, ey - sy)
+    if dist < 0.5:
+        return []
+    if dist > 40 and random.random() < cfg.mouse_overshoot_chance:
+        # Land a little past (or short of) the target, slightly off-line.
+        ang = math.atan2(ey - sy, ex - sx) + rand(-0.25, 0.25)
+        miss = dist * rand(0.01, 0.05) + rand_range(cfg.mouse_overshoot_px)
+        if random.random() < 0.3:
+            miss = -miss  # undershoot
+        mx, my = round(ex + math.cos(ang) * miss), round(ey + math.sin(ang) * miss)
+        pts = plan_stroke(sx, sy, mx, my, cfg)
+        corr = math.hypot(ex - mx, ey - my)
+        pause = rand(40, 140)
+        tail = plan_stroke(mx, my, ex, ey, cfg,
+                           duration=max(FRAME_MS * 2, rand_lognormal(90 + 25 * math.log2(1 + corr), 0.3)))
+        if tail:
+            x, y, dt = tail[0]
+            tail[0] = (x, y, dt + pause)
+        return pts + tail
+    return plan_stroke(sx, sy, ex, ey, cfg)
 
 
 def human_move(
@@ -61,42 +169,9 @@ def human_move(
     end_x: float, end_y: float,
     cfg: HumanConfig,
 ) -> None:
-    dist = math.hypot(end_x - start_x, end_y - start_y)
-    if dist < 1:
-        return
-
-    steps = max(cfg.mouse_min_steps, min(cfg.mouse_max_steps, round(dist / cfg.mouse_steps_divisor)))
-    start = Point(start_x, start_y)
-    end = Point(end_x, end_y)
-    cp1, cp2 = _random_control_points(start, end)
-
-    burst_counter = 0
-    burst_size = rand_int_range(cfg.mouse_burst_size)
-
-    for i in range(steps + 1):
-        progress = i / steps
-        eased_t = _ease_in_out(progress)
-        pt = _bezier(start, cp1, cp2, end, eased_t)
-
-        wobble_amp = math.sin(math.pi * progress) * cfg.mouse_wobble_max
-        wx = pt.x + (random.random() - 0.5) * 2 * wobble_amp
-        wy = pt.y + (random.random() - 0.5) * 2 * wobble_amp
-
-        raw.move(round(wx), round(wy))
-
-        burst_counter += 1
-        if burst_counter >= burst_size and i < steps:
-            sleep_ms(rand_range(cfg.mouse_burst_pause))
-            burst_counter = 0
-
-    if random.random() < cfg.mouse_overshoot_chance:
-        overshoot_dist = rand_range(cfg.mouse_overshoot_px)
-        angle = math.atan2(end_y - start_y, end_x - start_x)
-        raw.move(round(end_x + math.cos(angle) * overshoot_dist),
-                 round(end_y + math.sin(angle) * overshoot_dist))
-        sleep_ms(rand(30, 70))
-        raw.move(round(end_x + (random.random() - 0.5) * 4),
-                 round(end_y + (random.random() - 0.5) * 4))
+    for x, y, dt in plan_move(start_x, start_y, end_x, end_y, cfg):
+        sleep_ms(dt)
+        raw.move(x, y)
 
 
 def click_target(box: dict, is_input: bool, cfg: HumanConfig) -> Point:

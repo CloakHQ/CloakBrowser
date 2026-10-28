@@ -49,7 +49,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "playwright>=1.40",
+    "playwright>=1.53",
     "httpx>=0.24",
     "cryptography>=41.0",  # verify Ed25519 signature on SHA256SUMS before trusting it
 ]
@@ -57,7 +57,7 @@ dependencies = [
 [project.optional-dependencies]
 geoip = ["geoip2>=4.0", "socksio>=1.0"]  # socksio: SOCKS5 transport for httpx
 serve = ["aiohttp>=3.9", "websockets>=12.0"]
-dev = ["pytest>=7.0", "pytest-asyncio>=0.23"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "pytest-timeout>=2.1"]
 
 [project.scripts]
 cloakbrowser = "cloakbrowser.__main__:main"
@@ -74,4 +74,7 @@ path = "cloakbrowser/_version.py"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-markers = ["slow: marks tests that hit live detection sites (deselect with '-m \"not slow\"')"]
+markers = [
+    "slow: marks tests that hit live detection sites (deselect with '-m \"not slow\"')",
+    "real_browser: launches the real binary from the real ~/.cloakbrowser cache (not isolated)",
+]

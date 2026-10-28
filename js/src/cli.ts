@@ -24,9 +24,9 @@ import {
   CHROMIUM_VERSION,
   WRAPPER_VERSION,
 } from "./config.js";
-import { countFontsPresent, WINDOWS_FONT_TELLS, OFFICE_FONT_TELLS } from "./fonts.js";
+import { countFontsPresent, WINDOWS_FONT_TELLS, OFFICE_FONT_TELLS, MACOS_FONT_TELLS } from "./fonts.js";
 import { resolveProxyGeo } from "./geoip.js";
-import { resolveLicenseKey, validateLicense, getProLatestRelease, getActiveSessionCount, type LicenseInfo } from "./license.js";
+import { resolveLicenseKey, validateLicense, getProLatestRelease, getSessionSeats, type LicenseInfo } from "./license.js";
 import { execFileSync, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -68,18 +68,11 @@ function moduleAvailable(name: string): boolean {
 /**
  * Launch `<binary> --version` to prove it runs.
  *
- * Chromium only handles --version on POSIX, so on Windows the switch is ignored
- * and a browser starts instead of printing — the probe then times out and a
- * healthy install looks broken. --no-startup-window makes it exit right away
- * without putting a window on screen; a broken binary still exits non-zero, so
- * the check keeps its meaning. It just reports no version there, as nothing is
- * printed.
+ * POSIX only: Windows ignores --version and starts a browser instead.
  */
 function binaryVersion(binaryPath: string): { ok: boolean; version: string; error: string } {
-  const argv = ["--version"];
-  if (os.platform() === "win32") argv.push("--no-startup-window");
   try {
-    const out = execFileSync(binaryPath, argv, {
+    const out = execFileSync(binaryPath, ["--version"], {
       encoding: "utf8",
       timeout: 10000,
       killSignal: "SIGKILL",
@@ -233,7 +226,13 @@ export async function collectDiagnostics(
   if (entitledPro && !quick) {
     const key = resolveLicenseKey();
     if (key) {
-      license.sessions = { active: await getActiveSessionCount(key) };
+      const seats = await getSessionSeats(key);
+      license.sessions = {
+        active: seats.active,
+        limit: seats.limit,
+        state: seats.state,
+        reason: seats.reason,
+      };
     }
   }
 
@@ -256,22 +255,33 @@ export async function collectDiagnostics(
     diag.launch = { tested: false, reason: "skipped (--quick)" };
   } else if (!binPath || !(installed || fs.existsSync(binPath))) {
     diag.launch = { tested: false, reason: "binary not installed" };
+  } else if (os.platform() === "win32") {
+    // Windows ignores --version and starts a real browser, which takes a
+    // license seat and never frees it. Read the version manifest instead.
+    const manifest = fs.readdirSync(path.dirname(binPath)).find((f) => f.endsWith(".manifest"));
+    let reason = "not launched on Windows (it would take a license seat)";
+    if (manifest) reason += `; binary ${manifest.slice(0, -".manifest".length)}`;
+    diag.launch = { tested: false, reason };
   } else {
     const { ok, version, error } = binaryVersion(binPath);
     diag.launch = { tested: true, ok, version, error };
     if (!ok) diag.launch.missing_libs = missingSharedLibs(binPath);
   }
 
-  // Windows-font probe — only meaningful on a Linux host spoofing Windows.
-  // Omitted entirely off Linux, where it carries no signal.
+  // Windows/macOS-font probe — only meaningful on a Linux host spoofing another
+  // OS. Omitted entirely off Linux, where it carries no signal.
   if (os.platform() === "linux") {
     // Strict count, not "any one present" — real font installs are atomic
     // (you have the whole pack or none), so report how complete the set is.
+    // Both sets are counted unconditionally: `info` has no persona flag, so we
+    // report each raw count and let the user read the one for the persona they spoof.
     const winN = countFontsPresent(WINDOWS_FONT_TELLS);
     const officeN = countFontsPresent(OFFICE_FONT_TELLS);
+    const macN = countFontsPresent(MACOS_FONT_TELLS);
     diag.fonts = {
       windows: winN === null ? null : [winN, WINDOWS_FONT_TELLS.length],
       office: officeN === null ? null : [officeN, OFFICE_FONT_TELLS.length],
+      macos: macN === null ? null : [macN, MACOS_FONT_TELLS.length],
     };
   }
 
@@ -300,6 +310,43 @@ export async function collectDiagnostics(
   };
 
   return diag;
+}
+
+interface SeatSection {
+  active?: number | null;
+  limit?: number | null;
+  state?: string;
+  reason?: string | null;
+}
+
+// Server error codes → the words a customer can act on. Anything unrecognised is
+// printed verbatim rather than swallowed, so a new server code still says something.
+const SEAT_DENIAL_REASONS: Record<string, string> = {
+  invalid_key: "invalid key",
+  license_inactive: "license inactive",
+  rate_limited: "rate limited",
+};
+
+/** Render the seat lookup. Kept identical in the Python and .NET wrappers. */
+export function formatSeats(sessions: SeatSection): string {
+  const state = sessions.state ?? "ok";
+  if (state === "unreachable") return "unavailable (cannot reach cloakbrowser.dev)";
+  if (state === "denied") {
+    const reason = sessions.reason || "refused";
+    return `unavailable (${SEAT_DENIAL_REASONS[reason] ?? reason})`;
+  }
+  if (state !== "ok" || typeof sessions.active !== "number") {
+    // The server is up and the key is fine — it just cannot count right now.
+    return "unavailable (server cannot report seats right now)";
+  }
+
+  const active = sessions.active;
+  if (typeof sessions.limit !== "number") {
+    // No cap to show (unlimited, unrecognised plan, or a server predating the
+    // field). Fall back to the bare count — never print "N/unknown".
+    return `${active} seat${active === 1 ? "" : "s"} in use`;
+  }
+  return `${active}/${sessions.limit} in use`;
 }
 
 function printDiagnostics(diag: Record<string, any>): void {
@@ -393,6 +440,19 @@ function printDiagnostics(diag: Record<string, any>): void {
       const verdict = n === total ? "ok" : n === 0 ? "absent" : "partial";
       console.log(`Office fonts: ${verdict} (${n}/${total})`);
     }
+    const mac = diag.fonts.macos;
+    if (mac === undefined || mac === null) {
+      console.log("Mac fonts: unknown (fc-list unavailable)");
+    } else {
+      const [n, total] = mac;
+      const verdict = n === total ? "ok" : n === 0 ? "missing" : "partial";
+      console.log(`Mac fonts: ${verdict} (${n}/${total})`);
+      if (n < total) {
+        // Phrased conditionally: some Mac fonts also ship on a Windows box, so a
+        // partial count is expected unless macOS is the intended persona.
+        console.log("           → if spoofing macOS on this host, copy the real Mac fonts (Helvetica Neue, Menlo, SF/Apple system fonts)");
+      }
+    }
   }
 
   const lic = diag.license;
@@ -412,12 +472,7 @@ function printDiagnostics(diag: Record<string, any>): void {
   }
 
   if (lic.sessions) {
-    const active = (lic.sessions as { active: number | null }).active;
-    console.log(
-      active === null
-        ? "Sessions:  unavailable"
-        : `Sessions:  ${active} seat${active === 1 ? "" : "s"} in use`
-    );
+    console.log(`Sessions:  ${formatSeats(lic.sessions as SeatSection)}`);
   }
 
   const resolved = diag.geoip.resolved;

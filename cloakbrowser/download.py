@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -74,7 +75,16 @@ WELCOME_FREE_INTERVAL = 24 * 3600
 # Pro Chromium major shown in the free-tier welcome banner. Bump at each Pro
 # major release (there is no local constant to derive it from — the live Pro
 # version comes from the network, which we don't call just to print a banner).
-PRO_MAJOR = "150"
+PRO_MAJOR = "155"
+
+# Attempts to rename an extraction into place while concurrent callers are
+# replacing the same partial install (see _extract_archive).
+INSTALL_RENAME_ATTEMPTS = 5
+
+# Retries for a directory rename that Windows transiently denies (see
+# _rename_dir_with_retry): about 2.5 seconds in total.
+TRANSIENT_RENAME_ATTEMPTS = 10
+TRANSIENT_RENAME_DELAY = 0.25
 
 
 def _welcome_due(marker: Path, pro: bool) -> bool:
@@ -113,6 +123,20 @@ def _warn_preview_fallback() -> None:
     )
 
 
+def _emit(text: str) -> None:
+    """Write a cosmetic line to stderr, swallowing any error.
+
+    On a legacy Windows console sys.stderr is cp1252/strict; an unencodable
+    glyph raises UnicodeEncodeError. Because the welcome banner runs on the
+    binary-download path, that would abort the whole launch.
+    A banner is decoration - never let it propagate.
+    """
+    try:
+        sys.stderr.write(text)
+    except Exception:
+        pass
+
+
 def _show_welcome(tier: str = "keyless") -> None:
     """Show welcome message on launch. A marker file gates the cadence: a paid
     (Pro) key shows once ever; free (keyless or a free GitHub key) re-shows every
@@ -126,36 +150,40 @@ def _show_welcome(tier: str = "keyless") -> None:
     marker = get_cache_dir() / ".welcome_shown"
     if not _welcome_due(marker, pro=(tier == "pro")):
         return
-    sys.stderr.write("\n")
-    sys.stderr.write("  CloakBrowser — stealth Chromium for automation\n")
-    sys.stderr.write("  https://github.com/CloakHQ/CloakBrowser\n")
-    sys.stderr.write("\n")
+    # ASCII-only banner + a swallow-everything writer: on a legacy Windows
+    # console sys.stderr is cp1252/strict, so a non-ASCII glyph (or any IO
+    # error) here would raise and abort the whole binary-download path. A
+    # cosmetic banner must never be able to kill a launch.
+    _emit("\n")
+    _emit("  CloakBrowser - stealth Chromium for automation\n")
+    _emit("  https://github.com/CloakHQ/CloakBrowser\n")
+    _emit("\n")
     if tier == "pro":
-        sys.stderr.write(
-            f"  CloakBrowser Pro active (v{PRO_MAJOR}) — latest binary, newest patches.\n"
+        _emit(
+            f"  CloakBrowser Pro active (v{PRO_MAJOR}) - latest binary, newest patches.\n"
         )
-        sys.stderr.write("  Pro support → support@cloakbrowser.dev\n")
+        _emit("  Pro support -> support@cloakbrowser.dev\n")
     elif tier == "free":
-        sys.stderr.write(
+        _emit(
             f"  CloakBrowser free (v{PRO_MAJOR}): the latest binary, 1 concurrent session.\n"
         )
-        sys.stderr.write(
-            "  For more than one concurrent session → https://cloakbrowser.dev\n"
+        _emit(
+            "  For more than one concurrent session -> https://cloakbrowser.dev\n"
         )
     else:
         free_major = CHROMIUM_VERSION.split(".")[0]
-        sys.stderr.write(
+        _emit(
             f"  Running the free binary (v{free_major}). "
             f"The latest binary (v{PRO_MAJOR}) is free too, with 1 concurrent session.\n"
         )
-        sys.stderr.write(
+        _emit(
             "  Get your key: run  cloakbrowser login  or visit https://cloakbrowser.dev/free\n"
         )
-        sys.stderr.write(
-            "  For more than one concurrent session → https://cloakbrowser.dev\n"
+        _emit(
+            "  For more than one concurrent session -> https://cloakbrowser.dev\n"
         )
-    sys.stderr.write("  Star us if CloakBrowser helps your project!\n")
-    sys.stderr.write("\n")
+    _emit("  Star us if CloakBrowser helps your project!\n")
+    _emit("\n")
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(str(int(time.time())))
@@ -193,7 +221,11 @@ def ensure_binary(
     requested_version = normalize_requested_version(browser_version)
 
     # Pro license key check (custom download URL overrides Pro path)
-    from .license import resolve_license_key, validate_license
+    from .license import (
+        CloakBrowserLicenseError,
+        resolve_license_key,
+        validate_license,
+    )
 
     key = resolve_license_key(license_key)
     if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
@@ -232,11 +264,19 @@ def ensure_binary(
                     f"CLOAKBROWSER_LICENSE_KEY."
                 ) from e
         elif info:
-            logger.warning(
-                "License validation failed (plan=%s), using free tier", info.plan
+            # Key supplied but rejected — abort, never downgrade to free.
+            raise CloakBrowserLicenseError(
+                f"CloakBrowser Pro: license key is invalid or expired "
+                f"(plan={info.plan}). Check CLOAKBROWSER_LICENSE_KEY, or unset it "
+                f"to use the free binary."
             )
         else:
-            logger.warning("License validation unavailable, using free tier")
+            # Key supplied but unvalidatable (server down, no cache) — abort.
+            raise CloakBrowserLicenseError(
+                "CloakBrowser Pro: license could not be validated (server "
+                "unreachable and no cached validation). Retry in a moment, or "
+                "unset CLOAKBROWSER_LICENSE_KEY to use the free binary."
+            )
 
     # Fail fast if no binary available for this platform
     check_platform_available()
@@ -868,75 +908,97 @@ def _extract_archive(
 ) -> None:
     """Extract tar.gz or zip archive to destination directory."""
     logger.info("Extracting to %s", dest_dir)
-
-    # Clean existing dir if partial download existed
-    if dest_dir.exists():
-        try:
-            shutil.rmtree(dest_dir)
-        except OSError:
-            logger.error("Failed to remove partial extraction directory: %s", dest_dir)
-            raise
-
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    if str(archive_path).endswith(".zip"):
-        _extract_zip(archive_path, dest_dir)
-    else:
-        _extract_tar(archive_path, dest_dir)
-
-    # If extracted into a single subdirectory, flatten it
-    # (e.g. fingerprint-chromium-142-custom-v2/chrome → chrome)
-    # But never flatten .app bundles — macOS needs the bundle structure intact
-    _flatten_single_subdir(dest_dir)
-
-    # Make binary executable
     bp = binary_path or get_binary_path()
-    if bp.exists():
-        _make_executable(bp)
 
-    # macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
-    if platform.system() == "Darwin":
-        _remove_quarantine(dest_dir)
+    # Extract into a private sibling dir, then rename it into place. Concurrent
+    # first runs (in this process or others) each get their own staging dir, so
+    # none of them can see or delete another's half-written install.
+    staging_dir = dest_dir.with_name(f"{dest_dir.name}.partial-{uuid.uuid4().hex}")
+    staging_dir.mkdir()
+    stale_dirs: list[Path] = []
+    try:
+        if str(archive_path).endswith(".zip"):
+            _extract_zip(archive_path, staging_dir)
+        else:
+            _extract_tar(archive_path, staging_dir)
+
+        # If extracted into a single subdirectory, flatten it
+        # (e.g. fingerprint-chromium-142-custom-v2/chrome → chrome)
+        # But never flatten .app bundles: macOS needs the bundle structure intact
+        _flatten_single_subdir(staging_dir)
+
+        # Make binary executable
+        staged_binary_path = staging_dir / bp.relative_to(dest_dir)
+        if staged_binary_path.exists():
+            _make_executable(staged_binary_path)
+
+        # macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts
+        if platform.system() == "Darwin":
+            _remove_quarantine(staging_dir)
+
+        for attempt in range(1, INSTALL_RENAME_ATTEMPTS + 1):
+            try:
+                _rename_dir_with_retry(staging_dir, dest_dir)
+                break
+            except OSError:
+                # dest_dir is in the way. Keep it if another caller finished a complete
+                # install; replace it if it is an incomplete leftover, such as an
+                # interrupted in-place extraction from an older release.
+                if bp.exists() and _is_executable(bp):
+                    break
+                if attempt == INSTALL_RENAME_ATTEMPTS:
+                    raise
+            # Rename the leftover aside before deleting it. Deleting it in place races
+            # other callers renaming their extraction into dest_dir.
+            stale_dir = dest_dir.with_name(f"{dest_dir.name}.stale-{uuid.uuid4().hex}")
+            try:
+                _rename_dir_with_retry(dest_dir, stale_dir)
+            except FileNotFoundError:
+                continue  # another caller moved it aside first
+            stale_dirs.append(stale_dir)
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        for stale_dir in stale_dirs:
+            shutil.rmtree(stale_dir, ignore_errors=True)
 
     if bp.exists():
         logger.info("Binary ready: %s", bp)
 
 
-def _extract_tar(archive_path: Path, dest_dir: Path) -> None:
-    """Extract tar.gz archive with path traversal protection."""
-    with tarfile.open(archive_path, "r:gz") as tar:
-        safe_members = []
-        for member in tar.getmembers():
-            # Allow symlinks — macOS .app bundles require them (Framework layout)
-            if member.issym() or member.islnk():
-                link_target = member.linkname
-                if os.path.isabs(link_target) or ".." in link_target.split("/"):
-                    logger.warning(
-                        "Skipping suspicious symlink: %s -> %s",
-                        member.name,
-                        link_target,
-                    )
-                    continue
-            else:
-                member_path = (dest_dir / member.name).resolve()
-                if not str(member_path).startswith(str(dest_dir.resolve())):
-                    raise RuntimeError(
-                        f"Archive contains path traversal: {member.name}"
-                    )
-            safe_members.append(member)
+def _rename_dir_with_retry(source: Path, destination: Path) -> None:
+    """Rename a directory, retrying while Windows reports it as in use."""
+    for attempt in range(1, TRANSIENT_RENAME_ATTEMPTS + 1):
+        try:
+            source.rename(destination)
+            return
+        except PermissionError:
+            # Windows antivirus briefly holds freshly written files open, which fails the
+            # rename with access denied. An existing destination is not transient.
+            if (
+                platform.system() != "Windows"
+                or attempt == TRANSIENT_RENAME_ATTEMPTS
+                or destination.exists()
+            ):
+                raise
+            time.sleep(TRANSIENT_RENAME_DELAY)
 
-        tar.extractall(dest_dir, members=safe_members)
+
+def _extract_tar(archive_path: Path, dest_dir: Path) -> None:
+    """Extract tar.gz. Archive is signature-verified before extraction, so unpack
+    as-is. filter="fully_trusted" pins legacy behavior (3.14 defaults to "data",
+    which mangles macOS .app symlinks/perms); fallback covers Python < 3.12."""
+    with tarfile.open(archive_path, "r:gz") as tar:
+        try:
+            tar.extractall(dest_dir, filter="fully_trusted")
+        except TypeError:
+            tar.extractall(dest_dir)
 
 
 def _extract_zip(archive_path: Path, dest_dir: Path) -> None:
-    """Extract zip archive with path traversal protection."""
+    """Extract zip. Signature-verified before extraction, so unpack as-is."""
     import zipfile
 
     with zipfile.ZipFile(archive_path, "r") as zf:
-        for info in zf.infolist():
-            member_path = (dest_dir / info.filename).resolve()
-            if not str(member_path).startswith(str(dest_dir.resolve())):
-                raise RuntimeError(f"Archive contains path traversal: {info.filename}")
         zf.extractall(dest_dir)
 
 
@@ -1210,7 +1272,7 @@ def _check_wrapper_update() -> None:
         latest = resp.json()["info"]["version"]
         if _version_newer(latest, _wrapper_version):
             logger.warning(
-                "Update available: cloakbrowser %s → %s. "
+                "Update available: cloakbrowser %s -> %s. "
                 "Run: pip install --upgrade cloakbrowser",
                 _wrapper_version,
                 latest,

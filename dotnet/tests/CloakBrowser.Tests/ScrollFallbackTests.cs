@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using CloakBrowser.Human;
 using Xunit;
@@ -36,6 +37,37 @@ public class ScrollFallbackTests
             LiveCalls++;
             return Task.FromResult(_live);
         }
+
+        public Task<(double Y, double MaxY, double X, double MaxX)?> GetScrollStateAsync() =>
+            Task.FromResult<(double, double, double, double)?>((0, 0, 0, 0));
+    }
+
+    /// <summary>Scroll page with a fixed viewport and configurable scroll position.</summary>
+    private sealed class ViewportPage : IRawScrollPage
+    {
+        private readonly (int, int) _size;
+        private readonly (double, double, double, double)? _scroll;
+        public ViewportPage((int, int) size, (double, double, double, double)? scroll)
+        {
+            _size = size;
+            _scroll = scroll;
+        }
+
+        public (int Width, int Height)? ViewportSize => _size;
+        public Task<(int Width, int Height)?> GetLiveWindowSizeAsync() =>
+            Task.FromResult<(int, int)?>(_size);
+        public Task<(double Y, double MaxY, double X, double MaxX)?> GetScrollStateAsync() =>
+            Task.FromResult(_scroll);
+    }
+
+    private sealed class CountingMouse : IRawMouse
+    {
+        public List<(double Dx, double Dy)> Wheels { get; } = new();
+        public int WheelCalls => Wheels.Count;
+        public Task MoveAsync(double x, double y) => Task.CompletedTask;
+        public Task DownAsync() => Task.CompletedTask;
+        public Task UpAsync() => Task.CompletedTask;
+        public Task WheelAsync(double dx, double dy) { Wheels.Add((dx, dy)); return Task.CompletedTask; }
     }
 
     // Zero out the timing ranges so the scroll loop runs instantly in tests.
@@ -90,5 +122,135 @@ public class ScrollFallbackTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             HumanScroll.HumanScrollIntoViewAsync(page, raw, getBox, 0, 0, FastConfig()));
+    }
+
+    [Fact]
+    public async Task Fully_visible_above_zone_at_top_bails_without_scrolling()
+    {
+        // viewport 720 -> zone [144, 576]; element top=50 is above the zone but
+        // fully visible, and the page is pinned at the top (y=0). Must not scroll.
+        var page = new ViewportPage((1280, 720), scroll: (0, 2000, 0, 0));
+        var mouse = new CountingMouse();
+        Func<Task<BoundingBox?>> getBox = () => Task.FromResult<BoundingBox?>(new BoundingBox(200, 50, 50, 30));
+
+        var result = await HumanScroll.HumanScrollIntoViewAsync(page, mouse, getBox, 0, 0, FastConfig());
+
+        Assert.False(result.DidScroll);
+        Assert.Equal(0, mouse.WheelCalls);
+    }
+
+    [Fact]
+    public async Task Subpixel_negative_top_at_page_top_bails_without_scrolling()
+    {
+        // Layout reports top=-1/64 px on an unscrolled page; still fully visible.
+        var page = new ViewportPage((1000, 700), scroll: (0, 0, 0, 0));
+        var mouse = new CountingMouse();
+        Func<Task<BoundingBox?>> getBox = () => Task.FromResult<BoundingBox?>(new BoundingBox(200, -0.015625, 200, 21.5));
+
+        var result = await HumanScroll.HumanScrollIntoViewAsync(page, mouse, getBox, 0, 0, FastConfig());
+
+        Assert.False(result.DidScroll);
+        Assert.Equal(0, mouse.WheelCalls);
+    }
+
+    [Fact]
+    public async Task Fully_visible_above_zone_with_room_still_scrolls()
+    {
+        // Same element, but the page is scrolled down (y=500) so it CAN scroll up.
+        var page = new ViewportPage((1280, 720), scroll: (500, 2000, 0, 0));
+        var mouse = new CountingMouse();
+        Func<Task<BoundingBox?>> getBox = () => Task.FromResult<BoundingBox?>(new BoundingBox(200, 50, 50, 30));
+
+        await HumanScroll.HumanScrollIntoViewAsync(page, mouse, getBox, 0, 0, FastConfig());
+
+        Assert.True(mouse.WheelCalls > 0);
+    }
+
+    [Fact]
+    public async Task Box_past_right_edge_scrolls_x_axis_only()
+    {
+        // #521: viewport 1000 wide, element spans x 800..1600 on a page that can
+        // scroll 600px right. The y axis is already in the zone.
+        var page = new ViewportPage((1000, 700), scroll: (0, 0, 0, 600));
+        var mouse = new CountingMouse();
+        var boxes = new Queue<BoundingBox?>(new BoundingBox?[]
+        {
+            new BoundingBox(800, 300, 800, 30),
+            new BoundingBox(200, 300, 800, 30),
+        });
+        Func<Task<BoundingBox?>> getBox = () => Task.FromResult(boxes.Dequeue());
+
+        var result = await HumanScroll.HumanScrollIntoViewAsync(page, mouse, getBox, 0, 0, FastConfig());
+
+        Assert.True(result.DidScroll);
+        Assert.Equal(200, result.Box.X);
+        Assert.NotEmpty(mouse.Wheels);
+        Assert.All(mouse.Wheels, w =>
+        {
+            Assert.True(w.Dx > 0);
+            Assert.Equal(0, w.Dy);
+        });
+    }
+
+    [Fact]
+    public async Task Smooth_wheel_sends_whole_notches_only()
+    {
+        // CDP reports every wheel event as one notch (wheelDeltaY 120), so each
+        // event's pixel delta must be one whole notch - never a chunk or (0, 0).
+        foreach (double notch in new[] { 40.0, 100.0, 120.0 })
+        {
+            var cfg = FastConfig();
+            cfg.ScrollNotchPx = notch;
+            for (int i = 0; i < 20; i++)
+            {
+                var mouse = new CountingMouse();
+                double delta = (i % 2 == 1 ? -1 : 1) * (notch + 37 * i);
+                await HumanScroll.SmoothWheelAsync(mouse, 0, delta, cfg);
+                Assert.NotEmpty(mouse.Wheels);
+                Assert.All(mouse.Wheels, w => { Assert.Equal(0, w.Dx); Assert.Equal(notch, Math.Abs(w.Dy)); });
+                Assert.True(Math.Abs(mouse.Wheels.Sum(w => w.Dy) - delta) <= notch / 2);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Box_past_right_edge_with_page_pinned_right_bails_without_scrolling()
+    {
+        var page = new ViewportPage((1000, 700), scroll: (0, 0, 600, 600));
+        var mouse = new CountingMouse();
+        Func<Task<BoundingBox?>> getBox = () => Task.FromResult<BoundingBox?>(new BoundingBox(900, 300, 200, 30));
+
+        var result = await HumanScroll.HumanScrollIntoViewAsync(page, mouse, getBox, 0, 0, FastConfig());
+
+        Assert.False(result.DidScroll);
+        Assert.Equal(0, mouse.WheelCalls);
+    }
+
+    [Fact]
+    public async Task Rtl_page_at_start_scrolls_x_axis_left()
+    {
+        // RTL page at its start: scrollX 0 with a range of -600..0, which an
+        // IRawScrollPage reports measured from the leftmost position (X = 600 of 0..600).
+        // The element sits in the left overflow, so the page is not pinned that way.
+        (double, double, double, double) scroll = (0, 0, 600, 600);
+        var page = new ViewportPage((1000, 700), scroll);
+        var mouse = new CountingMouse();
+        var boxes = new Queue<BoundingBox?>(new BoundingBox?[]
+        {
+            new BoundingBox(-600, 300, 200, 30),
+            new BoundingBox(400, 300, 200, 30),
+        });
+        Func<Task<BoundingBox?>> getBox = () => Task.FromResult(boxes.Dequeue());
+
+        var result = await HumanScroll.HumanScrollIntoViewAsync(page, mouse, getBox, 0, 0, FastConfig());
+
+        Assert.True(result.DidScroll);
+        Assert.Equal(400, result.Box.X);
+        Assert.NotEmpty(mouse.Wheels);
+        Assert.All(mouse.Wheels, w =>
+        {
+            Assert.True(w.Dx < 0);
+            Assert.Equal(0, w.Dy);
+        });
     }
 }

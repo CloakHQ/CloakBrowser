@@ -11,6 +11,11 @@ vi.mock("../src/download.js", () => ({
   ensureBinary: vi.fn().mockResolvedValue("/fake/chrome"),
 }));
 
+// "./my-profile" is a fake path: keep the seed file off disk (covered in profile-seed.test.ts).
+vi.mock("../src/profile-seed.js", () => ({
+  persistentSeedArgs: (_d: any, _s: any, a: any) => a,
+}));
+
 vi.mock("../src/geoip.js", () => ({
   resolveProxyGeo: vi.fn().mockResolvedValue({ timezone: null, locale: null }),
   maybeResolveGeoip: vi.fn().mockResolvedValue({}),

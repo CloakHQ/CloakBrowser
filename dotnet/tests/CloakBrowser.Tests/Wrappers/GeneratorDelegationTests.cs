@@ -41,19 +41,20 @@ public class GeneratorDelegationTests
     public async Task Method_arguments_are_forwarded_unchanged()
     {
         var (human, rec) = Locator();
-        rec.On("GetAttributeAsync", Task.FromResult<string?>("yes"));
-        await human.GetAttributeAsync("data-id");
-        Assert.Equal("data-id", rec.Last("GetAttributeAsync")!.Args[0]);
+        rec.On("WaitForAsync", Task.CompletedTask);
+        var options = new LocatorWaitForOptions();
+        await human.WaitForAsync(options);
+        Assert.Same(options, rec.Last("WaitForAsync")!.Args[0]);
     }
 
     [Fact]
     public async Task Method_with_optional_options_delegates_without_throwing()
     {
         var (human, rec) = Locator();
-        rec.On("InnerTextAsync", Task.FromResult("text"));
+        rec.On("WaitForAsync", Task.CompletedTask);
         // Call without supplying the optional options argument.
-        Assert.Equal("text", await human.InnerTextAsync());
-        Assert.True(rec.WasCalled("InnerTextAsync"));
+        await human.WaitForAsync();
+        Assert.True(rec.WasCalled("WaitForAsync"));
     }
 
     [Fact]
@@ -88,8 +89,8 @@ public class GeneratorDelegationTests
     public async Task Delegated_exception_propagates_with_same_type_and_message()
     {
         var (human, rec) = Locator();
-        rec.On("InnerHTMLAsync", _ => throw new TimeoutException("timed out"));
-        var ex = await Assert.ThrowsAsync<TimeoutException>(() => human.InnerHTMLAsync());
+        rec.On("WaitForAsync", _ => throw new TimeoutException("timed out"));
+        var ex = await Assert.ThrowsAsync<TimeoutException>(() => human.WaitForAsync());
         Assert.Equal("timed out", ex.Message);
     }
 
@@ -200,14 +201,87 @@ public class GeneratorDelegationTests
         new object[] { typeof(HumanizedMouse), "MoveAsync" },
         new object[] { typeof(HumanizedMouse), "ClickAsync" },
         new object[] { typeof(HumanizedMouse), "DblClickAsync" },
-        new object[] { typeof(HumanizedMouse), "DownAsync" },
-        new object[] { typeof(HumanizedMouse), "UpAsync" },
-        new object[] { typeof(HumanizedMouse), "WheelAsync" },
         // HumanizedKeyboard
         new object[] { typeof(HumanizedKeyboard), "TypeAsync" },
-        new object[] { typeof(HumanizedKeyboard), "PressAsync" },
-        new object[] { typeof(HumanizedKeyboard), "InsertTextAsync" },
+        // Element reads + event dispatch (isolated world, never Playwright's own path)
+        new object[] { typeof(HumanizedPage), "InputValueAsync" },
+        new object[] { typeof(HumanizedPage), "TextContentAsync" },
+        new object[] { typeof(HumanizedPage), "InnerTextAsync" },
+        new object[] { typeof(HumanizedPage), "InnerHTMLAsync" },
+        new object[] { typeof(HumanizedPage), "GetAttributeAsync" },
+        new object[] { typeof(HumanizedPage), "DispatchEventAsync" },
+        new object[] { typeof(HumanizedFrame), "InputValueAsync" },
+        new object[] { typeof(HumanizedFrame), "TextContentAsync" },
+        new object[] { typeof(HumanizedFrame), "InnerTextAsync" },
+        new object[] { typeof(HumanizedFrame), "InnerHTMLAsync" },
+        new object[] { typeof(HumanizedFrame), "GetAttributeAsync" },
+        new object[] { typeof(HumanizedFrame), "DispatchEventAsync" },
+        new object[] { typeof(HumanizedLocator), "InputValueAsync" },
+        new object[] { typeof(HumanizedLocator), "TextContentAsync" },
+        new object[] { typeof(HumanizedLocator), "InnerTextAsync" },
+        new object[] { typeof(HumanizedLocator), "InnerHTMLAsync" },
+        new object[] { typeof(HumanizedLocator), "GetAttributeAsync" },
+        new object[] { typeof(HumanizedLocator), "DispatchEventAsync" },
+        new object[] { typeof(HumanizedElementHandle), "InputValueAsync" },
+        new object[] { typeof(HumanizedElementHandle), "TextContentAsync" },
+        new object[] { typeof(HumanizedElementHandle), "InnerTextAsync" },
+        new object[] { typeof(HumanizedElementHandle), "InnerHTMLAsync" },
+        new object[] { typeof(HumanizedElementHandle), "GetAttributeAsync" },
+        new object[] { typeof(HumanizedElementHandle), "DispatchEventAsync" },
     };
+
+    /// <summary>Every member that hands out an element handle, frame or frame locator
+    /// re-wraps it; otherwise actions on the result would run stock Playwright (visible to
+    /// the page through its InjectedScript events).</summary>
+    [Theory]
+    [InlineData(typeof(HumanizedPage), "QuerySelectorAsync")]
+    [InlineData(typeof(HumanizedPage), "QuerySelectorAllAsync")]
+    [InlineData(typeof(HumanizedPage), "WaitForSelectorAsync")]
+    [InlineData(typeof(HumanizedPage), "FrameLocator")]
+    [InlineData(typeof(HumanizedFrame), "QuerySelectorAsync")]
+    [InlineData(typeof(HumanizedFrame), "QuerySelectorAllAsync")]
+    [InlineData(typeof(HumanizedFrame), "WaitForSelectorAsync")]
+    [InlineData(typeof(HumanizedFrame), "FrameElementAsync")]
+    [InlineData(typeof(HumanizedFrame), "FrameLocator")]
+    [InlineData(typeof(HumanizedLocator), "ElementHandleAsync")]
+    [InlineData(typeof(HumanizedLocator), "ElementHandlesAsync")]
+    [InlineData(typeof(HumanizedLocator), "FrameLocator")]
+    [InlineData(typeof(HumanizedElementHandle), "QuerySelectorAsync")]
+    [InlineData(typeof(HumanizedElementHandle), "ContentFrameAsync")]
+    [InlineData(typeof(HumanizedElementHandle), "OwnerFrameAsync")]
+    public void Handle_and_frame_returning_member_rewraps(System.Type wrapper, string methodName)
+    {
+        var methods = wrapper.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Where(m => m.Name == methodName).ToList();
+        Assert.NotEmpty(methods);
+        Assert.All(methods, m => Assert.False(IsGenerated(m), $"{wrapper.Name}.{methodName} must re-wrap its result"));
+    }
+
+    [Theory]
+    [InlineData(typeof(HumanizedLocator), "ContentFrame")]
+    public void Frame_locator_property_rewraps(System.Type wrapper, string propertyName)
+    {
+        var getter = wrapper.GetProperty(propertyName)!.GetGetMethod()!;
+        Assert.False(IsGenerated(getter), $"{wrapper.Name}.{propertyName} must re-wrap its result");
+    }
+
+    /// <summary>Raw primitives stay raw, like the Python / JS wrappers: a person's
+    /// mouse down / up / wheel and key down / up / press / insertText map 1:1 to input.</summary>
+    [Theory]
+    [InlineData(typeof(HumanizedMouse), "DownAsync")]
+    [InlineData(typeof(HumanizedMouse), "UpAsync")]
+    [InlineData(typeof(HumanizedMouse), "WheelAsync")]
+    [InlineData(typeof(HumanizedKeyboard), "DownAsync")]
+    [InlineData(typeof(HumanizedKeyboard), "UpAsync")]
+    [InlineData(typeof(HumanizedKeyboard), "PressAsync")]
+    [InlineData(typeof(HumanizedKeyboard), "InsertTextAsync")]
+    public void Raw_input_primitive_is_delegated(System.Type wrapper, string methodName)
+    {
+        var methods = wrapper.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Where(m => m.Name == methodName).ToList();
+        Assert.NotEmpty(methods);
+        Assert.All(methods, m => Assert.True(IsGenerated(m), $"{wrapper.Name}.{methodName} should be delegated"));
+    }
 
     [Theory]
     [MemberData(nameof(InteractionMethodsByWrapper))]

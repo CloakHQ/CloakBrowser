@@ -446,7 +446,55 @@ describe("launchContext (unit)", () => {
     // Warning was logged for both stripped keys
     expect(warnSpy).toHaveBeenCalledTimes(2);
   });
+
+  it("warns once when the request client is used with a --proxy-server proxy (#579)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { req, inner } = mockRequestClient();
+    mockContext.request = req;
+    const { launchContext } = await import("../src/playwright.js");
+    const ctx: any = await launchContext({ proxy: "socks5://u:p@h:1080" });
+
+    expect(requestProxyWarnings(warnSpy)).toBe(0); // nothing until first use
+    await ctx.request._innerFetch({});
+    await ctx.request._innerFetch({});
+    expect(inner).toHaveBeenCalledTimes(2);
+    expect(requestProxyWarnings(warnSpy)).toBe(1);
+  });
+
+  it("no request client warning when Playwright owns the proxy (#579)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { req, inner } = mockRequestClient();
+    mockContext.request = req;
+    const { launchContext } = await import("../src/playwright.js");
+    const ctx: any = await launchContext({ proxy: "http://h:8080" });
+
+    await ctx.request._innerFetch({});
+    expect(inner).toHaveBeenCalledOnce();
+    expect(requestProxyWarnings(warnSpy)).toBe(0);
+  });
+
+  it("no request client warning when the context has its own proxy (#579)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { req } = mockRequestClient();
+    mockContext.request = req;
+    mockContext._options = { proxy: { server: "http://ctx-proxy:8080" } };
+    const { launchContext } = await import("../src/playwright.js");
+    const ctx: any = await launchContext({ proxy: "socks5://u:p@h:1080" });
+
+    await ctx.request._innerFetch({});
+    expect(requestProxyWarnings(warnSpy)).toBe(0);
+  });
 });
+
+/** Request client whose _innerFetch lives on the prototype, like playwright-core's. */
+function mockRequestClient() {
+  const proto = { _innerFetch: vi.fn().mockResolvedValue("ok") };
+  return { req: Object.create(proto), inner: proto._innerFetch };
+}
+
+function requestProxyWarnings(warnSpy: { mock: { calls: unknown[][] } }): number {
+  return warnSpy.mock.calls.filter((c) => String(c[0]).includes("context.request")).length;
+}
 
 describe("launchPersistentContext (unit)", () => {
   let mockContext: any;
@@ -461,6 +509,8 @@ describe("launchPersistentContext (unit)", () => {
     };
 
     vi.doMock("playwright-core", () => ({ chromium: mockChromium }));
+    // Fixed fake profile paths: keep the seed file off disk (covered in profile-seed.test.ts).
+    vi.doMock("../src/profile-seed.js", () => ({ persistentSeedArgs: (_d: any, _s: any, a: any) => a }));
   });
 
   afterEach(() => {
@@ -471,6 +521,30 @@ describe("launchPersistentContext (unit)", () => {
     } else {
       delete process.env.CLOAKBROWSER_BINARY_PATH;
     }
+  });
+
+  it("warns once when the request client is used with a --proxy-server proxy (#579)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { req, inner } = mockRequestClient();
+    mockContext.request = req;
+    const { launchPersistentContext } = await import("../src/playwright.js");
+    const ctx: any = await launchPersistentContext({ userDataDir: "/tmp/profile", proxy: "socks5://u:p@h:1080" });
+
+    await ctx.request._innerFetch({});
+    await ctx.request._innerFetch({});
+    expect(inner).toHaveBeenCalledTimes(2);
+    expect(requestProxyWarnings(warnSpy)).toBe(1);
+  });
+
+  it("no request client warning when Playwright owns the proxy (#579)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { req } = mockRequestClient();
+    mockContext.request = req;
+    const { launchPersistentContext } = await import("../src/playwright.js");
+    const ctx: any = await launchPersistentContext({ userDataDir: "/tmp/profile", proxy: "http://h:8080" });
+
+    await ctx.request._innerFetch({});
+    expect(requestProxyWarnings(warnSpy)).toBe(0);
   });
 
   it("applies DEFAULT_VIEWPORT", async () => {

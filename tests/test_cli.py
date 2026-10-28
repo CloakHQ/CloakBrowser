@@ -10,7 +10,7 @@ import pytest
 
 import cloakbrowser.__main__
 from cloakbrowser.__main__ import _binary_version, cmd_info
-from cloakbrowser.license import LicenseInfo, ProReleaseInfo
+from cloakbrowser.license import LicenseInfo, ProReleaseInfo, SessionSeats
 
 
 def _run(args, *, key=None, license_info=None, sessions=None):
@@ -18,8 +18,9 @@ def _run(args, *, key=None, license_info=None, sessions=None):
 
     key=None  -> no license -> free binary.
     key set   -> validate_license returns license_info (entitled to Pro if valid).
-    sessions  -> what the seat-count lookup reports (it is mocked out, so a
-                 non-quick Pro run never reaches the network).
+    sessions  -> the SessionSeats the seat lookup reports (it is mocked out, so a
+                 non-quick Pro run never reaches the network). None defaults to a
+                 server-cannot-count result, which keeps unrelated tests offline.
 
     Returns (download_free_mock, download_pro_mock, session_count_mock) so callers
     can assert the command never triggers a binary download or an unwanted lookup.
@@ -28,7 +29,8 @@ def _run(args, *, key=None, license_info=None, sessions=None):
         patch("cloakbrowser.license.resolve_license_key", return_value=key),
         patch("cloakbrowser.license.validate_license", return_value=license_info),
         patch(
-            "cloakbrowser.license.get_active_session_count", return_value=sessions
+            "cloakbrowser.license.get_session_seats",
+            return_value=sessions if sessions is not None else SessionSeats(state="unknown"),
         ) as mock_sessions,
         patch("cloakbrowser.download._download_and_extract") as mock_dl_free,
         patch("cloakbrowser.download._download_pro_binary") as mock_dl_pro,
@@ -170,35 +172,92 @@ def test_invalid_key_falls_back_to_free(capsys):
 _PRO = LicenseInfo(valid=True, plan="business", expires=None)
 
 
-def test_pro_reports_seats_in_use(capsys):
-    _run(Namespace(quick=False, json=True), key="cb_test", license_info=_PRO, sessions=3)
+def _seats(args_json=False, **seat_kwargs):
+    """Render the Sessions line for one SessionSeats result."""
+    return _run(
+        Namespace(quick=False, json=args_json),
+        key="cb_test",
+        license_info=_PRO,
+        sessions=SessionSeats(**seat_kwargs),
+    )
+
+
+def test_pro_reports_seats_and_limit_in_json(capsys):
+    _seats(args_json=True, active=8, limit=2000, state="ok")
     data = json.loads(capsys.readouterr().out)
-    assert data["license"]["sessions"] == {"active": 3}
+    assert data["license"]["sessions"] == {
+        "active": 8, "limit": 2000, "state": "ok", "reason": None,
+    }
 
 
-def test_seat_line_printed_in_text_mode(capsys):
-    _run(Namespace(quick=False, json=False), key="cb_test", license_info=_PRO, sessions=3)
-    assert "Sessions:  3 seats in use" in capsys.readouterr().out
+def test_seat_line_shows_used_over_limit(capsys):
+    """The point of the change: a scale-plan customer can see they are nowhere near
+    the ceiling (or right on it) instead of reading a bare number."""
+    _seats(active=8, limit=2000, state="ok")
+    assert "Sessions:  8/2000 in use" in capsys.readouterr().out
 
 
-def test_seat_line_is_singular_for_one(capsys):
-    _run(Namespace(quick=False, json=False), key="cb_test", license_info=_PRO, sessions=1)
-    assert "Sessions:  1 seat in use" in capsys.readouterr().out
-
-
-def test_zero_seats_reads_as_none_in_use_not_unavailable(capsys):
-    """0 is a real answer ("nothing running"); only an unknown prints unavailable."""
-    _run(Namespace(quick=False, json=False), key="cb_test", license_info=_PRO, sessions=0)
+def test_seat_line_falls_back_when_the_server_sends_no_limit(capsys):
+    """Older server, unlimited licence, or an unrecognised plan. Print the count we do
+    have rather than "8/unknown"."""
+    _seats(active=8, limit=None, state="ok")
     out = capsys.readouterr().out
-    assert "Sessions:  0 seats in use" in out
+    assert "Sessions:  8 seats in use" in out
     assert "unavailable" not in out
 
 
-def test_unknown_count_prints_unavailable(capsys):
-    """Server unreachable, or the server itself reported the count as unknown
-    (leaseless mode) -> "unavailable", never a made-up number."""
-    _run(Namespace(quick=False, json=False), key="cb_test", license_info=_PRO, sessions=None)
-    assert "Sessions:  unavailable" in capsys.readouterr().out
+def test_seat_fallback_is_singular_for_one(capsys):
+    _seats(active=1, limit=None, state="ok")
+    assert "Sessions:  1 seat in use" in capsys.readouterr().out
+
+
+def test_one_of_one_seat_shows_the_limit(capsys):
+    """A free key holds exactly one seat — the cohort most likely to hit its cap."""
+    _seats(active=1, limit=1, state="ok")
+    assert "Sessions:  1/1 in use" in capsys.readouterr().out
+
+
+def test_zero_seats_reads_as_a_real_answer_not_unavailable(capsys):
+    """0 is a real answer ("nothing running"); only an unknown prints unavailable."""
+    _seats(active=0, limit=5, state="ok")
+    out = capsys.readouterr().out
+    assert "Sessions:  0/5 in use" in out
+    assert "unavailable" not in out
+
+
+def test_unreachable_server_says_so(capsys):
+    _seats(state="unreachable")
+    assert "Sessions:  unavailable (cannot reach cloakbrowser.dev)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "code,shown",
+    [
+        ("license_inactive", "license inactive"),
+        ("invalid_key", "invalid key"),
+        ("rate_limited", "rate limited"),
+    ],
+)
+def test_denial_reasons_are_spelled_out(capsys, code, shown):
+    """These four used to be one string. A dead key and a healthy key behind a
+    degraded backend must not read identically."""
+    _seats(state="denied", reason=code)
+    assert f"Sessions:  unavailable ({shown})" in capsys.readouterr().out
+
+
+def test_unrecognised_denial_reason_is_passed_through(capsys):
+    """A server code we have no wording for still says something actionable."""
+    _seats(state="denied", reason="some_new_code")
+    assert "Sessions:  unavailable (some_new_code)" in capsys.readouterr().out
+
+
+def test_server_cannot_count_is_not_an_error(capsys):
+    """Leaseless mode / seat store down: the customer's key is fine and there is
+    nothing for them to do. Must not read like a licence problem."""
+    _seats(state="unknown")
+    out = capsys.readouterr().out
+    assert "Sessions:  unavailable (server cannot report seats right now)" in out
+    assert "invalid" not in out
 
 
 def test_quick_skips_the_seat_lookup(capsys):
@@ -248,6 +307,56 @@ def test_free_license_shows_upgrade_hint(capsys):
 
 
 # ---------------------------------------------------------------------------
+# Font probe — the Linux-only Windows/macOS-persona font check. Forces the Linux
+# branch and mocks fc-list so the count is deterministic on any host.
+# ---------------------------------------------------------------------------
+
+
+def _fonts_linux(mac_present):
+    """Patch context: force the Linux font branch and stub fc-list so the Windows
+    and Office sets read fully present while the mac set reports `mac_present`.
+    """
+    from cloakbrowser.browser import _MAC_FONT_TELLS
+
+    def fake_count(tells):
+        return mac_present if tells is _MAC_FONT_TELLS else len(tells)
+
+    return (
+        patch("cloakbrowser.__main__.platform.system", return_value="Linux"),
+        patch("cloakbrowser.browser._count_fonts_present", side_effect=fake_count),
+    )
+
+
+def test_info_reports_partial_mac_fonts_with_conditional_nudge(capsys):
+    # 5/20 = the Windows-box overlap (Arial, Georgia, Times New Roman, ...).
+    p_platform, p_count = _fonts_linux(5)
+    with p_platform, p_count:
+        _run(Namespace(quick=True, json=False))
+    out = capsys.readouterr().out
+    assert "Mac fonts: partial (5/20)" in out
+    assert "if spoofing macOS on this host" in out
+
+
+def test_info_full_mac_fonts_has_no_nudge(capsys):
+    from cloakbrowser.browser import _MAC_FONT_TELLS
+
+    p_platform, p_count = _fonts_linux(len(_MAC_FONT_TELLS))
+    with p_platform, p_count:
+        _run(Namespace(quick=True, json=False))
+    out = capsys.readouterr().out
+    assert "Mac fonts: ok (20/20)" in out
+    assert "if spoofing macOS on this host" not in out
+
+
+def test_info_json_includes_mac_font_count_on_linux(capsys):
+    p_platform, p_count = _fonts_linux(5)
+    with p_platform, p_count:
+        _run(Namespace(quick=True, json=True))
+    data = json.loads(capsys.readouterr().out)
+    assert data["fonts"]["macos"] == [5, 20]
+
+
+# ---------------------------------------------------------------------------
 # Launch test — exercises the real subprocess path (not --quick) against a stub
 # executable, so the launch-test code is actually covered by CI.
 # ---------------------------------------------------------------------------
@@ -293,24 +402,33 @@ def test_console_glyph_kept_on_utf8(monkeypatch):
 
 
 @pytestmark_posix
-def test_binary_version_windows_probe_does_not_hang(tmp_path, monkeypatch):
-    """Real Windows Chrome ignores --version and starts a browser instead of
-    printing, so the stub here hangs unless --no-startup-window is passed —
-    mirroring the binary rather than a stub that prints and exits."""
-    stub = tmp_path / "winchrome"
-    stub.write_text(
-        "#!/bin/sh\n"
-        'case "$*" in\n'
-        "  *--no-startup-window*) exit 0 ;;\n"
-        "  *) sleep 30 ;;\n"  # stands in for the browser that never returns
-        "esac\n"
-    )
+def test_info_never_launches_binary_on_windows(tmp_path, monkeypatch, capsys):
+    """Windows Chrome ignores --version and starts a real browser, which takes a
+    license seat it never releases. info must read the version manifest instead."""
+    marker = tmp_path / "ran"
+    stub = tmp_path / "chrome.exe"
+    stub.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
     stub.chmod(0o755)
+    (tmp_path / "1.2.3.4.manifest").write_text("")
+    fake_binary = {
+        "version": "1.2.3.4.1",
+        "tier": "pro",
+        "bundled_version": "x",
+        "path": str(stub),
+        "installed": True,
+        "cache_dir": str(tmp_path),
+        "override": None,
+    }
     monkeypatch.setattr(cloakbrowser.__main__.platform, "system", lambda: "Windows")
-    ok, version, err = _binary_version(str(stub))
-    assert ok, f"probe hung on a healthy Windows binary: {err}"
-    assert version == ""  # Windows prints no version
-    assert err == ""
+    with (
+        patch("cloakbrowser.license.resolve_license_key", return_value=None),
+        patch("cloakbrowser.__main__._effective_binary", return_value=fake_binary),
+    ):
+        cmd_info(Namespace(quick=False, json=True))
+    data = json.loads(capsys.readouterr().out)
+    assert data["launch"]["tested"] is False
+    assert "1.2.3.4" in data["launch"]["reason"]
+    assert not marker.exists(), "info launched the binary on Windows"
 
 
 @pytestmark_posix

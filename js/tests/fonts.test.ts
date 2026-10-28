@@ -138,3 +138,17 @@ describe("maybeWarnWindowsFonts", () => {
     expect(String(warn.mock.calls[0][0])).toContain(MSG);
   });
 });
+
+describe("MACOS_FONT_TELLS", () => {
+  it("holds the 20-font mac core set and counts via fc-list", async () => {
+    const { MACOS_FONT_TELLS, countFontsPresent } = await import("../src/fonts.js");
+    expect(MACOS_FONT_TELLS.length).toBe(20);
+    expect(MACOS_FONT_TELLS).toContain("Helvetica Neue");
+    const cp = await import("node:child_process");
+    // fc-list listing with only 2 of the mac tells present.
+    vi.mocked(cp.execFileSync).mockReturnValue(
+      "/x/Menlo.ttc: Menlo:style=Regular\n/x/Monaco.ttf: Monaco:style=Regular" as any,
+    );
+    expect(countFontsPresent(MACOS_FONT_TELLS as string[])).toBe(2);
+  });
+});

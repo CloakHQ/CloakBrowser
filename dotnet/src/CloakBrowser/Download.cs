@@ -48,6 +48,21 @@ public static class Download
     // once (see ShowWelcome).
     internal const long WelcomeFreeInterval = 24L * 3600;
 
+    // Attempts to rename an extraction into place while concurrent callers are
+    // replacing the same partial install (see ExtractArchive).
+    private const int InstallRenameAttempts = 5;
+
+    // Retries for a directory rename that Windows transiently denies (see
+    // MoveDirectoryWithRetry): about 2.5 seconds in total.
+    private const int TransientRenameAttempts = 10;
+    private const int TransientRenameDelayMs = 250;
+
+    // HRESULTs of the IOException Directory.Move throws on Windows for
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
+    private const int AccessDeniedHResult = unchecked((int)0x80070005);
+    private const int SharingViolationHResult = unchecked((int)0x80070020);
+    private const int LockViolationHResult = unchecked((int)0x80070021);
+
     private static readonly HttpClient Http = CreateHttpClient();
 
     private static HttpClient CreateHttpClient()
@@ -82,7 +97,7 @@ public static class Download
     // Pro Chromium major shown in the free-tier welcome banner. Bump at each Pro
     // major release (there is no local constant to derive it from - the live Pro
     // version comes from the network, which we don't call just to print a banner).
-    private const string ProMajor = "150";
+    private const string ProMajor = "155";
 
     /// <summary>
     /// Whether the welcome banner should be shown now. Pro: once ever (only when
@@ -134,25 +149,28 @@ public static class Download
     ///   "free"    — a free GitHub key (latest binary, one concurrent session)
     ///   "keyless" — no key, running the older free binary (invite the free login)
     /// </summary>
-    private static void ShowWelcome(string tier = "keyless")
+    internal static void ShowWelcome(string tier = "keyless")
     {
         var marker = Path.Combine(Config.GetCacheDir(), ".welcome_shown");
         if (!WelcomeDue(marker, tier == "pro")) return;
 
+        // ASCII-only banner: on a legacy Windows console a non-ASCII glyph can
+        // crash or mojibake the write, and this runs on the binary-download
+        // path. Keep the three wrappers byte-parallel.
         var sb = new System.Text.StringBuilder();
         sb.Append('\n');
-        sb.Append("  CloakBrowser — stealth Chromium for automation\n");
+        sb.Append("  CloakBrowser - stealth Chromium for automation\n");
         sb.Append("  https://github.com/CloakHQ/CloakBrowser\n");
         sb.Append('\n');
         if (tier == "pro")
         {
-            sb.Append($"  CloakBrowser Pro active (v{ProMajor}) — latest binary, newest patches.\n");
-            sb.Append("  Pro support → support@cloakbrowser.dev\n");
+            sb.Append($"  CloakBrowser Pro active (v{ProMajor}) - latest binary, newest patches.\n");
+            sb.Append("  Pro support -> support@cloakbrowser.dev\n");
         }
         else if (tier == "free")
         {
             sb.Append($"  CloakBrowser free (v{ProMajor}): the latest binary, 1 concurrent session.\n");
-            sb.Append("  For more than one concurrent session → https://cloakbrowser.dev\n");
+            sb.Append("  For more than one concurrent session -> https://cloakbrowser.dev\n");
         }
         else
         {
@@ -160,7 +178,7 @@ public static class Download
             sb.Append($"  Running the free binary (v{freeMajor}). " +
                       $"The latest binary (v{ProMajor}) is free too, with 1 concurrent session.\n");
             sb.Append("  Get your key: run  cloakbrowser login  or visit https://cloakbrowser.dev/free\n");
-            sb.Append("  For more than one concurrent session → https://cloakbrowser.dev\n");
+            sb.Append("  For more than one concurrent session -> https://cloakbrowser.dev\n");
         }
         sb.Append("  Star us if CloakBrowser helps your project!\n");
         sb.Append('\n');
@@ -217,7 +235,8 @@ public static class Download
 
         if (!string.IsNullOrEmpty(key))
         {
-            var info = License.ValidateLicense(key);
+            // Sync HTTP on a cache miss: run it off the caller's thread (e.g. a UI thread).
+            var info = await Task.Run(() => License.ValidateLicense(key)).ConfigureAwait(false);
             if (info != null && info.Valid)
             {
                 // Free tier always gets the latest build. Drop any version pin: the
@@ -251,11 +270,18 @@ public static class Download
             }
             else if (info != null)
             {
-                CloakLog.Warning("License validation failed (plan={0}), using free tier", info.Plan);
+                // Key supplied but rejected - abort, never downgrade to free.
+                throw new InvalidOperationException(
+                    $"CloakBrowser Pro: license key is invalid or expired (plan={info.Plan}). " +
+                    "Check CLOAKBROWSER_LICENSE_KEY, or unset it to use the free binary.");
             }
             else
             {
-                CloakLog.Warning("License validation unavailable, using free tier");
+                // Key supplied but unvalidatable (server down, no cache) - abort.
+                throw new InvalidOperationException(
+                    "CloakBrowser Pro: license could not be validated (server unreachable " +
+                    "and no cached validation). Retry in a moment, or unset " +
+                    "CLOAKBROWSER_LICENSE_KEY to use the free binary.");
             }
         }
 
@@ -429,7 +455,7 @@ public static class Download
 
         // GetProLatestVersion() is rate-limited to one network call per hour and returns a
         // cached string in between, so this foreground check stays cheap steady-state.
-        var latest = License.GetProLatestVersion(releaseChannel);
+        var latest = await Task.Run(() => License.GetProLatestVersion(releaseChannel)).ConfigureAwait(false);
 
         // Tell the user when they asked for Preview but the server has no preview build
         // for this platform, so the Stable build is used instead. The lookup is a cache
@@ -437,7 +463,7 @@ public static class Download
         // network on the once-an-hour refresh.
         if (Config.NormalizeReleaseChannel(releaseChannel) == "preview")
         {
-            var release = License.GetProLatestRelease(releaseChannel);
+            var release = await Task.Run(() => License.GetProLatestRelease(releaseChannel)).ConfigureAwait(false);
             if (release is { Fallback: true })
                 WarnPreviewFallback();
         }
@@ -952,106 +978,113 @@ public static class Download
     private static void ExtractArchive(string archivePath, string destDir, string? binaryPath)
     {
         CloakLog.Info("Extracting to {0}", destDir);
-
-        // Clean existing dir if partial download existed.
-        if (Directory.Exists(destDir))
-            Directory.Delete(destDir, recursive: true);
-
-        Directory.CreateDirectory(destDir);
-
-        if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-            ExtractZip(archivePath, destDir);
-        else
-            ExtractTar(archivePath, destDir);
-
-        // If extracted into a single subdirectory, flatten it (but never .app bundles).
-        FlattenSingleSubdir(destDir);
-
         var bp = binaryPath ?? Config.GetBinaryPath();
-        if (File.Exists(bp))
-            MakeExecutable(bp);
 
-        // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts.
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            RemoveQuarantine(destDir);
+        // Extract into a private sibling dir, then rename it into place. Concurrent
+        // first runs (in this process or others) each get their own staging dir, so
+        // none of them can see or delete another's half-written install.
+        var stagingDir = $"{destDir}.partial-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(stagingDir);
+        var staleDirs = new List<string>();
+        try
+        {
+            if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                ExtractZip(archivePath, stagingDir);
+            else
+                ExtractTar(archivePath, stagingDir);
+
+            // If extracted into a single subdirectory, flatten it (but never .app bundles).
+            FlattenSingleSubdir(stagingDir);
+
+            var stagedBinaryPath = Path.Combine(stagingDir, Path.GetRelativePath(destDir, bp));
+            if (File.Exists(stagedBinaryPath))
+                MakeExecutable(stagedBinaryPath);
+
+            // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts.
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                RemoveQuarantine(stagingDir);
+
+            for (var attempt = 1; attempt <= InstallRenameAttempts; attempt++)
+            {
+                try
+                {
+                    MoveDirectoryWithRetry(stagingDir, destDir);
+                    break;
+                }
+                catch (Exception err) when (err is IOException or UnauthorizedAccessException)
+                {
+                    // destDir is in the way. Keep it if another caller finished a complete
+                    // install; replace it if it is an incomplete leftover, such as an
+                    // interrupted in-place extraction from an older release.
+                    if (File.Exists(bp) && IsExecutable(bp)) break;
+                    if (attempt == InstallRenameAttempts) throw;
+                }
+                // Rename the leftover aside before deleting it. Deleting it in place races
+                // other callers renaming their extraction into destDir.
+                var staleDir = $"{destDir}.stale-{Guid.NewGuid():N}";
+                try
+                {
+                    MoveDirectoryWithRetry(destDir, staleDir);
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    continue; // another caller moved it aside first
+                }
+                staleDirs.Add(staleDir);
+            }
+        }
+        finally
+        {
+            // Best effort, so a cleanup failure never masks the exception being thrown.
+            foreach (var leftoverDir in staleDirs.Prepend(stagingDir))
+            {
+                try { if (Directory.Exists(leftoverDir)) Directory.Delete(leftoverDir, recursive: true); }
+                catch (Exception err) when (err is IOException or UnauthorizedAccessException) { }
+            }
+        }
 
         if (File.Exists(bp))
             CloakLog.Info("Binary ready: {0}", bp);
     }
 
-    /// <summary>
-    /// Resolves an archive entry to an absolute path under <paramref name="destinationDir"/>,
-    /// guarding against path-traversal / zip-slip. The combined path is normalized via
-    /// <see cref="Path.GetFullPath(string)"/> and must stay within the (also normalized)
-    /// destination directory - comparison accounts for a trailing directory separator and
-    /// uses <see cref="StringComparison.Ordinal"/>. Throws <see cref="InvalidOperationException"/>
-    /// (naming the offending entry) when the entry escapes the destination.
-    /// </summary>
-    internal static string ResolveSafeEntryPath(string destinationDir, string entryName)
-    {
-        var destFull = Path.GetFullPath(destinationDir);
-        // Ensure a trailing separator so a sibling like "<dest>foo" can't masquerade as
-        // being inside "<dest>".
-        var destPrefix = destFull.EndsWith(Path.DirectorySeparatorChar)
-            ? destFull
-            : destFull + Path.DirectorySeparatorChar;
-
-        var memberPath = Path.GetFullPath(Path.Combine(destFull, entryName));
-
-        if (!string.Equals(memberPath, destFull, StringComparison.Ordinal) &&
-            !memberPath.StartsWith(destPrefix, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException($"Archive contains path traversal: {entryName}");
-        }
-
-        return memberPath;
-    }
-
     private static void ExtractTar(string archivePath, string destDir)
     {
+        // Signature-verified before extraction, so unpack as-is (symlinks included:
+        // macOS .app bundles need them for the Framework layout).
         using var fileStream = File.OpenRead(archivePath);
         using var gzip = new GZipStream(fileStream, CompressionMode.Decompress);
-        using var reader = new TarReader(gzip);
+        TarFile.ExtractToDirectory(gzip, destDir, overwriteFiles: true);
+    }
 
-        TarEntry? entry;
-        while ((entry = reader.GetNextEntry()) != null)
+    /// <summary>Rename a directory, retrying while Windows reports it as in use.</summary>
+    private static void MoveDirectoryWithRetry(string source, string destination)
+    {
+        for (var attempt = 1; attempt <= TransientRenameAttempts; attempt++)
         {
-            // Allow symlinks - macOS .app bundles require them (Framework layout).
-            if (entry.EntryType is TarEntryType.SymbolicLink or TarEntryType.HardLink)
+            try
             {
-                var linkTarget = entry.LinkName;
-                if (Path.IsPathRooted(linkTarget) || linkTarget.Split('/').Contains(".."))
-                {
-                    CloakLog.Warning("Skipping suspicious symlink: {0} -> {1}", entry.Name, linkTarget);
-                    continue;
-                }
-                var linkPath = Path.Combine(destDir, entry.Name);
-                Directory.CreateDirectory(Path.GetDirectoryName(linkPath)!);
-                entry.ExtractToFile(linkPath, overwrite: true);
-                continue;
+                Directory.Move(source, destination);
+                return;
             }
-
-            var memberPath = ResolveSafeEntryPath(destDir, entry.Name);
-
-            if (entry.EntryType == TarEntryType.Directory)
+            catch (Exception err) when (err is IOException or UnauthorizedAccessException)
             {
-                Directory.CreateDirectory(memberPath);
-                continue;
+                // Windows antivirus briefly holds freshly written files open, which fails the
+                // move with access denied. An existing destination is not transient.
+                var accessDenied = err is UnauthorizedAccessException
+                    || err.HResult is AccessDeniedHResult or SharingViolationHResult or LockViolationHResult;
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                    || !accessDenied
+                    || attempt == TransientRenameAttempts
+                    || Directory.Exists(destination))
+                    throw;
+                Thread.Sleep(TransientRenameDelayMs);
             }
-
-            Directory.CreateDirectory(Path.GetDirectoryName(memberPath)!);
-            entry.ExtractToFile(memberPath, overwrite: true);
         }
     }
 
     private static void ExtractZip(string archivePath, string destDir)
     {
-        using var zf = ZipFile.OpenRead(archivePath);
-        foreach (var info in zf.Entries)
-        {
-            // Validate every entry up-front; throws on any zip-slip attempt.
-            ResolveSafeEntryPath(destDir, info.FullName);
-        }
+        // Signature-verified before extraction, so unpack as-is.
         ZipFile.ExtractToDirectory(archivePath, destDir, overwriteFiles: true);
     }
 
@@ -1214,7 +1247,7 @@ public static class Download
     public static async Task<string?> CheckForProUpdateAsync(
         string licenseKey, CancellationToken ct = default, string? releaseChannel = null)
     {
-        var latest = License.GetProLatestVersion(releaseChannel);
+        var latest = await Task.Run(() => License.GetProLatestVersion(releaseChannel)).ConfigureAwait(false);
         if (string.IsNullOrEmpty(latest)) return null;
 
         var effective = Config.GetEffectiveVersion(pro: true, releaseChannel: releaseChannel);

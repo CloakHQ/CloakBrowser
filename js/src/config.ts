@@ -418,8 +418,15 @@ export const IGNORE_DEFAULT_ARGS = ["--enable-automation", "--enable-unsafe-swif
 // innerHeight=947 (minus ~85px Chrome UI: tabs + address bar + bookmarks).
 export const DEFAULT_VIEWPORT = { width: 1920, height: 947 };
 
+export const SEED_MIN = 10000;
+export const SEED_MAX = 99999;
+
+export function randomSeed(): number {
+  return Math.floor(Math.random() * (SEED_MAX - SEED_MIN + 1)) + SEED_MIN;
+}
+
 export function getDefaultStealthArgs(): string[] {
-  const seed = Math.floor(Math.random() * 90000) + 10000; // 10000-99999
+  const seed = randomSeed();
   const isMac = process.platform === "darwin";
 
   const base = [

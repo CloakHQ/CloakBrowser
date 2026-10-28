@@ -407,6 +407,8 @@ class ChromePool:
                 self._default = cp
 
             logger.info("Chrome ready (seed=%s, port=%d, pid=%d)", actual_seed, port, process.pid)
+            if self._connections.get(seed_key, 0) == 0:
+                self._schedule_idle_cleanup(seed_key)
             return cp
 
     async def _cleanup_process(self, key: str) -> None:

@@ -17,7 +17,6 @@ public class LocatorWrapperTests
         IdleBetweenActions = false,
         MouseMinSteps = 2,
         MouseMaxSteps = 3,
-        MouseBurstPause = (0, 0),
         MouseOvershootChance = 0,
         ClickAimDelayButton = (0, 0),
         ClickHoldButton = (0, 0),
@@ -64,165 +63,6 @@ public class LocatorWrapperTests
     // Interception
     // -----------------------------------------------------------------------
 
-    [Fact]
-    public async Task ClickAsync_runs_humanized_motion_and_press()
-    {
-        var (page, mouseRec, _) = BuildPage();
-        var (locator, _) = BuildLocator();
-        var cursor = new HumanCursor(page);
-        var human = new HumanizedLocator(locator, cursor, FastConfig());
-
-        await human.ClickAsync();
-
-        Assert.True(mouseRec.CountOf("MoveAsync") >= 1, "should move along a curve");
-        Assert.Equal(1, mouseRec.CountOf("DownAsync"));
-        Assert.Equal(1, mouseRec.CountOf("UpAsync"));
-    }
-
-    [Fact]
-    public async Task FillAsync_clears_then_types_via_keyboard()
-    {
-        var (page, _, kbRec) = BuildPage();
-        var (locator, _) = BuildLocator();
-        var human = new HumanizedLocator(locator, new HumanCursor(page), FastConfig());
-
-        await human.FillAsync("hi");
-
-        // Select-all + Backspace + per-char typing all go through the page keyboard.
-        Assert.True(kbRec.CountOf("PressAsync") >= 2, "select-all + backspace");
-        Assert.True(kbRec.CountOf("DownAsync") >= 2, "typed characters");
-    }
-
-    [Fact]
-    public async Task Frame_PressAsync_forwards_delay()
-    {
-        var (page, _, kbRec) = BuildPage();
-        var (locator, _) = BuildLocator(evaluateResult: true);
-        var (frame, frameRec) = Fake.Of<IFrame>();
-        frameRec.On("Locator", locator);
-        var human = new HumanizedFrame(frame, new HumanCursor(page), FastConfig());
-
-        await human.PressAsync("#field", "Control+V", new FramePressOptions { Delay = 300 });
-
-        var options = Assert.IsType<KeyboardPressOptions>(kbRec.Last("PressAsync")!.Args[1]);
-        Assert.Equal(300, options.Delay);
-    }
-
-    [Fact]
-    public async Task ElementHandle_PressAsync_forwards_delay()
-    {
-        var (page, _, kbRec) = BuildPage();
-        var (element, _) = Fake.Of<IElementHandle>();
-        var human = new HumanizedElementHandle(element, new HumanCursor(page), FastConfig());
-
-        await human.PressAsync("Control+V", new ElementHandlePressOptions { Delay = 300 });
-
-        var options = Assert.IsType<KeyboardPressOptions>(kbRec.Last("PressAsync")!.Args[1]);
-        Assert.Equal(300, options.Delay);
-    }
-
-    [Fact]
-    public async Task SelectOptionAsync_runs_humanized_hover_then_delegates()
-    {
-        var (page, mouseRec, _) = BuildPage();
-        var (locator, locRec) = BuildLocator();
-        IReadOnlyList<string> selected = new[] { "opt1" };
-        locRec.On("SelectOptionAsync", Task.FromResult(selected));
-        var human = new HumanizedLocator(locator, new HumanCursor(page), FastConfig());
-
-        var result = await human.SelectOptionAsync("opt1");
-
-        // The cursor must travel to the <select> along a curve before the native select.
-        Assert.True(mouseRec.CountOf("MoveAsync") >= 1, "should move the cursor to the element");
-        // The real Playwright select is still performed (and its result flows back).
-        Assert.True(locRec.WasCalled("SelectOptionAsync"));
-        Assert.Equal(new[] { "opt1" }, result);
-    }
-
-    [Fact]
-    public async Task SelectOptionAsync_overloads_all_humanize_and_delegate()
-    {
-        IReadOnlyList<string> selected = new[] { "v" };
-
-        // Every ILocator SelectOptionAsync overload should hover (move) then delegate.
-        async Task AssertOverload(System.Func<HumanizedLocator, Task> call)
-        {
-            var (page, mouseRec, _) = BuildPage();
-            var (locator, locRec) = BuildLocator();
-            locRec.On("SelectOptionAsync", Task.FromResult(selected));
-            var human = new HumanizedLocator(locator, new HumanCursor(page), FastConfig());
-
-            await call(human);
-
-            Assert.True(mouseRec.CountOf("MoveAsync") >= 1, "should move the cursor");
-            Assert.True(locRec.WasCalled("SelectOptionAsync"), "should delegate to inner");
-        }
-
-        var (handle, _) = Fake.Of<IElementHandle>();
-        await AssertOverload(h => h.SelectOptionAsync("v"));
-        await AssertOverload(h => h.SelectOptionAsync(new[] { "v" }));
-        await AssertOverload(h => h.SelectOptionAsync(new SelectOptionValue { Value = "v" }));
-        await AssertOverload(h => h.SelectOptionAsync(new[] { new SelectOptionValue { Value = "v" } }));
-        await AssertOverload(h => h.SelectOptionAsync(handle));
-        await AssertOverload(h => h.SelectOptionAsync(new[] { handle }));
-    }
-
-    [Fact]
-    public async Task ClearAsync_focuses_selects_all_and_backspaces()
-    {
-        var (page, mouseRec, kbRec) = BuildPage();
-        var (locator, _) = BuildLocator(); // EvaluateAsync(IsFocused) -> false
-        var human = new HumanizedLocator(locator, new HumanCursor(page), FastConfig());
-
-        await human.ClearAsync();
-
-        // Not focused -> humanized click to focus the field (curve + press).
-        Assert.True(mouseRec.CountOf("MoveAsync") >= 1, "should move the cursor to focus");
-        Assert.Equal(1, mouseRec.CountOf("DownAsync"));
-        // Then select-all + Backspace via the keyboard (NOT an instant value reset).
-        Assert.True(kbRec.CountOf("PressAsync") >= 2, "select-all + backspace");
-    }
-
-    [Fact]
-    public async Task ClearAsync_when_focused_skips_click_but_still_selects_and_deletes()
-    {
-        var (page, mouseRec, kbRec) = BuildPage();
-        // Field is already focused -> no humanized click, just select-all + backspace.
-        var (locator, _) = BuildLocator(evaluateResult: true);
-        var human = new HumanizedLocator(locator, new HumanCursor(page), FastConfig());
-
-        await human.ClearAsync();
-
-        Assert.Equal(0, mouseRec.CountOf("DownAsync")); // no focus click needed
-        Assert.True(kbRec.CountOf("PressAsync") >= 2, "select-all + backspace");
-    }
-
-    [Fact]
-    public async Task CheckAsync_clicks_only_when_not_already_checked()
-    {
-        var (page, mouseRec, _) = BuildPage();
-        var (locator, locRec) = BuildLocator();
-        locRec.On("IsCheckedAsync", Task.FromResult(true)); // already checked
-        var human = new HumanizedLocator(locator, new HumanCursor(page), FastConfig());
-
-        await human.CheckAsync();
-
-        Assert.Equal(0, mouseRec.CountOf("DownAsync")); // no click performed
-    }
-
-    [Fact]
-    public async Task CheckAsync_clicks_when_unchecked()
-    {
-        var (page, mouseRec, _) = BuildPage();
-        var (locator, locRec) = BuildLocator();
-        locRec.On("IsCheckedAsync", Task.FromResult(false));
-        var human = new HumanizedLocator(locator, new HumanCursor(page), FastConfig());
-
-        await human.CheckAsync();
-
-        Assert.Equal(1, mouseRec.CountOf("DownAsync")); // click performed
-    }
-
     // -----------------------------------------------------------------------
     // Nested re-wrapping: locator-returning members return humanized locators.
     // -----------------------------------------------------------------------
@@ -260,16 +100,18 @@ public class LocatorWrapperTests
         var (page, _, _) = BuildPage();
         var (inner, innerRec) = Fake.Of<ILocator>();
         innerRec.On("CountAsync", Task.FromResult(7));
-        innerRec.On("TextContentAsync", Task.FromResult<string?>("hello"));
+        // A pure query; the element reads (TextContentAsync, GetAttributeAsync, ...) are
+        // humanized instead (see GeneratorDelegationTests).
+        innerRec.On("AllTextContentsAsync", Task.FromResult<IReadOnlyList<string>>(new[] { "hello" }));
         innerRec.On("IsVisibleAsync", Task.FromResult(true));
 
         var human = new HumanizedLocator(inner, new HumanCursor(page), FastConfig());
 
         Assert.Equal(7, await human.CountAsync());
-        Assert.Equal("hello", await human.TextContentAsync());
+        Assert.Equal(new[] { "hello" }, await human.AllTextContentsAsync());
         Assert.True(await human.IsVisibleAsync());
         Assert.True(innerRec.WasCalled("CountAsync"));
-        Assert.True(innerRec.WasCalled("TextContentAsync"));
+        Assert.True(innerRec.WasCalled("AllTextContentsAsync"));
     }
 
     // -----------------------------------------------------------------------
@@ -370,13 +212,27 @@ public class LocatorWrapperTests
     }
 
     [Fact]
-    public async Task Cancellation_propagates_as_OperationCanceled()
+    public void Filter_unwraps_Has_and_HasNot_and_rewraps_result()
     {
         var (page, _, _) = BuildPage();
-        var (locator, locRec) = BuildLocator();
-        locRec.On("ScrollIntoViewIfNeededAsync", _ => throw new OperationCanceledException());
-        var human = new HumanizedLocator(locator, new HumanCursor(page), FastConfig());
+        var (inner, innerRec) = Fake.Of<ILocator>();
+        var (resultLoc, _) = Fake.Of<ILocator>();
+        innerRec.On("Filter", resultLoc);
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() => human.ClickAsync());
+        var cursor = new HumanCursor(page);
+        var (rawHas, _) = Fake.Of<ILocator>();
+        var (rawHasNot, _) = Fake.Of<ILocator>();
+        var human = new HumanizedLocator(inner, cursor, FastConfig());
+
+        var result = human.Filter(new LocatorFilterOptions
+        {
+            Has = new HumanizedLocator(rawHas, cursor, FastConfig()),
+            HasNot = new HumanizedLocator(rawHasNot, cursor, FastConfig()),
+        });
+
+        var opts = (LocatorFilterOptions)innerRec.Last("Filter")!.Args[0]!;
+        Assert.Same(rawHas, opts.Has);            // raw locator reached Playwright
+        Assert.Same(rawHasNot, opts.HasNot);
+        Assert.IsType<HumanizedLocator>(result);  // returned locator stays humanized
     }
 }

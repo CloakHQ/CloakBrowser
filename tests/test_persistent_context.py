@@ -10,6 +10,14 @@ import pytest
 from cloakbrowser.config import DEFAULT_VIEWPORT
 
 
+@pytest.fixture(autouse=True)
+def _no_seed_file():
+    """These tests use fixed fake profile paths; keep the seed file off disk.
+    Seed persistence itself is covered in test_profile_seed.py."""
+    with patch("cloakbrowser.browser.persistent_seed_args", side_effect=lambda _d, _s, a: a):
+        yield
+
+
 def _make_mock_pw_and_context():
     """Create mock sync_playwright chain returning a mock context."""
     context = MagicMock()
@@ -276,6 +284,57 @@ async def test_persistent_context_async_timezone_id_alias(_mock_bin):
     assert "timezone_id" not in call_kwargs
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("launcher", ["launch_async", "launch_context_async", "launch_persistent_context_async"])
+async def test_async_launchers_do_blocking_io_off_the_event_loop(launcher):
+    """Binary/license, GeoIP and WebRTC lookups are blocking network calls; on the loop
+    they freeze every other coroutine (e.g. a server's health endpoint) for up to 20s."""
+    import asyncio
+    import threading
+    import time
+
+    loop_thread = threading.get_ident()
+    threads = []
+
+    def slow(result):
+        def call(*_a, **_kw):
+            threads.append(threading.get_ident())
+            time.sleep(0.2)
+            return result(*_a) if callable(result) else result
+        return call
+
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.02)
+            ticks += 1
+
+    pw_cm, pw, context = _make_mock_async_pw_and_context()
+    pw.chromium.launch.return_value = AsyncMock()
+
+    with patch("playwright.async_api.async_playwright", return_value=pw_cm), \
+         patch("cloakbrowser.browser.ensure_binary", slow("/fake/chrome")), \
+         patch("cloakbrowser.browser.maybe_resolve_geoip", slow(("Europe/Berlin", "de-DE", "5.6.7.8"))), \
+         patch("cloakbrowser.browser._resolve_webrtc_args", slow(lambda args, _proxy: args)):
+        import cloakbrowser.browser as browser
+        beat = asyncio.create_task(heartbeat())
+        try:
+            if launcher == "launch_persistent_context_async":
+                await browser.launch_persistent_context_async("/tmp/profile", geoip=True)
+            else:
+                await getattr(browser, launcher)(geoip=True)
+        finally:
+            beat.cancel()
+
+    # 3 calls; 4 via launch_context_async (its inner launch_async re-calls geoip as a no-op)
+    assert len(threads) >= 3 and loop_thread not in threads
+    assert ticks >= 10  # ~30 over 0.6s at 20ms; a blocked loop gets ~0
+    launch = pw.chromium.launch_persistent_context if launcher == "launch_persistent_context_async" else pw.chromium.launch
+    assert "--fingerprint-timezone=Europe/Berlin" in launch.call_args[1]["args"]
+
+
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
 @patch("cloakbrowser.browser.seed_widevine_hint")
@@ -303,3 +362,57 @@ async def test_persistent_context_async_seeds_widevine(_mock_seed, _mock_geoip, 
         await launch_persistent_context_async("/tmp/profile")
 
     _mock_seed.assert_called_once_with("/tmp/profile", "/fake/chrome")
+
+
+# ---------------------------------------------------------------------------
+# Ordering: humanize must be applied BEFORE the license guard
+#
+# The guard stores its wrapper as an attribute on the page/context object (it
+# carries this launch's denial path), and an object attribute shadows the class
+# method humanize patches. Guarding first therefore captured Playwright's own
+# methods, silently disabling humanize for every call on that page — clicks
+# teleported.
+# ---------------------------------------------------------------------------
+
+
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
+def test_persistent_context_humanizes_before_the_license_guard(_mock_geoip, _mock_bin):
+    pw_cm, pw, context = _make_mock_pw_and_context()
+    context.pages = [MagicMock()]
+    order = []
+
+    with patch("playwright.sync_api.sync_playwright", return_value=pw_cm), \
+         patch("cloakbrowser.browser.mint_denial_file", return_value="/tmp/denial"), \
+         patch("cloakbrowser.browser.resolve_license_key", return_value="cb_test"), \
+         patch("cloakbrowser.browser._install_license_guard",
+               side_effect=lambda *a: order.append("guard")), \
+         patch("cloakbrowser.human.patch_context",
+               side_effect=lambda *a: order.append("humanize")):
+        from cloakbrowser.browser import launch_persistent_context
+        launch_persistent_context("/tmp/profile", humanize=True, license_key="cb_test")
+
+    # one guard call for the context plus one per already-open page
+    assert order[0] == "humanize" and set(order[1:]) == {"guard"}, order
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
+async def test_persistent_context_async_humanizes_before_the_license_guard(_mock_geoip, _mock_bin):
+    pw_cm, pw, context = _make_mock_async_pw_and_context()
+    context.pages = [MagicMock()]
+    order = []
+
+    with patch("playwright.async_api.async_playwright", return_value=pw_cm), \
+         patch("cloakbrowser.browser.mint_denial_file", return_value="/tmp/denial"), \
+         patch("cloakbrowser.browser.resolve_license_key", return_value="cb_test"), \
+         patch("cloakbrowser.browser._install_license_guard_async",
+               side_effect=lambda *a: order.append("guard")), \
+         patch("cloakbrowser.human.patch_context_async",
+               side_effect=lambda *a: order.append("humanize")):
+        from cloakbrowser.browser import launch_persistent_context_async
+        await launch_persistent_context_async("/tmp/profile", humanize=True, license_key="cb_test")
+
+    # one guard call for the context plus one per already-open page
+    assert order[0] == "humanize" and set(order[1:]) == {"guard"}, order

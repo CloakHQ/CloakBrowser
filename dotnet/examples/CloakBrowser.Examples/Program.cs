@@ -27,6 +27,7 @@ switch (which)
     case "webrtctest": await WebRtcTest(); break;
     case "trusted": await TrustedTest(); break;
     case "timeout": await TimeoutTest(); break;
+    case "repro549": await Repro549(); break;
     default:
         Console.Error.WriteLine($"Unknown example: {which}");
         Console.Error.WriteLine("Available: basic, humanize, context, persistent, proxy-geoip, bottest, behavioral, visual");
@@ -567,4 +568,49 @@ static async Task TimeoutTest()
     Console.WriteLine(elapsed < limit
         ? ">>> PASS - timeout budget is shared, not multiplied"
         : ">>> FAIL - timeout multiplied (each step took the full budget)");
+}
+
+// ---------------------------------------------------------------------------
+// Repro for GitHub #549 - AddLocatorHandlerAsync throws under Humanize=true.
+// HumanizedLocator (from page.GetByText) is not Playwright's concrete Locator,
+// so Playwright's internal `(locator as Locator)._frame` -> null -> NRE.
+// Runs the reporter's exact flow with Humanize=true (expected: throw) and a
+// Humanize=false control (expected: pass).  dotnet run -- repro549
+// ---------------------------------------------------------------------------
+static async Task Repro549()
+{
+    await RunAddLocatorHandler(humanize: true);
+    await RunAddLocatorHandler(humanize: false);
+}
+
+static async Task RunAddLocatorHandler(bool humanize)
+{
+    Console.WriteLine($"\n=== AddLocatorHandlerAsync with Humanize={humanize} ===");
+    await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
+    {
+        Headless = true,
+        Humanize = humanize,
+    });
+    var page = await browser.NewPageAsync();
+    await page.GotoAsync("https://example.com/");
+
+    var locator = page.GetByText("Test");
+    Console.WriteLine($"page:    {page.GetType().FullName}");
+    Console.WriteLine($"locator: {locator.GetType().FullName}");
+
+    try
+    {
+        // Reporter's exact snippet (Func<Task> overload + NoWaitAfter).
+        await page.AddLocatorHandlerAsync(page.GetByText("Test"), () =>
+        {
+            Console.WriteLine("test");
+            return Task.CompletedTask;
+        }, new PageAddLocatorHandlerOptions() { NoWaitAfter = true });
+        Console.WriteLine(">>> OK - handler registered, no exception");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($">>> THREW: {ex.GetType().FullName}: {ex.Message}");
+        Console.WriteLine(ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim());
+    }
 }

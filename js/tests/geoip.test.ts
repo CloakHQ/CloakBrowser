@@ -3,7 +3,13 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { COUNTRY_LOCALE_MAP, maybeResolveGeoip, resolveProxyGeo, resolveProxyIp } from "../src/geoip.js";
+import {
+  COUNTRY_LOCALE_MAP,
+  DEFAULT_GEOIP_TIMEOUT_MS,
+  maybeResolveGeoip,
+  resolveProxyGeo,
+  resolveProxyIp,
+} from "../src/geoip.js";
 import Stream from "node:stream";
 
 const tempDirs: string[] = [];
@@ -53,6 +59,10 @@ describe("resolveProxyIp", () => {
 });
 
 describe("maybeResolveGeoip", () => {
+  it("uses a 20-second default timeout", () => {
+    expect(DEFAULT_GEOIP_TIMEOUT_MS).toBe(20_000);
+  });
+
   it("forwards separate HTTP proxy credentials to CONNECT requests", async () => {
     const authorizationHeaders: Array<string | undefined> = [];
     const sockets = new Set<Stream.Duplex>();
@@ -109,11 +119,96 @@ describe("maybeResolveGeoip", () => {
       }),
     } as Response);
 
-    const result = await resolveProxyGeo("http://203.0.113.10:8080");
+    await expect(resolveProxyGeo("http://203.0.113.10:8080")).rejects.toThrow(
+      "GeoIP resolution",
+    );
 
-    expect(result).toEqual({ timezone: null, locale: null, exitIp: null });
     expect(fetchSpy).toHaveBeenCalledOnce();
     expect(fetchSpy.mock.calls[0][1]).toEqual({ redirect: "follow" });
+  });
+
+  it("GeoIP database download writes nothing to stdout", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-stdout-"));
+    tempDirs.push(cacheDir);
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+    process.env.CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS = "0.001";
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1, 2, 3]));
+          controller.close();
+        },
+      }),
+    } as Response);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const stdoutWrite = vi.spyOn(process.stdout, "write");
+
+    await expect(resolveProxyGeo("http://203.0.113.10:8080")).rejects.toThrow();
+
+    expect(fs.existsSync(path.join(cacheDir, "geoip", "GeoLite2-City.mmdb"))).toBe(true);
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(stdoutWrite).not.toHaveBeenCalled();
+  });
+
+  it("throws when the GeoIP database is unavailable", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-db-failure-"));
+    tempDirs.push(cacheDir);
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+
+    vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new Error("database unavailable"))
+      .mockResolvedValue({ ok: true, text: async () => "5.6.7.8" } as Response);
+
+    await expect(resolveProxyGeo(null)).rejects.toThrow("database is unavailable");
+  });
+
+  it("throws when the GeoIP database lookup fails", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-lookup-failure-"));
+    tempDirs.push(cacheDir);
+    const geoipDir = path.join(cacheDir, "geoip");
+    fs.mkdirSync(geoipDir, { recursive: true });
+    fs.writeFileSync(path.join(geoipDir, "GeoLite2-City.mmdb"), "invalid database");
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      text: async () => "5.6.7.8",
+    } as Response);
+
+    await expect(resolveProxyGeo(null)).rejects.toThrow("GeoIP lookup failed");
+  });
+
+  it("falls back to en-US for a country missing from the locale map (#591)", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloak-geoip-unmapped-"));
+    tempDirs.push(cacheDir);
+    const geoipDir = path.join(cacheDir, "geoip");
+    fs.mkdirSync(geoipDir, { recursive: true });
+    fs.writeFileSync(path.join(geoipDir, "GeoLite2-City.mmdb"), "stub");
+    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
+
+    class Reader {
+      get() {
+        return { location: { time_zone: "Indian/Mahe" }, country: { iso_code: "XX" } };
+      }
+    }
+    vi.doMock("mmdb-lib", () => ({ default: { Reader }, Reader }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      text: async () => "5.6.7.8",
+    } as Response);
+
+    try {
+      await expect(resolveProxyGeo(null)).resolves.toEqual({
+        timezone: "Indian/Mahe",
+        locale: "en-US",
+        exitIp: "5.6.7.8",
+      });
+    } finally {
+      vi.doUnmock("mmdb-lib");
+    }
   });
 
   it("downloads the database once under concurrent first-use launches (#458)", async () => {
@@ -144,10 +239,11 @@ describe("maybeResolveGeoip", () => {
         ),
     );
 
-    await Promise.all(
+    const results = await Promise.allSettled(
       Array.from({ length: 5 }, () => resolveProxyGeo("http://203.0.113.10:8080")),
     );
 
+    expect(results.every(result => result.status === "rejected")).toBe(true);
     // Only one launch actually fetched the shared ~70 MB file.
     expect(fetchSpy).toHaveBeenCalledOnce();
   });
@@ -243,6 +339,10 @@ describe("COUNTRY_LOCALE_MAP", () => {
     for (const code of ["US", "GB", "DE", "FR", "JP", "BR", "IL", "RU"]) {
       expect(COUNTRY_LOCALE_MAP[code]).toBeDefined();
     }
+  });
+
+  it("maps Seychelles (issue #591)", () => {
+    expect(COUNTRY_LOCALE_MAP["SC"]).toBe("en-SC");
   });
 
   it("values are BCP 47 language-REGION format", () => {

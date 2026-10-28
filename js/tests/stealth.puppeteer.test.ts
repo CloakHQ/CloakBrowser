@@ -545,7 +545,7 @@ describe("Puppeteer: page.type accepts per-call human config override", () => {
       idle_between_actions: false,
       field_switch_delay: [0, 1],
     });
-    expect(cfg.typing_delay).toBe(70);
+    expect(cfg.typing_delay).toBe(150);
 
     let captured: any = null;
     const typeSpy = vi.spyOn(keyboardMod, "humanType").mockImplementation(
@@ -571,7 +571,7 @@ describe("Puppeteer: page.type accepts per-call human config override", () => {
 
     expect(captured.typing_delay).toBe(30);
     expect(captured.mistype_chance).toBe(0);
-    expect(cfg.typing_delay).toBe(70);
+    expect(cfg.typing_delay).toBe(150);
 
     typeSpy.mockRestore();
     scrollSpy.mockRestore();
@@ -915,6 +915,25 @@ describe("Puppeteer: mouse.wheel() smooth scroll", () => {
     expect(wheelCalls.length).toBeGreaterThan(1);
   });
 
+  it("smoothWheel sends whole notches only, never a zero step", async () => {
+    const { smoothWheel } = await import("../src/human-puppeteer/scroll.js");
+    const calls: [number, number][] = [];
+    const raw: any = { wheel: async (dx: number, dy: number) => { calls.push([dx, dy]); } };
+    const cfg = resolveConfig("default", { scroll_pause_fast: [0, 0], scroll_pause_slow: [0, 0] });
+    // CDP reports every wheel event as one notch (wheelDeltaY 120), so the
+    // pixel delta of each event must be one platform notch, never a chunk.
+    for (const notch of [40, 100, 120]) {
+      for (let i = 0; i < 20; i++) {
+        calls.length = 0;
+        const delta = (i % 2 ? -1 : 1) * (notch + 37 * i);
+        const done = await smoothWheel(raw, delta, cfg, "y", notch);
+        expect(calls.every(([dx, dy]) => dx === 0 && Math.abs(dy) === notch)).toBe(true);
+        expect(calls.reduce((a, [, dy]) => a + dy, 0)).toBe(done);
+        expect(Math.abs(done - delta)).toBeLessThanOrEqual(notch / 2);
+      }
+    }
+  }, 30_000);
+
   it("mouse.wheel({deltaX: 200}) smooths horizontal scroll too", async () => {
     const { patchPage } = await import("../src/human-puppeteer/index.js");
 
@@ -954,6 +973,36 @@ describe("Puppeteer: mouse.wheel() smooth scroll", () => {
 // =========================================================================
 // mouse.dragAndDrop() — Bézier drag between coordinates
 // =========================================================================
+describe("Puppeteer: humanScrollIntoView x axis (#521)", () => {
+  it("scrolls the x axis for an element past the right edge", async () => {
+    const { humanScrollIntoView } = await import("../src/human-puppeteer/scroll.js");
+    const cfg = resolveConfig("default", {
+      scroll_pre_move_delay: [0, 1], scroll_settle_delay: [0, 1],
+    });
+
+    const page: any = { viewport: () => ({ width: 1000, height: 700 }) };
+    const raw = {
+      move: vi.fn(async () => {}), down: vi.fn(async () => {}),
+      up: vi.fn(async () => {}), wheel: vi.fn(async (_dx: number, _dy: number) => {}),
+    };
+    const boxes = [
+      { x: 800, y: 300, width: 800, height: 30 },
+      { x: 200, y: 300, width: 800, height: 30 },
+    ];
+    let i = 0;
+    const getBox = async () => boxes[i++];
+
+    const result = await humanScrollIntoView(page, raw as any, getBox, 0, 0, cfg);
+
+    expect(result.box.x).toBe(200);
+    expect(raw.wheel).toHaveBeenCalled();
+    for (const [dx, dy] of raw.wheel.mock.calls) {
+      expect(dx).toBeGreaterThan(0);
+      expect(dy).toBe(0);
+    }
+  }, 15000);
+});
+
 describe("Puppeteer: mouse.dragAndDrop() humanization", () => {
   it("mouse.dragAndDrop is patched after patchPage", async () => {
     const { patchPage } = await import("../src/human-puppeteer/index.js");
@@ -1528,9 +1577,12 @@ describe("Puppeteer: frame-level patching", () => {
     patchPage(page as any, cfg, cursor as any);
     await page.goto("https://example.com");
 
-    expect(page.on).toHaveBeenCalledTimes(1);
-    const [eventName, handler] = page.on.mock.calls[0];
-    expect(eventName).toBe("frameattached");
+    // Two listeners are wired once: frameattached (patch dynamic frames) and
+    // framenavigated (invalidate the isolated world — #507).
+    expect(page.on).toHaveBeenCalledTimes(2);
+    const attachedCall = page.on.mock.calls.find((c: any[]) => c[0] === "frameattached");
+    expect(attachedCall).toBeDefined();
+    const handler = attachedCall[1];
 
     const attachedFrame: any = {
       click: vi.fn(async () => {}),
@@ -2188,6 +2240,32 @@ describeIfSlow("Puppeteer stealth browser: focus() uses click", () => {
 
     await browser.close();
   }, 30000);
+});
+
+const WIDE_ROW_HTML = `
+  <body style="margin:0">
+    <div style="display:flex">
+      <div style="min-width:800px">left</div>
+      <button id="target" style="min-width:800px"
+              onclick="this.textContent = 'CLICKED'">right</button>
+    </div>
+  </body>`;
+
+describeIfSlow("Puppeteer stealth browser: horizontal scroll into view (#521)", () => {
+  it("clicks a target past the right edge of a horizontally overflowing page", async () => {
+    const { launch } = await import("../src/puppeteer.js");
+    const browser = await launch({ humanize: true, headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1000, height: 700 });
+      await page.setContent(WIDE_ROW_HTML);
+      await page.click("#target");
+      await sleep(500);
+      expect(await page.$eval("#target", (el) => el.textContent)).toBe("CLICKED");
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
 });
 
 describeIfSlow("Puppeteer stealth browser: mouse.wheel smooth scroll", () => {

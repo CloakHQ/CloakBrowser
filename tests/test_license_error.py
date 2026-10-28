@@ -26,7 +26,7 @@ def _launch_text(code: int) -> str:
         (76, "session limit"),
         (77, "invalid, expired, or missing"),
         (78, "couldn't verify"),
-        (79, "not writable"),
+        (79, "--license-route"),
     ],
 )
 def test_known_license_codes_map_to_message(code, fragment):
@@ -63,7 +63,7 @@ def test_error_type_is_runtimeerror_subclass():
     (76, "session limit"),
     (77, "invalid, expired, or missing"),
     (78, "couldn't verify"),
-    (79, "not writable"),
+    (79, "--license-route"),
 ])
 def test_license_error_for_code_known(code, fragment):
     err = license_error_for_code(code)

@@ -4,77 +4,47 @@ using Xunit;
 namespace CloakBrowser.Tests.Human;
 
 /// <summary>
-/// Ports the spirit of Python <c>TestTimeoutBudget307</c> (issue #307): sequential
-/// operations share one deadline so the overall timeout budget is never multiplied.
-///
-/// The full end-to-end timing test needs a real browser to drive the retry loops, so it
-/// is marked <c>Skip</c>. What we CAN unit-test without a browser is the shared remaining
-/// time helper every step uses (<see cref="Actionability.RemainingMs(double)"/>): given a
-/// single deadline, it must never go negative and must monotonically shrink as time passes.
+/// Issue #307: every step of one action (wait, scroll, move, hit-test, retry) carves out
+/// of a single <see cref="Deadline"/>, so the timeout budget is never multiplied. The
+/// end-to-end timing is checked against a real browser in HumanEngineBrowserTests; here
+/// the deadline arithmetic itself.
 /// </summary>
 public class TimeoutBudgetTests
 {
     [Fact]
-    public void RemainingMs_never_negative_past_deadline()
+    public void Remaining_never_negative_after_expiry()
     {
-        double pastDeadline = System.Environment.TickCount64 - 1000; // already expired
-        Assert.Equal(0, Actionability.RemainingMs(pastDeadline));
+        var d = new Deadline(1);
+        Thread.Sleep(20);
+        Assert.True(d.Expired);
+        Assert.Equal(0, d.Remaining);
     }
 
     [Fact]
-    public void RemainingMs_at_deadline_is_zero()
+    public async Task Remaining_shrinks_and_never_exceeds_the_budget()
     {
-        double now = System.Environment.TickCount64;
-        Assert.True(Actionability.RemainingMs(now) <= 0.0 + 1.0); // ~0 (clamped, never < 0)
-        Assert.True(Actionability.RemainingMs(now) >= 0.0);
+        var d = new Deadline(1000);
+        var first = d.Remaining;
+        await Task.Delay(30);
+        var second = d.Remaining;
+        Assert.True(first <= 1000);
+        Assert.True(second < first);
+        Assert.False(d.Expired);
     }
 
     [Fact]
-    public void RemainingMs_positive_before_deadline()
+    public void Zero_timeout_means_no_limit()
     {
-        double deadline = System.Environment.TickCount64 + 5000;
-        double remaining = Actionability.RemainingMs(deadline);
-        Assert.InRange(remaining, 1, 5000);
+        var d = new Deadline(0);
+        Assert.False(d.Expired);
+        Assert.True(double.IsPositiveInfinity(d.Remaining));
     }
 
     [Fact]
-    public async Task RemainingMs_shrinks_as_time_passes()
+    public void Nested_steps_share_the_parent_deadline()
     {
-        double deadline = System.Environment.TickCount64 + 5000;
-        double first = Actionability.RemainingMs(deadline);
-        await Task.Delay(60);
-        double second = Actionability.RemainingMs(deadline);
-
-        Assert.True(second < first, $"remaining should shrink: {first} -> {second}");
-        Assert.True(second >= 0, "remaining must never go negative");
-    }
-
-    [Fact]
-    public void RemainingMs_budget_is_shared_not_multiplied()
-    {
-        // Three sequential "steps" computed from a SINGLE deadline must sum to <= the
-        // original budget - they carve out of one budget rather than each getting the full
-        // timeout (the bug behind issue #307).
-        const double budget = 1000;
-        double deadline = System.Environment.TickCount64 + budget;
-
-        double step1 = Actionability.RemainingMs(deadline);
-        double step2 = Actionability.RemainingMs(deadline);
-        double step3 = Actionability.RemainingMs(deadline);
-
-        // Each subsequent read is <= the previous (time only moves forward) and never
-        // exceeds the single budget.
-        Assert.True(step1 <= budget + 1);
-        Assert.True(step2 <= step1 + 1);
-        Assert.True(step3 <= step2 + 1);
-    }
-
-    [Fact(Skip = "requires browser: drives the full page.click retry loop to measure end-to-end timing")]
-    public void Page_click_total_time_within_budget()
-    {
-        // Python TestTimeoutBudget307.test_page_click_total_time_within_budget patches a
-        // live page and asserts the wall-clock click time stays < 1.8x the timeout. That
-        // exercises real Playwright locator waits and cannot be faithfully reproduced with
-        // DispatchProxy fakes, so it is covered by the browser-backed integration suite.
+        var d = new Deadline(500);
+        var nested = new ActOpts { Deadline = d }.With(o => o.Nested = true);
+        Assert.Same(d, nested.Deadline);
     }
 }

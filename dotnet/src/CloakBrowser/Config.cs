@@ -62,6 +62,137 @@ public static class Config
 
     private static readonly Random _rng = new();
 
+    public const int SeedMin = 10000;
+    public const int SeedMax = 99999;
+
+    /// <summary>
+    /// Per-profile seed file, shared with the Python and JS wrappers (decimal seed +
+    /// newline), so a profile keeps its seed whichever wrapper opens it.
+    /// </summary>
+    public const string ProfileSeedFile = ".cloakbrowser-seed";
+
+    internal static int RandomSeed()
+    {
+        lock (_rng) { return _rng.Next(SeedMin, SeedMax + 1); }
+    }
+
+    /// <summary>Stored seed, or null if the file is missing or corrupt (corrupt is removed).</summary>
+    private static int? ReadProfileSeed(string file)
+    {
+        byte[] data;
+        try
+        {
+            data = File.ReadAllBytes(file);
+            // Empty = a concurrent launch's exclusive create (no-hard-link fallback)
+            // hasn't written yet; give it ~1s before calling the file corrupt.
+            for (int i = 0; i < 20 && data.Length == 0; i++)
+            {
+                Thread.Sleep(50);
+                data = File.ReadAllBytes(file);
+            }
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null; // DirectoryNotFound: the profile dir doesn't exist yet
+        }
+        var text = System.Text.Encoding.Latin1.GetString(data).Trim();
+        if (text.Length > 0 && text.All(c => c is >= '0' and <= '9')
+            && int.TryParse(text, out var seed) && seed is >= SeedMin and <= SeedMax)
+            return seed;
+        // A corrupt file gets a fresh seed (= new identity), so say so loudly.
+        CloakLog.Warning("Corrupt fingerprint seed file {0} ({1}); generating a new seed",
+            file, text.Length > 32 ? text[..32] : text);
+        File.Delete(file); // no-op if a concurrent launch already removed it
+        return null;
+    }
+
+    [DllImport("libc", EntryPoint = "link", SetLastError = true)]
+    private static extern int PosixLink(string oldPath, string newPath);
+
+    private const int EEXIST = 17; // same value on Linux and macOS
+
+    /// <summary>
+    /// Atomically create <paramref name="file"/> from <paramref name="tmp"/>, keeping an
+    /// existing file. On Unix, File.Move(overwrite: false) checks then renames, so
+    /// concurrent callers can replace each other (seen on macOS); POSIX link() fails
+    /// atomically with EEXIST instead. Windows MoveFileEx without REPLACE_EXISTING is atomic.
+    /// </summary>
+    private static void PublishNoReplace(string tmp, string file, byte[] content)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            try { File.Move(tmp, file, overwrite: false); }
+            catch (IOException) when (File.Exists(file)) { }
+            return;
+        }
+        if (PosixLink(tmp, file) == 0)
+            return;
+        int errno = Marshal.GetLastPInvokeError();
+        if (errno == EEXIST)
+            return;
+        // No hard links (FAT/exFAT, some network mounts): exclusive create still
+        // never overwrites. ponytail: a concurrent reader can catch the file empty
+        // here and regenerate; link() avoids that window.
+        CloakLog.Debug("Hard link unsupported for {0} (errno {1}); using exclusive create", file, errno);
+        try { WriteSynced(file, content); }
+        catch (IOException) when (File.Exists(file)) { }
+    }
+
+    /// <summary>Create <paramref name="file"/> exclusively (throws if present), write, flush to disk.</summary>
+    private static void WriteSynced(string file, byte[] content)
+    {
+        using var fs = new FileStream(file, FileMode.CreateNew, FileAccess.Write);
+        fs.Write(content, 0, content.Length);
+        fs.Flush(flushToDisk: true);
+    }
+
+    /// <summary>
+    /// Prepend the persistent profile's stored <c>--fingerprint=&lt;seed&gt;</c> to
+    /// <paramref name="args"/>, creating it on first launch. It is a user arg, so it
+    /// overrides the random stealth default via BuildArgs dedup. An explicit
+    /// <c>--fingerprint</c> (including <c>=off</c>) or <c>stealthArgs: false</c>
+    /// leaves the file alone. Mirrors Python <c>config.persistent_seed_args</c>.
+    /// </summary>
+    internal static List<string>? PersistentSeedArgs(string userDataDir, bool stealthArgs, List<string>? args)
+    {
+        if (!stealthArgs || string.IsNullOrEmpty(userDataDir))
+            return args;
+        if (args != null && args.Any(a => a.Split('=', 2)[0] == "--fingerprint"))
+            return args;
+
+        var file = Path.Combine(userDataDir, ProfileSeedFile);
+        var seed = ReadProfileSeed(file);
+        if (seed == null)
+        {
+            Directory.CreateDirectory(userDataDir);
+            var tmp = Path.Combine(userDataDir, $"{ProfileSeedFile}.{Guid.NewGuid():N}.tmp");
+            try
+            {
+                var content = System.Text.Encoding.ASCII.GetBytes($"{RandomSeed()}\n");
+                WriteSynced(tmp, content);
+                // Publish without replacing: concurrent first launches all end up
+                // with whichever seed was published first.
+                PublishNoReplace(tmp, file, content);
+            }
+            finally
+            {
+                try
+                {
+                    File.Delete(tmp);
+                }
+                catch (Exception e)
+                {
+                    CloakLog.Warning("Failed to remove temp seed file {0}: {1}", tmp, e.Message);
+                }
+            }
+            seed = ReadProfileSeed(file)
+                ?? throw new IOException($"Could not create fingerprint seed file {file}");
+        }
+        var result = new List<string> { $"--fingerprint={seed}" };
+        if (args != null) result.AddRange(args);
+        return result;
+    }
+
     /// <summary>
     /// Build stealth args with a random fingerprint seed per launch.
     /// On macOS, skips platform/GPU spoofing - runs as a native Mac browser.
@@ -69,8 +200,7 @@ public static class Config
     /// </summary>
     public static List<string> GetDefaultStealthArgs()
     {
-        int seed;
-        lock (_rng) { seed = _rng.Next(10000, 100000); }
+        int seed = RandomSeed();
 
         var baseArgs = new List<string>
         {
