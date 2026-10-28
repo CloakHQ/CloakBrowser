@@ -197,6 +197,7 @@ internal static class LicenseGuard
                 case IGuardedProxy g: current = g.GuardTarget; break;
                 case HumanizedPage p: current = p.Original; break;
                 case HumanizedFrame f: current = f.Original; break;
+                case HumanizedLocator l: current = l.Original; break;
                 case HumanizedElementHandle e: current = e.Original; break;
                 case HumanizedBrowserContext c: current = c.Original; break;
                 case HumanizedBrowser b: current = b.Original; break;

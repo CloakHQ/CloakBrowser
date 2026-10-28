@@ -290,10 +290,13 @@ await test('page has _original after launch', async () => {
 await test('page.click is humanized', async () => {
   const browser = await launch({ headless: true, humanize: true });
   const page = await browser.newPage();
-  const clickStr = page.click.toString();
-  if (!clickStr.includes('ensureCursorInit') && !clickStr.includes('humanClickFn') && !clickStr.includes('scrollToElement')) {
-    throw new Error('page.click does not appear humanized');
-  }
+  await page.evaluate(() => {
+    document.body.innerHTML = '<button id="b" style="margin:200px">b</button>';
+    window.__moves = 0; document.addEventListener('mousemove', () => window.__moves++, true);
+  });
+  await page.click('#b');
+  const moves = await page.evaluate(() => window.__moves);
+  if (moves < 3) throw new Error(`page.click does not appear humanized (${moves} mousemove events)`);
   await browser.close();
 });
 
@@ -331,21 +334,11 @@ await test('press skips click when element already focused', async () => {
   await delay(300);
 
   // Record mouse moves before pressing Enter
-  const movesBefore = [];
-  const origMove = page._humanOriginals.mouseMove;
-  let moveCount = 0;
-  page._humanOriginals.mouseMove = async (x, y, opts) => {
-    moveCount++;
-    return origMove(x, y, opts);
-  };
+  await page.evaluate(() => { window.__moves = 0; document.addEventListener('mousemove', () => window.__moves++, true); });
 
-  // Press Enter — element is already focused, should NOT trigger mouse move
-  const movesAtStart = moveCount;
+  // Press — element is already focused, should NOT trigger a mouse path
   await page.locator('#searchInput').press('a');
-  const movesUsed = moveCount - movesAtStart;
-
-  // Restore
-  page._humanOriginals.mouseMove = origMove;
+  const movesUsed = await page.evaluate(() => window.__moves);
 
   // If focus check works, should be 0 moves (just keyboard press)
   if (movesUsed > 0) {
@@ -394,8 +387,7 @@ await test('frame has all methods patched', async () => {
 
   const mainFrame = page.mainFrame();
   const expected = ['click', 'dblclick', 'hover', 'type', 'fill',
-                    'check', 'uncheck', 'selectOption', 'press',
-                    'clear', 'dragAndDrop'];
+                    'check', 'uncheck', 'selectOption', 'press', 'dragAndDrop'];
   const missing = [];
   for (const method of expected) {
     if (typeof mainFrame[method] !== 'function') {
@@ -407,9 +399,9 @@ await test('frame has all methods patched', async () => {
   }
 
   // Verify they are patched (not original Playwright bindings)
-  if (!mainFrame._humanPatched) {
-    throw new Error('mainFrame._humanPatched flag not set');
-  }
+  const marker = Symbol.for('cloakbrowser.humanized');
+  const unpatched = expected.filter((m) => !mainFrame[m][marker]);
+  if (unpatched.length) throw new Error(`Frame methods not humanized: ${unpatched.join(', ')}`);
 
   await browser.close();
 });

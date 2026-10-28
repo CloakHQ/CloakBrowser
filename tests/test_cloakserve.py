@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -579,6 +579,25 @@ class TestConnectionTracking:
             second_task = pool._idle_tasks["seed1"]
 
             assert second_task is not first_task
+            pool._cancel_idle_cleanup("seed1")
+            await asyncio.sleep(0)
+            assert "seed1" not in pool._idle_tasks
+
+        asyncio.run(run())
+
+    @patch("subprocess.Popen")
+    def test_launch_without_connections_schedules_idle_cleanup(self, mock_popen):
+        async def run():
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+
+            pool = self._make_pool(idle_timeout=1.0)
+            with patch.object(pool, "_wait_for_cdp", return_value=True):
+                await pool.get_or_launch("seed1")
+
+            assert "seed1" in pool._idle_tasks
             pool._cancel_idle_cleanup("seed1")
             await asyncio.sleep(0)
             assert "seed1" not in pool._idle_tasks

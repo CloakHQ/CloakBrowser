@@ -11,9 +11,9 @@
 
 Drop-in Playwright/Puppeteer replacement. Same API, same code — just swap the import. **3 lines of code, 30 seconds to unblock.**
 
-- **71 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, WebRTC, network timing, automation signals
+- **87 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, WebRTC, network timing, automation signals
 - **0.9 reCAPTCHA v3 score** — human-level, server-verified
-- **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — tested against 30+ detection sites
+- **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — tested against 50+ detection sites
 - **`npm install cloakbrowser`** — binary auto-downloads, auto-updates, zero config
 - **Free and open source** — no subscriptions, no usage limits
 - **Works with any framework** — tested with browser-use, Crawl4AI, Scrapling, Stagehand ([example](examples/stagehand.ts)), LangChain, Selenium, and more
@@ -83,6 +83,10 @@ const browser = await launch({
 const browser = await launch({
   proxy: 'socks5://user:pass@proxy:1080',
 });
+// Note: SOCKS5 and credentialed HTTP proxies are set on the browser, so
+// context.request / page.request / route.fetch() do NOT use them (real IP).
+// Make those calls from the page instead, which goes through the proxy:
+const data = await page.evaluate(async (url) => (await fetch(url)).json(), 'https://example.com/api');
 
 // With proxy object (bypass, separate auth fields)
 const browser = await launch({
@@ -103,8 +107,8 @@ const browser = await launch({
   locale: 'en-US',
 });
 
-// Pin an exact Chromium version (Free or Pro)
-const browser = await launch({ browserVersion: '146.0.7680.177.5' });
+// Pin an exact Chromium version (paid Pro key only)
+const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '154.0.8037.57.1' });
 
 // Opt into the Pro Preview binary channel
 const browser = await launch({
@@ -212,7 +216,7 @@ if (newVersion) console.log(`Updated to ${newVersion}`);
 | `navigator.webdriver` | `true` | **`false`** |
 | CDP detection | Detected | **Not detected** |
 | TLS fingerprint | Mismatch | **Identical to Chrome** |
-| | | **Tested against 30+ detection sites** |
+| | | **Tested against 50+ detection sites** |
 
 ## Configuration
 
@@ -225,7 +229,7 @@ if (newVersion) console.log(`Updated to ${newVersion}`);
 | `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Set to `true` to skip SHA-256 verification after download |
 | `CLOAKBROWSER_WIDEVINE_CDM` | — | Path to a sideloaded `WidevineCdm` directory (overrides auto-detection next to the binary) |
 | `CLOAKBROWSER_WIDEVINE` | `1` | Set to `0` to disable automatic Widevine hint-file seeding for persistent contexts |
-| `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `146.0.7680.177.5`). Works with Free and Pro binaries |
+| `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `154.0.8037.57.1`). Paid Pro key only |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | `stable` | Set to `preview` to opt into the Pro Preview binary channel |
 
 ### Widevine / DRM
@@ -254,11 +258,11 @@ const page = await browser.newPage();
 
 | Platform | Free | Pro | Status |
 |---|---|---|---|
-| Linux x86_64 | Chromium 146 (58 patches) | Chromium 150 (71 patches) | ✅ |
-| Linux arm64 (RPi, Graviton) | Chromium 146 (58 patches) | Chromium 150 (71 patches) | ✅ |
-| macOS arm64 (Apple Silicon) | Chromium 145 (26 patches) | Chromium 150 (71 patches) | ✅ |
-| macOS x86_64 (Intel) | Chromium 145 (26 patches) | Chromium 150 (71 patches) | ✅ |
-| Windows x86_64 | Chromium 146 (58 patches) | Chromium 150 (71 patches) | ✅ |
+| Linux x86_64 | Chromium 146 (58 patches) | Chromium 155 (87 patches) | ✅ |
+| Linux arm64 (RPi, Graviton) | Chromium 146 (58 patches) | Chromium 155 (87 patches) | ✅ |
+| macOS arm64 (Apple Silicon) | Chromium 145 (26 patches) | Chromium 155 (87 patches) | ✅ |
+| macOS x86_64 (Intel) | Chromium 145 (26 patches) | Chromium 155 (87 patches) | ✅ |
+| Windows x86_64 | Chromium 146 (58 patches) | Chromium 155 (87 patches) | ✅ |
 
 ## CloakBrowser Pro
 
@@ -266,7 +270,7 @@ The wrappers (Python, JS, .NET) are MIT, free forever. The latest binary is **fr
 
 Anti-bot systems change every week and an older binary quietly degrades. The latest build is the one that keeps passing. **Try it free, then upgrade when you're running for real.**
 
-- **Free, latest build (Chromium 150)** — the newest binary, the exact one that stays [green against live detection](#test-results). Free with a GitHub sign-in, one concurrent session. [Grab your key](https://cloakbrowser.dev/free) or run `cloakbrowser login`, then point it at the site that's been blocking you.
+- **Free, latest build (Chromium 155)** — the newest binary, the exact one that stays [green against live detection](#test-results). Free with a GitHub sign-in, one concurrent session. [Grab your key](https://cloakbrowser.dev/free) or run `cloakbrowser login`, then point it at the site that's been blocking you.
 - **Pro** — when it's part of production scraping, QA, monitoring, or automation: scale to **5, 20, 200, 2,000, or more concurrent sessions**, always first on the newest patches, with hands-on support. Linux, Windows, macOS. **[See plans and pricing →](https://cloakbrowser.dev)**
 - **v146** — the older build stays free on [GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases). A quick first look, but it ages fast as detection evolves.
 
@@ -282,7 +286,7 @@ Try the latest free → **[cloakbrowser.dev/free](https://cloakbrowser.dev/free)
 
 ## Requirements
 
-- Node.js >= 20
+- Node.js 20.19+ or 22.12+
 - One of: `playwright-core` >= 1.53 or `puppeteer-core` >= 21
 
 ## Troubleshooting
@@ -351,14 +355,14 @@ Or set `CLOAKBROWSER_RELEASE_CHANNEL=preview` for all launches and CLI commands.
 
 **New update broke something? Roll back to the previous version**
 
-Pin to an exact binary version (keep current wrapper, use older Chromium):
+Pin to an exact binary version (keep current wrapper, use older Chromium). Paid Pro key only. A free GitHub key cannot pin: it ignores the pin and always gets the latest build.
 
 ```bash
-export CLOAKBROWSER_VERSION=146.0.7680.177.5   # env var for all launches
+export CLOAKBROWSER_VERSION=154.0.8037.57.1   # env var for all launches
 ```
 
 ```javascript
-const browser = await launch({ browserVersion: '146.0.7680.177.5' });
+const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '154.0.8037.57.1' });
 ```
 
 The pin is never sticky — unpinned launches always use the latest available version.

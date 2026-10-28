@@ -68,7 +68,7 @@ public static class CloakLauncher
         catch (Exception ex)
         {
             playwright.Dispose();
-            var lic = License.LicenseErrorFrom(ex);
+            var lic = License.LicenseErrorFrom(ex, denialPath);
             if (lic is not null) throw lic;
             throw;
         }
@@ -175,6 +175,7 @@ public static class CloakLauncher
             options.Proxy, options.BrowserVersion, options.LicenseKey, options.ReleaseChannel);
         var args = await ResolveWebRtcArgsAsync(options.Args, options.Proxy).ConfigureAwait(false);
         args = MaybeAppendWebRtcExitIp(args, exitIp);
+        args = Config.PersistentSeedArgs(userDataDir, options.StealthArgs, args);
 
         var combined = new List<string>(args ?? new List<string>());
         combined.AddRange(proxyResolution.ExtraArgs);
@@ -215,7 +216,7 @@ public static class CloakLauncher
         catch (Exception ex)
         {
             playwright.Dispose();
-            var lic = License.LicenseErrorFrom(ex);
+            var lic = License.LicenseErrorFrom(ex, denialPath);
             if (lic is not null) throw lic;
             throw;
         }
@@ -287,7 +288,15 @@ public static class CloakLauncher
         }
 
         var (geoTz, geoLocale, exitIp) = await GeoIp.ResolveProxyGeoWithIpAsync(proxyUrl).ConfigureAwait(false);
-        return (timezone ?? geoTz, locale ?? geoLocale, exitIp);
+        timezone ??= geoTz;
+        locale ??= geoLocale;
+        var missing = new List<string>();
+        if (timezone == null) missing.Add("timezone");
+        if (locale == null) missing.Add("locale");
+        if (missing.Count > 0)
+            throw new InvalidOperationException(
+                $"GeoIP resolution failed: could not determine {string.Join(" and ", missing)}");
+        return (timezone, locale, exitIp);
     }
 
     // -----------------------------------------------------------------------
@@ -472,6 +481,20 @@ public static class CloakLauncher
         "Monotype Corsiva", "Bookman Old Style",
     };
 
+    // macOS OS fonts — the core set present on essentially every real Mac. Their
+    // absence on a macOS-spoofing Linux host degrades results, just as a Windows-
+    // spoofing host needs the Windows set above. Several entries (Arial, Georgia,
+    // Times New Roman, Courier New, Tahoma) also ship on a Windows box, so a
+    // partial count off-Mac is normal.
+    internal static readonly string[] MacFontTells =
+    {
+        "Apple Color Emoji", "Arial", "Arial Narrow", "Arial Unicode MS",
+        "Comic Sans MS", "Courier", "Courier New", "Georgia", "Gill Sans",
+        "Helvetica", "Helvetica Neue", "Impact", "Menlo", "Microsoft Sans Serif",
+        "Monaco", "Tahoma", "Times New Roman", "Trebuchet MS", "Webdings",
+        "Wingdings",
+    };
+
     internal static bool _fontWarningChecked;
 
     /// <summary>
@@ -560,7 +583,7 @@ public static class CloakLauncher
             var present = WindowsFontsPresent();
             if (present != false) return; // true (full set) or null (undeterminable)
             CloakLog.Warning(
-                "[cloakbrowser] Incomplete Windows font set — installing the full " +
+                "[cloakbrowser] Incomplete Windows font set - installing the full " +
                 "set is strongly advised for best results when spoofing Windows on " +
                 "Linux. https://github.com/CloakHQ/cloakbrowser#font-setup-on-linux " +
                 "(silence: CLOAKBROWSER_SUPPRESS_FONT_WARNING=1)");

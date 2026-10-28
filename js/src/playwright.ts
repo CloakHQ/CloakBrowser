@@ -13,7 +13,7 @@ import {
 import { buildArgs } from "./args.js";
 import { maybeWarnWindowsFonts } from "./fonts.js";
 import { ensureBinary } from "./download.js";
-import { resolveProxyConfig } from "./proxy.js";
+import { resolveProxyConfig, warnOnRequestClientUse } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
 import {
   buildLaunchEnv,
@@ -23,6 +23,7 @@ import {
   resolveLicenseKey,
 } from "./license.js";
 import { seedWidevineHint } from "./widevine.js";
+import { persistentSeedArgs } from "./profile-seed.js";
 
 /** @internal Accept both timezone and timezoneId — either works, no warning. Exported for testing. */
 export function resolveTimezone<T extends { timezone?: string; timezoneId?: string }>(options: T): T {
@@ -202,10 +203,12 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright-core");
   const denialPath = resolveLicenseKey(options.licenseKey) ? mintDenialFile() : undefined;
   let browser: Browser;
+  let launchOptions: PlaywrightLaunchOptions;
   try {
-    browser = await chromium.launch(await buildLaunchOptions(options, denialPath));
+    launchOptions = await buildLaunchOptions(options, denialPath);
+    browser = await chromium.launch(launchOptions);
   } catch (err) {
-    const lic = licenseErrorFrom(err);
+    const lic = licenseErrorFrom(err, denialPath);
     if (lic) throw lic;
     throw err;
   }
@@ -215,6 +218,16 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   if (denialPath) {
     (browser as any).__cloakDenialPath = denialPath;
     installLicenseGuard(browser, denialPath);
+  }
+  // Proxy went to Chrome as --proxy-server, so Playwright's request client has no
+  // proxy (#579). browser.newPage() and launchContext() both go through newContext.
+  if (options.proxy && !launchOptions.proxy) {
+    const origNewContext = browser.newContext.bind(browser);
+    (browser as any).newContext = async (opts?: Parameters<typeof origNewContext>[0]) => {
+      const context = await origNewContext(opts);
+      warnOnRequestClientUse(context);
+      return context;
+    };
   }
   // Headed: a bare browser.newPage() would inherit Playwright's emulated 1280x720
   // viewport -> outerWidth < innerWidth (impossible window = bot tell). Default
@@ -362,6 +375,7 @@ export async function launchPersistentContext(
   );
   let resolvedArgs = await resolveWebrtcArgs(options);
   resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
+  resolvedArgs = persistentSeedArgs(options.userDataDir, options.stealthArgs, resolvedArgs);
   const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
   maybeWarnWindowsFonts(args);
 
@@ -392,9 +406,25 @@ export async function launchPersistentContext(
       ...envResult,
     });
   } catch (err) {
-    const lic = licenseErrorFrom(err);
+    const lic = licenseErrorFrom(err, denialPath);
     if (lic) throw lic;
     throw err;
+  }
+
+  if (proxyArgs.length) warnOnRequestClientUse(context);
+
+  // Human-like behavioral patching. Applied BEFORE the license guard: the guard
+  // stores its wrapper on the page/context object (it carries this launch's denial
+  // path), and an own property shadows the prototype method humanize patches. Guarding
+  // first would capture Playwright's own methods and silently disable humanize.
+  if (options.humanize) {
+    const { patchContext } = await import('./human/index.js');
+    const { resolveConfig } = await import('./human/config.js');
+    const cfg = resolveConfig(
+      options.humanPreset ?? 'default',
+      options.humanConfig,
+    );
+    patchContext(context, cfg);
   }
 
   // The persistent path hands back a context, so guard its newPage (see launch()).
@@ -407,17 +437,6 @@ export async function launchPersistentContext(
     for (const pg of context.pages()) {
       installLicenseGuard(pg, denialPath);
     }
-  }
-
-  // Human-like behavioral patching
-  if (options.humanize) {
-    const { patchContext } = await import('./human/index.js');
-    const { resolveConfig } = await import('./human/config.js');
-    const cfg = resolveConfig(
-      options.humanPreset ?? 'default',
-      options.humanConfig,
-    );
-    patchContext(context, cfg);
   }
 
   return context;

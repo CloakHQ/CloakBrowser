@@ -25,6 +25,7 @@ import {
   resolveLicenseKey,
 } from "./license.js";
 import { seedWidevineHint } from "./widevine.js";
+import { persistentSeedArgs } from "./profile-seed.js";
 
 export { CloakBrowserLicenseError } from "./license.js";
 
@@ -60,7 +61,9 @@ function resolveDefaultViewport(options: LaunchOptions): { width: number; height
 }
 
 /** Resolve binary path, geoip, webrtc, and build final Chrome args. */
-async function resolveArgs(options: LaunchOptions): Promise<{ binaryPath: string; args: string[] }> {
+async function resolveArgs(
+  options: LaunchOptions & { userDataDir?: string },
+): Promise<{ binaryPath: string; args: string[] }> {
   const binaryPath =
     process.env.CLOAKBROWSER_BINARY_PATH ||
     (await ensureBinary(
@@ -72,6 +75,8 @@ async function resolveArgs(options: LaunchOptions): Promise<{ binaryPath: string
   let resolvedArgs = (await resolveWebrtcArgs(options)) ?? options.args;
 
   resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
+  // Only launchPersistentContext passes userDataDir; plain launch() stays random.
+  resolvedArgs = persistentSeedArgs(options.userDataDir, options.stealthArgs, resolvedArgs);
   const args = buildArgs({ ...options, ...resolved, args: resolvedArgs });
   maybeWarnWindowsFonts(args);
   return { binaryPath, args };
@@ -205,7 +210,7 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
       ...envResult,
     });
   } catch (err) {
-    const lic = licenseErrorFrom(err);
+    const lic = licenseErrorFrom(err, denialPath);
     if (lic) throw lic;
     throw err;
   }
@@ -272,7 +277,7 @@ export async function launchPersistentContext(
       ...envResult,
     });
   } catch (err) {
-    const lic = licenseErrorFrom(err);
+    const lic = licenseErrorFrom(err, denialPath);
     if (lic) throw lic;
     throw err;
   }

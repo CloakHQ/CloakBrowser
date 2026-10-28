@@ -9,8 +9,9 @@ public class HumanConfigTests
     public void DefaultPreset_HasExpectedDefaults()
     {
         var cfg = HumanConfigFactory.Resolve(HumanPreset.Default);
-        Assert.Equal(70, cfg.TypingDelay);
-        Assert.Equal((15, 35), (cfg.KeyHold.Min, cfg.KeyHold.Max));
+        Assert.Equal(150, cfg.TypingDelay);
+        Assert.Equal((60, 175), (cfg.KeyHold.Min, cfg.KeyHold.Max));
+        Assert.Equal(0, cfg.ScrollNotchPx);
         Assert.False(cfg.IdleBetweenActions);
     }
 
@@ -18,9 +19,9 @@ public class HumanConfigTests
     public void CarefulPreset_IsSlower()
     {
         var cfg = HumanConfigFactory.Resolve(HumanPreset.Careful);
-        Assert.Equal(100, cfg.TypingDelay);
+        Assert.Equal(210, cfg.TypingDelay);
         Assert.True(cfg.IdleBetweenActions);
-        Assert.Equal((20, 45), (cfg.KeyHold.Min, cfg.KeyHold.Max));
+        Assert.Equal((70, 190), (cfg.KeyHold.Min, cfg.KeyHold.Max));
     }
 
     [Fact]
@@ -72,7 +73,7 @@ public class HumanConfigTests
         {
             ["does_not_exist"] = 5,
         });
-        Assert.Equal(70, cfg.TypingDelay); // unchanged
+        Assert.Equal(150, cfg.TypingDelay); // unchanged
     }
 
     [Fact]
@@ -93,7 +94,7 @@ public class HumanConfigTests
     {
         var baseCfg = new HumanConfig();
         var merged = baseCfg.With(new Dictionary<string, object> { ["typing_delay"] = 999.0 });
-        Assert.Equal(70, baseCfg.TypingDelay);
+        Assert.Equal(150, baseCfg.TypingDelay);
         Assert.Equal(999, merged.TypingDelay);
     }
 

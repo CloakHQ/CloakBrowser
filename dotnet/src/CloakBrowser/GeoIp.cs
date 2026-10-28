@@ -23,7 +23,7 @@ public static class GeoIp
     // Serializes GeoIP DB downloads within the process so N concurrent launches
     // don't each fetch the same ~70 MB file (issue #458). Per-process only.
     private static readonly SemaphoreSlim GeoIpDownloadGate = new(1, 1);
-    private const double DefaultGeoIpTimeoutSeconds = 5.0;
+    private const double DefaultGeoIpTimeoutSeconds = 20.0;
     private const string GeoIpTimeoutEnv = "CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS";
 
     // IP echo services - fast, no auth, return just the IP.
@@ -74,11 +74,12 @@ public static class GeoIp
             ["CM"] = "fr-CM", ["AO"] = "pt-AO", ["MZ"] = "pt-MZ", ["ZM"] = "en-ZM", ["ZW"] = "en-ZW",
             ["HN"] = "es-HN", ["NI"] = "es-NI", ["SV"] = "es-SV", ["PA"] = "es-PA", ["JM"] = "en-JM",
             ["TT"] = "en-TT", ["PR"] = "es-PR",
+            ["SC"] = "en-SC",
         };
 
     /// <summary>
     /// Resolve timezone and locale from a proxy's IP address.
-    /// Returns (timezone, locale) - either or both may be null on failure. Never throws.
+    /// Throws when the exit IP, database, or database lookup cannot be resolved.
     /// </summary>
     public static async Task<(string? Timezone, string? Locale)> ResolveProxyGeoAsync(
         string? proxyUrl, CancellationToken ct = default)
@@ -116,13 +117,12 @@ public static class GeoIp
         if (ip == null || DeadlineExpired(deadline))
         {
             if (deadline != null && DeadlineExpired(deadline))
-                CloakLog.Warning("GeoIP resolution timed out after {0:0.0}s; continuing without GeoIP", timeout);
-            return (null, null, null);
+                throw new InvalidOperationException($"GeoIP resolution timed out after {timeout:0.0}s");
+            throw new InvalidOperationException("GeoIP resolution failed: could not discover the egress IP");
         }
 
-        // DB only drives tz/locale; a missing/failed DB still returns the exit IP.
         if (dbPath == null)
-            return (null, null, ip);
+            throw new InvalidOperationException("GeoIP resolution failed: GeoIP database is unavailable");
 
         try
         {
@@ -131,13 +131,18 @@ public static class GeoIp
             var timezone = resp.Location?.TimeZone;
             var country = resp.Country?.IsoCode;
             string? locale = country != null && CountryLocaleMap.TryGetValue(country, out var l) ? l : null;
+            if (locale == null)
+            {
+                // Map gap, not a lookup failure — don't abort the launch over it
+                CloakLog.Warning("GeoIP: no locale for country {0} (IP {1}), using en-US", country, ip);
+                locale = "en-US";
+            }
             CloakLog.Debug("GeoIP: {0} -> tz={1}, country={2}, locale={3}", ip, timezone, country, locale);
             return (timezone, locale, ip);
         }
         catch (Exception exc)
         {
-            CloakLog.Warning("GeoIP lookup failed for {0}: {1}", ip, exc.Message);
-            return (null, null, ip);
+            throw new InvalidOperationException($"GeoIP lookup failed for {ip}: {exc.Message}", exc);
         }
     }
 
@@ -228,7 +233,7 @@ public static class GeoIp
         var deadline = DeadlineFromTimeout(timeout);
         var ip = await ResolveExitIpAsync(proxyUrl, timeout, ct).ConfigureAwait(false);
         if (ip == null && DeadlineExpired(deadline))
-            CloakLog.Warning("GeoIP resolution timed out after {0:0.0}s; continuing without GeoIP", timeout);
+            CloakLog.Warning("Proxy exit-IP resolution timed out after {0:0.0}s", timeout);
         return ip;
     }
 

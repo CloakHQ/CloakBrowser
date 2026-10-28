@@ -10,6 +10,8 @@ from cloakbrowser import (
 )
 from cloakbrowser.config import get_chromium_version
 
+pytestmark = pytest.mark.real_browser
+
 
 @pytest.mark.parametrize("env", [None, "patchright"])
 def test_removed_backend_kwarg_raises(env, monkeypatch):

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import random
 import re
+import time
+import uuid
 from pathlib import Path
+
+logger = logging.getLogger("cloakbrowser")
 
 
 # ---------------------------------------------------------------------------
@@ -51,13 +56,109 @@ IGNORE_DEFAULT_ARGS = ["--enable-automation", "--enable-unsafe-swiftshader"]
 # Default stealth arguments passed to the patched Chromium binary.
 # These activate source-level fingerprint patches compiled into the binary.
 # ---------------------------------------------------------------------------
+SEED_MIN, SEED_MAX = 10000, 99999
+
+# Shared with the JS and .NET wrappers: decimal seed + newline, so a profile
+# keeps its seed whichever wrapper opens it.
+PROFILE_SEED_FILE = ".cloakbrowser-seed"
+
+
+def _random_seed() -> int:
+    return random.randint(SEED_MIN, SEED_MAX)
+
+
+def _read_profile_seed(path: Path) -> int | None:
+    """Stored seed, or None if the file is missing or corrupt (corrupt is removed)."""
+    try:
+        data = path.read_bytes()
+        # Empty = a concurrent launch's exclusive create (no-hard-link fallback)
+        # hasn't written yet; give it ~1s before calling the file corrupt.
+        for _ in range(20):
+            if data:
+                break
+            time.sleep(0.05)
+            data = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    text = data.strip()
+    if text.isdigit() and text.isascii() and SEED_MIN <= int(text) <= SEED_MAX:
+        return int(text)
+    # A corrupt file gets a fresh seed (= new identity), so say so loudly.
+    logger.warning("Corrupt fingerprint seed file %s (%r); generating a new seed", path, data[:32])
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass  # a concurrent launch already removed it
+    return None
+
+
+def _write_synced(path: Path, mode: str, content: str) -> None:
+    # newline="\n": same bytes as the JS/.NET wrappers (no \r\n on Windows)
+    with open(path, mode, encoding="ascii", newline="\n") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def persistent_seed_args(
+    user_data_dir: str | os.PathLike, stealth_args: bool, args: list[str] | None
+) -> list[str] | None:
+    """Pin a persistent profile's fingerprint seed in ``<user_data_dir>/.cloakbrowser-seed``.
+
+    The first launch creates the seed; later launches reuse it. Returned as a
+    user arg, so it overrides the random stealth default via build_args dedup.
+    An explicit ``--fingerprint`` in ``args`` (including ``=off``) or
+    ``stealth_args=False`` leaves the file alone.
+    """
+    if not stealth_args or not user_data_dir:
+        return args
+    if any(a.split("=", 1)[0] == "--fingerprint" for a in args or []):
+        return args
+
+    profile = Path(os.fspath(user_data_dir))
+    path = profile / PROFILE_SEED_FILE
+    seed = _read_profile_seed(path)
+    if seed is None:
+        profile.mkdir(parents=True, exist_ok=True)
+        tmp = profile / f"{PROFILE_SEED_FILE}.{uuid.uuid4().hex}.tmp"
+        content = f"{_random_seed()}\n"
+        try:
+            _write_synced(tmp, "w", content)
+            # Publish without replacing: concurrent first launches all end up
+            # with whichever seed was linked first.
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                pass
+            except OSError as e:
+                # No hard links (FAT/exFAT, some network mounts): exclusive create
+                # still never overwrites. ponytail: a concurrent reader can catch
+                # the file empty here and regenerate; link() avoids that window.
+                logger.debug("Hard link unsupported for %s (%s); using exclusive create", path, e)
+                try:
+                    _write_synced(path, "x", content)
+                except FileExistsError:
+                    pass
+        finally:
+            try:
+                tmp.unlink()
+            except OSError as e:
+                logger.warning("Failed to remove temp seed file %s: %s", tmp, e)
+        # ponytail: if the winner's file is corrupt here (only via a concurrent
+        # corrupt-file race), fail loudly rather than loop.
+        seed = _read_profile_seed(path)
+        if seed is None:
+            raise RuntimeError(f"Could not create fingerprint seed file {path}")
+    return [f"--fingerprint={seed}", *(args or [])]
+
+
 def get_default_stealth_args() -> list[str]:
     """Build stealth args with a random fingerprint seed per launch.
 
     On macOS, skips platform/GPU spoofing — runs as a native Mac browser.
     Spoofing Windows on Mac creates detectable mismatches (fonts, GPU, etc.).
     """
-    seed = random.randint(10000, 99999)
+    seed = _random_seed()
     system = platform.system()
 
     base = [

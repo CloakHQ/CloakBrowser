@@ -206,6 +206,20 @@ static void PrintDiagnostics(Dictionary<string, object?> diag)
             string verdict = n == total ? "ok" : n == 0 ? "absent" : "partial";
             Console.WriteLine($"Office fonts: {verdict} ({n}/{total})");
         }
+        if (fonts.TryGetValue("macos", out var macObj) && macObj is int[] mac)
+        {
+            int n = mac[0], total = mac[1];
+            string verdict = n == total ? "ok" : n == 0 ? "missing" : "partial";
+            Console.WriteLine($"Mac fonts: {verdict} ({n}/{total})");
+            if (n < total)
+                // Phrased conditionally: some Mac fonts also ship on a Windows box,
+                // so a partial count is expected unless macOS is the intended persona.
+                Console.WriteLine("           → if spoofing macOS on this host, copy the real Mac fonts (Helvetica Neue, Menlo, SF/Apple system fonts)");
+        }
+        else
+        {
+            Console.WriteLine("Mac fonts: unknown (fc-list unavailable)");
+        }
     }
 
     var lic = (Dictionary<string, object?>)diag["license"]!;
@@ -235,10 +249,7 @@ static void PrintDiagnostics(Dictionary<string, object?> diag)
 
     if (lic.TryGetValue("sessions", out var sessionsObj) && sessionsObj is Dictionary<string, object?> sessions)
     {
-        var active = sessions["active"] as int?;
-        Console.WriteLine(active is null
-            ? "Sessions:  unavailable"
-            : $"Sessions:  {active} seat{(active == 1 ? "" : "s")} in use");
+        Console.WriteLine($"Sessions:  {Diagnostics.FormatSeats(sessions)}");
     }
 
     var geoip = (Dictionary<string, object?>)diag["geoip"]!;

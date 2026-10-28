@@ -26,6 +26,28 @@ export interface LicenseInfo {
   expires: string | null;
 }
 
+/**
+ * Result of a seat lookup: the count, the cap it counts against, and the reason
+ * either is missing.
+ *
+ * state:
+ *   "ok"          active is a real number (0 is a real answer, not an error)
+ *   "unreachable" never got an answer — DNS, refused, timeout, TLS
+ *   "denied"      the server refused; `reason` carries its error code
+ *   "unknown"     the server is up and the key is fine, but it cannot count
+ *                 right now (leaseless mode, or its seat store is unreachable)
+ *
+ * limit is null whenever the server declined to state a cap: unlimited, an
+ * unrecognised plan, or a server too old to send the field. Callers must fall back
+ * to the bare count, never invent a denominator.
+ */
+export interface SessionSeats {
+  active: number | null;
+  limit: number | null;
+  state: "ok" | "unreachable" | "denied" | "unknown";
+  reason: string | null;
+}
+
 export interface ProReleaseInfo {
   version: string;
   requestedChannel: "stable" | "preview";
@@ -50,17 +72,18 @@ export class CloakBrowserLicenseError extends Error {
 // emits only the number (no diagnostic strings, by design); the message text
 // lives here in the wrapper. Mirrors Python _LICENSE_EXIT_MESSAGES.
 const LICENSE_EXIT_MESSAGES: Record<number, string> = {
-  76: "CloakBrowser Pro: session limit reached for your plan. Close another running session or upgrade your plan.",
+  76: "CloakBrowser Pro: session limit reached for your plan. Close another running session or upgrade your plan. Always close with await browser.close() (e.g. in a finally block). A session that crashed or was killed frees its seat automatically within 4 min (free/trial/solo), 15 min (team) or 30 min (business/scale).",
   77: "CloakBrowser Pro: license key is invalid, expired, or missing. Check CLOAKBROWSER_LICENSE_KEY.",
   78: "CloakBrowser Pro: couldn't verify your license (license server unreachable or a connection problem).",
-  79: "CloakBrowser Pro: local configuration problem, ~/.cloakbrowser is not writable.",
+  79: "CloakBrowser Pro: local configuration problem. Either ~/.cloakbrowser is not writable, or the --license-route value is invalid (use auto, direct, or proxy with a proxy set).",
 };
 
 // Playwright embeds the child-process exit as "<process did exit: exitCode=N, ...>".
-// Puppeteer surfaces it as "Browser process exited with code N" / "with exit code N".
+// Puppeteer 25.x surfaces it as "Failed to launch the browser process:  Code: N".
 // Anchored so an unrelated "exitCode=" elsewhere in the error can't false-match.
 const EXIT_CODE_PATTERNS = [
   /process did exit:\s*exitCode=(\d+)/,
+  /Failed to launch the browser process:\s*Code:\s*(\d+)/,
   /exited with (?:exit )?code (\d+)/i,
 ];
 
@@ -83,12 +106,18 @@ export function licenseErrorMessage(errorText: string): string | null {
 
 /**
  * Return a CloakBrowserLicenseError if a launch failure was a license deny,
- * else null so the original error propagates unchanged.
+ * else null so the original error propagates unchanged. Falls back to the
+ * launch's denial file because not every driver puts the exit code in its
+ * error text (.NET Playwright reports only "Target ... has been closed").
  */
-export function licenseErrorFrom(err: unknown): CloakBrowserLicenseError | null {
+export function licenseErrorFrom(err: unknown, denialPath?: string): CloakBrowserLicenseError | null {
   const text = err instanceof Error ? err.message : String(err);
   const msg = licenseErrorMessage(text);
-  return msg !== null ? new CloakBrowserLicenseError(msg, { cause: err }) : null;
+  if (msg !== null) return new CloakBrowserLicenseError(msg, { cause: err });
+  if (!denialPath) return null;
+  const code = readDenialFile(denialPath);
+  const fromFile = code !== null ? LICENSE_EXIT_MESSAGES[code] : undefined;
+  return fromFile ? new CloakBrowserLicenseError(fromFile, { cause: err }) : null;
 }
 
 // Env var the wrapper uses to tell the Pro binary where to record a license
@@ -630,31 +659,71 @@ export async function getProLatestVersion(releaseChannel?: string): Promise<stri
 }
 
 /**
- * How many concurrent sessions (seats) this license is holding right now.
+ * Seats held right now, the cap they count against, and why either is missing.
  *
- * Deliberately NOT cached: a cached seat count is a wrong seat count. Returns
- * null when the number is unknown — the server couldn't be reached, or it
- * reported the count as unavailable (it does that instead of a false 0 while
- * running in leaseless mode). Callers render null as "unavailable".
+ * Deliberately NOT cached: a cached seat count is a wrong seat count.
+ *
+ * Six different things can stop us answering — no route to the host, a timeout, a
+ * 403 for a dead key, a 429, the server reporting the count as unknown in leaseless
+ * mode, and its seat store being unreachable. They used to collapse into one bare
+ * null, so `info` printed the same "unavailable" for "your key is dead" and "our
+ * backend is degraded, you are fine". `state` keeps them apart.
  */
-export async function getActiveSessionCount(licenseKey: string): Promise<number | null> {
+export async function getSessionSeats(licenseKey: string): Promise<SessionSeats> {
+  let resp: Response;
   try {
-    const resp = await fetch(SESSION_COUNT_URL, {
+    resp = await fetch(SESSION_COUNT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ license_key: licenseKey }),
       signal: AbortSignal.timeout(10_000),
     });
-
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
-    }
-
-    const data = (await resp.json()) as Record<string, unknown>;
-    return typeof data.active === "number" ? data.active : null;
   } catch {
-    return null;
+    // Never reached the server: DNS, refused, timed out, TLS.
+    return { active: null, limit: null, state: "unreachable", reason: null };
   }
+
+  if (!resp.ok) {
+    // The server answered, and the answer was a refusal. Its `error` field is the
+    // actionable part (invalid_key / license_inactive / rate_limited); fall back to
+    // the status when the body is missing or not JSON.
+    let reason: string | null = null;
+    try {
+      const body = (await resp.json()) as Record<string, unknown>;
+      if (typeof body.error === "string") reason = body.error;
+    } catch {
+      // fall through to the status
+    }
+    return { active: null, limit: null, state: "denied", reason: reason ?? `HTTP ${resp.status}` };
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = (await resp.json()) as Record<string, unknown>;
+  } catch {
+    return { active: null, limit: null, state: "unknown", reason: null };
+  }
+
+  if (typeof data.active !== "number") {
+    // 200 with active=null is the server saying "up, your key is fine, but I
+    // genuinely cannot count right now" — deliberate, so it never reports a false 0.
+    return { active: null, limit: null, state: "unknown", reason: null };
+  }
+
+  // limit absent (older server) or null (unlimited / unknown plan): callers fall back
+  // to the bare count rather than printing a made-up denominator.
+  const limit = typeof data.limit === "number" ? data.limit : null;
+  return { active: data.active, limit, state: "ok", reason: null };
+}
+
+/**
+ * How many concurrent sessions (seats) this license is holding right now.
+ *
+ * Kept for callers outside `info` that only want the number. Prefer
+ * getSessionSeats(), which also carries the cap and the reason a lookup failed.
+ */
+export async function getActiveSessionCount(licenseKey: string): Promise<number | null> {
+  return (await getSessionSeats(licenseKey)).active;
 }
 
 // ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ def page(browser):
     p.close()
 
 
+@pytest.mark.real_browser
 class TestWebDriverDetection:
     """Tests for WebDriver/automation detection signals."""
 

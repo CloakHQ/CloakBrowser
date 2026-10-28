@@ -35,9 +35,13 @@ internal static class Diagnostics
             string? sessionKey = License.ResolveLicenseKey();
             if (!string.IsNullOrEmpty(sessionKey))
             {
+                var seats = License.GetSessionSeats(sessionKey!);
                 license["sessions"] = new Dictionary<string, object?>
                 {
-                    ["active"] = License.GetActiveSessionCount(sessionKey!),
+                    ["active"] = seats.Active,
+                    ["limit"] = seats.Limit,
+                    ["state"] = seats.State,
+                    ["reason"] = seats.Reason,
                 };
             }
         }
@@ -61,6 +65,15 @@ internal static class Diagnostics
         {
             diag["launch"] = new Dictionary<string, object?> { ["tested"] = false, ["reason"] = "binary not installed" };
         }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // Windows ignores --version and starts a real browser, which takes a
+            // license seat and never frees it. Read the version manifest instead.
+            string? manifest = Directory.EnumerateFiles(Path.GetDirectoryName(binPath!)!, "*.manifest").FirstOrDefault();
+            string reason = "not launched on Windows (it would take a license seat)";
+            if (manifest != null) reason += $"; binary {Path.GetFileNameWithoutExtension(manifest)}";
+            diag["launch"] = new Dictionary<string, object?> { ["tested"] = false, ["reason"] = reason };
+        }
         else
         {
             var (ok, version, error) = BinaryVersion(binPath!);
@@ -75,18 +88,22 @@ internal static class Diagnostics
             diag["launch"] = launch;
         }
 
-        // Windows-font probe — only meaningful on a Linux host spoofing Windows.
-        // Omitted entirely off Linux, where it carries no signal.
+        // Windows/macOS-font probe — only meaningful on a Linux host spoofing
+        // another OS. Omitted entirely off Linux, where it carries no signal.
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             // Strict count, not "any one present" — real font installs are atomic
             // (you have the whole pack or none), so report how complete the set is.
+            // Both sets are counted unconditionally: `info` has no persona flag, so
+            // we report each raw count and let the user read the one they spoof.
             int? winN = CloakLauncher.CountFontsPresent(CloakLauncher.WindowsFontTells);
             int? officeN = CloakLauncher.CountFontsPresent(CloakLauncher.OfficeFontTells);
+            int? macN = CloakLauncher.CountFontsPresent(CloakLauncher.MacFontTells);
             diag["fonts"] = new Dictionary<string, object?>
             {
                 ["windows"] = winN is null ? null : new[] { winN.Value, CloakLauncher.WindowsFontTells.Length },
                 ["office"] = officeN is null ? null : new[] { officeN.Value, CloakLauncher.OfficeFontTells.Length },
+                ["macos"] = macN is null ? null : new[] { macN.Value, CloakLauncher.MacFontTells.Length },
             };
         }
 
@@ -237,12 +254,7 @@ internal static class Diagnostics
 
     // Launch `<binary> --version` to prove it runs.
     //
-    // Chromium only handles --version on POSIX, so on Windows the switch is ignored
-    // and a browser starts instead of printing — the probe then times out and a
-    // healthy install looks broken. --no-startup-window makes it exit right away
-    // without putting a window on screen; a broken binary still exits non-zero, so
-    // the check keeps its meaning. It just reports no version there, as nothing is
-    // printed.
+    // POSIX only: Windows ignores --version and starts a browser instead.
     private static (bool ok, string version, string error) BinaryVersion(string binaryPath)
     {
         try
@@ -255,8 +267,6 @@ internal static class Diagnostics
                 UseShellExecute = false,
             };
             startInfo.ArgumentList.Add("--version");
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                startInfo.ArgumentList.Add("--no-startup-window");
             using var proc = new Process { StartInfo = startInfo };
             proc.Start();
             // Read both pipes asynchronously so a full pipe buffer can't deadlock
@@ -315,5 +325,44 @@ internal static class Diagnostics
         }
         catch { /* best-effort */ }
         return missing;
+    }
+
+    // Server error codes -> the words a customer can act on. Anything unrecognised is
+    // printed verbatim rather than swallowed, so a new server code still says something.
+    private static string HumaniseSeatDenial(string reason) => reason switch
+    {
+        "invalid_key" => "invalid key",
+        "license_inactive" => "license inactive",
+        "rate_limited" => "rate limited",
+        _ => reason,
+    };
+
+    /// <summary>
+    /// Render the seat lookup for the CLI's "Sessions:" line. Kept byte-identical to
+    /// the Python (_format_seats) and JS (formatSeats) renderers.
+    /// </summary>
+    /// <remarks>
+    /// Lives here rather than in the CLI because Program.cs uses top-level statements,
+    /// whose local functions cannot be reached from the test assembly.
+    /// </remarks>
+    internal static string FormatSeats(Dictionary<string, object?> sessions)
+    {
+        var state = sessions.GetValueOrDefault("state") as string ?? "ok";
+        if (state == "unreachable")
+            return "unavailable (cannot reach cloakbrowser.dev)";
+        if (state == "denied")
+        {
+            var reason = sessions.GetValueOrDefault("reason") as string;
+            return $"unavailable ({HumaniseSeatDenial(string.IsNullOrEmpty(reason) ? "refused" : reason)})";
+        }
+        if (state != "ok" || sessions.GetValueOrDefault("active") is not int active)
+            // The server is up and the key is fine - it just cannot count right now.
+            return "unavailable (server cannot report seats right now)";
+
+        if (sessions.GetValueOrDefault("limit") is not int limit)
+            // No cap to show (unlimited, unrecognised plan, or a server predating the
+            // field). Fall back to the bare count - never print "N/unknown".
+            return $"{active} seat{(active == 1 ? "" : "s")} in use";
+        return $"{active}/{limit} in use";
     }
 }

@@ -10,6 +10,7 @@ import {
   getProLatestRelease,
   getProLatestVersion,
   getActiveSessionCount,
+  getSessionSeats,
   buildLaunchEnv,
   licenseErrorMessage,
   licenseErrorFrom,
@@ -619,7 +620,7 @@ describe("denial file + license guard", () => {
     [76, "session limit"],
     [77, "invalid, expired, or missing"],
     [78, "couldn't verify"],
-    [79, "not writable"],
+    [79, "--license-route"],
   ])("licenseErrorForCode maps %i", (code, fragment) => {
     const err = licenseErrorForCode(code as number);
     expect(err).toBeInstanceOf(CloakBrowserLicenseError);
@@ -807,14 +808,17 @@ describe("license exit-code surfacing", () => {
   const playwrightText = (code: number) =>
     "BrowserType.launch: Target page, context or browser has been closed\n" +
     `Browser logs:\n- [pid=123] <process did exit: exitCode=${code}, signal=null>`;
+  // Verbatim shape from puppeteer-core 25.12 (@puppeteer/browsers launch.ts), as in #584.
   const puppeteerText = (code: number) =>
-    `Failed to launch the browser process!\nBrowser process exited with code ${code}`;
+    `Failed to launch the browser process:  Code: ${code}\n\nstderr:\n` +
+    "[3105:3105:1011/003330.769964:ERROR:media/gpu/vaapi/vaapi_wrapper.cc:1801] vaInitialize failed: unknown libva error\n\n" +
+    "TROUBLESHOOTING: https://pptr.dev/troubleshooting\n";
 
   it.each([
     [76, "session limit"],
     [77, "invalid, expired, or missing"],
     [78, "couldn't verify"],
-    [79, "not writable"],
+    [79, "--license-route"],
   ])("maps Playwright exitCode=%i", (code, fragment) => {
     const msg = licenseErrorMessage(playwrightText(code as number));
     expect(msg).not.toBeNull();
@@ -822,7 +826,7 @@ describe("license exit-code surfacing", () => {
     expect(msg!.startsWith("CloakBrowser Pro:")).toBe(true);
   });
 
-  it("maps the Puppeteer 'exited with code N' phrasing", () => {
+  it("maps the Puppeteer 'Code: N' launch-failure phrasing", () => {
     expect(licenseErrorMessage(puppeteerText(76))).toContain("session limit");
     expect(licenseErrorMessage(puppeteerText(77))).toContain("invalid");
   });
@@ -845,6 +849,28 @@ describe("license exit-code surfacing", () => {
     expect(lic).toBeInstanceOf(CloakBrowserLicenseError);
     expect(lic!.message).toContain("invalid");
     expect(licenseErrorFrom(new Error("some unrelated crash"))).toBeNull();
+  });
+
+  it("licenseErrorFrom falls back to the denial file when the text has no code", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-denial-"));
+    const f = path.join(dir, "launch.json");
+    fs.writeFileSync(f, "76");
+    const original = new Error("Target page, context or browser has been closed");
+    const lic = licenseErrorFrom(original, f);
+    expect(lic).toBeInstanceOf(CloakBrowserLicenseError);
+    expect(lic!.message).toContain("session limit");
+    expect(lic!.cause).toBe(original);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("licenseErrorFrom returns null with no file or a non-license code in it", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-denial-"));
+    const closed = new Error("Target page, context or browser has been closed");
+    expect(licenseErrorFrom(closed, path.join(dir, "absent.json"))).toBeNull();
+    const f = path.join(dir, "crash.json");
+    fs.writeFileSync(f, "139");
+    expect(licenseErrorFrom(closed, f)).toBeNull();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -909,5 +935,110 @@ describe("getActiveSessionCount", () => {
     await getActiveSessionCount("cb_key");
     await getActiveSessionCount("cb_key");
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── getSessionSeats ───────────────────────────────────
+
+describe("getSessionSeats", () => {
+  // The six failure paths that used to collapse into one bare null.
+  const ok = (payload: unknown) =>
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => payload,
+    } as Response);
+
+  const denied = (status: number, payload: unknown) =>
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status,
+      statusText: "Denied",
+      json: async () => payload,
+    } as Response);
+
+  it("reports the count and the limit", async () => {
+    ok({ valid: true, active: 8, limit: 2000 });
+    expect(await getSessionSeats("cb_key")).toEqual({
+      active: 8, limit: 2000, state: "ok", reason: null,
+    });
+  });
+
+  it("treats a missing limit as null, not an error", async () => {
+    // A server predating the field still yields a usable count.
+    ok({ valid: true, active: 8 });
+    const seats = await getSessionSeats("cb_key");
+    expect(seats.state).toBe("ok");
+    expect(seats.active).toBe(8);
+    expect(seats.limit).toBeNull();
+  });
+
+  it("treats an explicit null limit as null", async () => {
+    // Unlimited licence or unrecognised plan — the server says so explicitly.
+    ok({ valid: true, active: 3, limit: null });
+    expect((await getSessionSeats("cb_key")).limit).toBeNull();
+  });
+
+  it("keeps zero seats as a real answer", async () => {
+    ok({ valid: true, active: 0, limit: 5 });
+    const seats = await getSessionSeats("cb_key");
+    expect(seats.state).toBe("ok");
+    expect(seats.active).toBe(0);
+  });
+
+  it("reports a network failure as unreachable", async () => {
+    // info is a diagnostic — it degrades, it never throws out of the command.
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("timeout"));
+    const seats = await getSessionSeats("cb_key");
+    expect(seats.state).toBe("unreachable");
+    expect(seats.active).toBeNull();
+  });
+
+  it("carries the server's reason on a denial", async () => {
+    denied(403, { valid: false, error: "license_inactive" });
+    const seats = await getSessionSeats("cb_key");
+    expect(seats.state).toBe("denied");
+    expect(seats.reason).toBe("license_inactive");
+  });
+
+  it("treats a rate limit as a denial", async () => {
+    denied(429, { valid: false, error: "rate_limited" });
+    expect((await getSessionSeats("cb_key")).reason).toBe("rate_limited");
+  });
+
+  it("falls back to the status when a denial has no body", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Server Error",
+      json: async () => {
+        throw new Error("not json");
+      },
+    } as unknown as Response);
+    expect((await getSessionSeats("cb_key")).reason).toBe("HTTP 500");
+  });
+
+  it("reports a server-side unknown as unknown, not denied", async () => {
+    // Leaseless mode: 200, key is fine, the server just cannot count. This is the
+    // distinction the old single null destroyed.
+    ok({ valid: true, active: null, limit: null });
+    const seats = await getSessionSeats("cb_key");
+    expect(seats.state).toBe("unknown");
+    expect(seats.active).toBeNull();
+  });
+
+  it("reports an unparseable body as unknown", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => {
+        throw new Error("not json");
+      },
+    } as unknown as Response);
+    expect((await getSessionSeats("cb_key")).state).toBe("unknown");
+  });
+
+  it("keeps getActiveSessionCount returning the bare count", async () => {
+    // It is shipped public API — it must keep behaving.
+    ok({ valid: true, active: 4, limit: 20 });
+    expect(await getActiveSessionCount("cb_key")).toBe(4);
   });
 });

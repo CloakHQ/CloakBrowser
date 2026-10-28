@@ -1,0 +1,804 @@
+using System.Reflection;
+using System.Text.Json;
+using Microsoft.Playwright;
+
+namespace CloakBrowser.Human;
+
+/// <summary>What an action is aimed at: a selector in a frame, or an element handle.</summary>
+internal sealed class Target
+{
+    public Target(IFrame frame, string? selector, bool strict = false, IElementHandle? handle = null)
+    {
+        Frame = frame; Selector = selector; Strict = strict; Handle = handle;
+        Description = selector != null ? $"locator({JsonSerializer.Serialize(selector)})" : "element handle";
+    }
+
+    public IFrame Frame { get; }
+    public string? Selector { get; }
+    public bool Strict { get; }
+    public IElementHandle? Handle { get; }
+    public string Description { get; set; }
+}
+
+internal readonly record struct Resolved(IFrame Frame, int Id);
+
+internal sealed class Deadline
+{
+    private readonly long? _end;
+    public Deadline(double timeoutMs)
+    {
+        Timeout = timeoutMs;
+        _end = timeoutMs > 0 ? Environment.TickCount64 + (long)timeoutMs : null;
+    }
+    public double Timeout { get; }
+    public double Remaining => _end == null ? double.PositiveInfinity : Math.Max(0, _end.Value - Environment.TickCount64);
+    public bool Expired => _end != null && Environment.TickCount64 >= _end.Value;
+}
+
+/// <summary>Internal: the current attempt failed for a reason; retry until timeout.</summary>
+internal sealed class RetryException : Exception
+{
+    public RetryException(string reason) : base(reason) { }
+}
+
+/// <summary>A read / DispatchEvent on an ElementHandle the isolated world cannot locate
+/// (no box: hidden; or a box shared with another element). The wrapper runs Playwright's
+/// own call instead, which reads hidden elements. Also a DispatchEvent whose eventInit
+/// holds a JSHandle (it lives in the page's main world, where Playwright dispatches).</summary>
+internal sealed class RawFallbackException : Exception
+{
+    /// <summary>A JSHandle anywhere in an eventInit (dictionary, list or plain/anonymous object).</summary>
+    public static bool HasHandle(object? v) => v switch
+    {
+        null or string => false,
+        IJSHandle => true,
+        System.Collections.IDictionary d => d.Values.Cast<object?>().Any(HasHandle),
+        System.Collections.IEnumerable e => e.Cast<object?>().Any(HasHandle),
+        _ when v.GetType().IsValueType => false,
+        _ => v.GetType().GetProperties().Any(p => p.GetIndexParameters().Length == 0 && HasHandle(p.GetValue(v))),
+    };
+}
+
+/// <summary>Options every humanized action understands (Playwright names + ours).</summary>
+internal sealed class ActOpts
+{
+    public float? Timeout { get; set; }
+    public bool Force { get; set; }
+    public bool Trial { get; set; }
+    public bool Strict { get; set; }
+    public (double X, double Y)? Position { get; set; }
+    public MouseButton? Button { get; set; }
+    public int? ClickCount { get; set; }
+    public float? Delay { get; set; }
+    public IReadOnlyList<string>? Modifiers { get; set; }
+    public (double X, double Y)? SourcePosition { get; set; }
+    public (double X, double Y)? TargetPosition { get; set; }
+    public IReadOnlyDictionary<string, object>? HumanConfig { get; set; }
+    // internal
+    public Deadline? Deadline { get; set; }
+    public bool Nested { get; set; }
+    public object[]? Aim { get; set; }
+
+    public ActOpts With(Action<ActOpts> change)
+    {
+        var c = (ActOpts)MemberwiseClone();
+        change(c);
+        return c;
+    }
+
+    /// <summary>Read the Playwright options object of any action (they share property
+    /// names but no base type).</summary>
+    public static ActOpts From(object? o, IReadOnlyDictionary<string, object>? humanConfig = null)
+    {
+        var a = new ActOpts { HumanConfig = humanConfig };
+        if (o == null) return a;
+        object? P(string n) => o.GetType().GetProperty(n)?.GetValue(o);
+        a.Timeout = P("Timeout") as float?;
+        a.Force = P("Force") as bool? ?? false;
+        a.Trial = P("Trial") as bool? ?? false;
+        a.Strict = P("Strict") as bool? ?? false;
+        a.Button = P("Button") as MouseButton?;
+        a.ClickCount = P("ClickCount") as int?;
+        a.Delay = P("Delay") as float?;
+        if (P("Modifiers") is IEnumerable<KeyboardModifier> mods) a.Modifiers = mods.Select(m => m.ToString()).ToList();
+        if (P("Position") is Position pos) a.Position = (pos.X, pos.Y);
+        if (P("SourcePosition") is SourcePosition sp) a.SourcePosition = (sp.X, sp.Y);
+        if (P("TargetPosition") is TargetPosition tp) a.TargetPosition = (tp.X, tp.Y);
+        return a;
+    }
+}
+
+internal sealed class Box
+{
+    public Rect Rect;
+    public double Bl, Bt;
+    public Rect Clip;
+    public Rect Visible;
+    public Rect? Scroller;
+    public double X => Rect.X; public double Y => Rect.Y; public double Width => Rect.Width; public double Height => Rect.Height;
+}
+
+/// <summary>Original (un-humanized) input primitives of one page.</summary>
+internal interface IRawInput
+{
+    Task MoveAsync(double x, double y, int? steps = null);
+    Task DownAsync(MouseButton button = MouseButton.Left, int clickCount = 1);
+    Task UpAsync(MouseButton button = MouseButton.Left, int clickCount = 1);
+    Task WheelAsync(double dx, double dy);
+    Task KeyDownAsync(string key);
+    Task KeyUpAsync(string key);
+    Task KeyPressAsync(string key, float? delay = null);
+    Task InsertTextAsync(string text);
+}
+
+internal sealed class PlaywrightRawInput : IRawInput
+{
+    private readonly IMouse _m;
+    private readonly IKeyboard _k;
+    public PlaywrightRawInput(IMouse mouse, IKeyboard keyboard) { _m = mouse; _k = keyboard; }
+    public Task MoveAsync(double x, double y, int? steps = null) =>
+        _m.MoveAsync((float)x, (float)y, steps == null ? null : new MouseMoveOptions { Steps = steps });
+    public Task DownAsync(MouseButton button = MouseButton.Left, int clickCount = 1) =>
+        _m.DownAsync(new MouseDownOptions { Button = button, ClickCount = clickCount });
+    public Task UpAsync(MouseButton button = MouseButton.Left, int clickCount = 1) =>
+        _m.UpAsync(new MouseUpOptions { Button = button, ClickCount = clickCount });
+    public Task WheelAsync(double dx, double dy) => _m.WheelAsync((float)dx, (float)dy);
+    public Task KeyDownAsync(string key) => _k.DownAsync(key);
+    public Task KeyUpAsync(string key) => _k.UpAsync(key);
+    public Task KeyPressAsync(string key, float? delay = null) =>
+        _k.PressAsync(key, delay == null ? null : new KeyboardPressOptions { Delay = delay });
+    public Task InsertTextAsync(string text) => _k.InsertTextAsync(text);
+}
+
+/// <summary>Reads client-side Playwright .NET internals:
+/// a locator's frame and selector string, and the page's default-timeout settings.</summary>
+internal static class PlaywrightInternals
+{
+    private const BindingFlags Inst = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+
+    public static (IFrame Frame, string Selector) LocatorParts(ILocator locator)
+    {
+        var t = locator.GetType();
+        var frame = t.GetField("_frame", Inst)?.GetValue(locator) as IFrame;
+        var selector = t.GetField("_selector", Inst)?.GetValue(locator) as string;
+        if (frame == null || selector == null)
+            throw new PlaywrightException(
+                $"cloakbrowser humanize: unsupported locator implementation {t.FullName}; Microsoft.Playwright layout changed");
+        return (frame, selector);
+    }
+
+    /// <summary>Playwright's effective timeout for an action: the explicit option, else
+    /// the page / context default, else 30 s. 0 means no limit.</summary>
+    public static double Timeout(IFrame frame, float? explicitTimeout)
+    {
+        if (explicitTimeout != null) return explicitTimeout.Value;
+        var page = frame.Page;
+        var ts = page.GetType().GetField("_timeoutSettings", Inst)?.GetValue(page);
+        var m = ts?.GetType().GetMethod("Timeout", Inst, null, new[] { typeof(float?) }, null);
+        if (m != null) return Convert.ToDouble(m.Invoke(ts, new object?[] { null }));
+        return 30000;
+    }
+
+    public static IFrame HandleFrame(IElementHandle handle)
+    {
+        // An ElementHandle's parent object is its frame.
+        var parent = handle.GetType().GetProperty("Parent", Inst)?.GetValue(handle);
+        return parent as IFrame
+            ?? throw new PlaywrightException("cloakbrowser humanize: cannot determine the frame of this element handle");
+    }
+
+    public static string HandleGuid(IElementHandle handle) =>
+        handle.GetType().GetProperty("Guid", Inst)?.GetValue(handle) as string ?? handle.GetHashCode().ToString();
+}
+
+/// <summary>
+/// Unified humanized action pipeline. Port of <c>cloakbrowser/human/engine.py</c>
+/// (and <c>js/src/human/engine.ts</c>).
+///
+/// One implementation drives page / frame / locator / element-handle actions:
+/// resolve (isolated world, Playwright selector engine, strict mode) -> wait for element
+/// states -> scroll into view with mouse-wheel bursts (page, iframes, containers) ->
+/// Bezier move to a point inside the visible part of the element -> hit-target check
+/// (element and every ancestor iframe) -> press / type. Nothing falls back to
+/// Playwright's stock actions, and failures throw
+/// <see cref="PlaywrightException"/> / <see cref="System.TimeoutException"/>.
+/// </summary>
+internal sealed partial class HumanEngine
+{
+    // Microsoft.Playwright .NET joins FrameLocator parts with an extra space
+    // ("enter-frame  >> "), so split on the marker with any surrounding whitespace.
+    private static readonly System.Text.RegularExpressions.Regex EnterFrameSplit =
+        new(@"\s*>>\s*internal:control=enter-frame\s*>>\s*", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly string[] ClickStates = { "visible", "enabled", "stable" };
+    private static readonly string[] HoverStates = { "visible", "stable" };
+    private static readonly string[] InputStates = { "visible", "enabled", "editable" };
+    private static readonly string[] FocusStates = { "visible", "enabled" };
+    private static readonly int[] RetryMs = { 0, 20, 100, 100, 500 };
+
+    private readonly IPage _page;
+    private readonly IRawInput _raw;
+    private string? _platform;
+    private readonly Dictionary<string, (IFrame Frame, int Ctx, int Id)> _handleIds = new();
+
+    public HumanEngine(IPage page, HumanConfig cfg, CursorPosition cursor, IRawInput? raw = null)
+    {
+        _page = page;
+        Config = cfg;
+        Cursor = cursor;
+        _raw = raw ?? new PlaywrightRawInput(page.Mouse, page.Keyboard);
+        World = new HumanWorld(page);
+    }
+
+    public HumanConfig Config { get; }
+    public CursorPosition Cursor { get; }
+    public HumanWorld World { get; }
+    public IPage Page => _page;
+
+    private static Task Sleep(double ms) => ms > 0 ? Task.Delay(TimeSpan.FromMilliseconds(ms)) : Task.CompletedTask;
+    private static double R(double lo, double hi) => HumanRandom.Rand(lo, hi);
+    private static double RR(Range r) => HumanRandom.RandRange(r);
+
+    public HumanConfig CallCfg(IReadOnlyDictionary<string, object>? overrides) =>
+        overrides == null || overrides.Count == 0 ? Config : Config.With(overrides);
+
+    public Deadline DeadlineFor(Target t, ActOpts o) =>
+        o.Deadline ?? new Deadline(PlaywrightInternals.Timeout(t.Frame, o.Timeout));
+
+    private static PlaywrightException Err(string msg) => new(msg);
+
+    // -- persona ------------------------------------------------------------
+
+    public async Task<string> PlatformAsync()
+    {
+        if (_platform == null)
+        {
+            try { _platform = (await World.CallAsync(_page.MainFrame, "platform").ConfigureAwait(false))?.GetString() ?? ""; }
+            catch (PlaywrightException) { _platform = ""; }
+        }
+        return _platform;
+    }
+
+    public async Task<bool> IsMacAsync() => (await PlatformAsync().ConfigureAwait(false)).StartsWith("mac", StringComparison.OrdinalIgnoreCase);
+    public async Task<string> SelectAllKeyAsync() => await IsMacAsync().ConfigureAwait(false) ? "Meta+a" : "Control+a";
+
+    private async Task<string> ModifierAsync(string key) =>
+        key == "ControlOrMeta" ? (await IsMacAsync().ConfigureAwait(false) ? "Meta" : "Control") : key;
+
+    private async Task<string> KeysAsync(string key) =>
+        key.Contains("ControlOrMeta") ? key.Replace("ControlOrMeta", await ModifierAsync("ControlOrMeta").ConfigureAwait(false)) : key;
+
+    // -- cursor -------------------------------------------------------------
+
+    public async Task EnsureCursorAsync(HumanConfig? cfg = null)
+    {
+        if (Cursor.Initialized) return;
+        var c = cfg ?? Config;
+        Cursor.X = Math.Round(RR(c.InitialCursorX));
+        Cursor.Y = Math.Round(RR(c.InitialCursorY));
+        await _raw.MoveAsync(Cursor.X, Cursor.Y).ConfigureAwait(false);
+        Cursor.Initialized = true;
+    }
+
+    /// <summary>Move from the current cursor position to (x, y), ending exactly there: an
+    /// early-peaking main stroke timed by Fitts' law, sometimes a short corrective stroke, one
+    /// pointer event per frame and none without movement.</summary>
+    public async Task MoveToAsync(double x, double y, HumanConfig cfg)
+    {
+        await EnsureCursorAsync(cfg).ConfigureAwait(false);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        double clock = 0;
+        foreach (var (px, py, dt) in HumanMouse.PlanMove(Cursor.X, Cursor.Y, x, y, cfg))
+        {
+            // Keep to the planned schedule: the CDP round trip of each move
+            // comes out of the next wait instead of adding to it.
+            clock += dt;
+            await Sleep(clock - sw.Elapsed.TotalMilliseconds).ConfigureAwait(false);
+            await _raw.MoveAsync(px, py).ConfigureAwait(false);
+        }
+        Cursor.X = x; Cursor.Y = y;
+    }
+
+    public async Task IdleAsync(HumanConfig cfg)
+    {
+        if (!cfg.IdleBetweenActions) return;
+        await EnsureCursorAsync(cfg).ConfigureAwait(false);
+        long end = Environment.TickCount64 + (long)(R(cfg.IdleBetweenDuration.Min, cfg.IdleBetweenDuration.Max) * 1000);
+        double x = Cursor.X, y = Cursor.Y;
+        while (Environment.TickCount64 < end)
+        {
+            x += (HumanRandom.NextDouble() - 0.5) * 2 * cfg.IdleDriftPx;
+            y += (HumanRandom.NextDouble() - 0.5) * 2 * cfg.IdleDriftPx;
+            await _raw.MoveAsync(Math.Round(x), Math.Round(y)).ConfigureAwait(false);
+            await Sleep(Math.Min(RR(cfg.IdlePauseRange), Math.Max(0, end - Environment.TickCount64))).ConfigureAwait(false);
+        }
+        await _raw.MoveAsync(Cursor.X, Cursor.Y).ConfigureAwait(false); // drift is noise, not a new position
+    }
+
+    // -- resolution ---------------------------------------------------------
+
+    /// <summary>Resolve once. Throws <see cref="RetryException"/> (not yet there) or a final error.</summary>
+    public async Task<Resolved> ResolveAsync(Target t)
+    {
+        if (t.Handle != null) return await ResolveHandleAsync(t.Handle).ConfigureAwait(false);
+        var frame = t.Frame;
+        var parts = EnterFrameSplit.Split(t.Selector!);
+        for (int i = 0; i < parts.Length; i++)
+        {
+            var res = (await World.CallAsync(frame, "resolve", parts[i], t.Strict, 0).ConfigureAwait(false))!.Value;
+            var status = res.GetProperty("status").GetString();
+            if (status == "none") throw new RetryException($"waiting for {t.Description}");
+            if (status is "strict" or "error") throw Err(res.GetProperty("message").GetString() ?? status);
+            int id = res.GetProperty("id").GetInt32();
+            if (i == parts.Length - 1) return new Resolved(frame, id);
+            frame = await World.ContentFrameAsync(frame, id).ConfigureAwait(false)
+                ?? throw new RetryException($"waiting for the frame of {t.Description}");
+        }
+        throw Err("unreachable");
+    }
+
+    /// <summary><paramref name="exact"/> (reads): skip the cache (it may hold a click's pick
+    /// from a same-box chain) and accept only the one element with this box; anything else
+    /// throws <see cref="RawFallbackException"/>.</summary>
+    public async Task<Resolved> ResolveHandleAsync(IElementHandle handle, bool exact = false)
+    {
+        var frame = PlaywrightInternals.HandleFrame(handle);
+        var guid = PlaywrightInternals.HandleGuid(handle);
+        // Element ids are local to one isolated world, and a new document gets a new
+        // world: an id cached before a navigation may now name a different element.
+        int ctx = await World.ContextIdAsync(frame).ConfigureAwait(false);
+        if (!exact && _handleIds.TryGetValue(guid, out var cached) && cached.Frame == frame && cached.Ctx == ctx &&
+            await World.CallAsync(frame, "connected", cached.Id).ConfigureAwait(false) is { ValueKind: JsonValueKind.True })
+            return new Resolved(frame, cached.Id);
+        // An ElementHandle carries no identity our context can read, so find the element
+        // with exactly its border box.
+        var box = await handle.BoundingBoxAsync().ConfigureAwait(false);
+        if (box == null)
+        {
+            if (exact) throw new RawFallbackException();
+            // Resolved in an earlier document of this frame and gone now
+            // (a same-document navigation keeps the element, and its box).
+            if (_handleIds.TryGetValue(guid, out var old) && old.Frame == frame) throw Err("Element is not attached to the DOM");
+            throw new RetryException("element is not visible");
+        }
+        var (ox, oy, _) = await World.FrameGeometryAsync(frame).ConfigureAwait(false);
+        var res = (await World.CallAsync(frame, "matchRect", box.X - ox, box.Y - oy, box.Width, box.Height, exact).ConfigureAwait(false))!.Value;
+        if (res.GetProperty("count").GetInt32() != 1)
+        {
+            if (exact) throw new RawFallbackException();
+            throw Err("cloakbrowser humanize: cannot identify the element behind this ElementHandle inside the isolated " +
+                      "world (it shares its box with another element); use a Locator instead");
+        }
+        int id = res.GetProperty("id").GetInt32();
+        _handleIds[guid] = (frame, ctx, id);
+        return new Resolved(frame, id);
+    }
+
+    public Task<Resolved> WaitForAsync(Target t, string[] states, Deadline d, string api, bool force = false) =>
+        RetryAsync(api, t, d, () => AttemptStatesAsync(t, states, force));
+
+    public async Task<Resolved> AttemptStatesAsync(Target t, string[] states, bool force)
+    {
+        var r = await ResolveAsync(t).ConfigureAwait(false);
+        if (force) return r;
+        var res = await World.CallAsync(r.Frame, "states", r.Id, states).ConfigureAwait(false);
+        if (res == null || res.Value.ValueKind == JsonValueKind.Null) return r;
+        if (res.Value.TryGetProperty("error", out var e)) throw Err(e.GetString() ?? "state check failed");
+        var missing = res.Value.GetProperty("missing").GetString();
+        if (missing == "attached")
+        {
+            if (t.Handle != null) throw Err("Element is not attached to the DOM");
+            throw new RetryException("element was detached from the DOM, retrying");
+        }
+        throw new RetryException($"element is not {missing}");
+    }
+
+    // -- reads --------------------------------------------------------------
+
+    private static object?[] WithId(int id, object?[] extra)
+    {
+        var args = new object?[extra.Length + 1];
+        args[0] = id;
+        Array.Copy(extra, 0, args, 1, extra.Length);
+        return args;
+    }
+
+    private static string? WorldValue(JsonElement res) =>
+        res.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>Read a property through the isolated world.
+    ///
+    /// Resolve until the selector matches once (Playwright's read semantics), then read
+    /// the property in the world the engine already runs in — the same isolated world
+    /// the actions use.</summary>
+    /// <summary>For an ElementHandle: cache its exact isolated-world id, or throw
+    /// <see cref="RawFallbackException"/> at once when it has no box or shares it
+    /// (Playwright reads hidden elements; a read must not land on a same-box wrapper).</summary>
+    private async Task HandleOrRawAsync(Target t, Deadline d, string api)
+    {
+        if (t.Handle is { } h)
+            await RetryAsync(api, t, d, () => ResolveHandleAsync(h, exact: true)).ConfigureAwait(false);
+    }
+
+    public async Task<string?> ReadAsync(Target t, string op, ActOpts o, string api, params object?[] extra)
+    {
+        var d = DeadlineFor(t, o);
+        await HandleOrRawAsync(t, d, api).ConfigureAwait(false);
+        var r = await WaitForAsync(t, Array.Empty<string>(), d, api).ConfigureAwait(false);
+        var res = await World.CallAsync(r.Frame, op, WithId(r.Id, extra)).ConfigureAwait(false);
+        if (res is JsonElement e && e.ValueKind == JsonValueKind.Object)
+        {
+            if (e.TryGetProperty("error", out var err)) throw Err($"{api}: Error: {err.GetString()}");
+            return WorldValue(e);
+        }
+        return null;
+    }
+
+    /// <summary>Dispatch a DOM event on the resolved element.
+    ///
+    /// The event is built by Playwright's own injected helper, evaluated in the
+    /// isolated world instead of the page's world.</summary>
+    public async Task DispatchAsync(Target t, ActOpts o, string api, string type, object? eventInit = null)
+    {
+        if (RawFallbackException.HasHandle(eventInit)) throw new RawFallbackException();
+        var d = DeadlineFor(t, o);
+        await HandleOrRawAsync(t, d, api).ConfigureAwait(false);
+        var r = await WaitForAsync(t, Array.Empty<string>(), d, api).ConfigureAwait(false);
+        var res = await World.CallAsync(r.Frame, "dispatchEvent", r.Id, type, eventInit).ConfigureAwait(false);
+        if (res is JsonElement e && e.ValueKind == JsonValueKind.Object && e.TryGetProperty("error", out var err))
+            throw Err($"{api}: Error: {err.GetString()}");
+    }
+
+    public async Task<T> RetryAsync<T>(string api, Target t, Deadline d, Func<Task<T>> attempt)
+    {
+        var reasons = new List<string>();
+        void Note(string r) { if (reasons.Count == 0 || reasons[^1] != r) reasons.Add(r); }
+        for (int n = 0; ; n++)
+        {
+            try
+            {
+                return await attempt().ConfigureAwait(false);
+            }
+            catch (StaleElementException)
+            {
+                if (t.Handle != null) throw Err($"{api}: Element is not attached to the DOM");
+                Note("element was detached from the DOM, retrying");
+            }
+            catch (RetryException r)
+            {
+                Note(r.Message);
+            }
+            catch (PlaywrightException e) when (!e.Message.StartsWith(api, StringComparison.Ordinal))
+            {
+                throw new PlaywrightException($"{api}: {e.Message}", e);
+            }
+            if (d.Expired)
+            {
+                var log = string.Join("\n", new[] { $"waiting for {t.Description}" }.Concat(reasons.TakeLast(5)).Select(r => $"  - {r}"));
+                throw new System.TimeoutException($"{api}: Timeout {Math.Round(d.Timeout)}ms exceeded.\nCall log:\n{log}");
+            }
+            await Sleep(Math.Min(RetryMs[Math.Min(n, RetryMs.Length - 1)], d.Remaining)).ConfigureAwait(false);
+        }
+    }
+
+    public Task RetryAsync(string api, Target t, Deadline d, Func<Task> attempt) =>
+        RetryAsync<bool>(api, t, d, async () => { await attempt().ConfigureAwait(false); return true; });
+
+    // -- geometry -----------------------------------------------------------
+
+    private static double D(JsonElement e, string p) => e.GetProperty(p).GetDouble();
+
+    /// <summary>Element border box in viewport coordinates plus its visible clip.</summary>
+    public async Task<Box> ElementBoxAsync(Resolved r)
+    {
+        var g = await World.CallAsync(r.Frame, "geometry", r.Id).ConfigureAwait(false);
+        if (g == null || g.Value.ValueKind == JsonValueKind.Null) throw new StaleElementException();
+        var (ox, oy, clip) = await World.FrameGeometryAsync(r.Frame).ConfigureAwait(false);
+        var gv = g.Value;
+        var box = new Box
+        {
+            Rect = new Rect(D(gv, "x") + ox, D(gv, "y") + oy, D(gv, "width"), D(gv, "height")),
+            Bl = D(gv, "bl"), Bt = D(gv, "bt"),
+        };
+        var sc = await World.CallAsync(r.Frame, "scroller", r.Id).ConfigureAwait(false);
+        if (sc is JsonElement s && s.ValueKind == JsonValueKind.Object)
+        {
+            var srect = new Rect(D(s, "x") + ox, D(s, "y") + oy, D(s, "width"), D(s, "height"));
+            clip = Rect.Intersect(clip, srect);
+            box.Scroller = srect;
+        }
+        box.Clip = clip;
+        box.Visible = Rect.Intersect(clip, box.Rect);
+        return box;
+    }
+
+    // -- scrolling ----------------------------------------------------------
+
+    /// <summary>Wheel-scroll until the element sits inside its visible clip (and, for the
+    /// main document, inside <c>ScrollTargetZone</c> when the page can still scroll that way).</summary>
+    public async Task<Box> ScrollIntoViewAsync(Resolved r, HumanConfig cfg, Deadline d)
+    {
+        var box = await ElementBoxAsync(r).ConfigureAwait(false);
+        var (vw, vh) = await World.ViewportAsync().ConfigureAwait(false);
+        int stalled = 0, rounds = 0;
+        bool overshot = false;
+        double lastDx = 0, lastDy = 0;
+        double notch = await NotchPxAsync(cfg).ConfigureAwait(false);
+        while (stalled < 2 && rounds < 40 && !d.Expired)
+        {
+            var (dx, dy) = await NeededScrollAsync(r, box, vw, vh, cfg).ConfigureAwait(false);
+            if (Math.Abs(dx) < 1 && Math.Abs(dy) < 1) break;
+            rounds++;
+            // Whole notches can jump over a target whose slack is smaller than
+            // one notch (a short scroll box): after such a reversal, finish with
+            // one wheel event of the exact remainder (a free-spinning or
+            // high-resolution wheel sends those) instead of swinging forever.
+            bool fineY = dy * lastDy < 0 && Math.Abs(dy) < notch;
+            bool fineX = dx * lastDx < 0 && Math.Abs(dx) < notch;
+            lastDx = dx; lastDy = dy;
+            var area = box.Clip.Width > 4 && box.Clip.Height > 4 ? box.Clip : new Rect(0, 0, vw, vh);
+            if (!area.Contains(Cursor.X, Cursor.Y))
+            {
+                await MoveToAsync(area.X + area.Width * R(0.3, 0.7), area.Y + area.Height * R(0.3, 0.7), cfg).ConfigureAwait(false);
+                await Sleep(RR(cfg.ScrollPreMoveDelay)).ConfigureAwait(false);
+            }
+            double bx = box.X, by = box.Y;
+            if (Math.Abs(dy) >= 1)
+            {
+                if (fineY) await _raw.WheelAsync(0, Math.Round(dy)).ConfigureAwait(false);
+                else
+                {
+                    await WheelBurstAsync(0, dy, cfg, d).ConfigureAwait(false);
+                    if (!overshot)
+                    {
+                        overshot = true;
+                        await OvershootAsync(dy, cfg, d).ConfigureAwait(false);
+                    }
+                }
+            }
+            if (Math.Abs(dx) >= 1)
+            {
+                if (fineX) await _raw.WheelAsync(Math.Round(dx), 0).ConfigureAwait(false);
+                else await WheelBurstAsync(dx, 0, cfg, d).ConfigureAwait(false);
+            }
+            await Sleep(Math.Min(RR(cfg.ScrollSettleDelay), d.Remaining)).ConfigureAwait(false);
+            box = await ElementBoxAsync(r).ConfigureAwait(false);
+            stalled = Math.Abs(box.X - bx) + Math.Abs(box.Y - by) < 1 ? stalled + 1 : 0;
+        }
+        return box;
+    }
+
+    private async Task<(double Dx, double Dy)> NeededScrollAsync(Resolved r, Box box, double vw, double vh, HumanConfig cfg)
+    {
+        var clip = box.Clip;
+        if (clip.Width <= 0 || clip.Height <= 0)
+            return (0, box.Y + box.Height / 2 - vh / 2); // the frame/container itself is out of view
+        double dx = 0, dy = 0, top = box.Y, bottom = box.Y + box.Height;
+        var zone = cfg.ScrollTargetZone;
+        bool mainDoc = r.Frame.ParentFrame == null && box.Scroller == null;
+        if (mainDoc && box.Height <= vh * (zone.Max - zone.Min))
+        {
+            if (top < vh * zone.Min || bottom > vh * zone.Max)
+            {
+                dy = top + box.Height / 2 - vh * R(zone.Min, zone.Max);
+                if (top >= clip.Y - 1 && bottom <= clip.Y + clip.Height + 1)
+                {
+                    // Fully visible but off-centre: only if the page can scroll that way.
+                    var doc = (await World.CallAsync(_page.MainFrame, "doc").ConfigureAwait(false))!.Value;
+                    if ((dy < 0 && D(doc, "y") <= 0) || (dy > 0 && D(doc, "y") >= D(doc, "maxY"))) dy = 0;
+                }
+            }
+        }
+        else if (box.Height <= clip.Height)
+        {
+            if (top < clip.Y - 1 || bottom > clip.Y + clip.Height + 1) dy = top + box.Height / 2 - (clip.Y + clip.Height / 2);
+        }
+        else if (box.Visible.Height < clip.Height * 0.5)
+        {
+            dy = top - clip.Y - clip.Height * 0.1;
+        }
+        // Horizontal (#521): containment only.
+        double left = box.X, right = box.X + box.Width;
+        if (box.Width <= clip.Width)
+        {
+            if (left < clip.X - 1 || right > clip.X + clip.Width + 1) dx = left + box.Width / 2 - (clip.X + clip.Width / 2);
+        }
+        else if (box.Visible.Width <= 0)
+        {
+            dx = left - clip.X;
+        }
+        return (dx, dy);
+    }
+
+    /// <summary>Sometimes scroll a little past the target, pause, and wheel back
+    /// (<c>ScrollOvershootChance</c> / <c>ScrollOvershootPx</c>). The next round of
+    /// <see cref="ScrollIntoViewAsync"/> fixes whatever is left.</summary>
+    private async Task OvershootAsync(double dy, HumanConfig cfg, Deadline d)
+    {
+        if (HumanRandom.NextDouble() >= cfg.ScrollOvershootChance || d.Expired) return;
+        int sign = dy > 0 ? 1 : -1;
+        double notch = await NotchPxAsync(cfg).ConfigureAwait(false);
+        int over = Math.Max(1, (int)Math.Round(RR(cfg.ScrollOvershootPx) / notch));
+        await WheelBurstAsync(0, over * notch * sign, cfg, d).ConfigureAwait(false);
+        await Sleep(Math.Min(RR(cfg.ScrollSettleDelay), d.Remaining)).ConfigureAwait(false);
+        // Turn back in one or two flicks.
+        int first = over > 1 && HumanRandom.NextDouble() < 0.5 ? HumanRandom.RandInt(1, over) : over;
+        foreach (int n in new[] { first, over - first })
+        {
+            if (n <= 0 || d.Expired) continue;
+            await WheelBurstAsync(0, n * notch * -sign, cfg, d).ConfigureAwait(false);
+            await Sleep(Math.Min(R(100, 250), d.Remaining)).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>CSS pixels one wheel notch scrolls for the persona's platform: Chrome scrolls
+    /// 100 px per notch on Windows (3 lines of 33.3 px), 40 on macOS and 120 on Linux, and
+    /// reports <c>wheelDelta</c> 120 per notch. CDP always reports one notch per wheel event,
+    /// so whole-notch events are the only ones whose <c>deltaY</c> and <c>wheelDeltaY</c> agree.</summary>
+    public async Task<double> NotchPxAsync(HumanConfig cfg)
+    {
+        if (cfg.ScrollNotchPx > 0) return cfg.ScrollNotchPx;
+        var plat = (await PlatformAsync().ConfigureAwait(false)).ToLowerInvariant();
+        if (plat.StartsWith("mac", StringComparison.Ordinal)) return 40;
+        if (plat.StartsWith("win", StringComparison.Ordinal)) return 100;
+        return 120;
+    }
+
+    /// <summary>One logical scroll: flicks of a few wheel notches each, quicker in the middle
+    /// of a flick, with short pauses between flicks. Every event is exactly one notch, so the
+    /// page scrolls by the nearest whole number of notches (the caller re-measures and scrolls
+    /// again when needed).</summary>
+    public async Task WheelBurstAsync(double dx, double dy, HumanConfig cfg, Deadline? d = null)
+    {
+        double total = dy != 0 ? Math.Abs(dy) : Math.Abs(dx);
+        int sign = (dy != 0 ? dy : dx) > 0 ? 1 : -1;
+        double notch = await NotchPxAsync(cfg).ConfigureAwait(false);
+        int notches = Math.Max(1, (int)Math.Round(total / notch));
+        int accel = HumanRandom.RandIntRange(cfg.ScrollAccelSteps), decel = HumanRandom.RandIntRange(cfg.ScrollDecelSteps);
+        int flick = HumanRandom.RandInt(2, 5);
+        for (int i = 0; i < notches; i++)
+        {
+            if (d?.Expired ?? false) break;
+            double step = notch * sign;
+            await _raw.WheelAsync(dx != 0 ? step : 0, dy != 0 ? step : 0).ConfigureAwait(false);
+            if (i == notches - 1) break;
+            if (--flick <= 0)
+            {
+                // A finger lifts and turns the wheel again.
+                flick = HumanRandom.RandInt(2, 5);
+                await Sleep(RR(cfg.ScrollPauseSlow) + R(40, 120)).ConfigureAwait(false);
+            }
+            else if (i < accel || i >= notches - decel) await Sleep(RR(cfg.ScrollPauseSlow)).ConfigureAwait(false);
+            else await Sleep(RR(cfg.ScrollPauseFast)).ConfigureAwait(false);
+        }
+    }
+
+    // -- pointer ------------------------------------------------------------
+
+    private static (double X, double Y) PointIn(Box box, (double X, double Y)? position, bool isInput, HumanConfig cfg)
+    {
+        if (position is { } p) return (box.X + box.Bl + p.X, box.Y + box.Bt + p.Y);
+        var vis = box.Visible;
+        if (vis.Width <= 0 || vis.Height <= 0) throw new RetryException("element is outside of the viewport");
+        var full = HumanMouse.ClickTarget(new BoundingBox(box.X, box.Y, box.Width, box.Height), isInput, cfg);
+        return (Math.Min(Math.Max(full.X, vis.X + 1), vis.X + vis.Width - 1),
+                Math.Min(Math.Max(full.Y, vis.Y + 1), vis.Y + vis.Height - 1));
+    }
+
+    /// <summary>Exact aim points: a date-editor segment, or a fraction along a slider.</summary>
+    private static (double X, double Y) AimPoint(Box box, object[] aim)
+    {
+        double x, y;
+        if ((string)aim[0] == "segment")
+        {
+            var seg = (EditorField)aim[1];
+            x = box.X + seg.Dx + R(-2, 2); y = box.Y + seg.Dy + R(-2, 2);
+        }
+        else
+        {
+            double frac = (double)aim[1]; bool vertical = (bool)aim[2];
+            if (vertical)
+            {
+                double inset = Math.Min(8, box.Height / 4);
+                y = box.Y + box.Height - inset - frac * (box.Height - 2 * inset); x = box.X + box.Width / 2;
+            }
+            else
+            {
+                double inset = Math.Min(8, box.Width / 4);
+                x = box.X + inset + frac * (box.Width - 2 * inset); y = box.Y + box.Height / 2 + R(-1.5, 1.5);
+            }
+        }
+        if (!box.Visible.Contains(x, y)) throw new RetryException("element is outside of the viewport");
+        return (x, y);
+    }
+
+    internal async Task HitAsync(Resolved r, double x, double y)
+    {
+        var (ox, oy, clip) = await World.FrameGeometryAsync(r.Frame).ConfigureAwait(false);
+        if (!clip.Contains(x, y)) throw new RetryException("element is outside of the viewport");
+        var desc = await World.CallAsync(r.Frame, "hit", r.Id, x - ox, y - oy).ConfigureAwait(false);
+        string? d = desc is { ValueKind: JsonValueKind.String } s ? s.GetString() : null;
+        if (d == null && r.Frame.ParentFrame != null) d = await World.OwnersHitAsync(r.Frame, x, y).ConfigureAwait(false);
+        if (d != null) throw new RetryException($"{d} intercepts pointer events");
+    }
+
+    private async Task<bool> IsInputAsync(Resolved r)
+    {
+        var info = (await World.CallAsync(r.Frame, "info", r.Id).ConfigureAwait(false))!.Value;
+        var tag = info.GetProperty("tag").GetString();
+        return tag is "input" or "textarea" || info.GetProperty("editable").GetBoolean();
+    }
+
+    public delegate Task PointerAct(Resolved r, double x, double y, HumanConfig cfg);
+
+    /// <summary>Shared scroll -> move -> hit-check -> action sequence. <paramref name="hold"/>:
+    /// modifier names held down while the cursor travels to the target (Playwright's hover
+    /// modifiers).</summary>
+    public async Task<Resolved> PointerActionAsync(string api, Target t, ActOpts o, string[] states,
+        bool? isInputHint = null, PointerAct? action = null, IReadOnlyList<string>? hold = null)
+    {
+        var cfg = CallCfg(o.HumanConfig);
+        var d = DeadlineFor(t, o);
+        await EnsureCursorAsync(cfg).ConfigureAwait(false);
+        if (!(o.Nested || o.Deadline != null)) await IdleAsync(cfg).ConfigureAwait(false);
+        return await RetryAsync(api, t, d, async () =>
+        {
+            var r = await AttemptStatesAsync(t, states, o.Force).ConfigureAwait(false);
+            var box = await ScrollIntoViewAsync(r, cfg, d).ConfigureAwait(false);
+            bool isInput = isInputHint ?? await IsInputAsync(r).ConfigureAwait(false);
+            var (x, y) = o.Aim != null ? AimPoint(box, o.Aim) : PointIn(box, o.Position, isInput, cfg);
+            if (!o.Force) await HitAsync(r, x, y).ConfigureAwait(false);
+            if (o.Trial) return r;
+            var keys = new List<string>();
+            foreach (var m in hold ?? Array.Empty<string>()) keys.Add(await ModifierAsync(m).ConfigureAwait(false));
+            foreach (var k in keys) await _raw.KeyDownAsync(k).ConfigureAwait(false);
+            try
+            {
+                await MoveToAsync(x, y, cfg).ConfigureAwait(false);
+            }
+            finally
+            {
+                for (int i = keys.Count - 1; i >= 0; i--) await _raw.KeyUpAsync(keys[i]).ConfigureAwait(false);
+            }
+            // The page may replace or remove the target while the cursor travels; never
+            // press on whatever is under it now (even with force). Locators re-resolve.
+            if (await World.CallAsync(r.Frame, "connected", r.Id).ConfigureAwait(false) is not { ValueKind: JsonValueKind.True })
+                throw new StaleElementException();
+            if (!o.Force) await HitAsync(r, Cursor.X, Cursor.Y).ConfigureAwait(false);
+            if (action != null) await action(r, Cursor.X, Cursor.Y, cfg).ConfigureAwait(false);
+            return r;
+        }).ConfigureAwait(false);
+    }
+
+    public async Task PressMouseAsync(HumanConfig cfg, bool isInput, MouseButton button = MouseButton.Left,
+        int clickCount = 1, float? delay = null, IReadOnlyList<string>? modifiers = null)
+    {
+        var mods = new List<string>();
+        foreach (var m in modifiers ?? Array.Empty<string>()) mods.Add(await ModifierAsync(m).ConfigureAwait(false));
+        await Sleep(RR(isInput ? cfg.ClickAimDelayInput : cfg.ClickAimDelayButton)).ConfigureAwait(false);
+        foreach (var m in mods) await _raw.KeyDownAsync(m).ConfigureAwait(false);
+        try
+        {
+            int count = Math.Max(1, clickCount);
+            for (int n = 1; n <= count; n++)
+            {
+                double hold = delay ?? RR(isInput ? cfg.ClickHoldInput : cfg.ClickHoldButton);
+                await _raw.DownAsync(button, n).ConfigureAwait(false);
+                await Sleep(hold).ConfigureAwait(false);
+                await _raw.UpAsync(button, n).ConfigureAwait(false);
+                if (n < count) await Sleep(delay ?? R(60, 140)).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            for (int i = mods.Count - 1; i >= 0; i--) await _raw.KeyUpAsync(mods[i]).ConfigureAwait(false);
+        }
+    }
+}
+
+/// <summary>Shared virtual cursor position of one page.</summary>
+internal sealed class CursorPosition
+{
+    public double X;
+    public double Y;
+    public bool Initialized;
+}

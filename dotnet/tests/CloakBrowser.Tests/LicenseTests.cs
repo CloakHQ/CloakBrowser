@@ -209,6 +209,53 @@ public class LicenseTests : IDisposable
     }
 
     // =======================================================================
+    // EnsureBinary Pro routing - a supplied key that isn't valid aborts,
+    // never silently downgrades to the free binary.
+    // =======================================================================
+
+    [Fact]
+    public async Task InvalidKey_aborts_not_free()
+    {
+        License.ValidateLicenseOverride = key => new LicenseInfo(false, "solo", null);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Download.EnsureBinaryAsync("cb_bad"));
+        Assert.Contains("invalid or expired", ex.Message);
+    }
+
+    [Fact]
+    public async Task UnvalidatableKey_aborts_not_free()
+    {
+        // validate returns null (server unreachable, no cache) -> abort.
+        License.ValidateLicenseOverride = key => null;
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Download.EnsureBinaryAsync("cb_x"));
+        Assert.Contains("could not be validated", ex.Message);
+    }
+
+    [Fact]
+    public async Task EnsureBinaryAsync_does_not_block_the_caller_during_license_validation()
+    {
+        // Validation is a sync HTTP call; run inline it would hold the caller's thread
+        // (e.g. a UI thread) for the whole request.
+        using var gate = new ManualResetEventSlim();
+        License.ValidateLicenseOverride = _ =>
+        {
+            gate.Wait(TimeSpan.FromSeconds(2));
+            return new LicenseInfo(false, "solo", null);
+        };
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var task = Download.EnsureBinaryAsync("cb_slow");
+        var returnedAfter = sw.Elapsed;
+        var completedOnReturn = task.IsCompleted;
+        gate.Set();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => task);
+        Assert.False(completedOnReturn);
+        Assert.True(returnedAfter < TimeSpan.FromSeconds(1), $"caller blocked {returnedAfter}");
+    }
+
+    // =======================================================================
     // GetProLatestVersion - rate limiting + marker
     // =======================================================================
 
@@ -565,6 +612,137 @@ public class LicenseTests : IDisposable
     }
 
     // =======================================================================
+    // GetSessionSeats — the six failure paths that used to collapse into one
+    // bare null (count, cap, and the reason either is missing)
+    // =======================================================================
+
+    [Fact]
+    public void SessionSeats_reports_count_and_limit()
+    {
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":8,\"limit\":2000}"),
+            () =>
+            {
+                var seats = License.GetSessionSeats("cb_key");
+                Assert.Equal("ok", seats.State);
+                Assert.Equal(8, seats.Active);
+                Assert.Equal(2000, seats.Limit);
+            });
+    }
+
+    [Fact]
+    public void SessionSeats_missing_limit_is_null_not_an_error()
+    {
+        // A server predating the field still yields a usable count.
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":8}"),
+            () =>
+            {
+                var seats = License.GetSessionSeats("cb_key");
+                Assert.Equal("ok", seats.State);
+                Assert.Equal(8, seats.Active);
+                Assert.Null(seats.Limit);
+            });
+    }
+
+    [Fact]
+    public void SessionSeats_null_limit_is_null()
+    {
+        // Unlimited licence or unrecognised plan — the server says so explicitly.
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":3,\"limit\":null}"),
+            () => Assert.Null(License.GetSessionSeats("cb_key").Limit));
+    }
+
+    [Fact]
+    public void SessionSeats_zero_is_a_real_answer()
+    {
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":0,\"limit\":5}"),
+            () =>
+            {
+                var seats = License.GetSessionSeats("cb_key");
+                Assert.Equal("ok", seats.State);
+                Assert.Equal(0, seats.Active);
+            });
+    }
+
+    [Fact]
+    public void SessionSeats_network_failure_is_unreachable()
+    {
+        // info is a diagnostic — it degrades, it never throws out of the command.
+        var original = License.Http;
+        License.Http = new HttpClient(new ThrowingHandler());
+        try
+        {
+            var seats = License.GetSessionSeats("cb_key");
+            Assert.Equal("unreachable", seats.State);
+            Assert.Null(seats.Active);
+        }
+        finally
+        {
+            License.Http.Dispose();
+            License.Http = original;
+        }
+    }
+
+    [Theory]
+    [InlineData("license_inactive", HttpStatusCode.Forbidden)]
+    [InlineData("invalid_key", HttpStatusCode.Forbidden)]
+    [InlineData("rate_limited", HttpStatusCode.TooManyRequests)]
+    public void SessionSeats_denial_carries_the_server_reason(string code, HttpStatusCode status)
+    {
+        WithSessionCountHttp(
+            new SessionCountHandler($"{{\"valid\":false,\"error\":\"{code}\"}}", status),
+            () =>
+            {
+                var seats = License.GetSessionSeats("cb_key");
+                Assert.Equal("denied", seats.State);
+                Assert.Equal(code, seats.Reason);
+            });
+    }
+
+    [Fact]
+    public void SessionSeats_denial_without_a_body_falls_back_to_the_status()
+    {
+        WithSessionCountHttp(
+            new SessionCountHandler("not json", HttpStatusCode.InternalServerError),
+            () => Assert.Equal("HTTP 500", License.GetSessionSeats("cb_key").Reason));
+    }
+
+    [Fact]
+    public void SessionSeats_server_reported_unavailable_is_unknown_not_denied()
+    {
+        // Leaseless mode: 200, key is fine, the server just cannot count. This is
+        // the distinction the old single null destroyed.
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":null,\"limit\":null}"),
+            () =>
+            {
+                var seats = License.GetSessionSeats("cb_key");
+                Assert.Equal("unknown", seats.State);
+                Assert.Null(seats.Active);
+            });
+    }
+
+    [Fact]
+    public void SessionSeats_unparseable_body_is_unknown()
+    {
+        WithSessionCountHttp(
+            new SessionCountHandler("not json"),
+            () => Assert.Equal("unknown", License.GetSessionSeats("cb_key").State));
+    }
+
+    [Fact]
+    public void SessionSeats_old_helper_still_returns_the_bare_count()
+    {
+        // GetActiveSessionCount is shipped public API — it must keep behaving.
+        WithSessionCountHttp(
+            new SessionCountHandler("{\"valid\":true,\"active\":4,\"limit\":20}"),
+            () => Assert.Equal(4, License.GetActiveSessionCount("cb_key")));
+    }
+
+    // =======================================================================
     // Config Pro paths
     // =======================================================================
 
@@ -588,7 +766,7 @@ public class LicenseTests : IDisposable
     {
         var marker = Path.Combine(_tmp, $"latest_pro_version_{Config.GetPlatformTag()}");
         File.WriteAllText(marker, "148.0.7778.215.2");
-        // Ticket 431 Fix 4: marker present but no Pro binary on disk -> null, NOT the
+        // Marker present but no Pro binary on disk -> null, NOT the
         // free base. A valid Pro license must never fall back to the free binary.
         Assert.Null(Config.GetEffectiveVersion(pro: true));
     }
@@ -771,7 +949,7 @@ public class LicenseTests : IDisposable
     [Fact]
     public void CheckForProUpdate_already_latest_returns_null()
     {
-        // Ticket 431 Fix 1: `update` on a Pro install already at latest is a no-op.
+        // `update` on a Pro install already at latest is a no-op.
         File.WriteAllText(
             Path.Combine(_tmp, $"latest_pro_version_{Config.GetPlatformTag()}"),
             "148.0.7778.215.5");
@@ -901,7 +1079,7 @@ public class LicenseTests : IDisposable
     [InlineData(76, "session limit")]
     [InlineData(77, "invalid, expired, or missing")]
     [InlineData(78, "couldn't verify")]
-    [InlineData(79, "not writable")]
+    [InlineData(79, "--license-route")]
     public void LicenseErrorMessage_MapsKnownCodes(int code, string fragment)
     {
         var msg = License.LicenseErrorMessage(LaunchText(code));
@@ -944,13 +1122,47 @@ public class LicenseTests : IDisposable
         Assert.Null(License.LicenseErrorFrom(new Exception("some unrelated crash")));
     }
 
+    [Fact]
+    public void LicenseErrorFrom_FallsBackToDenialFile()
+    {
+        // .NET Playwright's real launch failure on an over-cap seat carries no exit
+        // code (#584); the binary's denial file is the only source.
+        var dir = Directory.CreateTempSubdirectory("cb-denial-").FullName;
+        try
+        {
+            var f = Path.Combine(dir, "launch.json");
+            File.WriteAllText(f, "76");
+            var original = new Exception("Target page, context or browser has been closed");
+            var lic = License.LicenseErrorFrom(original, f);
+            Assert.NotNull(lic);
+            Assert.Contains("session limit", lic!.Message);
+            Assert.Same(original, lic.InnerException);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void LicenseErrorFrom_NoFileOrNonLicenseCode_ReturnsNull()
+    {
+        var dir = Directory.CreateTempSubdirectory("cb-denial-").FullName;
+        try
+        {
+            var closed = new Exception("Target page, context or browser has been closed");
+            Assert.Null(License.LicenseErrorFrom(closed, Path.Combine(dir, "absent.json")));
+            var f = Path.Combine(dir, "crash.json");
+            File.WriteAllText(f, "139");
+            Assert.Null(License.LicenseErrorFrom(closed, f));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
     // ── post-handshake denial: helpers + guard ────────────
 
     [Theory]
     [InlineData(76, "session limit")]
     [InlineData(77, "invalid, expired, or missing")]
     [InlineData(78, "couldn't verify")]
-    [InlineData(79, "not writable")]
+    [InlineData(79, "--license-route")]
     public void LicenseErrorForCode_MapsKnownCodes(int code, string fragment)
     {
         var err = License.LicenseErrorForCode(code);

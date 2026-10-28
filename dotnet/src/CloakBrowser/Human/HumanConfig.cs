@@ -21,31 +21,52 @@ public enum HumanPreset
 /// </summary>
 public sealed class HumanConfig
 {
-    // Keyboard
-    public double TypingDelay { get; set; } = 70;
-    public double TypingDelaySpread { get; set; } = 40;
-    public double TypingPauseChance { get; set; } = 0.1;
-    public Range TypingPauseRange { get; set; } = (400, 1000);
-    public Range ShiftDownDelay { get; set; } = (30, 70);
-    public Range ShiftUpDelay { get; set; } = (20, 50);
-    public Range KeyHold { get; set; } = (15, 35);
+    // Keyboard. Defaults follow the 136M Keystrokes study (Dhakal et al.,
+    // CHI 2018): keys are held ~100 ms, ~150 ms pass between key presses, and
+    // the next key is often pressed before the previous one is released.
+    //
+    // TypingDelay: median time from one key press to the next (ms); the gap is
+    // log-normal and depends on the letters (other hand: faster, same finger:
+    // slower, after a space: slower).
+    public double TypingDelay { get; set; } = 150;
+    /// <summary>How much the gap varies (ms); 0 = always exactly <see cref="TypingDelay"/>.</summary>
+    public double TypingDelaySpread { get; set; } = 70;
+    /// <summary>Chance of a thinking pause before a word (a tenth of it inside a word).</summary>
+    public double TypingPauseChance { get; set; } = 0.15;
+    public Range TypingPauseRange { get; set; } = (300, 1000);
+    /// <summary>Shift press -> letter press (ms, log-normal: ~5th..95th percentile).</summary>
+    public Range ShiftDownDelay { get; set; } = (60, 220);
+    /// <summary>Shift release relative to the letter release (ms). Negative = Shift goes up
+    /// first, which is what people usually do.</summary>
+    public Range ShiftUpDelay { get; set; } = (-60, 30);
+    /// <summary>How long a key is held down (ms, log-normal: ~5th..95th percentile).</summary>
+    public Range KeyHold { get; set; } = (60, 175);
 
-    // Mistype (typo simulation)
-    public double MistypeChance { get; set; } = 0.02;
+    // Mistype (typo simulation): chance per letter / digit.
+    public double MistypeChance { get; set; } = 0.04;
     public Range MistypeDelayNotice { get; set; } = (100, 300);
     public Range MistypeDelayCorrect { get; set; } = (50, 150);
 
     public Range FieldSwitchDelay { get; set; } = (800, 1500);
 
-    // Mouse - movement
-    public double MouseStepsDivisor { get; set; } = 8;
-    public int MouseMinSteps { get; set; } = 25;
-    public int MouseMaxSteps { get; set; } = 80;
+    // Mouse - movement. A move lasts (Fitts' law, log-normal spread)
+    //   median = MouseTimeBase + MouseTimePerBit * log2(1 + distance / 8) ms;
+    // the speed peaks early (a fast main stroke, then a slow approach) and
+    // pointer events go out at ~60 Hz.
+    public double MouseTimeBase { get; set; } = 160;
+    public double MouseTimePerBit { get; set; } = 75;
+    public double MouseTimeSpread { get; set; } = 0.3;
+    /// <summary>Fewest pointer events per stroke.</summary>
+    public int MouseMinSteps { get; set; } = 2;
+    /// <summary>Most pointer events per stroke.</summary>
+    public int MouseMaxSteps { get; set; } = 200;
+    /// <summary>Smooth sideways drift (px).</summary>
     public double MouseWobbleMax { get; set; } = 1.5;
-    public double MouseOvershootChance { get; set; } = 0.15;
-    public Range MouseOvershootPx { get; set; } = (3, 6);
-    public Range MouseBurstSize { get; set; } = (3, 5);
-    public Range MouseBurstPause { get; set; } = (8, 18);
+    /// <summary>Chance that the main stroke lands a little off and a short corrective
+    /// stroke finishes the move (the miss is a few % of the distance plus
+    /// <see cref="MouseOvershootPx"/>).</summary>
+    public double MouseOvershootChance { get; set; } = 0.35;
+    public Range MouseOvershootPx { get; set; } = (2, 6);
 
     // Mouse - clicks
     public Range ClickAimDelayInput { get; set; } = (60, 140);
@@ -58,9 +79,11 @@ public sealed class HumanConfig
     public double IdleDriftPx { get; set; } = 3;
     public Range IdlePauseRange { get; set; } = (300, 1000);
 
-    // Scroll
-    public Range ScrollDeltaBase { get; set; } = (80, 130);
-    public double ScrollDeltaVariance { get; set; } = 0.2;
+    // Scroll. The wheel turns in whole notches: one wheel event per notch of
+    // ScrollNotchPx CSS pixels, so deltaY and wheelDeltaY agree the way they
+    // do for a real mouse wheel. 0 = what Chrome uses on the persona's
+    // platform (100 on Windows, 40 on macOS, 120 on Linux).
+    public double ScrollNotchPx { get; set; } = 0;
     public Range ScrollPauseFast { get; set; } = (30, 80);
     public Range ScrollPauseSlow { get; set; } = (80, 200);
     public Range ScrollAccelSteps { get; set; } = (2, 3);
@@ -89,17 +112,20 @@ public static class HumanConfigFactory
     private static HumanConfig CarefulConfig() => new()
     {
         // Keyboard - slower typing
-        TypingDelay = 100,
-        TypingDelaySpread = 50,
-        TypingPauseChance = 0.15,
+        TypingDelay = 210,
+        TypingDelaySpread = 100,
+        TypingPauseChance = 0.25,
         TypingPauseRange = (500, 1200),
-        ShiftDownDelay = (40, 90),
-        ShiftUpDelay = (30, 70),
-        KeyHold = (20, 45),
+        ShiftDownDelay = (80, 260),
+        ShiftUpDelay = (-50, 40),
+        KeyHold = (70, 190),
         FieldSwitchDelay = (1000, 2000),
+        MistypeChance = 0.05,
         // Mouse - slower, more precise
-        MouseOvershootChance = 0.10,
-        MouseBurstPause = (12, 25),
+        MouseTimeBase = 220,
+        MouseTimePerBit = 95,
+        MouseOvershootChance = 0.45,
+        MouseOvershootPx = (2, 5),
         // Mouse - clicks (longer aiming and holding)
         ClickAimDelayInput = (80, 180),
         ClickAimDelayButton = (120, 280),

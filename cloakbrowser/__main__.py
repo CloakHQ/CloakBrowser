@@ -75,19 +75,11 @@ def _module_available(module: str) -> bool:
 def _binary_version(binary_path: str) -> tuple[bool, str, str]:
     """Launch `<binary> --version` to prove it runs. Returns (ok, version, err).
 
-    Chromium only handles --version on POSIX, so on Windows the switch is ignored
-    and a browser starts instead of printing — the probe then times out and a
-    healthy install looks broken. --no-startup-window makes it exit right away
-    without putting a window on screen; a broken binary still exits non-zero, so
-    the check keeps its meaning. It just reports no version there, as nothing is
-    printed.
+    POSIX only: Windows ignores --version and starts a browser instead.
     """
-    argv = [binary_path, "--version"]
-    if platform.system() == "Windows":
-        argv.append("--no-startup-window")
     try:
         result = subprocess.run(
-            argv,
+            [binary_path, "--version"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -265,11 +257,17 @@ def _collect_diagnostics(quick: bool, proxy: str | None = None) -> dict:
     # latest-version check below: --quick keeps `info` network-free, and a free
     # tier holds no seats. Never cached (a cached count is a wrong count).
     if entitled_pro and not quick:
-        from .license import get_active_session_count, resolve_license_key
+        from .license import get_session_seats, resolve_license_key
 
         key = resolve_license_key(None)
         if key:
-            license_info["sessions"] = {"active": get_active_session_count(key)}
+            seats = get_session_seats(key)
+            license_info["sessions"] = {
+                "active": seats.active,
+                "limit": seats.limit,
+                "state": seats.state,
+                "reason": seats.reason,
+            }
 
     from .config import get_platform_tag
 
@@ -290,6 +288,16 @@ def _collect_diagnostics(quick: bool, proxy: str | None = None) -> dict:
         diag["launch"] = {"tested": False, "reason": "skipped (--quick)"}
     elif not binary or not (installed or (binary and os.path.isfile(binary))):
         diag["launch"] = {"tested": False, "reason": "binary not installed"}
+    elif platform.system() == "Windows":
+        # Windows ignores --version and starts a real browser, which takes a
+        # license seat and never frees it. Read the version manifest instead.
+        manifest = next(
+            (f for f in os.listdir(os.path.dirname(binary)) if f.endswith(".manifest")), ""
+        )
+        reason = "not launched on Windows (it would take a license seat)"
+        if manifest:
+            reason += f"; binary {manifest[: -len('.manifest')]}"
+        diag["launch"] = {"tested": False, "reason": reason}
     else:
         ok, version, err = _binary_version(binary)
         diag["launch"] = {"tested": True, "ok": ok, "version": version, "error": err}
@@ -300,6 +308,7 @@ def _collect_diagnostics(quick: bool, proxy: str | None = None) -> dict:
     # Omitted entirely off Linux, where it carries no signal.
     if platform.system() == "Linux":
         from .browser import (
+            _MAC_FONT_TELLS,
             _OFFICE_FONT_TELLS,
             _WINDOWS_FONT_TELLS,
             _count_fonts_present,
@@ -307,11 +316,16 @@ def _collect_diagnostics(quick: bool, proxy: str | None = None) -> dict:
 
         # Strict count, not "any one present" — real font installs are atomic
         # (you have the whole pack or none), so report how complete the set is.
+        # Both Windows and macOS sets are counted unconditionally: `info` has no
+        # persona flag, so we report each raw count and let the user read the one
+        # for the persona they spoof.
         win_n = _count_fonts_present(_WINDOWS_FONT_TELLS)
         office_n = _count_fonts_present(_OFFICE_FONT_TELLS)
+        mac_n = _count_fonts_present(_MAC_FONT_TELLS)
         diag["fonts"] = {
             "windows": None if win_n is None else [win_n, len(_WINDOWS_FONT_TELLS)],
             "office": None if office_n is None else [office_n, len(_OFFICE_FONT_TELLS)],
+            "macos": None if mac_n is None else [mac_n, len(_MAC_FONT_TELLS)],
         }
 
     diag["license"] = license_info
@@ -351,6 +365,36 @@ def _collect_diagnostics(quick: bool, proxy: str | None = None) -> dict:
     }
 
     return diag
+
+
+# Server error codes → the words a customer can act on. Anything unrecognised is
+# printed verbatim rather than swallowed, so a new server code still says something.
+_SEAT_DENIAL_REASONS = {
+    "invalid_key": "invalid key",
+    "license_inactive": "license inactive",
+    "rate_limited": "rate limited",
+}
+
+
+def _format_seats(sessions: dict) -> str:
+    """Render the seat lookup. Kept identical in the JS and .NET wrappers."""
+    state = sessions.get("state", "ok")
+    if state == "unreachable":
+        return "unavailable (cannot reach cloakbrowser.dev)"
+    if state == "denied":
+        reason = sessions.get("reason") or "refused"
+        return f"unavailable ({_SEAT_DENIAL_REASONS.get(reason, reason)})"
+    if state != "ok" or sessions.get("active") is None:
+        # The server is up and the key is fine — it just cannot count right now.
+        return "unavailable (server cannot report seats right now)"
+
+    active = sessions["active"]
+    limit = sessions.get("limit")
+    if limit is None:
+        # No cap to show (unlimited, unrecognised plan, or a server predating the
+        # field). Fall back to the bare count — never print "N/unknown".
+        return f"{active} seat{'' if active == 1 else 's'} in use"
+    return f"{active}/{limit} in use"
 
 
 def _print_diagnostics(diag: dict) -> None:
@@ -441,6 +485,17 @@ def _print_diagnostics(diag: dict) -> None:
             # persona (~53% of real machines have none), so no install nudge.
             verdict = "ok" if n == total else "absent" if n == 0 else "partial"
             print(f"Office fonts: {verdict} ({n}/{total})")
+        mac = diag["fonts"].get("macos")
+        if mac is None:
+            print("Mac fonts: unknown (fc-list unavailable)")
+        else:
+            n, total = mac
+            verdict = "ok" if n == total else "missing" if n == 0 else "partial"
+            print(f"Mac fonts: {verdict} ({n}/{total})")
+            if n < total:
+                # Phrased conditionally: some Mac fonts also ship on a Windows box,
+                # so a partial count is expected unless macOS is the intended persona.
+                print(f"           {ARROW} if spoofing macOS on this host, copy the real Mac fonts (Helvetica Neue, Menlo, SF/Apple system fonts)")
 
     lic = diag["license"]
     tier = lic["tier"]
@@ -459,11 +514,7 @@ def _print_diagnostics(diag: dict) -> None:
         print(f"License:   {tier}")
 
     if "sessions" in lic:
-        active = lic["sessions"]["active"]
-        if active is None:
-            print("Sessions:  unavailable")
-        else:
-            print(f"Sessions:  {active} seat{'' if active == 1 else 's'} in use")
+        print(f"Sessions:  {_format_seats(lic['sessions'])}")
 
     geoip = diag["geoip"]
     db_line = "present" if geoip["db_present"] else "not downloaded (optional)"
