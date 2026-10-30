@@ -1,0 +1,48 @@
+FROM python:3.12-slim-trixie
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/home/app \
+    APP_ENV=development \
+    APP_NAME="发大财" \
+    HOST=127.0.0.1 \
+    PORT=8014 \
+    DATABASE_PATH=/data/saas_accounts.sqlite3 \
+    COOKIE_SECURE=0 \
+    LOCAL_BROWSER_ENABLED=1 \
+    CLOAKBROWSER_CACHE_DIR=/home/app/.cloakbrowser
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+    libdbus-1-3 libdrm2 libxkbcommon0 libatspi2.0-0 libxcomposite1 \
+    libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
+    libcairo2 libasound2 libx11-xcb1 libfontconfig1 libx11-6 \
+    libxcb1 libxext6 libxshmfence1 libglib2.0-0 libgtk-3-0 \
+    libpangocairo-1.0-0 libcairo-gobject2 libgdk-pixbuf-2.0-0 \
+    libxss1 libxtst6 fonts-liberation fonts-noto-color-emoji \
+    fonts-unifont fonts-freefont-ttf fonts-ipafont-gothic \
+    fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-urw-base35 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --create-home --home-dir /home/app app \
+    && mkdir -p /data \
+    && chown app:app /data /home/app
+
+WORKDIR /app
+COPY requirements-dashboard.txt ./
+RUN pip install --no-cache-dir -r requirements-dashboard.txt
+COPY pyproject.toml README.md LICENSE BINARY-LICENSE.md CHANGELOG.md ./
+COPY cloakbrowser/ cloakbrowser/
+RUN pip install --no-cache-dir ".[serve,geoip]"
+COPY control_plane.py ./
+COPY templates/control/ templates/control/
+COPY static/control/ static/control/
+COPY bin/control-plane-entrypoint.py /usr/local/bin/control-plane-entrypoint
+RUN chmod 755 /usr/local/bin/control-plane-entrypoint
+
+USER app
+RUN python -c "from cloakbrowser import ensure_binary; ensure_binary()"
+USER root
+ENTRYPOINT ["/usr/local/bin/control-plane-entrypoint"]
+CMD ["gunicorn", "--bind", "127.0.0.1:8014", "--workers", "1", "--threads", "4", "--access-logfile", "-", "--error-logfile", "-", "control_plane:app"]
