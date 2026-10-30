@@ -301,6 +301,22 @@ def test_close_closes_browser(mock_launch, _mock_bin):
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch")
+def test_close_forwards_reason(mock_launch, _mock_bin):
+    """context.close(reason=...) passes the reason to Playwright and still closes the browser."""
+    browser, context = _make_mock_browser()
+    original_ctx_close = context.close
+    mock_launch.return_value = browser
+
+    from cloakbrowser.browser import launch_context
+    ctx = launch_context()
+
+    ctx.close(reason="done")
+    original_ctx_close.assert_called_once_with(reason="done")
+    browser.close.assert_called_once()
+
+
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch")
 def test_error_closes_browser(mock_launch, _mock_bin):
     """If new_context() raises, browser is still closed."""
     browser = MagicMock()
@@ -417,6 +433,23 @@ async def test_async_close_closes_browser(mock_launch_async, _mock_bin):
 
     await ctx.close()
     original_ctx_close.assert_called_once()
+    browser.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch_async")
+async def test_async_close_forwards_reason(mock_launch_async, _mock_bin):
+    """await ctx.close(reason=...) passes the reason to Playwright (async)."""
+    browser, context = _make_mock_async_browser()
+    original_ctx_close = context.close
+    mock_launch_async.return_value = browser
+
+    from cloakbrowser.browser import launch_context_async
+    ctx = await launch_context_async()
+
+    await ctx.close(reason="done")
+    original_ctx_close.assert_called_once_with(reason="done")
     browser.close.assert_called_once()
 
 
