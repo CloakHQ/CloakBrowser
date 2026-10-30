@@ -376,6 +376,12 @@ def launch(
 
     binary_path = ensure_binary(license_key=license_key, browser_version=browser_version, release_channel=release_channel)
     timezone, locale, exit_ip = maybe_resolve_geoip(geoip, proxy, timezone, locale, args)
+    if geoip and not proxy:
+        logger.warning(
+            "geoip=True without proxy= at launch — timezone/locale will default to "
+            "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass "
+            "proxy= to launch() or set explicit timezone=/locale=."
+        )
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = _resolve_webrtc_args(args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
@@ -512,6 +518,12 @@ async def launch_async(  # noqa: C901
     # they don't freeze the caller's event loop.
     binary_path = await asyncio.to_thread(ensure_binary, license_key=license_key, browser_version=browser_version, release_channel=release_channel)
     timezone, locale, exit_ip = await asyncio.to_thread(maybe_resolve_geoip, geoip, proxy, timezone, locale, args)
+    if geoip and not proxy:
+        logger.warning(
+            "geoip=True without proxy= at launch — timezone/locale will default to "
+            "UTC/en-US. Per-context proxies don't trigger geoip resolution. Pass "
+            "proxy= to launch() or set explicit timezone=/locale=."
+        )
     proxy_kwargs, proxy_extra_args = _resolve_proxy_config(proxy, browser_version, license_key, release_channel)
     args = await asyncio.to_thread(_resolve_webrtc_args, args, proxy)
     args = _append_webrtc_exit_ip(args, exit_ip)
