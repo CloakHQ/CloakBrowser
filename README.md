@@ -963,6 +963,10 @@ docker run -d --name cloak -p 127.0.0.1:9222:9222 cloakhq/cloakbrowser \
 # Keep per-seed profiles (cookies, logins) across idle cleanup and container restarts
 docker run -d --name cloak -p 127.0.0.1:9222:9222 -v ./cloak-profiles:/profiles cloakhq/cloakbrowser \
   cloakserve --idle-timeout=300 --data-dir=/profiles --keep-profiles
+
+# Per-job container: reap Chrome 60s after disconnect, exit (status 0) after 5 minutes with no connections
+docker run --rm --name cloak -p 127.0.0.1:9222:9222 cloakhq/cloakbrowser \
+  cloakserve --idle-timeout=60 --exit-after-idle=300
 ```
 
 Stop the server:
@@ -1375,10 +1379,11 @@ Issues and PRs welcome. If something isn't working, [open an issue](https://gith
 - [@ishiko732](https://github.com/ishiko732) — HTTP proxy credentials in GeoIP resolution
 - [@Shub3am](https://github.com/Shub3am) — horizontal scroll-into-view for humanized clicks, safe concurrent first-run downloads
 - [@dstosch](https://github.com/dstosch) — cloakserve idle cleanup for browsers launched over HTTP
-- [@bercedev](https://github.com/bercedev) — humanize support for compiled (Nuitka) Playwright builds
+- [@bercedev](https://github.com/bercedev) — humanize support for compiled (Nuitka) Playwright builds, cloakserve exit after idle
 - [@laplace-anon](https://github.com/laplace-anon) — humanize fix for Playwright 1.64
 - [@theaafofficial](https://github.com/theaafofficial) — non-blocking async launches (GeoIP, WebRTC and license lookups off the event loop)
 - [@jipeng6036-del](https://github.com/jipeng6036-del) — Seychelles GeoIP locale
+- [@pujitha24](https://github.com/pujitha24) — cloakserve WebSocket heartbeat for vanished clients
 
 ## Star History
 

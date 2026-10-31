@@ -303,6 +303,9 @@ class ChromePool:
         geoip: bool = False,
     ) -> ChromeProcess:
         """Get existing or launch new Chrome process for a seed."""
+        # Clients open the browser before their WebSocket connects; without this
+        # --exit-after-idle can fire in that gap and cut the client off mid-launch.
+        self._last_activity = time.monotonic()
         # Apply CLI defaults when query params don't provide values
         if seed is None and self._default_seed:
             seed = self._default_seed

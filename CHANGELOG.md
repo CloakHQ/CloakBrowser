@@ -8,7 +8,10 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
-- **[wrapper]** `cloakserve --exit-after-idle=SECONDS` (or `CLOAKSERVE_EXIT_AFTER_IDLE`) shuts the server down with exit status 0 once no CDP connection has been open for that long, so a per-job container stops when its work is done (#572)
+- **[wrapper]** `cloakserve --exit-after-idle=SECONDS` (or `CLOAKSERVE_EXIT_AFTER_IDLE`) shuts the server down with exit status 0 once no CDP connection has been open for that long, so a per-job container stops when its work is done (#572, #616)
+- **[wrapper]** `cloakserve --keep-profiles` keeps each seed's profile under `--data-dir` when its Chrome process is cleaned up, so reopening the seed restores its cookies and logins
+- **[wrapper]** `cloakserve` now stops Chrome with SIGINT instead of SIGTERM on Linux and macOS, so cookies set just before cleanup are written to disk, and waits up to 10s before force-killing it so the license session can end cleanly
+- **[wrapper]** `cloakserve` pings each CDP client every 30 seconds and drops one that stops answering, so a client that vanishes without closing its connection (network drop, dead host) no longer keeps its Chrome process alive (#412, #622)
 
 ## [0.6.4] — 2026-10-23
 

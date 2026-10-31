@@ -562,6 +562,20 @@ class TestConnectionTracking:
 
         asyncio.run(run())
 
+    def test_get_or_launch_resets_exit_after_idle_clock(self):
+        # A client opens the browser (/json/version) before its WebSocket connects;
+        # the idle exit must not fire in that gap and cut the client off.
+        async def run():
+            pool = self._make_pool()
+            pool._processes["12345"] = SimpleNamespace(
+                process=SimpleNamespace(poll=lambda: None), cdp_port=1,
+            )
+            pool._last_activity = 0.0
+            await pool.get_or_launch(seed="12345")
+            assert _mod.time.monotonic() - pool._last_activity < 1
+
+        asyncio.run(run())
+
     def test_idle_cleanup_disabled_by_default(self):
         async def run():
             pool = self._make_pool()
