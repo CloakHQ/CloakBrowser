@@ -109,15 +109,20 @@ def plan_stroke(sx: float, sy: float, ex: float, ey: float, cfg: HumanConfig,
     amp = min(cfg.mouse_wobble_max, dist * 0.02) * rand(-1, 1)
     waves = rand(0.5, 1.5)
     phase = rand(0, math.pi)
+    wave_frequency = 2 * math.pi * waves
+    sin = math.sin
+    pi = math.pi
+    cp1x, cp1y = cp1.x, cp1.y
+    cp2x, cp2y = cp2.x, cp2.y
     out: List[Tuple[float, float, float]] = []
     lx, ly = sx, sy
     t_prev = 0.0
     for i in range(1, n + 1):
         # Frame timing jitters a little; the final event lands on the target.
-        t = min(1.0, (i + (rand(-0.2, 0.2) if i < n else 0)) / n)
         if i == n:
+            t = 1.0
             x, y = ex, ey
-            if abs(x - lx) < 1 and abs(y - ly) < 1:
+            if -1 < x - lx < 1 and -1 < y - ly < 1:
                 if not out:
                     break  # already there (sub-pixel move): nothing to report
                 # The last frame already got there: land exactly on it instead.
@@ -125,10 +130,21 @@ def plan_stroke(sx: float, sy: float, ex: float, ey: float, cfg: HumanConfig,
                 out.append((x, y, pdt + (t - t_prev) * total))
                 break
         else:
-            p = _bezier(start, cp1, cp2, end, curve(t))
-            w = amp * math.sin(math.pi * t) * math.sin(phase + 2 * math.pi * waves * t)
-            x, y = round(p.x - uy * w), round(p.y + ux * w)
-            if abs(x - lx) < 1 and abs(y - ly) < 1:
+            # With i < n, the bounded jitter keeps this fraction below 1.
+            t = (i + rand(-0.2, 0.2)) / n
+            progress = curve(t)
+            u = 1 - progress
+            uu = u * u
+            uuu = uu * u
+            tt = progress * progress
+            ttt = tt * progress
+            b1 = 3 * uu * progress
+            b2 = 3 * u * tt
+            px = uuu * sx + b1 * cp1x + b2 * cp2x + ttt * ex
+            py = uuu * sy + b1 * cp1y + b2 * cp2y + ttt * ey
+            w = amp * sin(pi * t) * sin(phase + wave_frequency * t)
+            x, y = round(px - uy * w), round(py + ux * w)
+            if -1 < x - lx < 1 and -1 < y - ly < 1:
                 continue
         dt = (t - t_prev) * total
         t_prev = t
