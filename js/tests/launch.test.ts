@@ -393,6 +393,24 @@ describe("launchContext (unit)", () => {
     expect(mockBrowser.close).toHaveBeenCalledOnce();
   });
 
+  it("close({ reason }) forwards options to the original close", async () => {
+    const { launchContext } = await import("../src/playwright.js");
+    const ctx = await launchContext();
+
+    await ctx.close({ reason: "shutting down" });
+    expect(mockContext._origClose).toHaveBeenCalledWith({ reason: "shutting down" });
+    expect(mockBrowser.close).toHaveBeenCalledOnce();
+  });
+
+  it("close() still closes browser when the context close throws", async () => {
+    const { launchContext } = await import("../src/playwright.js");
+    const ctx = await launchContext();
+    mockContext._origClose.mockRejectedValueOnce(new Error("boom"));
+
+    await expect(ctx.close()).rejects.toThrow("boom");
+    expect(mockBrowser.close).toHaveBeenCalledOnce();
+  });
+
   it("forwards contextOptions to newContext (storageState, etc.)", async () => {
     const { launchContext } = await import("../src/playwright.js");
     await launchContext({

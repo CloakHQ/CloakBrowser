@@ -8,7 +8,7 @@ namespace CloakBrowser;
 
 /// <summary>
 /// A launched stealth browser. Owns the underlying Playwright instance and disposes
-/// it on <see cref="CloseAsync"/>. Use <see cref="Browser"/> for the raw Playwright API.
+/// it on <see cref="CloseAsync()"/>. Use <see cref="Browser"/> for the raw Playwright API.
 /// </summary>
 public sealed class CloakBrowserHandle : IAsyncDisposable
 {
@@ -106,9 +106,12 @@ public sealed class CloakBrowserHandle : IAsyncDisposable
     public bool HumanizeEnabled => _humanize;
 
     /// <summary>Close the browser and stop the underlying Playwright instance.</summary>
-    public async Task CloseAsync()
+    public Task CloseAsync() => CloseAsync(null);
+
+    /// <summary>Close the browser (options such as <c>Reason</c> are forwarded) and stop Playwright.</summary>
+    public async Task CloseAsync(BrowserCloseOptions? options)
     {
-        try { await _rawBrowser.CloseAsync().ConfigureAwait(false); }
+        try { await _rawBrowser.CloseAsync(options).ConfigureAwait(false); }
         finally { _playwright.Dispose(); }
     }
 
@@ -356,7 +359,7 @@ internal class LicenseGuardProxy<T> : DispatchProxy, IGuardedProxy where T : cla
 
 /// <summary>
 /// A launched stealth browser context. Owns the underlying Playwright instance (and,
-/// for non-persistent contexts, the browser) and cleans them up on <see cref="CloseAsync"/>.
+/// for non-persistent contexts, the browser) and cleans them up on <see cref="CloseAsync()"/>.
 /// </summary>
 public sealed class CloakContextHandle : IAsyncDisposable
 {
@@ -415,13 +418,22 @@ public sealed class CloakContextHandle : IAsyncDisposable
     public bool HumanizeEnabled => _humanize;
 
     /// <summary>Close the context (and browser, if owned) and stop Playwright.</summary>
-    public async Task CloseAsync()
+    public Task CloseAsync() => CloseAsync(null);
+
+    /// <summary>Close the context (options such as <c>Reason</c> are forwarded), the browser if owned, and stop Playwright.</summary>
+    public async Task CloseAsync(BrowserContextCloseOptions? options)
     {
         try
         {
-            await _rawContext.CloseAsync().ConfigureAwait(false);
-            if (_browser != null)
-                await _browser.CloseAsync().ConfigureAwait(false);
+            try
+            {
+                await _rawContext.CloseAsync(options).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (_browser != null)
+                    await _browser.CloseAsync().ConfigureAwait(false);
+            }
         }
         finally
         {
