@@ -198,9 +198,12 @@ public static class GeoIp
                 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
                 || (b[0] == 192 && b[1] == 168)
                 || b[0] == 127
-                || (b[0] == 169 && b[1] == 254);
+                || (b[0] == 169 && b[1] == 254)
+                || (b[0] == 100 && b[1] >= 64 && b[1] <= 127); // CGNAT (Tailscale)
         }
-        return IPAddress.IsLoopback(addr) || addr.IsIPv6LinkLocal || addr.IsIPv6SiteLocal;
+        // IsIPv6SiteLocal is fec0::/10 only; ULA fc00::/7 checked by byte
+        return IPAddress.IsLoopback(addr) || addr.IsIPv6LinkLocal || addr.IsIPv6SiteLocal
+            || (addr.GetAddressBytes()[0] & 0xFE) == 0xFC;
     }
 
     private static double GetGeoIpTimeoutSeconds()

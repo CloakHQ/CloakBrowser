@@ -61,7 +61,7 @@ describe("resolveProxyIp", () => {
 
 describe("isPrivateIp", () => {
   it("classifies loopback, private and link-local ranges", () => {
-    for (const ip of ["127.0.0.1", "10.0.0.1", "172.16.5.4", "192.168.1.1", "169.254.1.1", "::1", "fd00::1", "fe80::1"]) {
+    for (const ip of ["127.0.0.1", "10.0.0.1", "172.16.5.4", "192.168.1.1", "100.100.1.1", "169.254.1.1", "::1", "fd00::1", "fe80::1"]) {
       expect(isPrivateIp(ip), ip).toBe(true);
     }
     for (const ip of ["8.8.8.8", "172.32.0.1", "2001:4860:4860::8888", "not-an-ip"]) {

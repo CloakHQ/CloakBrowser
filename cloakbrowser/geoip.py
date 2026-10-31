@@ -197,7 +197,8 @@ def _resolve_proxy_ip(proxy_url: str) -> str | None:
 def _is_private_ip(ip: str) -> bool:
     """Check if an IP address is private/internal (not routable on the internet)."""
     try:
-        return ipaddress.ip_address(ip).is_private
+        # not is_global: is_private misses CGNAT 100.64/10 (Tailscale)
+        return not ipaddress.ip_address(ip).is_global
     except ValueError:
         return False
 

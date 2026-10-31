@@ -198,6 +198,7 @@ PRIVATE_NETWORKS.addSubnet("172.16.0.0", 12, "ipv4");
 PRIVATE_NETWORKS.addSubnet("192.168.0.0", 16, "ipv4");
 PRIVATE_NETWORKS.addSubnet("127.0.0.0", 8, "ipv4");
 PRIVATE_NETWORKS.addSubnet("169.254.0.0", 16, "ipv4");
+PRIVATE_NETWORKS.addSubnet("100.64.0.0", 10, "ipv4"); // CGNAT (Tailscale)
 PRIVATE_NETWORKS.addAddress("::1", "ipv6");
 PRIVATE_NETWORKS.addSubnet("fc00::", 7, "ipv6");
 PRIVATE_NETWORKS.addSubnet("fe80::", 10, "ipv6");

@@ -374,6 +374,12 @@ def test_private_ip_rfc1918():
     assert _is_private_ip("172.16.0.1") is True
 
 
+def test_private_ip_cgnat_and_ula():
+    # Tailscale/CGNAT and IPv6 ULA are not routable exits either
+    assert _is_private_ip("100.100.1.1") is True
+    assert _is_private_ip("fd00::1") is True
+
+
 def test_private_ip_public():
     assert _is_private_ip("8.8.8.8") is False
     assert _is_private_ip("8.8.8.8") is False
