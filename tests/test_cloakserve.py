@@ -738,3 +738,42 @@ class TestSafeRmtree:
         pool._safe_rmtree(traversal)
 
         assert victim.exists(), "Traversal path must not be deleted"
+
+
+class TestClientHeartbeat:
+    """A silently dead client must be detected so the connection is released."""
+
+    def test_dead_client_is_disconnected(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        events = []
+
+        class Pool:
+            async def get_or_launch(self, seed=None):
+                return SimpleNamespace(cdp_port=1)
+
+            def connect(self, key):
+                events.append("connect")
+
+            def disconnect(self, key):
+                events.append("disconnect")
+
+        async def fake_proxy(client_ws, target_url, label):
+            async for _ in client_ws:
+                pass
+
+        async def run():
+            app = web.Application()
+            app["pool"] = Pool()
+            app.router.add_get("/devtools/{path:.*}", _mod.handle_ws_default)
+            async with TestClient(TestServer(app)) as client:
+                # autoping=False: the client never answers server pings.
+                ws = await client.ws_connect("/devtools/browser/x", autoping=False)
+                await asyncio.sleep(1.0)
+                assert "disconnect" in events
+                await ws.close()
+
+        with patch.object(_mod, "WS_HEARTBEAT_SECONDS", 0.2), \
+                patch.object(_mod, "proxy_cdp_websocket", fake_proxy):
+            asyncio.run(run())
