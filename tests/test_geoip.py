@@ -117,6 +117,34 @@ def test_resolve_geo_raises_when_exit_ip_missing():
                     resolve_proxy_geo(None)
 
 
+def test_resolve_geo_does_not_fall_back_to_a_private_proxy_address():
+    """A local forwarding proxy is not the exit: report the egress failure instead."""
+    mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
+            with patch("cloakbrowser.geoip._resolve_exit_ip", return_value=None):
+                from cloakbrowser.geoip import resolve_proxy_geo
+                with pytest.raises(RuntimeError, match="could not discover the egress IP"):
+                    resolve_proxy_geo("http://127.0.0.1:8080")
+
+
+def test_resolve_geo_still_falls_back_to_a_public_proxy_address():
+    """A public proxy host is still a usable guess when exit discovery fails."""
+    resp = MagicMock()
+    resp.location.time_zone = "Europe/Berlin"
+    resp.country.iso_code = "DE"
+    reader = MagicMock()
+    reader.return_value.__enter__.return_value.city.return_value = resp
+    mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": reader})})()
+    with patch.dict("sys.modules", {"geoip2": mock_geoip2, "geoip2.database": mock_geoip2.database}):
+        with patch("cloakbrowser.geoip._ensure_geoip_db", return_value=object()):
+            with patch("cloakbrowser.geoip._resolve_exit_ip", return_value=None):
+                from cloakbrowser.geoip import resolve_proxy_geo_with_ip
+                assert resolve_proxy_geo_with_ip("http://5.6.7.8:8080") == (
+                    "Europe/Berlin", "de-DE", "5.6.7.8",
+                )
+
+
 def test_resolve_geo_raises_when_db_missing():
     """A database failure must abort requested GeoIP resolution."""
     mock_geoip2 = type("module", (), {"database": type("db", (), {"Reader": None})})()

@@ -112,8 +112,14 @@ public static class GeoIp
         // while the connection shows the proxy IP - a real deanonymization.
         var ip = await ResolveExitIpAsync(proxyUrl, RemainingSeconds(deadline), ct).ConfigureAwait(false);
         // Hostname fallback only applies to a proxy; no proxy -> echo services only.
+        // A private address (a local forwarding proxy, a LAN gateway) is never the
+        // exit, so it would only produce a misleading lookup error.
         if (ip == null && !string.IsNullOrEmpty(proxyUrl) && !DeadlineExpired(deadline))
+        {
             ip = ResolveProxyIp(proxyUrl);
+            if (ip != null && IsPrivateIp(ip))
+                ip = null;
+        }
         if (ip == null || DeadlineExpired(deadline))
         {
             if (deadline != null && DeadlineExpired(deadline))
