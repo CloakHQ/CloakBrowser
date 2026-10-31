@@ -1012,9 +1012,12 @@ def launch_context(
     # Patch close() to also close the browser (and its Playwright instance)
     _original_ctx_close = context.close
 
-    def _close_context_with_cleanup() -> None:
+    def _close_context_with_cleanup(*, reason: str | None = None) -> None:
         try:
-            _original_ctx_close()
+            if reason is None:
+                _original_ctx_close()
+            else:
+                _original_ctx_close(reason=reason)
         finally:
             browser.close()
 
@@ -1150,9 +1153,12 @@ async def launch_context_async(
     # Patch close() to also close the browser (and its Playwright instance)
     _original_ctx_close = context.close
 
-    async def _close_context_with_cleanup() -> None:
+    async def _close_context_with_cleanup(*, reason: str | None = None) -> None:
         try:
-            await _original_ctx_close()
+            if reason is None:
+                await _original_ctx_close()
+            else:
+                await _original_ctx_close(reason=reason)
         finally:
             await browser.close()
 
