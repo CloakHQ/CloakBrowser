@@ -200,6 +200,7 @@ class ChromePool:
         self._next_port = BASE_CDP_PORT
         # Connection refcounting for status reporting
         self._connections: dict[str, int] = {}
+        self._last_activity = time.monotonic()
         self._idle_tasks: dict[str, asyncio.Task] = {}
 
     def _get_lock(self, seed: str) -> asyncio.Lock:
@@ -235,10 +236,12 @@ class ChromePool:
     def connect(self, seed_key: str) -> None:
         """Increment connection refcount for a seed."""
         self._cancel_idle_cleanup(seed_key)
+        self._last_activity = time.monotonic()
         self._connections[seed_key] = self._connections.get(seed_key, 0) + 1
 
     def disconnect(self, seed_key: str) -> None:
         """Decrement connection refcount for a seed."""
+        self._last_activity = time.monotonic()
         count = self._connections.get(seed_key, 0) - 1
         if count <= 0:
             self._connections.pop(seed_key, None)
@@ -798,21 +801,32 @@ def _default_data_dir() -> str:
     return str(Path.home() / ".cloakbrowser" / "cloakserve")
 
 
-def _parse_idle_timeout(value: str) -> float:
+def _parse_idle_timeout(value: str, flag: str = "--idle-timeout") -> float:
     value = value.strip()
     if value.lower() in {"0", "false", "off", "none", "disabled"}:
         return 0.0
     timeout = float(value)
     if timeout < 0:
-        raise ValueError("--idle-timeout must be greater than or equal to 0")
+        raise ValueError(f"{flag} must be greater than or equal to 0")
     return timeout
 
 
-def _default_idle_timeout() -> float:
-    value = os.environ.get("CLOAKSERVE_IDLE_TIMEOUT")
+def _default_idle_timeout(env: str = "CLOAKSERVE_IDLE_TIMEOUT", flag: str = "--idle-timeout") -> float:
+    value = os.environ.get(env)
     if value is None:
         return 0.0
-    return _parse_idle_timeout(value)
+    return _parse_idle_timeout(value, flag)
+
+
+async def _exit_after_idle(pool: ChromePool, timeout: float) -> None:
+    """Stop the server once no CDP connection has been open for `timeout` seconds."""
+    while True:
+        if not pool._connections and time.monotonic() - pool._last_activity >= timeout:
+            logger.info("No CDP connections for %gs, exiting", timeout)
+            # run_app treats SIGINT as its normal shutdown (Chrome cleanup, exit status 0), Windows included
+            signal.raise_signal(signal.SIGINT)
+            return
+        await asyncio.sleep(min(timeout, 1.0))
 
 
 def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
@@ -832,6 +846,7 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
         "default_timezone": None,
         "idle_timeout": _default_idle_timeout(),
         "keep_profiles": False,
+        "exit_after_idle": _default_idle_timeout("CLOAKSERVE_EXIT_AFTER_IDLE", "--exit-after-idle"),
     }
     passthrough = []
     # Flags consumed by cloakserve (not passed to Chrome)
@@ -839,6 +854,7 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
         "--port=",
         "--data-dir=",
         "--idle-timeout=",
+        "--exit-after-idle=",
         "--remote-debugging-port=",
         "--remote-debugging-address=",
     )
@@ -852,6 +868,8 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
             config["idle_timeout"] = _parse_idle_timeout(arg.split("=", 1)[1])
         elif arg == "--keep-profiles":
             config["keep_profiles"] = True
+        elif arg.startswith("--exit-after-idle="):
+            config["exit_after_idle"] = _parse_idle_timeout(arg.split("=", 1)[1], "--exit-after-idle")
         elif arg == "--headless=false" or arg == "--headless=False":
             config["headless"] = False
             passthrough.append(arg)
@@ -920,6 +938,12 @@ def main() -> None:
     app.router.add_get("/devtools/{path:.+}", handle_ws_default)
 
     app.on_shutdown.append(on_shutdown)
+
+    if config["exit_after_idle"] > 0:
+        async def start_exit_watch(app: web.Application) -> None:
+            app["exit_watch"] = asyncio.create_task(_exit_after_idle(pool, config["exit_after_idle"]))
+
+        app.on_startup.append(start_exit_watch)
 
     port = config["port"]
     logger.info("CloakBrowser CDP multiplexer starting on port %d", port)
