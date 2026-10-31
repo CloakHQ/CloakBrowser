@@ -743,7 +743,11 @@ class TestSafeRmtree:
 class TestClientHeartbeat:
     """A silently dead client must be detected so the connection is released."""
 
-    def test_dead_client_is_disconnected(self):
+    @pytest.mark.parametrize("route,handler,url", [
+        ("/devtools/{path:.*}", "handle_ws_default", "/devtools/browser/x"),
+        ("/fingerprint/{seed}/devtools/{path:.+}", "handle_ws_seed", "/fingerprint/12345/devtools/browser/x"),
+    ])
+    def test_dead_client_is_disconnected(self, route, handler, url):
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -766,10 +770,10 @@ class TestClientHeartbeat:
         async def run():
             app = web.Application()
             app["pool"] = Pool()
-            app.router.add_get("/devtools/{path:.*}", _mod.handle_ws_default)
+            app.router.add_get(route, getattr(_mod, handler))
             async with TestClient(TestServer(app)) as client:
                 # autoping=False: the client never answers server pings.
-                ws = await client.ws_connect("/devtools/browser/x", autoping=False)
+                ws = await client.ws_connect(url, autoping=False)
                 await asyncio.sleep(1.0)
                 assert "disconnect" in events
                 await ws.close()
