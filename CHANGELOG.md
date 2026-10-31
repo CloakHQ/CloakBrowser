@@ -6,8 +6,12 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ---
 
-## [Unreleased]
+## [0.6.5] — 2026-10-31
 
+- **[wrapper]** `context.close(reason=...)` on a `launch_context()` / `launch_context_async()` context now passes the reason to Playwright. Python raised `TypeError` and left the browser running; JavaScript `launchContext()` dropped the reason. .NET handles gain `CloseAsync(options)`. The browser is now closed even when closing the context fails. Python, JavaScript, and .NET (#609, #633)
+- **[wrapper]** `geoip=True` no longer uses the proxy host's own address as the exit IP when that address is private (a local forwarding proxy, a LAN gateway, a Tailscale `100.64.0.0/10` host, an IPv6 `fc00::/7` address). The lookup on that address only produced a misleading error; the launch now reports that the exit IP could not be found. Python, JavaScript, and .NET (#631)
+- **[wrapper]** Humanized actions now respect `timeout=` when the page stops answering (an `onchange` or `onclick` running a synchronous XHR, a navigation that never commits). Each browser call is bounded by the timeout, human pauses between calls do not count, and keys and mouse buttons held at that moment are still released. `select_option()` returns the chosen value once the pick starts a navigation, also from an iframe to the top page. Python, JavaScript, and .NET (#619, #630)
+- **[wrapper]** Humanized element reads and actions now work in iframes whose page script sets `window.name`. They failed with `could not map the frame to a CDP frame`. Python, JavaScript, and .NET (#624)
 - **[wrapper]** `cloakserve --exit-after-idle=SECONDS` (or `CLOAKSERVE_EXIT_AFTER_IDLE`) shuts the server down with exit status 0 once no CDP connection has been open for that long, so a per-job container stops when its work is done (#572, #616)
 - **[wrapper]** `cloakserve --keep-profiles` keeps each seed's profile under `--data-dir` when its Chrome process is cleaned up, so reopening the seed restores its cookies and logins
 - **[wrapper]** `cloakserve` now stops Chrome with SIGINT instead of SIGTERM on Linux and macOS, so cookies set just before cleanup are written to disk, and waits up to 10s before force-killing it so the license session can end cleanly

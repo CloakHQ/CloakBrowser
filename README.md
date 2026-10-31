@@ -150,7 +150,7 @@ page.goto("https://example.com")
 
 ---
 
-## Latest: v0.6.4 — 87 source-level stealth patches (Chromium 155.0.8059.39.1)
+## Latest: v0.6.5 — 87 source-level stealth patches (Chromium 155.0.8059.39.1)
 
 - **CloakBrowser Pro Stable** — Chromium `155.0.8059.39.1` on Linux x64, Linux ARM64, Windows x64, and macOS (Apple Silicon and Intel). Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest Stable build for your platform automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
 - **.NET 8 / C# client** — CloakBrowser now ships as a NuGet package (`CloakBrowser`), mirroring the Python and JS wrappers.
@@ -1384,6 +1384,8 @@ Issues and PRs welcome. If something isn't working, [open an issue](https://gith
 - [@theaafofficial](https://github.com/theaafofficial) — non-blocking async launches (GeoIP, WebRTC and license lookups off the event loop)
 - [@jipeng6036-del](https://github.com/jipeng6036-del) — Seychelles GeoIP locale
 - [@pujitha24](https://github.com/pujitha24) — cloakserve WebSocket heartbeat for vanished clients
+- [@w21180239](https://github.com/w21180239) — Playwright-compatible `context.close(reason=...)`
+- [@alkaz-nodemaven](https://github.com/alkaz-nodemaven) — GeoIP private proxy address fix
 
 ## Star History
 
