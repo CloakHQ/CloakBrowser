@@ -163,6 +163,17 @@ class TestParseCliArgs:
         with pytest.raises(ValueError):
             parse_cli_args(["--idle-timeout=-1"])
 
+    def test_exit_after_idle(self, monkeypatch):
+        monkeypatch.delenv("CLOAKSERVE_EXIT_AFTER_IDLE", raising=False)
+        assert parse_cli_args([])[0]["exit_after_idle"] == 0.0
+        config, passthrough = parse_cli_args(["--exit-after-idle=30", "--no-sandbox"])
+        assert config["exit_after_idle"] == 30.0
+        assert passthrough == ["--no-sandbox"]
+        monkeypatch.setenv("CLOAKSERVE_EXIT_AFTER_IDLE", "off")
+        assert parse_cli_args([])[0]["exit_after_idle"] == 0.0
+        with pytest.raises(ValueError, match="--exit-after-idle"):
+            parse_cli_args(["--exit-after-idle=-1"])
+
     @patch("os.path.exists", return_value=True)
     def test_default_data_dir_docker(self, _mock):
         assert _default_data_dir() == "/tmp/cloakserve"
@@ -535,6 +546,21 @@ class TestConnectionTracking:
         pool.disconnect("a")
         assert pool._connections["a"] == 1
         assert pool._connections["b"] == 1
+
+    def test_exit_after_idle_waits_for_last_connection(self):
+        async def run():
+            pool = self._make_pool()
+            pool.connect("seed1")
+            with patch.object(_mod.signal, "raise_signal") as raise_signal:
+                watch = asyncio.create_task(_mod._exit_after_idle(pool, 0.02))
+                await asyncio.sleep(0.06)
+                raise_signal.assert_not_called()
+
+                pool.disconnect("seed1")
+                await asyncio.wait_for(watch, 1)
+                raise_signal.assert_called_once_with(_mod.signal.SIGINT)
+
+        asyncio.run(run())
 
     def test_idle_cleanup_disabled_by_default(self):
         async def run():
