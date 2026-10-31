@@ -4,7 +4,7 @@
  *
  * Usage:
  *   CLOAKBROWSER_BINARY_PATH=/path/to/chrome npx tsx examples/stealth-test.ts
- *   CLOAKBROWSER_BINARY_PATH=/path/to/chrome npx tsx examples/stealth-test.ts --proxy http://10.50.96.5:8888
+ *   CLOAKBROWSER_BINARY_PATH=/path/to/chrome npx tsx examples/stealth-test.ts --proxy http://user:pass@proxy:port
  */
 
 import { launch } from "../src/index.js";

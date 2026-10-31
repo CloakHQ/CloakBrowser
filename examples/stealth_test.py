@@ -7,7 +7,7 @@ Usage:
     python examples/stealth_test.py
     python examples/stealth_test.py --headed     # watch in real-time
     python examples/stealth_test.py --no-screenshots
-    python examples/stealth_test.py --proxy http://10.50.96.5:8888
+    python examples/stealth_test.py --proxy http://user:pass@proxy:port
 """
 
 import sys

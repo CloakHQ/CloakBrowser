@@ -23,12 +23,12 @@ afterEach(() => {
 
 describe("resolveProxyIp", () => {
   it("returns literal IPv4 from proxy URL", async () => {
-    expect(await resolveProxyIp("http://10.50.96.5:8888")).toBe("10.50.96.5");
+    expect(await resolveProxyIp("http://10.0.0.5:8888")).toBe("10.0.0.5");
   });
 
   it("handles proxy URL with credentials", async () => {
-    expect(await resolveProxyIp("http://user:pass@10.50.96.5:8888")).toBe(
-      "10.50.96.5"
+    expect(await resolveProxyIp("http://user:pass@10.0.0.5:8888")).toBe(
+      "10.0.0.5"
     );
   });
 
@@ -48,13 +48,13 @@ describe("resolveProxyIp", () => {
 
   it("returns null for schemeless proxy (shows why normalization is needed)", async () => {
     // no scheme — new URL() gives empty hostname for both bare formats
-    expect(await resolveProxyIp("user:pass@10.50.96.5:8888")).toBeNull();
-    expect(await resolveProxyIp("10.50.96.5:8888")).toBeNull();
+    expect(await resolveProxyIp("user:pass@10.0.0.5:8888")).toBeNull();
+    expect(await resolveProxyIp("10.0.0.5:8888")).toBeNull();
   });
 
   it("extracts IP after normalization (http:// prepended by maybeResolveGeoip)", async () => {
-    expect(await resolveProxyIp("http://user:pass@10.50.96.5:8888")).toBe("10.50.96.5");
-    expect(await resolveProxyIp("http://10.50.96.5:8888")).toBe("10.50.96.5");
+    expect(await resolveProxyIp("http://user:pass@10.0.0.5:8888")).toBe("10.0.0.5");
+    expect(await resolveProxyIp("http://10.0.0.5:8888")).toBe("10.0.0.5");
   });
 });
 

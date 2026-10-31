@@ -6,7 +6,7 @@ Chromium that passes bot-detection tests, built on top of
 [`Microsoft.Playwright`](https://playwright.dev/dotnet/).
 
 CloakBrowser is a thin wrapper around a closed-source, source-level patched
-Chromium binary (71 C++ fingerprint patches). This port reproduces **all** of the
+Chromium binary (87 C++ fingerprint patches). This port reproduces **all** of the
 wrapper functionality with identical behavior - same launch flags, same proxy /
 GeoIP / WebRTC logic, and a humanize layer whose curves, timings, and stealth
 paths match the Python and JavaScript clients exactly.
@@ -75,7 +75,6 @@ your code ──> HumanizedPage ──┬─ intercepted member ─> humanize en
 | **Proxy** - HTTP/HTTPS + SOCKS5, inline URL-encoded credentials | ✅ | `ProxyResolver.cs` |
 | **GeoIP** timezone/locale from proxy exit IP (MaxMind GeoLite2) | ✅ | `GeoIp.cs` |
 | **WebRTC** IP spoofing (`--fingerprint-webrtc-ip=auto`) | ✅ | `CloakLauncher.cs` |
-| **Widevine** CDM hint seeding (Linux) | ✅ | `Widevine.cs` |
 | **Persistent contexts** (profile reuse) | ✅ | `CloakLauncher.cs` |
 | **Humanize** - Bezier mouse, human typing, scrolling, actionability | ✅ | `Human/`, `Wrappers/` |
 | Transparent humanize via **source generator** | ✅ | `CloakBrowser.Generators/` |
@@ -88,7 +87,7 @@ your code ──> HumanizedPage ──┬─ intercepted member ─> humanize en
 | Dependency | Version | Why |
 | --- | --- | --- |
 | .NET SDK | **8.0** | target framework `net8.0` |
-| `Microsoft.Playwright` | **1.49.0** | underlying browser automation |
+| `Microsoft.Playwright` | **1.64.1** | underlying browser automation |
 | `MaxMind.GeoIP2` | **5.2.0** | GeoIP timezone/locale resolution |
 
 ---
@@ -114,7 +113,6 @@ dotnet/
 │   │   ├── Config.cs                    # <- cloakbrowser/config.py
 │   │   ├── Download.cs                  # <- cloakbrowser/download.py (+ zip-slip guard)
 │   │   ├── GeoIp.cs                     # <- cloakbrowser/geoip.py
-│   │   ├── Widevine.cs                  # <- cloakbrowser/widevine.py
 │   │   ├── CloakLauncher.cs             # <- cloakbrowser/browser.py (launch funcs, build_args)
 │   │   ├── ProxyResolver.cs             # <- cloakbrowser/browser.py (proxy URL helpers)
 │   │   ├── ProxySettings.cs             # <- ProxySettings TypedDict
@@ -164,7 +162,10 @@ using CloakBrowser;
 
 await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 {
-    Headless = true,
+    Proxy    = "http://user:pass@residential-proxy:port",
+    GeoIp    = true,     // match timezone + locale to proxy IP
+    Headless = false,
+    Humanize = true,
 });
 
 var page = await browser.NewPageAsync();
@@ -318,24 +319,20 @@ All entry points live on the static `CloakLauncher` class and return an
 | `LaunchPersistentContextAsync(userDataDir, LaunchContextOptions)` | `CloakContextHandle` | reuse a profile directory (cookies/localStorage persist) |
 
 ```csharp
-// emulated context
+// browser + context in one call
 await using var ctx = await CloakLauncher.LaunchContextAsync(new LaunchContextOptions
 {
-    Locale      = "en-US",
-    Timezone    = "America/New_York",
-    Viewport    = (1280, 800),
-    ColorScheme = "dark",
+    Proxy    = "http://user:pass@residential-proxy:port",
+    GeoIp    = true,
+    Headless = false,
+    Humanize = true,
 });
 var page = await ctx.NewPageAsync();
 ```
 
-> Locale and timezone are applied via **binary flags** (`--lang`,
-> `--fingerprint-locale`, `--fingerprint-timezone`) - *not* detectable CDP
-> emulation - matching the Python wrapper.
-
 ```csharp
 // persistent profile - cookies / localStorage survive across runs, so the
-// browser looks like a returning user instead of a fresh incognito session
+// browser looks like a returning user instead of a new visitor
 await using var ctx = await CloakLauncher.LaunchPersistentContextAsync("./profile",
     new LaunchContextOptions { Headless = false });
 var page = await ctx.NewPageAsync();
@@ -369,7 +366,7 @@ var page = await ctx.NewPageAsync();
 
 The wrappers are MIT, free forever. The latest binary is **free to try**:
 
-- **Free, latest build (Chromium 155)** — the newest binary. Free with a GitHub sign-in, one concurrent session. Run `cloakbrowser login` or [grab your key](https://cloakbrowser.dev/free).
+- **Free, latest build (Chromium 156)** — the newest binary. Free with a GitHub sign-in, one concurrent session. Run `cloakbrowser login` or [grab your key](https://cloakbrowser.dev/free).
 - **Pro** — scale to **5, 20, 200, 2,000, or more concurrent sessions**, always first on the newest patches, with hands-on support. Linux, Windows, macOS. **[See plans and pricing →](https://cloakbrowser.dev)**
 - **v146** — the older build stays free on [GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases). A quick first look, but it ages fast as detection evolves.
 
@@ -420,6 +417,12 @@ await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 
 The pin is **never sticky** — unpinned launches always use the latest available version.
 You can also set it globally via the `CLOAKBROWSER_VERSION` env var (see [Environment variables](#environment-variables)).
+
+Or downgrade the wrapper (if a new wrapper release broke something). With a license key you still get the latest binary; pin it as above to roll that back too:
+
+```bash
+dotnet add package CloakBrowser --version 0.6.3
+```
 
 ---
 
@@ -575,9 +578,10 @@ programmatic value is acceptable.
 ```csharp
 await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 {
-    Proxy = "http://user:pass@proxy.example.com:8080",   // or a ProxySettings
-    GeoIp = true,                                         // tz/locale from exit IP
-    Args  = new List<string> { "--fingerprint-webrtc-ip=auto" },
+    Proxy    = "http://user:pass@proxy.example.com:8080",   // or a ProxySettings
+    GeoIp    = true,      // tz/locale from exit IP; WebRTC spoofing added automatically
+    Headless = false,
+    Humanize = true,
 });
 ```
 
@@ -618,7 +622,7 @@ Same set as the Python wrapper:
 
 | Variable | Purpose |
 | --- | --- |
-| `CLOAKBROWSER_BINARY_PATH` | Use a local binary, skip download |
+| `CLOAKBROWSER_BINARY_PATH` | Use a local binary, skip download. Set `CLOAKBROWSER_VERSION` (or `BrowserVersion`) to that binary's exact version too, or proxy auth and headless viewport fall back to safe defaults |
 | `CLOAKBROWSER_CACHE_DIR` | Override the cache directory |
 | `CLOAKBROWSER_DOWNLOAD_URL` | Override the download URL |
 | `CLOAKBROWSER_AUTO_UPDATE` | Enable/disable background auto-update |
@@ -626,7 +630,6 @@ Same set as the Python wrapper:
 | `CLOAKBROWSER_VERSION` | Pin to an exact Chromium version for rollback (e.g. `154.0.8037.57.1`). Paid Pro key only |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | Set to `preview` to opt into the Pro Preview binary channel (default: `stable`) |
 | `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | GeoIP HTTP timeout |
-| `CLOAKBROWSER_WIDEVINE_CDM` / `CLOAKBROWSER_WIDEVINE` | Widevine seeding control |
 
 ---
 
@@ -678,7 +681,6 @@ classes share one serial xunit collection (`RealBrowser`).
 | `Config.cs` | `cloakbrowser/config.py` |
 | `Download.cs` | `cloakbrowser/download.py` |
 | `GeoIp.cs` | `cloakbrowser/geoip.py` |
-| `Widevine.cs` | `cloakbrowser/widevine.py` |
 | `CloakLauncher.cs` / `ProxyResolver.cs` | `cloakbrowser/browser.py` |
 | `Human/HumanConfig.cs` | `cloakbrowser/human/config.py` |
 | `Human/HumanMouse.cs` | `cloakbrowser/human/mouse.py` |
@@ -694,4 +696,5 @@ classes share one serial xunit collection (`RealBrowser`).
 
 ## License
 
-MIT - same as the upstream CloakBrowser project.
+- **Wrapper code** — MIT, same as the upstream CloakBrowser project.
+- **CloakBrowser binary** (compiled Chromium) — no redistribution. v146 and earlier: free, no key. v148 and later: requires a license key, free with a GitHub sign-in (one concurrent session) or a paid [CloakBrowser Pro](https://cloakbrowser.dev) subscription. See [BINARY-LICENSE.md](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md).

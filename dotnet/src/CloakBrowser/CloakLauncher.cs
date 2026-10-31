@@ -401,24 +401,6 @@ public static class CloakLauncher
                 Set(arg.Split('=', 2)[0], arg);
         }
 
-        // Playwright's default launch args switch off a browser feature that stock Chrome
-        // ships enabled. Re-enable it alongside the Windows font-metrics profile so the
-        // feature set matches a stock browser rather than a test harness. Merged into any
-        // existing --enable-features value rather than added as a second flag.
-        if (seen.ContainsKey("--fingerprint-windows-font-metrics"))
-        {
-            const string key = "--enable-features";
-            var current = seen.TryGetValue(key, out var existing)
-                ? existing.Split('=', 2).ElementAtOrDefault(1) ?? ""
-                : "";
-            var features = current.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
-            if (!features.Contains("MediaRouter"))
-            {
-                features.Add("MediaRouter");
-                Set(key, $"{key}={string.Join(",", features)}");
-            }
-        }
-
         if (!string.IsNullOrEmpty(timezone))
             Set("--fingerprint-timezone", $"--fingerprint-timezone={timezone}");
 

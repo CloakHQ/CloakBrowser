@@ -8,7 +8,7 @@ Tests the specific headless detection signals flagged by the community:
 
 Usage:
     python examples/fingerprint_scan_test.py
-    python examples/fingerprint_scan_test.py --proxy http://10.50.96.5:8888
+    python examples/fingerprint_scan_test.py --proxy http://user:pass@proxy:port
     python examples/fingerprint_scan_test.py --headless
 """
 

@@ -1459,18 +1459,6 @@ def build_args(
                 logger.debug("Arg override: %s -> %s", seen[key], arg)
             seen[key] = arg
 
-    # Playwright's default launch args switch off a browser feature that stock Chrome
-    # ships enabled. Re-enable it alongside the Windows font-metrics profile so the
-    # feature set matches a stock browser rather than a test harness. Merged into any
-    # existing --enable-features value rather than added as a second flag.
-    if "--fingerprint-windows-font-metrics" in seen:
-        key = "--enable-features"
-        current = seen[key].split("=", 1)[-1] if key in seen else ""
-        features = [f for f in current.split(",") if f]
-        if "MediaRouter" not in features:
-            features.append("MediaRouter")
-            seen[key] = f"{key}={','.join(features)}"
-
     # Timezone/locale flags are independent of stealth_args — always inject when set
     if timezone:
         key = "--fingerprint-timezone"
