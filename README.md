@@ -645,6 +645,7 @@ For an arbitrary expression, `page._stealth_world.evaluate("…")` evaluates it 
 | `CLOAKBROWSER_BINARY_PATH` | — | Skip download, use a local Chromium binary. Set `CLOAKBROWSER_VERSION` (or `browser_version=`) to that binary's exact version too, or proxy auth and headless viewport fall back to safe defaults |
 | `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
 | `CLOAKBROWSER_DOWNLOAD_URL` | `cloakbrowser.dev` | Custom download URL for binary |
+| `CLOAKBROWSER_DOWNLOAD_TIMEOUT_SECONDS` | `600` | JS wrapper only: max seconds for one binary download, raise it on a slow connection. Python and .NET have no limit on the whole download |
 | `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
 | `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Only applies to a custom `CLOAKBROWSER_DOWNLOAD_URL`: set to `true` to skip its checksum check. Signature verification on the official download path is mandatory and cannot be skipped. |
 | `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | `5` | Max seconds for GeoIP resolution before continuing without it |

@@ -211,6 +211,7 @@ if (newVersion) console.log(`Updated to ${newVersion}`);
 | `CLOAKBROWSER_BINARY_PATH` | — | Skip download, use a local Chromium binary. Set `CLOAKBROWSER_VERSION` (or `browserVersion`) to that binary's exact version too, or proxy auth and headless viewport fall back to safe defaults |
 | `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
 | `CLOAKBROWSER_DOWNLOAD_URL` | `cloakbrowser.dev` | Custom download URL |
+| `CLOAKBROWSER_DOWNLOAD_TIMEOUT_SECONDS` | `600` | Max seconds for one binary download, raise it on a slow connection |
 | `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
 | `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Set to `true` to skip SHA-256 verification after download |
 | `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `154.0.8037.57.1`). Paid Pro key only |
