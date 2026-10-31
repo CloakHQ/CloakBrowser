@@ -25,6 +25,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -182,7 +183,9 @@ class ChromePool:
         default_locale: str | None = None,
         default_timezone: str | None = None,
         idle_timeout: float = 0.0,
+        keep_profiles: bool = False,
     ):
+        self._keep_profiles = keep_profiles
         self._binary = binary
         self._global_args = global_args
         self._headless = headless
@@ -205,6 +208,10 @@ class ChromePool:
         return self._locks[seed]
 
     def _safe_rmtree(self, path: str) -> None:
+        # --keep-profiles: a seed's profile (cookies, logins) outlives its Chrome
+        # process, so reopening the seed after close/idle restores the identity.
+        if self._keep_profiles:
+            return
         resolved = Path(path).resolve()
         data_resolved = Path(self._data_dir).resolve()
         if resolved == data_resolved or not resolved.is_relative_to(data_resolved):
@@ -418,9 +425,16 @@ class ChromePool:
         if not proc:
             return
         if proc.process.poll() is None:
-            proc.process.terminate()
+            # Linux Chrome treats SIGTERM as session end and exits without writing
+            # its cookie store; SIGINT takes the normal exit path, which does.
+            if sys.platform == "win32":
+                proc.process.terminate()
+            else:
+                proc.process.send_signal(signal.SIGINT)
             try:
-                await asyncio.to_thread(proc.process.wait, timeout=5)
+                # The binary's /session/end on exit is bounded at 9s; killing
+                # sooner can leave the seat held until its TTL.
+                await asyncio.to_thread(proc.process.wait, timeout=10)
             except subprocess.TimeoutExpired:
                 proc.process.kill()
         await asyncio.to_thread(self._safe_rmtree, proc.user_data_dir)
@@ -811,6 +825,7 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
         "default_locale": None,
         "default_timezone": None,
         "idle_timeout": _default_idle_timeout(),
+        "keep_profiles": False,
     }
     passthrough = []
     # Flags consumed by cloakserve (not passed to Chrome)
@@ -829,6 +844,8 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
             config["data_dir"] = arg.split("=", 1)[1]
         elif arg.startswith("--idle-timeout="):
             config["idle_timeout"] = _parse_idle_timeout(arg.split("=", 1)[1])
+        elif arg == "--keep-profiles":
+            config["keep_profiles"] = True
         elif arg == "--headless=false" or arg == "--headless=False":
             config["headless"] = False
             passthrough.append(arg)
@@ -874,6 +891,7 @@ def main() -> None:
         default_locale=config["default_locale"],
         default_timezone=config["default_timezone"],
         idle_timeout=config["idle_timeout"],
+        keep_profiles=config["keep_profiles"],
     )
 
     app = web.Application()

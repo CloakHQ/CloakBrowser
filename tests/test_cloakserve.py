@@ -132,6 +132,12 @@ class TestParseCliArgs:
         _, passthrough = parse_cli_args(["--data-dir=/tmp/test"])
         assert not any(a.startswith("--data-dir=") for a in passthrough)
 
+    def test_keep_profiles_flag(self):
+        config, passthrough = parse_cli_args(["--keep-profiles", "--no-sandbox"])
+        assert config["keep_profiles"] is True
+        assert "--keep-profiles" not in passthrough
+        assert parse_cli_args([])[0]["keep_profiles"] is False
+
     def test_idle_timeout_not_in_passthrough(self):
         config, passthrough = parse_cli_args(["--idle-timeout=30", "--no-sandbox"])
         assert config["idle_timeout"] == 30.0
@@ -474,6 +480,28 @@ class TestConnectionTracking:
             process=SimpleNamespace(poll=lambda: None),
         )
 
+    @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+    def test_cleanup_stops_chrome_without_session_ending(self, platform):
+        # Linux Chrome treats SIGTERM as session end and skips the cookie-store
+        # write, so cleanup must use SIGINT off Windows.
+        pool = self._make_pool()
+        proc = MagicMock()
+        proc.poll.return_value = None
+        pool._processes["seed1"] = SimpleNamespace(process=proc, user_data_dir="/tmp/x")
+        pool._safe_rmtree = lambda path: None
+
+        with patch.object(_mod.sys, "platform", platform):
+            asyncio.run(pool._cleanup_process("seed1"))
+
+        if platform == "win32":
+            proc.terminate.assert_called_once_with()
+            proc.send_signal.assert_not_called()
+        else:
+            proc.send_signal.assert_called_once_with(_mod.signal.SIGINT)
+            proc.terminate.assert_not_called()
+        # Room for the binary's bounded /session/end (up to 9s) before kill()
+        proc.wait.assert_called_once_with(timeout=10)
+
     def test_connect_increments(self):
         pool = self._make_pool()
         pool.connect("seed1")
@@ -683,6 +711,21 @@ class TestSafeRmtree:
         pool._safe_rmtree(str(subdir))
 
         assert not subdir.exists(), "Valid subdirectory should be deleted"
+
+    def test_keep_profiles_keeps_subdirectory(self, tmp_path):
+        data_dir = tmp_path / "profiles"
+        data_dir.mkdir()
+        subdir = data_dir / "seed-12345"
+        subdir.mkdir()
+        (subdir / "Cookies").touch()
+
+        pool = ChromePool(
+            binary="/fake/chrome", global_args=[], headless=True,
+            data_dir=str(data_dir), keep_profiles=True,
+        )
+        pool._safe_rmtree(str(subdir))
+
+        assert (subdir / "Cookies").exists(), "--keep-profiles must keep the profile"
 
     def test_refuses_traversal_path(self, tmp_path):
         data_dir = tmp_path / "profiles"
