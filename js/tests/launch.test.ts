@@ -2,29 +2,28 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { binaryInfo } from "../src/download.js";
-import { DEFAULT_VIEWPORT, getBinaryPath, getChromiumVersion, getPlatformTag } from "../src/config.js";
+import { getBinaryPath, getPlatformTag } from "../src/config.js";
 
 describe("binaryInfo", () => {
-  it("returns correct structure", () => {
+  it("returns correct structure (nothing cached yet)", () => {
     const orig = process.env.CLOAKBROWSER_CACHE_DIR;
     process.env.CLOAKBROWSER_CACHE_DIR = `/tmp/cloakbrowser-test-${Date.now()}`;
     try {
       const info = binaryInfo();
 
-      expect(info.version).toBe(getChromiumVersion());
-      expect(info.bundledVersion).toBeTruthy();
+      expect(info.version).toBeNull();
       expect(info.platform).toMatch(/^(linux|darwin|windows)-(x64|arm64)$/);
-      expect(info.binaryPath).toBeTruthy();
-      expect(typeof info.installed).toBe("boolean");
-      expect(info.cacheDir).toContain("cloakbrowser");
+      expect(info.binaryPath).toBeNull();
+      expect(info.installed).toBe(false);
+      expect(info.downloadUrl).toMatch(/\/api\/download\/latest$/);
     } finally {
       if (orig) process.env.CLOAKBROWSER_CACHE_DIR = orig;
       else delete process.env.CLOAKBROWSER_CACHE_DIR;
     }
   });
 
-  it("reports tier from the installed binary, not a cached license", () => {
-    // A valid, fresh license is cached but NO Pro binary is on disk → free.
+  it("reports the installed binary, not a cached license", () => {
+    // A valid, fresh license is cached but NO binary is on disk.
     const orig = process.env.CLOAKBROWSER_CACHE_DIR;
     const dir = `/tmp/cloakbrowser-test-${Date.now()}-tier`;
     fs.mkdirSync(dir, { recursive: true });
@@ -40,16 +39,16 @@ describe("binaryInfo", () => {
           validated_at: Date.now() / 1000,
         })
       );
-      expect(binaryInfo().tier).toBe("free");
+      expect(binaryInfo().installed).toBe(false);
 
-      // Now drop a Pro binary on disk → pro.
+      // Now drop a binary on disk.
       fs.writeFileSync(path.join(dir, `latest_pro_version_${getPlatformTag()}`), "147.0.5555.1");
-      const bp = getBinaryPath("147.0.5555.1", true);
+      const bp = getBinaryPath("147.0.5555.1");
       fs.mkdirSync(path.dirname(bp), { recursive: true });
       fs.writeFileSync(bp, "fake");
       fs.chmodSync(bp, 0o755);
       const info = binaryInfo();
-      expect(info.tier).toBe("pro");
+      expect(info.installed).toBe(true);
       expect(info.version).toBe("147.0.5555.1");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -67,7 +66,7 @@ describe("binaryInfo", () => {
       // Same cached Pro binary satisfies both channels (version-keyed cache dir).
       fs.writeFileSync(path.join(dir, `latest_pro_version_preview_${getPlatformTag()}`), "151.0.7900.10.1");
       fs.writeFileSync(path.join(dir, `latest_pro_version_${getPlatformTag()}`), "151.0.7900.10.1");
-      const bp = getBinaryPath("151.0.7900.10.1", true);
+      const bp = getBinaryPath("151.0.7900.10.1");
       fs.mkdirSync(path.dirname(bp), { recursive: true });
       fs.writeFileSync(bp, "fake");
       fs.chmodSync(bp, 0o755);
@@ -154,78 +153,41 @@ describe("composable Playwright launch helpers", () => {
     expect(warnSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("buildContextOptions applies DEFAULT_VIEWPORT by default and allows null viewport", async () => {
+  it("buildContextOptions uses no viewport (null) by default, headed or headless", async () => {
     const { buildContextOptions } = await import("../src/index.js");
 
-    expect(buildContextOptions().viewport).toEqual(DEFAULT_VIEWPORT);
+    // Headed: CDP emulation would force outerWidth < innerWidth; headless: the
+    // binary reports coherent dimensions itself.
+    expect(buildContextOptions().viewport).toBeNull();
+    expect(buildContextOptions({ headless: false }).viewport).toBeNull();
+    expect(buildContextOptions({ headless: true }).viewport).toBeNull();
+    expect(buildContextOptions({ launchOptions: { headless: true } }).viewport).toBeNull();
+    // Explicit viewport always honored.
+    const custom = { width: 800, height: 600 };
+    expect(buildContextOptions({ headless: false, viewport: custom }).viewport).toEqual(custom);
     expect(buildContextOptions({ viewport: null }).viewport).toBeNull();
   });
 
-  it("buildContextOptions uses no viewport (null) when headed, so the page tracks the real window", async () => {
-    const { buildContextOptions } = await import("../src/index.js");
-
-    // Headed: no emulated viewport (CDP emulation would force outerWidth < innerWidth).
-    expect(buildContextOptions({ headless: false }).viewport).toBeNull();
-    // Headless keeps the deterministic default.
-    expect(buildContextOptions({ headless: true }).viewport).toEqual(DEFAULT_VIEWPORT);
-    // Explicit viewport always honored, even headed.
-    const custom = { width: 800, height: 600 };
-    expect(buildContextOptions({ headless: false, viewport: custom }).viewport).toEqual(custom);
-  });
-
-  it("buildContextOptions reads effective headless from launchOptions.headless", async () => {
-    const { buildContextOptions } = await import("../src/index.js");
-
-    // buildLaunchOptions spreads launchOptions LAST, so launchOptions.headless wins
-    // at the actual launch. Viewport must follow it — a raw headless:false (browser
-    // actually headed) must NOT get a fixed viewport (would reintroduce outer<inner).
-    expect(buildContextOptions({ launchOptions: { headless: false } }).viewport).toBeNull();
-    // And launchOptions.headless:true forces the deterministic viewport even if the
-    // top-level field said headed.
-    expect(
-      buildContextOptions({ headless: false, launchOptions: { headless: true } }).viewport,
-    ).toEqual(DEFAULT_VIEWPORT);
-  });
-
   it("buildLaunchOptions returns Playwright options without launching a browser", async () => {
-    // Free macOS lacks inline proxy auth → credentialed HTTP proxy goes through
-    // Playwright's proxy dict. Drive the platform via process.platform/arch since
-    // getPlatformTag reads them at call time (a config spy can't reach the
-    // intra-config gate call).
-    const origPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
-    const origArch = Object.getOwnPropertyDescriptor(process, "arch")!;
-    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-    Object.defineProperty(process, "arch", { value: "arm64", configurable: true });
-    try {
-      const { buildLaunchOptions } = await import("../src/index.js");
+    const { buildLaunchOptions } = await import("../src/index.js");
 
-      const options = await buildLaunchOptions({
-        headless: false,
-        proxy: "http://user:pass@proxy.example:8080",
-        args: ["--custom-flag"],
-        launchOptions: { timeout: 1234 },
-      });
+    const options = await buildLaunchOptions({
+      headless: false,
+      proxy: "http://user:pass@proxy.example:8080",
+      args: ["--custom-flag"],
+      launchOptions: { timeout: 1234 },
+    });
 
-      expect(options.executablePath).toBe("/fake/chrome");
-      expect(options.headless).toBe(false);
-      expect(options.args).toContain("--custom-flag");
-      expect(options.ignoreDefaultArgs).toContain("--enable-automation");
-      expect(options.proxy).toEqual({
-        server: "http://proxy.example:8080",
-        username: "user",
-        password: "pass",
-      });
-      expect(options.args).not.toContain(
-        "--proxy-server=http://user:pass@proxy.example:8080",
-      );
-      expect(options.timeout).toBe(1234);
-      // No license key -> env is not injected
-      expect(options.env).toBeUndefined();
-    } finally {
-      Object.defineProperty(process, "platform", origPlatform);
-      Object.defineProperty(process, "arch", origArch);
-      vi.restoreAllMocks();
-    }
+    expect(options.executablePath).toBe("/fake/chrome");
+    expect(options.headless).toBe(false);
+    expect(options.args).toContain("--custom-flag");
+    expect(options.ignoreDefaultArgs).toContain("--enable-automation");
+    // Credentialed HTTP proxy goes inline (every served build ships inline auth).
+    expect(options.proxy).toBeUndefined();
+    expect(options.args).toContain("--proxy-server=http://user:pass@proxy.example:8080");
+    expect(options.timeout).toBe(1234);
+    // No license key -> env is not injected
+    expect(options.env).toBeUndefined();
   });
 
   it("buildLaunchOptions injects env with license key", async () => {
@@ -307,6 +269,7 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)(
 describe("launchContext (unit)", () => {
   let mockContext: any;
   let mockBrowser: any;
+  let newContextMock: any;
   let mockChromium: any;
   const origEnv = process.env.CLOAKBROWSER_BINARY_PATH;
 
@@ -314,8 +277,12 @@ describe("launchContext (unit)", () => {
     process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
     const origClose = vi.fn();
     mockContext = { close: origClose, _origClose: origClose };
+    // launch() wraps browser.newContext (no-viewport default), so keep the
+    // original mock to read its calls.
+    newContextMock = vi.fn().mockResolvedValue(mockContext);
     mockBrowser = {
-      newContext: vi.fn().mockResolvedValue(mockContext),
+      newContext: newContextMock,
+      newPage: vi.fn(),
       close: vi.fn(),
     };
     mockChromium = { launch: vi.fn().mockResolvedValue(mockBrowser) };
@@ -333,12 +300,35 @@ describe("launchContext (unit)", () => {
     }
   });
 
-  it("applies DEFAULT_VIEWPORT when no viewport given", async () => {
+  it("guards the first launch whose key the no-key menu just created", async () => {
+    // No key before launch; ensureBinary's claim menu saves one. The license
+    // status file must still reach the browser (decided after ensureBinary).
+    delete process.env.CLOAKBROWSER_BINARY_PATH;
+    const origKey = process.env.CLOAKBROWSER_LICENSE_KEY;
+    delete process.env.CLOAKBROWSER_LICENSE_KEY;
+    const ensureBinary = vi.fn().mockImplementation(async () => {
+      process.env.CLOAKBROWSER_LICENSE_KEY = "cb_from_menu";
+      return "/fake/chrome";
+    });
+    vi.doMock("../src/download.js", () => ({ ensureBinary }));
+    try {
+      const { launch } = await import("../src/playwright.js");
+      await launch();
+      const env = mockChromium.launch.mock.calls[0][0].env;
+      expect(env.CLOAKBROWSER_LICENSE_STATUS_FILE).toMatch(/denials/);
+    } finally {
+      vi.doUnmock("../src/download.js");
+      if (origKey === undefined) delete process.env.CLOAKBROWSER_LICENSE_KEY;
+      else process.env.CLOAKBROWSER_LICENSE_KEY = origKey;
+    }
+  });
+
+  it("uses no emulated viewport when none given (headless too)", async () => {
     const { launchContext } = await import("../src/playwright.js");
     await launchContext();
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
-    expect(ctxArgs.viewport).toEqual(DEFAULT_VIEWPORT);
+    const ctxArgs = newContextMock.mock.calls[0][0];
+    expect(ctxArgs.viewport).toBeNull();
   });
 
   it("uses custom viewport when provided", async () => {
@@ -346,7 +336,7 @@ describe("launchContext (unit)", () => {
     const custom = { width: 1280, height: 720 };
     await launchContext({ viewport: custom });
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = newContextMock.mock.calls[0][0];
     expect(ctxArgs.viewport).toEqual(custom);
   });
 
@@ -354,7 +344,7 @@ describe("launchContext (unit)", () => {
     const { launchContext } = await import("../src/playwright.js");
     await launchContext({ userAgent: "Custom/1.0" });
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = newContextMock.mock.calls[0][0];
     expect(ctxArgs.userAgent).toBe("Custom/1.0");
   });
 
@@ -370,7 +360,7 @@ describe("launchContext (unit)", () => {
     expect(hasTimezoneFlag).toBe(true);
 
     // NOT in newContext() — no CDP emulation
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = newContextMock.mock.calls[0][0];
     expect(ctxArgs.timezoneId).toBeUndefined();
   });
 
@@ -378,7 +368,7 @@ describe("launchContext (unit)", () => {
     const { launchContext } = await import("../src/playwright.js");
     await launchContext({ colorScheme: "dark" });
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = newContextMock.mock.calls[0][0];
     expect(ctxArgs.colorScheme).toBe("dark");
   });
 
@@ -393,6 +383,24 @@ describe("launchContext (unit)", () => {
     expect(mockBrowser.close).toHaveBeenCalledOnce();
   });
 
+  it("close({ reason }) forwards options to the original close", async () => {
+    const { launchContext } = await import("../src/playwright.js");
+    const ctx = await launchContext();
+
+    await ctx.close({ reason: "shutting down" });
+    expect(mockContext._origClose).toHaveBeenCalledWith({ reason: "shutting down" });
+    expect(mockBrowser.close).toHaveBeenCalledOnce();
+  });
+
+  it("close() still closes browser when the context close throws", async () => {
+    const { launchContext } = await import("../src/playwright.js");
+    const ctx = await launchContext();
+    mockContext._origClose.mockRejectedValueOnce(new Error("boom"));
+
+    await expect(ctx.close()).rejects.toThrow("boom");
+    expect(mockBrowser.close).toHaveBeenCalledOnce();
+  });
+
   it("forwards contextOptions to newContext (storageState, etc.)", async () => {
     const { launchContext } = await import("../src/playwright.js");
     await launchContext({
@@ -402,7 +410,7 @@ describe("launchContext (unit)", () => {
       },
     });
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = newContextMock.mock.calls[0][0];
     expect(ctxArgs.storageState).toBe("state.json");
     expect(ctxArgs.permissions).toEqual(["geolocation"]);
   });
@@ -420,7 +428,7 @@ describe("launchContext (unit)", () => {
       },
     });
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = newContextMock.mock.calls[0][0];
     expect(ctxArgs.userAgent).toBe("Explicit/1.0");
     expect(ctxArgs.viewport).toEqual({ width: 1280, height: 720 });
     expect(ctxArgs.colorScheme).toBe("dark");
@@ -437,7 +445,7 @@ describe("launchContext (unit)", () => {
       },
     });
 
-    const ctxArgs = mockBrowser.newContext.mock.calls[0][0];
+    const ctxArgs = newContextMock.mock.calls[0][0];
     // Stealth-sensitive keys stripped — they would reintroduce detectable CDP emulation.
     expect(ctxArgs.locale).toBeUndefined();
     expect(ctxArgs.timezoneId).toBeUndefined();
@@ -547,12 +555,12 @@ describe("launchPersistentContext (unit)", () => {
     expect(requestProxyWarnings(warnSpy)).toBe(0);
   });
 
-  it("applies DEFAULT_VIEWPORT", async () => {
+  it("uses no emulated viewport by default (headless too)", async () => {
     const { launchPersistentContext } = await import("../src/playwright.js");
     await launchPersistentContext({ userDataDir: "/tmp/profile" });
 
     const args = mockChromium.launchPersistentContext.mock.calls[0][1];
-    expect(args.viewport).toEqual(DEFAULT_VIEWPORT);
+    expect(args.viewport).toBeNull();
   });
 
   it("passes timezone and locale via binary args, not CDP context", async () => {
@@ -572,32 +580,16 @@ describe("launchPersistentContext (unit)", () => {
     expect(args.locale).toBeUndefined();
   });
 
-  it("forwards proxy string", async () => {
-    // Free macOS → credentialed HTTP proxy via Playwright's proxy dict, not
-    // inline --proxy-server. Drive platform via process.platform/arch.
-    const origPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
-    const origArch = Object.getOwnPropertyDescriptor(process, "arch")!;
-    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-    Object.defineProperty(process, "arch", { value: "arm64", configurable: true });
-    try {
-      const { launchPersistentContext } = await import("../src/playwright.js");
-      await launchPersistentContext({
-        userDataDir: "/tmp/profile",
-        proxy: "http://user:pass@proxy:8080",
-      });
+  it("forwards a credentialed proxy string inline via --proxy-server", async () => {
+    const { launchPersistentContext } = await import("../src/playwright.js");
+    await launchPersistentContext({
+      userDataDir: "/tmp/profile",
+      proxy: "http://user:pass@proxy:8080",
+    });
 
-      const args = mockChromium.launchPersistentContext.mock.calls[0][1];
-      expect(args.proxy).toEqual({
-        server: "http://proxy:8080",
-        username: "user",
-        password: "pass",
-      });
-      expect(args.args).not.toContain("--proxy-server=http://user:pass@proxy:8080");
-    } finally {
-      Object.defineProperty(process, "platform", origPlatform);
-      Object.defineProperty(process, "arch", origArch);
-      vi.restoreAllMocks();
-    }
+    const args = mockChromium.launchPersistentContext.mock.calls[0][1];
+    expect(args.proxy).toBeUndefined();
+    expect(args.args).toContain("--proxy-server=http://user:pass@proxy:8080");
   });
 
   it("forwards userAgent and colorScheme", async () => {

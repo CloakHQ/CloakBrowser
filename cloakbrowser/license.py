@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 import uuid
 from collections.abc import Mapping
@@ -26,6 +27,10 @@ logger = logging.getLogger("cloakbrowser")
 VALIDATE_URL = "https://cloakbrowser.dev/api/license/validate"
 PRO_VERSION_URL = "https://cloakbrowser.dev/api/download/version"
 SESSION_COUNT_URL = "https://cloakbrowser.dev/api/license/session/count"
+CLAIM_URL = "https://cloakbrowser.dev/api/license/free/claim"
+# Fragment, not query: the claim code is a bearer secret and a fragment never
+# reaches the server or CDN logs. The page reads it client-side.
+FREE_CLAIM_LINK = "https://cloakbrowser.dev/#claim="
 
 LICENSE_CACHE_TTL = 86400  # 24 hours
 PRO_VERSION_CHECK_INTERVAL = 3600  # 1 hour
@@ -294,6 +299,127 @@ def resolve_license_key(license_key: str | None = None) -> str | None:
     """Resolve the license key: explicit param > env var > file > None."""
     key, _ = _resolve_license_key_with_source(license_key)
     return key
+
+
+_KEY_RE = re.compile(r"cb_[A-Za-z0-9_-]+")
+CLAIM_CODE_RE = re.compile(r"[A-Za-z0-9_-]{20,128}")  # the server's format
+CLAIM_MAX_AGE = 7 * 86400
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write `text` to `path` readable by the owner only, from the first byte.
+
+    The file is created 0600 before anything is written to it, then swapped into
+    place, so neither the key nor the claim code is ever world-readable."""
+    tmp = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def save_license_key(key: str, *, overwrite: bool = True) -> bool:
+    """Save a key to <cache>/license.key (0600) and retire the claim code.
+
+    `overwrite=False` (the background claim poll) leaves an existing key alone:
+    the user may have run `cloakbrowser login` meanwhile. Returns True if saved."""
+    key = key.strip()
+    if not _KEY_RE.fullmatch(key):
+        raise ValueError("not a CloakBrowser license key")
+    cache_dir = get_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key_file = cache_dir / "license.key"
+    # The claim code keeps returning the key, so it is retired either way:
+    # otherwise a later launch (say after `logout`) would silently re-save it.
+    claim = cache_dir / ".free_claim"
+    if not overwrite and key_file.exists():
+        claim.unlink(missing_ok=True)
+        return False
+    _write_private(key_file, key + "\n")
+    claim.unlink(missing_ok=True)
+    return True
+
+
+def get_claim_code() -> str:
+    """This install's claim code, from <cache>/.free_claim (made 0600, 7-day life).
+
+    Workers launching at once must print the same link, so the file is created
+    exclusively and a loser of the race reads the winner's code."""
+    cache_dir = get_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / ".free_claim"
+    try:
+        if time.time() - path.stat().st_mtime < CLAIM_MAX_AGE:
+            code = path.read_text().strip()
+            if CLAIM_CODE_RE.fullmatch(code):
+                return code
+        path.unlink(missing_ok=True)  # expired or garbage: start over
+    except OSError:
+        pass
+    code = secrets.token_urlsafe(32)
+    tmp = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(code)
+    try:
+        # Publish complete, without replacing: the first code wins and a reader
+        # never sees a half-written file (same as the profile seed file).
+        os.link(tmp, path)
+    except FileExistsError:
+        code = path.read_text().strip()
+    except OSError:
+        # ponytail: no hard links (FAT, some network mounts) -> plain replace;
+        # a concurrent first launch there may print a different link.
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return code
+
+
+def claim_link(code: str) -> str:
+    return f"{FREE_CLAIM_LINK}{code}"
+
+
+class FreeKeyAlreadyHeld(Exception):
+    """The claim's email already has a free key. The server never sends an
+    existing key to a claim (anyone can type anyone's email), so the person
+    pastes it from the email they got it in."""
+
+
+def check_claim(code: str) -> str | None:
+    """One poll: the key once the claim's email is confirmed, else None.
+    Raises FreeKeyAlreadyHeld (and retires the code) if that email has a key.
+
+    The code goes in the body, never the URL: it is a bearer secret and URLs
+    land in server logs."""
+    try:
+        resp = httpx.post(CLAIM_URL, json={"code": code}, timeout=5.0)
+        data = resp.json() if resp.status_code == 200 else {}
+    except (httpx.HTTPError, ValueError) as e:
+        logger.debug("Free-key claim check failed: %s", e)
+        return None
+    if not isinstance(data, dict):  # e.g. a captive portal's JSON: just pending
+        return None
+    if data.get("status") == "has_key":
+        # This code will only ever answer has_key: start fresh next time.
+        (get_cache_dir() / ".free_claim").unlink(missing_ok=True)
+        raise FreeKeyAlreadyHeld
+    key = data.get("license_key") if data.get("status") == "ready" else None
+    return key if isinstance(key, str) and _KEY_RE.fullmatch(key.strip()) else None
+
+
+def poll_claim(code: str, *, interval: float = 15.0, deadline: float | None = None,
+               overwrite: bool = False) -> str | None:
+    """Poll until the key arrives (saved, then returned) or `deadline` passes.
+    None if the deadline passed, or the key arrived but an existing key was kept
+    (overwrite=False)."""
+    while True:
+        key = check_claim(code)
+        if key:
+            return key.strip() if save_license_key(key, overwrite=overwrite) else None
+        if deadline is not None and time.time() + interval > deadline:
+            return None
+        time.sleep(interval)
 
 
 def build_launch_env(

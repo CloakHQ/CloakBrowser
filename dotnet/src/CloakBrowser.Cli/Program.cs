@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using CloakBrowser;
 
@@ -6,8 +5,8 @@ using CloakBrowser;
 // Direct port of Python cloakbrowser/__main__.py.
 //
 // Usage:
-//   cloakbrowser login        # Save a license key (or get a free key via GitHub)
-//   cloakbrowser logout       # Remove the saved license key (revert to free binary)
+//   cloakbrowser login        # Save a license key (or get a free key by email)
+//   cloakbrowser logout       # Remove the saved license key
 //   cloakbrowser install      # Download binary (with progress)
 //   cloakbrowser info         # Environment + binary diagnostics (--quick, --json)
 //   cloakbrowser doctor       # Alias for info
@@ -15,9 +14,7 @@ using CloakBrowser;
 //   cloakbrowser clear-cache  # Remove cached binaries
 
 const string UpgradeHint = "For more than one concurrent session → https://cloakbrowser.dev";
-const string FreeLatestHint =
-    "Get the latest binary free → run 'cloakbrowser login' or https://cloakbrowser.dev/free";
-const string FreeLoginUrl = "https://cloakbrowser.dev/api/license/free/github/start";
+const string NoKeyHint = "Get a free key → run 'cloakbrowser login'";
 
 // Route CloakBrowser logs to stderr at Info level (clean output).
 CloakLog.MinLevel = CloakLogLevel.Info;
@@ -43,8 +40,7 @@ try
             CmdInfo(rest);
             break;
         case "update":
-            await CmdUpdate();
-            break;
+            return await CmdUpdate();
         case "clear-cache":
             CmdClearCache();
             break;
@@ -227,16 +223,13 @@ static void PrintDiagnostics(Dictionary<string, object?> diag)
     bool validated = lic.TryGetValue("valid", out var validObj) && validObj is true;
     if (tier == "free" && validated)
     {
-        // Validated free-tier key (GitHub login): the latest binary, 1 session.
         Console.WriteLine("License:   Free (latest binary, 1 concurrent session)");
         Console.WriteLine($"           {UpgradeHint}");
     }
-    else if (tier == "free")
+    else if (tier == "none")
     {
-        // Keyless: running the older free binary — invite the free-latest login.
-        Console.WriteLine("License:   Free (no key)");
-        Console.WriteLine($"           {FreeLatestHint}");
-        Console.WriteLine($"           {UpgradeHint}");
+        Console.WriteLine("License:   none (a launch needs a key)");
+        Console.WriteLine($"           {NoKeyHint}");
     }
     else if (lic.ContainsKey("error"))
     {
@@ -280,36 +273,21 @@ static void PrintDiagnostics(Dictionary<string, object?> diag)
     }
 }
 
-static async Task CmdUpdate()
+static async Task<int> CmdUpdate()
 {
-    CloakLog.Info("Checking for updates...");
-
-    // A valid Pro license updates the Pro binary; everyone else updates free.
-    // Mirrors Diagnostics.ResolveLicense: a custom download URL disables Pro routing.
     string? key = License.ResolveLicenseKey();
-    if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL"))) key = null;
-    bool entitledPro = false;
-    if (!string.IsNullOrEmpty(key))
+    if (string.IsNullOrEmpty(key) || License.ValidateLicense(key)?.Valid != true)
     {
-        try { entitledPro = License.ValidateLicense(key!)?.Valid == true; }
-        catch { entitledPro = false; }
+        Console.Error.WriteLine($"No valid license key. {NoKeyHint}");
+        return 1;
     }
 
-    string? newVersion;
-    string label;
-    if (entitledPro)
-    {
-        newVersion = await Download.CheckForProUpdateAsync(key!).ConfigureAwait(false);
-        label = "Pro Chromium";
-    }
-    else
-    {
-        newVersion = await Download.CheckForUpdateAsync().ConfigureAwait(false);
-        label = "Chromium";
-    }
+    CloakLog.Info("Checking for updates...");
+    string? newVersion = await Download.CheckForProUpdateAsync(key).ConfigureAwait(false);
     Console.WriteLine(newVersion != null
-        ? $"Updated to {label} {newVersion}"
+        ? $"Updated to Chromium {newVersion}"
         : "Already up to date.");
+    return 0;
 }
 
 static void CmdClearCache()
@@ -323,23 +301,29 @@ static void CmdClearCache()
     Console.WriteLine("Cache cleared.");
 }
 
-// Activate any key. `login <key>` saves a pasted key; bare `login` prompts to
-// paste a key or press ENTER to get a free key via GitHub. Mirrors Python cmd_login.
+// Activate any key. `login <key>` saves a pasted key; bare `login` shows the same
+// menu as a no-key launch: get a free key by email, or paste one. Mirrors Python cmd_login.
 static int CmdLogin(string[] flags)
 {
     string key = (flags.Length > 0 ? flags[0] : "").Trim();
 
     if (string.IsNullOrEmpty(key))
     {
-        if (Console.IsInputRedirected)
+        // Same check as a launch: the menu is written to stderr, so both must be a terminal.
+        if (!Download.CanPrompt())
         {
             Console.Error.WriteLine(
                 "Usage: cloakbrowser login <key>  (or run it interactively for a free key).");
             return 2;
         }
-        Console.Write("Paste your license key, or press ENTER to get a free key via GitHub: ");
-        string entered = (Console.ReadLine() ?? "").Trim();
-        key = string.IsNullOrEmpty(entered) ? PromptFreeGithubLogin() : entered;
+        try
+        {
+            key = Download.PromptLicenseKey();
+        }
+        catch (EndOfStreamException)
+        {
+            key = "";
+        }
     }
 
     if (string.IsNullOrEmpty(key))
@@ -361,7 +345,15 @@ static int CmdLogin(string[] flags)
         return 1;
     }
 
-    SaveLicenseKey(key);
+    try
+    {
+        License.SaveLicenseKey(key);
+    }
+    catch (ArgumentException)
+    {
+        Console.Error.WriteLine("That is not a CloakBrowser license key (they start with cb_). Nothing was saved.");
+        return 1;
+    }
     if (info.Plan == "free")
     {
         Console.WriteLine(
@@ -375,9 +367,12 @@ static int CmdLogin(string[] flags)
     return 0;
 }
 
-// Remove the saved license key (revert to the free binary). Mirrors Python cmd_logout.
+// Remove the saved license key. Mirrors Python cmd_logout.
 static int CmdLogout()
 {
+    // A pending claim code would quietly reinstall a key on the next launch.
+    try { File.Delete(Path.Combine(Config.GetCacheDir(), ".free_claim")); }
+    catch (IOException) { }
     string keyFile = Path.Combine(Config.GetCacheDir(), "license.key");
     if (File.Exists(keyFile))
     {
@@ -390,37 +385,13 @@ static int CmdLogout()
             Console.Error.WriteLine($"Could not remove {keyFile}: {e.Message}");
             return 1;
         }
-        Console.WriteLine("Logged out. Removed the saved key; launches revert to the free binary.");
+        Console.WriteLine("Logged out. Removed the saved key; launches need a key again.");
     }
     else
     {
         Console.WriteLine("No saved license key found.");
     }
     return 0;
-}
-
-// Persist a validated key to <cache_dir>/license.key.
-static void SaveLicenseKey(string key)
-{
-    string cacheDir = Config.GetCacheDir();
-    Directory.CreateDirectory(cacheDir);
-    string keyFile = Path.Combine(cacheDir, "license.key");
-    File.WriteAllText(keyFile, key.Trim() + "\n");
-}
-
-// Open the GitHub free-key page and read back the emailed key.
-static string PromptFreeGithubLogin()
-{
-    Console.WriteLine($"Opening GitHub sign-in: {FreeLoginUrl}");
-    try
-    {
-        Process.Start(new ProcessStartInfo(FreeLoginUrl) { UseShellExecute = true });
-    }
-    catch { /* best-effort — the URL is printed above for manual navigation */ }
-    Console.WriteLine("If your browser did not open, visit the URL above and authorize with GitHub.");
-    Console.WriteLine("We'll email your free CloakBrowser key to your GitHub email.");
-    Console.Write("Paste the key from that email here: ");
-    return (Console.ReadLine() ?? "").Trim();
 }
 
 static string TitleCase(string s) =>
@@ -433,8 +404,8 @@ static void PrintHelp()
     Console.WriteLine("Manage the CloakBrowser stealth Chromium binary.");
     Console.WriteLine();
     Console.WriteLine("commands:");
-    Console.WriteLine("  login        Save a license key (or get a free key via GitHub)");
-    Console.WriteLine("  logout       Remove the saved license key (revert to free binary)");
+    Console.WriteLine("  login        Save a license key (or get a free key by email)");
+    Console.WriteLine("  logout       Remove the saved license key");
     Console.WriteLine("  install      Download the Chromium binary");
     Console.WriteLine("  info         Environment + binary diagnostics (--quick, --json)");
     Console.WriteLine("  doctor       Alias for info");

@@ -132,6 +132,12 @@ class TestParseCliArgs:
         _, passthrough = parse_cli_args(["--data-dir=/tmp/test"])
         assert not any(a.startswith("--data-dir=") for a in passthrough)
 
+    def test_keep_profiles_flag(self):
+        config, passthrough = parse_cli_args(["--keep-profiles", "--no-sandbox"])
+        assert config["keep_profiles"] is True
+        assert "--keep-profiles" not in passthrough
+        assert parse_cli_args([])[0]["keep_profiles"] is False
+
     def test_idle_timeout_not_in_passthrough(self):
         config, passthrough = parse_cli_args(["--idle-timeout=30", "--no-sandbox"])
         assert config["idle_timeout"] == 30.0
@@ -156,6 +162,17 @@ class TestParseCliArgs:
     def test_idle_timeout_rejects_negative_values(self):
         with pytest.raises(ValueError):
             parse_cli_args(["--idle-timeout=-1"])
+
+    def test_exit_after_idle(self, monkeypatch):
+        monkeypatch.delenv("CLOAKSERVE_EXIT_AFTER_IDLE", raising=False)
+        assert parse_cli_args([])[0]["exit_after_idle"] == 0.0
+        config, passthrough = parse_cli_args(["--exit-after-idle=30", "--no-sandbox"])
+        assert config["exit_after_idle"] == 30.0
+        assert passthrough == ["--no-sandbox"]
+        monkeypatch.setenv("CLOAKSERVE_EXIT_AFTER_IDLE", "off")
+        assert parse_cli_args([])[0]["exit_after_idle"] == 0.0
+        with pytest.raises(ValueError, match="--exit-after-idle"):
+            parse_cli_args(["--exit-after-idle=-1"])
 
     @patch("os.path.exists", return_value=True)
     def test_default_data_dir_docker(self, _mock):
@@ -474,6 +491,28 @@ class TestConnectionTracking:
             process=SimpleNamespace(poll=lambda: None),
         )
 
+    @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+    def test_cleanup_stops_chrome_without_session_ending(self, platform):
+        # Linux Chrome treats SIGTERM as session end and skips the cookie-store
+        # write, so cleanup must use SIGINT off Windows.
+        pool = self._make_pool()
+        proc = MagicMock()
+        proc.poll.return_value = None
+        pool._processes["seed1"] = SimpleNamespace(process=proc, user_data_dir="/tmp/x")
+        pool._safe_rmtree = lambda path: None
+
+        with patch.object(_mod.sys, "platform", platform):
+            asyncio.run(pool._cleanup_process("seed1"))
+
+        if platform == "win32":
+            proc.terminate.assert_called_once_with()
+            proc.send_signal.assert_not_called()
+        else:
+            proc.send_signal.assert_called_once_with(_mod.signal.SIGINT)
+            proc.terminate.assert_not_called()
+        # Room for the binary's bounded /session/end (up to 9s) before kill()
+        proc.wait.assert_called_once_with(timeout=10)
+
     def test_connect_increments(self):
         pool = self._make_pool()
         pool.connect("seed1")
@@ -507,6 +546,35 @@ class TestConnectionTracking:
         pool.disconnect("a")
         assert pool._connections["a"] == 1
         assert pool._connections["b"] == 1
+
+    def test_exit_after_idle_waits_for_last_connection(self):
+        async def run():
+            pool = self._make_pool()
+            pool.connect("seed1")
+            with patch.object(_mod.signal, "raise_signal") as raise_signal:
+                watch = asyncio.create_task(_mod._exit_after_idle(pool, 0.02))
+                await asyncio.sleep(0.06)
+                raise_signal.assert_not_called()
+
+                pool.disconnect("seed1")
+                await asyncio.wait_for(watch, 1)
+                raise_signal.assert_called_once_with(_mod.signal.SIGINT)
+
+        asyncio.run(run())
+
+    def test_get_or_launch_resets_exit_after_idle_clock(self):
+        # A client opens the browser (/json/version) before its WebSocket connects;
+        # the idle exit must not fire in that gap and cut the client off.
+        async def run():
+            pool = self._make_pool()
+            pool._processes["12345"] = SimpleNamespace(
+                process=SimpleNamespace(poll=lambda: None), cdp_port=1,
+            )
+            pool._last_activity = 0.0
+            await pool.get_or_launch(seed="12345")
+            assert _mod.time.monotonic() - pool._last_activity < 1
+
+        asyncio.run(run())
 
     def test_idle_cleanup_disabled_by_default(self):
         async def run():
@@ -684,6 +752,21 @@ class TestSafeRmtree:
 
         assert not subdir.exists(), "Valid subdirectory should be deleted"
 
+    def test_keep_profiles_keeps_subdirectory(self, tmp_path):
+        data_dir = tmp_path / "profiles"
+        data_dir.mkdir()
+        subdir = data_dir / "seed-12345"
+        subdir.mkdir()
+        (subdir / "Cookies").touch()
+
+        pool = ChromePool(
+            binary="/fake/chrome", global_args=[], headless=True,
+            data_dir=str(data_dir), keep_profiles=True,
+        )
+        pool._safe_rmtree(str(subdir))
+
+        assert (subdir / "Cookies").exists(), "--keep-profiles must keep the profile"
+
     def test_refuses_traversal_path(self, tmp_path):
         data_dir = tmp_path / "profiles"
         data_dir.mkdir()
@@ -695,3 +778,46 @@ class TestSafeRmtree:
         pool._safe_rmtree(traversal)
 
         assert victim.exists(), "Traversal path must not be deleted"
+
+
+class TestClientHeartbeat:
+    """A silently dead client must be detected so the connection is released."""
+
+    @pytest.mark.parametrize("route,handler,url", [
+        ("/devtools/{path:.*}", "handle_ws_default", "/devtools/browser/x"),
+        ("/fingerprint/{seed}/devtools/{path:.+}", "handle_ws_seed", "/fingerprint/12345/devtools/browser/x"),
+    ])
+    def test_dead_client_is_disconnected(self, route, handler, url):
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        events = []
+
+        class Pool:
+            async def get_or_launch(self, seed=None):
+                return SimpleNamespace(cdp_port=1)
+
+            def connect(self, key):
+                events.append("connect")
+
+            def disconnect(self, key):
+                events.append("disconnect")
+
+        async def fake_proxy(client_ws, target_url, label):
+            async for _ in client_ws:
+                pass
+
+        async def run():
+            app = web.Application()
+            app["pool"] = Pool()
+            app.router.add_get(route, getattr(_mod, handler))
+            async with TestClient(TestServer(app)) as client:
+                # autoping=False: the client never answers server pings.
+                ws = await client.ws_connect(url, autoping=False)
+                await asyncio.sleep(1.0)
+                assert "disconnect" in events
+                await ws.close()
+
+        with patch.object(_mod, "WS_HEARTBEAT_SECONDS", 0.2), \
+                patch.object(_mod, "proxy_cdp_websocket", fake_proxy):
+            asyncio.run(run())

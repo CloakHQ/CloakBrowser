@@ -28,14 +28,12 @@ vi.mock("../src/config.js", async (importActual) => {
 import {
   BinaryVerificationError,
   downloadProBinary,
-  fetchSignedManifest,
   parseChecksums,
   parseManifestVersion,
-  verifyDownloadChecksum,
   verifyProDownload,
   verifySignature,
 } from "../src/download.js";
-import { DOWNLOAD_BASE_URL, getArchiveName, getChromiumVersion } from "../src/config.js";
+import { DOWNLOAD_BASE_URL, getArchiveName } from "../src/config.js";
 
 /** Produce SHA256SUMS.sig content (base64 text bytes) for a manifest. */
 function sign(manifest: Uint8Array): Uint8Array {
@@ -91,88 +89,6 @@ describe("verifySignature", () => {
     expect(() => vs(manifest, sign(manifest))).not.toThrow();
     vi.doUnmock("../src/config.js");
     vi.resetModules();
-  });
-});
-
-describe("verifyDownloadChecksum (official path, fail-closed)", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
-    delete process.env.CLOAKBROWSER_SKIP_CHECKSUM;
-  });
-
-  function tmpFile(bytes: Buffer): string {
-    const p = path.join(os.tmpdir(), `cloak-sig-${process.pid}-${bytes.length}-${bytes[0]}`);
-    fs.writeFileSync(p, bytes);
-    return p;
-  }
-
-  /** Mock fetch to serve a signed manifest for the official URLs. */
-  function mockManifest(manifestBytes: Uint8Array) {
-    const sig = sign(manifestBytes);
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = typeof input === "string" ? input : (input as URL).toString();
-      const body = url.endsWith(".sig") ? sig : manifestBytes;
-      return { ok: true, arrayBuffer: async () => body.buffer } as Response;
-    });
-  }
-
-  /** Manifest body with the bound version line prepended (defaults to current). */
-  const body = (lines: string, version = getChromiumVersion()) =>
-    enc(`version=${version}\n${lines}`);
-
-  it("passes when signature is valid and hash matches", async () => {
-    const data = Buffer.from("the real binary");
-    const file = tmpFile(data);
-    const hash = createHash("sha256").update(data).digest("hex");
-    mockManifest(body(`${hash}  ${getArchiveName()}\n`));
-    await expect(verifyDownloadChecksum(file)).resolves.toBeUndefined();
-  });
-
-  it("fails when the binary is tampered (hash mismatch)", async () => {
-    const file = tmpFile(Buffer.from("a malicious binary"));
-    const goodHash = createHash("sha256").update(Buffer.from("the real binary")).digest("hex");
-    mockManifest(body(`${goodHash}  ${getArchiveName()}\n`));
-    await expect(verifyDownloadChecksum(file)).rejects.toThrow(/Checksum verification failed/);
-  });
-
-  it("fails on a signed manifest for the wrong version (downgrade)", async () => {
-    const data = Buffer.from("the real binary");
-    const file = tmpFile(data);
-    const hash = createHash("sha256").update(data).digest("hex");
-    // Genuinely signed, but declares an old version we did not request.
-    mockManifest(body(`${hash}  ${getArchiveName()}\n`, "1.0.0.0"));
-    await expect(verifyDownloadChecksum(file)).rejects.toThrow(/Version mismatch/);
-  });
-
-  it("fails when the version line is missing (binding required)", async () => {
-    const data = Buffer.from("the real binary");
-    const file = tmpFile(data);
-    const hash = createHash("sha256").update(data).digest("hex");
-    mockManifest(enc(`${hash}  ${getArchiveName()}\n`)); // no version= line
-    await expect(verifyDownloadChecksum(file)).rejects.toThrow(/Version mismatch/);
-  });
-
-  it("fails closed when no signed manifest can be fetched", async () => {
-    const file = tmpFile(Buffer.from("x"));
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: false, status: 404 } as Response);
-    await expect(verifyDownloadChecksum(file)).rejects.toThrow(/signed SHA256SUMS/);
-  });
-
-  it("fails when the signed manifest has no entry for this platform", async () => {
-    const file = tmpFile(Buffer.from("x"));
-    const someHash = "0".repeat(64);
-    mockManifest(body(`${someHash}  some-other-file.tar.gz\n`));
-    await expect(verifyDownloadChecksum(file)).rejects.toThrow(/no entry for/);
-  });
-
-  it("custom download URL keeps the legacy skippable path (no signature fetch)", async () => {
-    const file = tmpFile(Buffer.from("x"));
-    process.env.CLOAKBROWSER_DOWNLOAD_URL = "https://my-mirror.test";
-    process.env.CLOAKBROWSER_SKIP_CHECKSUM = "true";
-    const spy = vi.spyOn(globalThis, "fetch");
-    await expect(verifyDownloadChecksum(file)).resolves.toBeUndefined();
-    expect(spy).not.toHaveBeenCalled();
   });
 });
 
@@ -292,45 +208,5 @@ describe("version binding", () => {
     );
     expect(result.size).toBe(1);
     expect(result.has("cloakbrowser-linux-x64.tar.gz")).toBe(true);
-  });
-});
-
-describe("fetchSignedManifest", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  const mockPair = (manifest: string, sig: string, failPrimarySig = false) =>
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = typeof input === "string" ? input : (input as URL).toString();
-      const isSig = url.endsWith(".sig");
-      if (url.includes("cloakbrowser.dev") && isSig && failPrimarySig) {
-        return { ok: false, status: 404 } as Response;
-      }
-      return {
-        ok: true,
-        arrayBuffer: async () =>
-          new TextEncoder().encode(isSig ? sig : manifest).buffer,
-      } as Response;
-    });
-
-  it("returns manifest + sig from the primary origin", async () => {
-    mockPair("MANIFEST", "U0lH");
-    const result = await fetchSignedManifest("1.2.3.4");
-    expect(new TextDecoder().decode(result!.manifestBytes)).toBe("MANIFEST");
-    expect(new TextDecoder().decode(result!.sigBytes)).toBe("U0lH");
-  });
-
-  it("falls back to GitHub when the primary .sig is missing", async () => {
-    const spy = mockPair("MANIFEST", "U0lH", true);
-    const result = await fetchSignedManifest("1.2.3.4");
-    expect(result).not.toBeNull();
-    // primary SHA256SUMS + primary .sig (404) + github SHA256SUMS + github .sig
-    expect(spy.mock.calls.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it("returns null when everything fails", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network"));
-    expect(await fetchSignedManifest("1.2.3.4")).toBeNull();
   });
 });

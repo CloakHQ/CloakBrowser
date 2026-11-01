@@ -28,24 +28,21 @@ public static class CloakLauncher
             releaseChannel: options.ReleaseChannel).ConfigureAwait(false);
         var (timezone, locale, exitIp) = await MaybeResolveGeoIpAsync(
             options.GeoIp, options.Proxy, options.Timezone, options.Locale, options.Args).ConfigureAwait(false);
-        var proxyResolution = ProxyResolver.Resolve(
-            options.Proxy, options.BrowserVersion, options.LicenseKey, options.ReleaseChannel);
+        var proxyResolution = ProxyResolver.Resolve(options.Proxy);
         var args = await ResolveWebRtcArgsAsync(options.Args, options.Proxy).ConfigureAwait(false);
         args = MaybeAppendWebRtcExitIp(args, exitIp);
 
         var combined = new List<string>(args ?? new List<string>());
         combined.AddRange(proxyResolution.ExtraArgs);
         var chromeArgs = BuildArgs(options.StealthArgs, combined, timezone, locale, options.Headless, options.ExtensionPaths,
-            startMaximized: Config.BinarySupportsMaximizedWindow(
-                options.LicenseKey, options.BrowserVersion, options.ReleaseChannel)
-                && !options.SuppressMaximize);
+            startMaximized: !options.SuppressMaximize);
         MaybeWarnWindowsFonts(chromeArgs);
 
         CloakLog.Debug($"Launching stealth Chromium (headless={options.Headless}, args={chromeArgs.Count})");
 
         // Per-launch denial file: the binary records a post-handshake license
         // denial here so NewPage/NewContext can surface it (see LicenseGuard).
-        // Only when a key is in play — keyless runs the unenforced free binary.
+        // Only when a key is in play (none only with a CLOAKBROWSER_BINARY_PATH override).
         var denialPath = License.ResolveLicenseKey(options.LicenseKey) != null
             ? License.MintDenialFile()
             : null;
@@ -80,13 +77,10 @@ public static class CloakLauncher
             var humanCfg = options.Humanize
                 ? HumanConfigFactory.Resolve(options.HumanPreset, options.HumanConfig)
                 : null;
-            // Pass headless so headed handles default new pages/contexts to NoViewport
-            // (track the real window - see CloakBrowserHandle.ApplyDefaultNoViewport).
-            // headlessNoViewport extends that default to headless on newer binaries.
-            bool headlessNoViewport = Config.BinarySupportsHeadlessNoViewport(
-                options.LicenseKey, options.BrowserVersion, options.ReleaseChannel);
+            // New pages/contexts default to NoViewport: headed tracks the real window,
+            // headless reports coherent dimensions natively (see ViewportDefaults).
             return new CloakBrowserHandle(
-                playwright, browser, options.Humanize, humanCfg, options.Headless, headlessNoViewport, denialPath);
+                playwright, browser, options.Humanize, humanCfg, denialPath);
         }
         catch
         {
@@ -171,8 +165,7 @@ public static class CloakLauncher
             releaseChannel: options.ReleaseChannel).ConfigureAwait(false);
         var (timezone, locale, exitIp) = await MaybeResolveGeoIpAsync(
             options.GeoIp, options.Proxy, options.Timezone, options.Locale, options.Args).ConfigureAwait(false);
-        var proxyResolution = ProxyResolver.Resolve(
-            options.Proxy, options.BrowserVersion, options.LicenseKey, options.ReleaseChannel);
+        var proxyResolution = ProxyResolver.Resolve(options.Proxy);
         var args = await ResolveWebRtcArgsAsync(options.Args, options.Proxy).ConfigureAwait(false);
         args = MaybeAppendWebRtcExitIp(args, exitIp);
         args = Config.PersistentSeedArgs(userDataDir, options.StealthArgs, args);
@@ -180,9 +173,7 @@ public static class CloakLauncher
         var combined = new List<string>(args ?? new List<string>());
         combined.AddRange(proxyResolution.ExtraArgs);
         var chromeArgs = BuildArgs(options.StealthArgs, combined, timezone, locale, options.Headless, options.ExtensionPaths,
-            startMaximized: Config.BinarySupportsMaximizedWindow(
-                options.LicenseKey, options.BrowserVersion, options.ReleaseChannel)
-                && !options.NoViewport && options.Viewport == null);
+            startMaximized: !options.NoViewport && options.Viewport == null);
         MaybeWarnWindowsFonts(chromeArgs);
 
         CloakLog.Debug($"Launching persistent stealth Chromium (headless={options.Headless}, user_data_dir={userDataDir})");
@@ -401,24 +392,6 @@ public static class CloakLauncher
                 Set(arg.Split('=', 2)[0], arg);
         }
 
-        // Playwright's default launch args switch off a browser feature that stock Chrome
-        // ships enabled. Re-enable it alongside the Windows font-metrics profile so the
-        // feature set matches a stock browser rather than a test harness. Merged into any
-        // existing --enable-features value rather than added as a second flag.
-        if (seen.ContainsKey("--fingerprint-windows-font-metrics"))
-        {
-            const string key = "--enable-features";
-            var current = seen.TryGetValue(key, out var existing)
-                ? existing.Split('=', 2).ElementAtOrDefault(1) ?? ""
-                : "";
-            var features = current.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
-            if (!features.Contains("MediaRouter"))
-            {
-                features.Add("MediaRouter");
-                Set(key, $"{key}={string.Join(",", features)}");
-            }
-        }
-
         if (!string.IsNullOrEmpty(timezone))
             Set("--fingerprint-timezone", $"--fingerprint-timezone={timezone}");
 
@@ -438,8 +411,6 @@ public static class CloakLauncher
 
         // Open maximized (real Chrome overwhelmingly runs maximized) so the window
         // fills the spoofed screen. Skipped if the caller chose a window geometry.
-        // Gated to binaries where this stays coherent (see BinarySupportsMaximizedWindow)
-        // — below the gate it would make outerWidth < innerWidth.
         if (startMaximized
             && !seen.ContainsKey("--start-maximized")
             && !seen.ContainsKey("--window-size")
@@ -607,8 +578,8 @@ public static class CloakLauncher
     /// <summary>
     /// Resolve the viewport for a context. Headed: no emulated viewport so the page
     /// tracks the real window (CDP viewport emulation forces outerWidth &lt; innerWidth =
-    /// a physically impossible window = bot tell). Headless: a fixed DEFAULT_VIEWPORT
-    /// stays coherent (outer == inner) and keeps dimensions deterministic. An explicit
+    /// a physically impossible window = bot tell). Headless: the binary reports coherent
+    /// dimensions natively, so no emulated viewport either. An explicit
     /// <see cref="LaunchContextOptions.NoViewport"/> or <see cref="LaunchContextOptions.Viewport"/>
     /// is always honored. Port of Python <c>_resolve_context_viewport</c>.
     /// </summary>
@@ -618,14 +589,9 @@ public static class CloakLauncher
             return ViewportSize.NoViewport;
         if (options.Viewport != null)
             return new ViewportSize { Width = options.Viewport.Value.Width, Height = options.Viewport.Value.Height };
-        // Viewport unset: headed tracks the real window; headless on a newer binary also
-        // tracks it (coherent dimensions natively), older headless gets the fixed default.
-        bool headlessNoViewport = options.Headless
-            && Config.BinarySupportsHeadlessNoViewport(
-                options.LicenseKey, options.BrowserVersion, options.ReleaseChannel);
-        return options.Headless && !headlessNoViewport
-            ? new ViewportSize { Width = Config.DefaultViewportWidth, Height = Config.DefaultViewportHeight }
-            : ViewportSize.NoViewport;
+        // Viewport unset: headed tracks the real window; headless reports coherent
+        // dimensions natively.
+        return ViewportSize.NoViewport;
     }
 
     private static BrowserNewContextOptions BuildContextOptions(LaunchContextOptions options)

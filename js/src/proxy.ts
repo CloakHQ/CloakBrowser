@@ -2,7 +2,6 @@
  * Shared proxy URL parsing for Playwright and Puppeteer wrappers.
  */
 
-import { binarySupportsHttpProxyInlineAuth } from "./config.js";
 
 export interface ParsedProxy {
   server: string;
@@ -235,16 +234,11 @@ export function normalizeHttpStringUrl(urlStr: string): string {
 /**
  * Resolve proxy into Playwright option and/or Chrome args.
  *
- * Proxies with credentials (SOCKS5 or HTTP/HTTPS on supported platforms) are
- * passed via Chrome's --proxy-server flag with inline credentials, bypassing
- * Playwright's CDP auth interceptor which breaks on some proxies (#182).
+ * Proxies with credentials (SOCKS5 and HTTP/HTTPS) are passed via Chrome's
+ * --proxy-server flag with inline credentials, bypassing Playwright's CDP auth
+ * interceptor which breaks on some proxies (#182).
  */
-export function resolveProxyConfig(
-  proxy: string | ProxyDict | undefined,
-  browserVersion?: string,
-  licenseKey?: string,
-  releaseChannel?: string,
-): ProxyConfig {
+export function resolveProxyConfig(proxy: string | ProxyDict | undefined): ProxyConfig {
   if (!proxy) return { proxyArgs: [] };
 
   if (isSocksProxy(proxy)) {
@@ -260,14 +254,9 @@ export function resolveProxyConfig(
     return { proxyArgs: args };
   }
 
-  // HTTP/HTTPS with credentials, only on binaries that ship inline proxy auth:
-  // use Chrome's native proxy authentication path instead of Playwright's CDP
-  // auth interceptor (#182). Older binaries (free macOS/linux-arm64) can't parse
-  // inline credentials, so they fall through to the Playwright proxy dict below.
-  if (
-    hasCredentials(proxy) &&
-    binarySupportsHttpProxyInlineAuth(licenseKey, browserVersion, releaseChannel)
-  ) {
+  // HTTP/HTTPS with credentials: use Chrome's native proxy authentication path
+  // instead of Playwright's CDP auth interceptor (#182).
+  if (hasCredentials(proxy)) {
     if (typeof proxy === "string") {
       return { proxyArgs: [`--proxy-server=${normalizeHttpStringUrl(proxy)}`] };
     }
@@ -277,41 +266,11 @@ export function resolveProxyConfig(
     return { proxyArgs: args };
   }
 
-  // HTTP/HTTPS without credentials (or unsupported platform): use Playwright's proxy dict
+  // HTTP/HTTPS without credentials: use Playwright's proxy dict
   if (typeof proxy === "string") {
-    return { proxyOption: parseProxyUrl(proxy), proxyArgs: [] };
+    return { proxyOption: { server: proxy }, proxyArgs: [] };
   }
   return { proxyOption: proxy as ParsedProxy, proxyArgs: [] };
-}
-
-export function parseProxyUrl(proxy: string): ParsedProxy {
-  let url: URL;
-  // Bare format: "user:pass@host:port" — new URL() throws without a scheme.
-  const normalized =
-    proxy.includes("@") && !proxy.includes("://") ? `http://${proxy}` : proxy;
-  try {
-    url = new URL(normalized);
-  } catch {
-    // Not a parseable URL (e.g. bare "host:port") — pass through as-is
-    return { server: proxy };
-  }
-
-  if (!url.username) {
-    return { server: proxy };
-  }
-
-  // Rebuild server URL without credentials
-  const server = `${url.protocol}//${url.hostname}${url.port ? `:${url.port}` : ""}`;
-
-  const result: ParsedProxy = {
-    server,
-    username: decodeURIComponent(url.username),
-  };
-  if (url.password) {
-    result.password = decodeURIComponent(url.password);
-  }
-
-  return result;
 }
 
 let requestProxyWarned = false;

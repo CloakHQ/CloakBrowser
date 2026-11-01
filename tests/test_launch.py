@@ -8,7 +8,6 @@ from cloakbrowser import (
     launch_persistent_context,
     binary_info,
 )
-from cloakbrowser.config import get_chromium_version
 
 pytestmark = pytest.mark.real_browser
 
@@ -33,17 +32,16 @@ def test_removed_backend_kwarg_raises(env, monkeypatch):
 def test_binary_info(tmp_path, monkeypatch):
     """binary_info() returns expected structure.
 
-    Isolate the cache dir: with no cached Pro binary present, binary_info reports
-    the free base version. (Without isolation this reads the developer's real
-    ~/.cloakbrowser, which may hold a cached Pro build and flip the version.)
+    Isolate the cache dir: with nothing cached, no version is known yet.
+    (Without isolation this reads the developer's real ~/.cloakbrowser.)
     """
     monkeypatch.setenv("CLOAKBROWSER_CACHE_DIR", str(tmp_path))
     info = binary_info()
-    assert "version" in info
     assert "platform" in info
-    assert "binary_path" in info
-    assert "installed" in info
-    assert info["version"] == get_chromium_version()
+    assert "download_url" in info
+    assert info["version"] is None
+    assert info["binary_path"] is None
+    assert info["installed"] is False
 
 
 def test_launch_and_close():

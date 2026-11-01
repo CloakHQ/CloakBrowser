@@ -8,12 +8,13 @@ Requires: pip install undetected-chromedriver cloakbrowser
 
 import undetected_chromedriver as uc
 
-from cloakbrowser.config import get_chromium_version, get_default_stealth_args
+from cloakbrowser import binary_info
+from cloakbrowser.config import get_default_stealth_args
 from cloakbrowser.download import ensure_binary
 
 binary_path = ensure_binary()
 stealth_args = get_default_stealth_args()
-chromium_major = int(get_chromium_version().split(".")[0])
+chromium_major = int(binary_info()["version"].split(".")[0])  # the build just ensured
 
 options = uc.ChromeOptions()
 options.binary_location = binary_path

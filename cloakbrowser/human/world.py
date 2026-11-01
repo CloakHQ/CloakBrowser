@@ -17,8 +17,10 @@ into it through ``SyncBase._sync``.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import inspect
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Dict, List, Optional, Tuple
 
 from playwright._impl._errors import Error
 
@@ -31,6 +33,67 @@ _decoded_source: Optional[str] = None
 
 class StealthWorldError(Error):
     """An isolated-world evaluation failed (never falls back to the page)."""
+
+
+class PageStalled(Exception):
+    """A browser call got no answer within the action's timeout: the page stopped
+    answering, e.g. an onchange running a synchronous XHR (#619). Not a Playwright
+    ``Error``, so the engine's ``except Error`` fallbacks let it through; the patch
+    layer turns it into Playwright's ``TimeoutError``."""
+
+
+class Action:
+    """The humanized action in progress: its timeout (ms, 0 = no limit) and
+    whether the page stopped answering."""
+
+    __slots__ = ("timeout", "stalled")
+
+    def __init__(self, timeout_ms: float) -> None:
+        self.timeout = timeout_ms
+        self.stalled = False
+
+
+ACTION: "contextvars.ContextVar[Optional[Action]]" = contextvars.ContextVar("cloak_human_action", default=None)
+
+
+async def bounded(aw: Awaitable[Any]) -> Any:
+    """Await one browser call, bounded by the action's timeout: pauses and typing
+    between calls never count, only a call the page does not answer. Once the page
+    stopped answering, later calls (key / mouse releases on the way out) are still
+    sent, but not waited on, and do not raise again."""
+    act = ACTION.get()
+    if act is None or not act.timeout:
+        return await aw
+    task = asyncio.ensure_future(aw)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=0 if act.stalled else act.timeout / 1000.0)
+    finally:
+        if not task.done():
+            task.cancel()
+    if task in done:
+        return task.result()
+    if act.stalled:
+        # The action already failed and is unwinding: this cleanup call was sent;
+        # nothing waits for it, and every release in a cleanup loop still goes out.
+        return None
+    act.stalled = True
+    raise PageStalled()
+
+
+class BoundedCalls:
+    """``obj`` with every coroutine method going through ``bounded``."""
+
+    def __init__(self, obj: Any) -> None:
+        self._obj = obj
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._obj, name)
+        if not inspect.iscoroutinefunction(attr):
+            return attr
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            return await bounded(attr(*args, **kwargs))
+        return call
 
 
 # Helper library evaluated after the InjectedScript in every world.
@@ -366,7 +429,7 @@ class Worlds:
 
     async def session(self) -> Any:
         if self._session is None:
-            self._session = await self.page.context.new_cdp_session(self.page)
+            self._session = BoundedCalls(await bounded(self.page.context.new_cdp_session(self.page)))
         return self._session
 
     def invalidate(self, frame: Any = None) -> None:
@@ -396,7 +459,7 @@ class Worlds:
 
     async def _locate_child(self, frame: Any, parent: Any) -> _FrameRec:
         try:  # out-of-process iframe: it has its own target/session
-            own = await self.page.context.new_cdp_session(frame)
+            own = BoundedCalls(await bounded(self.page.context.new_cdp_session(frame)))
         except Error:
             own = None
         if own is not None:

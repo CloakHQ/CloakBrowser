@@ -150,6 +150,21 @@ internal sealed class PlaywrightRawInput : IRawInput
     public Task InsertTextAsync(string text) => _k.InsertTextAsync(text);
 }
 
+/// <summary>Raw input whose calls are bounded by the action's timeout.</summary>
+internal sealed class BoundedRawInput : IRawInput
+{
+    private readonly IRawInput _in;
+    public BoundedRawInput(IRawInput inner) => _in = inner;
+    public Task MoveAsync(double x, double y, int? steps = null) => HumanAction.Bounded(_in.MoveAsync(x, y, steps));
+    public Task DownAsync(MouseButton button = MouseButton.Left, int clickCount = 1) => HumanAction.Bounded(_in.DownAsync(button, clickCount));
+    public Task UpAsync(MouseButton button = MouseButton.Left, int clickCount = 1) => HumanAction.Bounded(_in.UpAsync(button, clickCount));
+    public Task WheelAsync(double dx, double dy) => HumanAction.Bounded(_in.WheelAsync(dx, dy));
+    public Task KeyDownAsync(string key) => HumanAction.Bounded(_in.KeyDownAsync(key));
+    public Task KeyUpAsync(string key) => HumanAction.Bounded(_in.KeyUpAsync(key));
+    public Task KeyPressAsync(string key, float? delay = null) => HumanAction.Bounded(_in.KeyPressAsync(key, delay));
+    public Task InsertTextAsync(string text) => HumanAction.Bounded(_in.InsertTextAsync(text));
+}
+
 /// <summary>Reads client-side Playwright .NET internals:
 /// a locator's frame and selector string, and the page's default-timeout settings.</summary>
 internal static class PlaywrightInternals
@@ -225,7 +240,7 @@ internal sealed partial class HumanEngine
         _page = page;
         Config = cfg;
         Cursor = cursor;
-        _raw = raw ?? new PlaywrightRawInput(page.Mouse, page.Keyboard);
+        _raw = new BoundedRawInput(raw ?? new PlaywrightRawInput(page.Mouse, page.Keyboard));
         World = new HumanWorld(page);
     }
 
@@ -243,6 +258,28 @@ internal sealed partial class HumanEngine
 
     public Deadline DeadlineFor(Target t, ActOpts o) =>
         o.Deadline ?? new Deadline(PlaywrightInternals.Timeout(t.Frame, o.Timeout));
+
+    /// <summary>Run a top-level action with its timeout bounding every browser call it makes,
+    /// so a page that stops answering cannot block past the timeout (#619). A call made while
+    /// an action is in progress (a sub-action) runs inside that action.</summary>
+    private async Task<T> InAction<T>(Target t, ActOpts o, string api, Func<Task<T>> action)
+    {
+        if (HumanAction.Current != null) return await action().ConfigureAwait(false);
+        double timeout = PlaywrightInternals.Timeout(t.Frame, o.Timeout);
+        HumanAction.Current = new HumanAction(timeout);
+        try
+        {
+            return await action().ConfigureAwait(false);
+        }
+        catch (PageStalledException)
+        {
+            throw new System.TimeoutException($"{api}: Timeout {Math.Round(timeout)}ms exceeded.\n" +
+                                              "Call log:\n  - waiting for the page to respond");
+        }
+    }
+
+    private Task InAction(Target t, ActOpts o, string api, Func<Task> action) =>
+        InAction(t, o, api, async () => { await action().ConfigureAwait(false); return true; });
 
     private static PlaywrightException Err(string msg) => new(msg);
 
@@ -351,7 +388,7 @@ internal sealed partial class HumanEngine
             return new Resolved(frame, cached.Id);
         // An ElementHandle carries no identity our context can read, so find the element
         // with exactly its border box.
-        var box = await handle.BoundingBoxAsync().ConfigureAwait(false);
+        var box = await HumanAction.Bounded(handle.BoundingBoxAsync()).ConfigureAwait(false);
         if (box == null)
         {
             if (exact) throw new RawFallbackException();
@@ -419,7 +456,10 @@ internal sealed partial class HumanEngine
             await RetryAsync(api, t, d, () => ResolveHandleAsync(h, exact: true)).ConfigureAwait(false);
     }
 
-    public async Task<string?> ReadAsync(Target t, string op, ActOpts o, string api, params object?[] extra)
+    public Task<string?> ReadAsync(Target t, string op, ActOpts o, string api, params object?[] extra) =>
+        InAction(t, o, api, () => ReadCoreAsync(t, op, o, api, extra));
+
+    private async Task<string?> ReadCoreAsync(Target t, string op, ActOpts o, string api, object?[] extra)
     {
         var d = DeadlineFor(t, o);
         await HandleOrRawAsync(t, d, api).ConfigureAwait(false);
@@ -437,7 +477,10 @@ internal sealed partial class HumanEngine
     ///
     /// The event is built by Playwright's own injected helper, evaluated in the
     /// isolated world instead of the page's world.</summary>
-    public async Task DispatchAsync(Target t, ActOpts o, string api, string type, object? eventInit = null)
+    public Task DispatchAsync(Target t, ActOpts o, string api, string type, object? eventInit = null) =>
+        InAction(t, o, api, () => DispatchCoreAsync(t, o, api, type, eventInit));
+
+    private async Task DispatchCoreAsync(Target t, ActOpts o, string api, string type, object? eventInit)
     {
         if (RawFallbackException.HasHandle(eventInit)) throw new RawFallbackException();
         var d = DeadlineFor(t, o);
@@ -750,14 +793,15 @@ internal sealed partial class HumanEngine
             if (o.Trial) return r;
             var keys = new List<string>();
             foreach (var m in hold ?? Array.Empty<string>()) keys.Add(await ModifierAsync(m).ConfigureAwait(false));
-            foreach (var k in keys) await _raw.KeyDownAsync(k).ConfigureAwait(false);
+            var held = new List<string>();
             try
             {
+                foreach (var k in keys) { held.Add(k); await _raw.KeyDownAsync(k).ConfigureAwait(false); }
                 await MoveToAsync(x, y, cfg).ConfigureAwait(false);
             }
             finally
             {
-                for (int i = keys.Count - 1; i >= 0; i--) await _raw.KeyUpAsync(keys[i]).ConfigureAwait(false);
+                for (int i = held.Count - 1; i >= 0; i--) await _raw.KeyUpAsync(held[i]).ConfigureAwait(false);
             }
             // The page may replace or remove the target while the cursor travels; never
             // press on whatever is under it now (even with force). Locators re-resolve.
@@ -775,22 +819,30 @@ internal sealed partial class HumanEngine
         var mods = new List<string>();
         foreach (var m in modifiers ?? Array.Empty<string>()) mods.Add(await ModifierAsync(m).ConfigureAwait(false));
         await Sleep(RR(isInput ? cfg.ClickAimDelayInput : cfg.ClickAimDelayButton)).ConfigureAwait(false);
-        foreach (var m in mods) await _raw.KeyDownAsync(m).ConfigureAwait(false);
+        var held = new List<string>();
         try
         {
+            foreach (var m in mods) { held.Add(m); await _raw.KeyDownAsync(m).ConfigureAwait(false); }
             int count = Math.Max(1, clickCount);
             for (int n = 1; n <= count; n++)
             {
                 double hold = delay ?? RR(isInput ? cfg.ClickHoldInput : cfg.ClickHoldButton);
-                await _raw.DownAsync(button, n).ConfigureAwait(false);
-                await Sleep(hold).ConfigureAwait(false);
-                await _raw.UpAsync(button, n).ConfigureAwait(false);
+                try
+                {
+                    await _raw.DownAsync(button, n).ConfigureAwait(false);
+                    await Sleep(hold).ConfigureAwait(false);
+                }
+                finally
+                {
+                    // Never leave the button down, also when the page stopped answering.
+                    await _raw.UpAsync(button, n).ConfigureAwait(false);
+                }
                 if (n < count) await Sleep(delay ?? R(60, 140)).ConfigureAwait(false);
             }
         }
         finally
         {
-            for (int i = mods.Count - 1; i >= 0; i--) await _raw.KeyUpAsync(mods[i]).ConfigureAwait(false);
+            for (int i = held.Count - 1; i >= 0; i--) await _raw.KeyUpAsync(held[i]).ConfigureAwait(false);
         }
     }
 }

@@ -29,14 +29,15 @@ afterEach(() => {
 });
 
 describe("collectDiagnostics", () => {
-  it("skips the launch test with quick=true and reports a free license", async () => {
+  it("skips the launch test with quick=true and reports no license", async () => {
     const { collectDiagnostics } = await import("../src/cli.js");
     const diag = (await collectDiagnostics(true)) as Record<string, any>;
 
     expect(diag.environment.node).toBe(process.version);
     expect(diag.launch.tested).toBe(false);
     expect(diag.launch.reason).toContain("--quick");
-    expect(diag.license.tier).toBe("free");
+    expect(diag.license.tier).toBe("none");
+    expect(diag.binary.tier).toBe("none");
     expect(diag.modules).toBeDefined();
   });
 

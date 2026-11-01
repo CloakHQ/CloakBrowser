@@ -4,9 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cloakbrowser.config import DEFAULT_VIEWPORT
-
-
 # All tests mock launch() to avoid needing a binary.
 # launch_context() calls launch() internally, then browser.new_context().
 
@@ -22,15 +19,16 @@ def _make_mock_browser():
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch")
 def test_default_viewport(mock_launch, _mock_bin):
-    """DEFAULT_VIEWPORT applied when no viewport given."""
+    """No emulated viewport when none is given, headless included."""
     browser, context = _make_mock_browser()
     mock_launch.return_value = browser
 
     from cloakbrowser.browser import launch_context
     launch_context()
 
-    ctx_kwargs = browser.new_context.call_args
-    assert ctx_kwargs[1]["viewport"] == DEFAULT_VIEWPORT
+    ctx_kwargs = browser.new_context.call_args[1]
+    assert ctx_kwargs.get("no_viewport") is True
+    assert "viewport" not in ctx_kwargs
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
@@ -125,7 +123,7 @@ def test_conflicting_viewport_kwargs_deduped(mock_launch, _mock_bin):
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch")
 def test_custom_viewport(mock_launch, _mock_bin):
-    """Custom viewport overrides DEFAULT_VIEWPORT."""
+    """Custom viewport is honored."""
     browser, context = _make_mock_browser()
     mock_launch.return_value = browser
 
@@ -301,6 +299,28 @@ def test_close_closes_browser(mock_launch, _mock_bin):
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch")
+def test_close_forwards_reason(mock_launch, _mock_bin):
+    """close(reason=...) reaches the underlying context (#609).
+
+    Playwright's own BrowserContext.close takes a keyword-only ``reason``;
+    the wrapper used to take no arguments, so the call died in the wrapper
+    with a TypeError before any cleanup ran.
+    """
+    browser, context = _make_mock_browser()
+    original_ctx_close = context.close
+    mock_launch.return_value = browser
+
+    from cloakbrowser.browser import launch_context
+    ctx = launch_context()
+
+    ctx.close(reason="shutting down")
+
+    original_ctx_close.assert_called_once_with(reason="shutting down")
+    browser.close.assert_called_once()
+
+
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch")
 def test_error_closes_browser(mock_launch, _mock_bin):
     """If new_context() raises, browser is still closed."""
     browser = MagicMock()
@@ -372,15 +392,16 @@ async def test_async_storage_state_forwarded(mock_launch_async, _mock_bin):
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.launch_async")
 async def test_async_default_viewport(mock_launch_async, _mock_bin):
-    """DEFAULT_VIEWPORT applied when no viewport given (async)."""
+    """No emulated viewport when none is given (async)."""
     browser, context = _make_mock_async_browser()
     mock_launch_async.return_value = browser
 
     from cloakbrowser.browser import launch_context_async
     await launch_context_async()
 
-    ctx_kwargs = browser.new_context.call_args
-    assert ctx_kwargs[1]["viewport"] == DEFAULT_VIEWPORT
+    ctx_kwargs = browser.new_context.call_args[1]
+    assert ctx_kwargs.get("no_viewport") is True
+    assert "viewport" not in ctx_kwargs
 
 
 @pytest.mark.asyncio
@@ -417,6 +438,24 @@ async def test_async_close_closes_browser(mock_launch_async, _mock_bin):
 
     await ctx.close()
     original_ctx_close.assert_called_once()
+    browser.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
+@patch("cloakbrowser.browser.launch_async")
+async def test_async_close_forwards_reason(mock_launch_async, _mock_bin):
+    """await ctx.close(reason=...) reaches the underlying context (#609)."""
+    browser, context = _make_mock_async_browser()
+    original_ctx_close = context.close
+    mock_launch_async.return_value = browser
+
+    from cloakbrowser.browser import launch_context_async
+    ctx = await launch_context_async()
+
+    await ctx.close(reason="shutting down")
+
+    original_ctx_close.assert_called_once_with(reason="shutting down")
     browser.close.assert_called_once()
 
 

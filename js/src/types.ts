@@ -71,13 +71,11 @@ export interface LaunchPersistentContextOptions extends LaunchContextOptions {
 }
 
 export interface BinaryInfo {
-  version: string;
-  /** The wrapper's bundled baseline Chromium version (CHROMIUM_VERSION). */
-  bundledVersion: string;
+  /** The cached build; null until one has been downloaded. */
+  version: string | null;
   platform: string;
-  tier: "pro" | "free";
-  binaryPath: string;
+  binaryPath: string | null;
   installed: boolean;
-  cacheDir: string;
+  cacheDir: string | null;
   downloadUrl: string;
 }

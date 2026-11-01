@@ -10,7 +10,14 @@
  *   npx cloakbrowser clear-cache  # Remove cached binaries
  */
 
-import { ensureBinary, checkForUpdate, checkForProUpdate, clearCache } from "./download.js";
+import {
+  ensureBinary,
+  checkForProUpdate,
+  clearCache,
+  canPrompt,
+  promptLicenseKey,
+  PromptClosedError,
+} from "./download.js";
 import {
   getLocalBinaryOverride,
   getCacheDir,
@@ -21,30 +28,33 @@ import {
   normalizeReleaseChannel,
   normalizeRequestedVersion,
   versionNewer,
-  CHROMIUM_VERSION,
   WRAPPER_VERSION,
 } from "./config.js";
 import { countFontsPresent, WINDOWS_FONT_TELLS, OFFICE_FONT_TELLS, MACOS_FONT_TELLS } from "./fonts.js";
 import { resolveProxyGeo } from "./geoip.js";
-import { resolveLicenseKey, validateLicense, getProLatestRelease, getSessionSeats, type LicenseInfo } from "./license.js";
-import { execFileSync, spawn } from "node:child_process";
+import {
+  resolveLicenseKey,
+  saveLicenseKey,
+  validateLicense,
+  getProLatestRelease,
+  getSessionSeats,
+  type LicenseInfo,
+} from "./license.js";
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import readline from "node:readline";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const UPGRADE_HINT = "For more than one concurrent session → https://cloakbrowser.dev";
-const FREE_LATEST_HINT =
-  "Get the latest binary free → run 'cloakbrowser login' or https://cloakbrowser.dev/free";
-const FREE_LOGIN_URL = "https://cloakbrowser.dev/api/license/free/github/start";
+const NO_KEY_HINT = "Get a free key → run 'cloakbrowser login'";
 
 const USAGE = `Usage: cloakbrowser <command>
 
 Commands:
-  login        Save a license key (or get a free key via GitHub)
-  logout       Remove the saved license key (revert to free binary)
+  login        Save a license key (or get a free key by email)
+  logout       Remove the saved license key
   install      Download the Chromium binary
   info         Environment + binary diagnostics (--quick, --json)
   doctor       Alias for info
@@ -111,11 +121,8 @@ function missingSharedLibs(binaryPath: string): string[] {
 
 /** Resolve + validate the license the way ensureBinary does. */
 async function resolveLicense(): Promise<{ license: Record<string, unknown>; entitledPro: boolean }> {
-  let key = resolveLicenseKey();
-  // ensureBinary disables Pro routing when a custom download URL is set, so the
-  // diagnostic must report free too (matches download.ts).
-  if (process.env.CLOAKBROWSER_DOWNLOAD_URL) key = undefined;
-  if (!key) return { license: { tier: "free" }, entitledPro: false };
+  const key = resolveLicenseKey();
+  if (!key) return { license: { tier: "none" }, entitledPro: false };
   try {
     const lic: LicenseInfo | null = await validateLicense(key);
     if (lic === null) return { license: { tier: "unknown", error: "could not validate" }, entitledPro: false };
@@ -138,7 +145,6 @@ async function effectiveBinary(
       latest_version: null,
       pinned: false,
       tier: "override",
-      bundled_version: CHROMIUM_VERSION,
       path: override,
       installed: fs.existsSync(override),
       cache_dir: null,
@@ -171,7 +177,7 @@ async function effectiveBinary(
   } else if (entitledPro) {
     // Mirror ensureBinary: report what the next launch resolves to, while
     // CLOAKBROWSER_AUTO_UPDATE=false retains an installed channel build.
-    installedVersion = getEffectiveVersion(true, requestedChannel);
+    installedVersion = getEffectiveVersion(requestedChannel);
     const autoUpdate = (process.env.CLOAKBROWSER_AUTO_UPDATE ?? "true").toLowerCase();
     const updatesEnabled = autoUpdate !== "false";
     if (installedVersion && !updatesEnabled) {
@@ -182,10 +188,11 @@ async function effectiveBinary(
       version = installedVersion ?? latestVersion;
     }
   } else {
-    version = getEffectiveVersion(false);
+    // No valid key: nothing launches; report only what is cached.
+    version = getEffectiveVersion(requestedChannel);
     installedVersion = version;
   }
-  const binPath = version ? getBinaryPath(version, entitledPro) : null;
+  const binPath = version ? getBinaryPath(version) : null;
   return {
     version,
     latest_version: latestVersion,
@@ -194,11 +201,10 @@ async function effectiveBinary(
     channel_fallback: channelFallback,
     installed_version: installedVersion,
     pinned: Boolean(requested),
-    tier: entitledPro ? "pro" : "free",
-    bundled_version: CHROMIUM_VERSION,
+    tier: entitledPro ? "pro" : "none",
     path: binPath,
     installed: binPath ? fs.existsSync(binPath) : false,
-    cache_dir: version ? getBinaryDir(version, entitledPro) : null,
+    cache_dir: version ? getBinaryDir(version) : null,
     override: null,
   };
 }
@@ -457,14 +463,11 @@ function printDiagnostics(diag: Record<string, any>): void {
 
   const lic = diag.license;
   if (lic.tier === "free" && lic.valid) {
-    // Validated free-tier key (GitHub login): the latest binary, 1 session.
     console.log("License:   Free (latest binary, 1 concurrent session)");
     console.log(`           ${UPGRADE_HINT}`);
-  } else if (lic.tier === "free") {
-    // Keyless: running the older free binary — invite the free-latest login.
-    console.log("License:   Free (no key)");
-    console.log(`           ${FREE_LATEST_HINT}`);
-    console.log(`           ${UPGRADE_HINT}`);
+  } else if (lic.tier === "none") {
+    console.log("License:   none (a launch needs a key)");
+    console.log(`           ${NO_KEY_HINT}`);
   } else if (lic.error) {
     console.log(`License:   ${lic.tier} (${lic.error})`);
   } else {
@@ -518,20 +521,16 @@ async function cmdInfo(args: string[]): Promise<void> {
 }
 
 async function cmdUpdate(): Promise<void> {
-  console.error("Checking for updates...");
-  // A valid Pro license updates the Pro binary; everyone else updates free.
   const { entitledPro } = await resolveLicense();
-  let newVersion: string | null;
-  let label: string;
-  if (entitledPro) {
-    newVersion = await checkForProUpdate(resolveLicenseKey()!);
-    label = "Pro Chromium";
-  } else {
-    newVersion = await checkForUpdate();
-    label = "Chromium";
+  const key = resolveLicenseKey();
+  if (!entitledPro || !key) {
+    console.error(`No valid license key. ${NO_KEY_HINT}`);
+    process.exit(1);
   }
+  console.error("Checking for updates...");
+  const newVersion = await checkForProUpdate(key);
   if (newVersion) {
-    console.log(`Updated to ${label} ${newVersion}`);
+    console.log(`Updated to Chromium ${newVersion}`);
   } else {
     console.log("Already up to date.");
   }
@@ -547,77 +546,27 @@ function cmdClearCache(): void {
   console.log("Cache cleared.");
 }
 
-/** Persist a validated key to <cacheDir>/license.key (0600). */
-function saveLicenseKey(key: string): void {
-  const cacheDir = getCacheDir();
-  fs.mkdirSync(cacheDir, { recursive: true });
-  const keyFile = path.join(cacheDir, "license.key");
-  fs.writeFileSync(keyFile, key.trim() + "\n");
-  try {
-    fs.chmodSync(keyFile, 0o600);
-  } catch {
-    // Non-fatal
-  }
-}
-
-/** Prompt for a single line of input, resolving "" on EOF. */
-function promptLine(question: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise<string>((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-    rl.on("close", () => resolve(""));
-  });
-}
-
-/** Best-effort open a URL in the platform browser (silent on failure). */
-function openUrl(url: string): void {
-  try {
-    const cmd =
-      process.platform === "darwin"
-        ? "open"
-        : process.platform === "win32"
-          ? "start"
-          : "xdg-open";
-    spawn(cmd, [url], {
-      stdio: "ignore",
-      detached: true,
-      shell: process.platform === "win32",
-    }).unref();
-  } catch {
-    // Non-fatal
-  }
-}
-
-/** Open the GitHub free-key page and read back the emailed key. */
-async function promptFreeGithubLogin(): Promise<string> {
-  console.log(`Opening GitHub sign-in: ${FREE_LOGIN_URL}`);
-  openUrl(FREE_LOGIN_URL);
-  console.log("If your browser did not open, visit the URL above and authorize with GitHub.");
-  console.log("We'll email your free CloakBrowser key to your GitHub email.");
-  return promptLine("Paste the key from that email here: ");
-}
-
 /**
- * Activate any key. `login <key>` saves a pasted key; bare `login` prompts to
- * paste a key or press ENTER to get a free key via GitHub.
+ * Activate any key. `login <key>` saves a pasted key; bare `login` shows the
+ * same menu as a no-key launch: get a free key by email, or paste one.
  */
-async function cmdLogin(rest: string[]): Promise<void> {
+export async function cmdLogin(rest: string[]): Promise<void> {
   let key = (rest[0] ?? "").trim();
 
   if (!key) {
-    if (!process.stdin.isTTY) {
+    // The menu is on stderr: with stderr redirected the prompt would be invisible.
+    if (!canPrompt()) {
       console.error(
         "Usage: cloakbrowser login <key>  (or run it interactively for a free key)."
       );
       process.exit(2);
     }
-    const entered = await promptLine(
-      "Paste your license key, or press ENTER to get a free key via GitHub: "
-    );
-    key = entered || (await promptFreeGithubLogin());
+    try {
+      key = await promptLicenseKey();
+    } catch (e) {
+      if (!(e instanceof PromptClosedError)) throw e;
+      key = "";
+    }
   }
 
   if (!key) {
@@ -637,7 +586,12 @@ async function cmdLogin(rest: string[]): Promise<void> {
     process.exit(1);
   }
 
-  saveLicenseKey(key);
+  try {
+    saveLicenseKey(key);
+  } catch {
+    console.error("That is not a CloakBrowser license key (they start with cb_). Nothing was saved.");
+    process.exit(1);
+  }
   if (info.plan === "free") {
     console.log(
       "Saved. Free tier active: latest binary, 1 concurrent session (one browser at a time)."
@@ -649,8 +603,10 @@ async function cmdLogin(rest: string[]): Promise<void> {
   }
 }
 
-/** Remove the saved license key (revert to the free binary). */
-function cmdLogout(): void {
+/** Remove the saved license key. */
+export function cmdLogout(): void {
+  // A pending claim would bring the key back on the next launch.
+  fs.rmSync(path.join(getCacheDir(), ".free_claim"), { force: true });
   const keyFile = path.join(getCacheDir(), "license.key");
   if (fs.existsSync(keyFile)) {
     try {
@@ -659,7 +615,7 @@ function cmdLogout(): void {
       console.error(`Could not remove ${keyFile}: ${(err as Error).message}`);
       process.exit(1);
     }
-    console.log("Logged out. Removed the saved key; launches revert to the free binary.");
+    console.log("Logged out. Removed the saved key; launches need a key again.");
   } else {
     console.log("No saved license key found.");
   }

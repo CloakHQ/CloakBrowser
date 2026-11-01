@@ -275,6 +275,13 @@ public sealed class SiteServer
             {
                 HttpListenerContext ctx;
                 try { ctx = await listener.GetContextAsync(); } catch { return; }
+                if (ctx.Request.Url!.AbsolutePath.StartsWith("/hang")) continue; // a server that never answers
+                if (ctx.Request.Url!.AbsolutePath.StartsWith("/slow")) // answers, late
+                {
+                    var late = ctx;
+                    _ = Task.Delay(3000).ContinueWith(_ => { late.Response.StatusCode = 204; late.Response.Close(); });
+                    continue;
+                }
                 var html = ctx.Request.Url!.AbsolutePath switch
                 {
                     "/" or "/index.html" => IndexHtml,

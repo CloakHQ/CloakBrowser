@@ -5,11 +5,7 @@
 
 import type { Browser, BrowserContext, BrowserContextOptions, LaunchOptions as PlaywrightLaunchOptions } from "playwright-core";
 import type { LaunchOptions, LaunchContextOptions, LaunchPersistentContextOptions } from "./types.js";
-import {
-  DEFAULT_VIEWPORT,
-  IGNORE_DEFAULT_ARGS,
-  binarySupportsHeadlessNoViewport,
-} from "./config.js";
+import { IGNORE_DEFAULT_ARGS } from "./config.js";
 import { buildArgs } from "./args.js";
 import { maybeWarnWindowsFonts } from "./fonts.js";
 import { ensureBinary } from "./download.js";
@@ -65,43 +61,13 @@ function filterStealthCtxOptions(ctx?: BrowserContextOptions): Partial<BrowserCo
  * Useful when integrating CloakBrowser with an existing Playwright Browser while
  * keeping the wrapper's stealth-safe defaults for `newContext()`.
  */
-/**
- * Effective headless mode for viewport decisions. buildLaunchOptions() spreads
- * `...options.launchOptions` LAST, so a raw `launchOptions.headless` overrides the
- * top-level field at the actual chromium.launch() call. Viewport logic must read
- * the same effective value — otherwise a headed browser gets a fixed viewport
- * (reintroducing the impossible-window tell). Playwright-specific (Puppeteer
- * resolves headless the opposite way).
- */
-function effectiveHeadless(options: LaunchOptions): boolean {
-  return (
-    (options.launchOptions as { headless?: boolean } | undefined)?.headless ??
-    options.headless ??
-    true
-  );
-}
-
 export function buildContextOptions(
   options: LaunchContextOptions = {}
 ): BrowserContextOptions {
-  // Headed: viewport=null (no emulation) so the page tracks the real window and
-  // outerWidth >= innerWidth stays coherent. Headless on a newer binary: also
-  // null, since it reports coherent dimensions without emulation. Headless on an
-  // older binary: a fixed DEFAULT_VIEWPORT keeps dimensions coherent and
-  // deterministic. Explicit viewport (incl. null) is always honored.
-  const headless = effectiveHeadless(options);
-  const headlessNoViewport =
-    headless && binarySupportsHeadlessNoViewport(
-      options.licenseKey,
-      options.browserVersion,
-      options.releaseChannel,
-    );
-  const viewport =
-    options.viewport !== undefined
-      ? options.viewport
-      : headless && !headlessNoViewport
-        ? DEFAULT_VIEWPORT
-        : null;
+  // Default viewport=null (no emulation): headed, the page tracks the real
+  // window (outerWidth >= innerWidth stays coherent); headless, the binary
+  // reports coherent dimensions itself. Explicit viewport (incl. null) wins.
+  const viewport = options.viewport !== undefined ? options.viewport : null;
   return {
     // contextOptions first — explicit wrapper fields below override it.
     // filterStealthCtxOptions strips locale/timezoneId to prevent CDP detection.
@@ -130,12 +96,7 @@ export async function buildLaunchOptions(
       options.releaseChannel,
     ));
   const { exitIp, ...resolved } = await maybeResolveGeoip(options);
-  const { proxyOption, proxyArgs } = resolveProxyConfig(
-    options.proxy,
-    options.browserVersion,
-    options.licenseKey,
-    options.releaseChannel,
-  );
+  const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy);
   let resolvedArgs = await resolveWebrtcArgs(options);
   resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
   const args = buildArgs({ ...options, ...resolved, args: [...(resolvedArgs ?? []), ...proxyArgs] });
@@ -194,11 +155,15 @@ export async function humanizeBrowser(
  */
 export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright-core");
-  const denialPath = resolveLicenseKey(options.licenseKey) ? mintDenialFile() : undefined;
+  // Only a path (nothing is written). Decided AFTER buildLaunchOptions: with no
+  // key, its ensureBinary runs the claim menu that creates one, and the guard must
+  // cover that first launch too (Python mints after ensure_binary for the same reason).
+  let denialPath = mintDenialFile();
   let browser: Browser;
   let launchOptions: PlaywrightLaunchOptions;
   try {
     launchOptions = await buildLaunchOptions(options, denialPath);
+    if (!resolveLicenseKey(options.licenseKey)) denialPath = undefined;
     browser = await chromium.launch(launchOptions);
   } catch (err) {
     const lic = licenseErrorFrom(err, denialPath);
@@ -225,18 +190,8 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   // Headed: a bare browser.newPage() would inherit Playwright's emulated 1280x720
   // viewport -> outerWidth < innerWidth (impossible window = bot tell). Default
   // newPage()/newContext() to viewport:null so the page tracks the real window.
-  // Headless on a newer binary also qualifies (coherent dimensions natively);
-  // older headless keeps Playwright's default viewport. Mirrors Python launch().
-  if (
-    !effectiveHeadless(options) ||
-    binarySupportsHeadlessNoViewport(
-      options.licenseKey,
-      options.browserVersion,
-      options.releaseChannel,
-    )
-  ) {
-    applyDefaultNoViewport(browser);
-  }
+  // Headless qualifies too (coherent dimensions natively). Mirrors Python launch().
+  applyDefaultNoViewport(browser);
   await humanizeBrowser(browser, options);
   return browser;
 }
@@ -299,9 +254,12 @@ export async function launchContext(
 
   // Patch close() to also close the browser
   const origClose = context.close.bind(context);
-  context.close = async () => {
-    await origClose();
-    await browser.close();
+  context.close = async (closeOptions?: { reason?: string }) => {
+    try {
+      await origClose(closeOptions);
+    } finally {
+      await browser.close();
+    }
   };
 
   // browser.newContext above is already guarded by launch(); also guard the
@@ -360,12 +318,7 @@ export async function launchPersistentContext(
       options.releaseChannel,
     ));
   const { exitIp, ...resolved } = await maybeResolveGeoip(options);
-  const { proxyOption, proxyArgs } = resolveProxyConfig(
-    options.proxy,
-    options.browserVersion,
-    options.licenseKey,
-    options.releaseChannel,
-  );
+  const { proxyOption, proxyArgs } = resolveProxyConfig(options.proxy);
   let resolvedArgs = await resolveWebrtcArgs(options);
   resolvedArgs = appendWebrtcExitIp(resolvedArgs, exitIp);
   resolvedArgs = persistentSeedArgs(options.userDataDir, options.stealthArgs, resolvedArgs);

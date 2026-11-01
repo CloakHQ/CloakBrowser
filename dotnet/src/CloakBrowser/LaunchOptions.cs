@@ -43,8 +43,8 @@ public class LaunchOptions
 
     /// <summary>
     /// CloakBrowser Pro license key. Also read from the <c>CLOAKBROWSER_LICENSE_KEY</c>
-    /// env var or <c>~/.cloakbrowser/license.key</c>. With a valid key the latest Pro
-    /// binary is downloaded from cloakbrowser.dev; without one, the free binary is used.
+    /// env var or <c>~/.cloakbrowser/license.key</c>. With no key anywhere, a launch from
+    /// a terminal offers a free key by email; otherwise it throws with the claim link.
     /// </summary>
     public string? LicenseKey { get; set; }
 
@@ -77,7 +77,7 @@ public class LaunchContextOptions : LaunchOptions
     /// <summary>Custom user agent string.</summary>
     public string? UserAgent { get; set; }
 
-    /// <summary>Viewport size. Null means "use default 1920x947". Set <see cref="NoViewport"/> to disable.</summary>
+    /// <summary>Viewport size. Null means no emulated viewport (headed tracks the real window; headless reports the binary's own dimensions).</summary>
     public (int Width, int Height)? Viewport { get; set; }
 
     /// <summary>Disable viewport emulation (use the OS window size).</summary>

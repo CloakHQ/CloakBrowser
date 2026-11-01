@@ -236,33 +236,6 @@ internal static class ProxyResolver
         return result;
     }
 
-    /// <summary>Parse an HTTP(S) proxy URL into a Playwright <see cref="Microsoft.Playwright.Proxy"/>.</summary>
-    private static Microsoft.Playwright.Proxy ParseProxyUrl(string proxy)
-    {
-        string normalized = proxy;
-        if (proxy.Contains('@') && !proxy.Contains("://"))
-            normalized = $"http://{proxy}";
-
-        var parsed = ParseUrl(normalized);
-        if (string.IsNullOrEmpty(parsed.Username))
-            return new Microsoft.Playwright.Proxy { Server = proxy };
-
-        string netloc = parsed.Host;
-        if (parsed.Port != null) netloc += $":{parsed.Port}";
-        var sb = new System.Text.StringBuilder();
-        if (!string.IsNullOrEmpty(parsed.Scheme)) sb.Append(parsed.Scheme).Append("://");
-        sb.Append(netloc).Append(parsed.Path);
-
-        var result = new Microsoft.Playwright.Proxy
-        {
-            Server = sb.ToString(),
-            Username = Unquote(parsed.Username!),
-        };
-        if (!string.IsNullOrEmpty(parsed.Password))
-            result.Password = Unquote(parsed.Password!);
-        return result;
-    }
-
     /// <summary>Extract a normalized proxy URL string from a string or dict proxy (for geoip / webrtc).</summary>
     public static string? ExtractProxyUrl(object? proxy)
     {
@@ -283,9 +256,7 @@ internal static class ProxyResolver
     }
 
     /// <summary>Resolve a proxy into Playwright options + extra Chrome args (one or both empty).</summary>
-    public static ProxyResolution Resolve(
-        object? proxy, string? browserVersion = null, string? licenseKey = null,
-        string? releaseChannel = null)
+    public static ProxyResolution Resolve(object? proxy)
     {
         if (proxy == null)
             return new ProxyResolution(null, new List<string>());
@@ -311,17 +282,15 @@ internal static class ProxyResolver
             return new ProxyResolution(null, new List<string> { $"--proxy-server={NormalizeSocksStringUrl(sUrl)}" });
         }
 
-        // HTTP/HTTPS with credentials, only on binaries that ship inline proxy auth:
-        // inline creds via --proxy-server. Older binaries (free macOS/linux-arm64)
-        // can't parse inline credentials, so they fall through to Playwright's proxy.
+        // HTTP/HTTPS with credentials: inline creds via --proxy-server (Chrome's native
+        // proxy auth) instead of Playwright's CDP auth interceptor (#182).
         bool hasCreds = proxy switch
         {
             ProxySettings ps => HasCredentials(ps),
             string s => HasCredentials(s),
             _ => false,
         };
-        if (hasCreds && Config.BinarySupportsHttpProxyInlineAuth(
-            licenseKey, browserVersion, releaseChannel))
+        if (hasCreds)
         {
             if (proxy is ProxySettings psd)
             {
@@ -346,6 +315,6 @@ internal static class ProxyResolver
                 Password = dict.Password,
             }, new List<string>());
         }
-        return new ProxyResolution(ParseProxyUrl((string)proxy), new List<string>());
+        return new ProxyResolution(new Microsoft.Playwright.Proxy { Server = (string)proxy }, new List<string>());
     }
 }

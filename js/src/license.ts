@@ -6,7 +6,7 @@
  * and Pro version checks.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -376,6 +376,155 @@ export function resolveLicenseKeyWithSource(
  */
 export function resolveLicenseKey(licenseKey?: string): string | undefined {
   return resolveLicenseKeyWithSource(licenseKey).key;
+}
+
+// ---------------------------------------------------------------------------
+// Free key by email: claim code + key save (mirrors Python license.py)
+// ---------------------------------------------------------------------------
+export const CLAIM_URL = "https://cloakbrowser.dev/api/license/free/claim";
+// A fragment, so the bearer code never reaches server or CDN logs.
+export const FREE_CLAIM_LINK = "https://cloakbrowser.dev/#claim=";
+export const KEY_RE = /^cb_[A-Za-z0-9_-]+$/;
+const CLAIM_CODE_RE = /^[A-Za-z0-9_-]{20,128}$/; // the server's format
+const CLAIM_MAX_AGE_MS = 7 * 86_400_000;
+
+/** The claim's email already has a free key. The server never sends an existing
+ * key to a claim (anyone can type anyone's email), so the person pastes it. */
+export class FreeKeyAlreadyHeld extends Error {
+  constructor() {
+    super("This email already has a free key");
+    this.name = "FreeKeyAlreadyHeld";
+  }
+}
+
+function tmpPath(target: string): string {
+  return `${target}.${randomBytes(8).toString("hex")}.tmp`;
+}
+
+/** Write a new file readable by the owner only, from the first byte. */
+function writePrivateTmp(target: string, text: string): string {
+  const tmp = tmpPath(target);
+  fs.writeFileSync(tmp, text, { mode: 0o600, flag: "wx" });
+  return tmp;
+}
+
+/**
+ * Save a key to <cache>/license.key (0600) and retire the claim code.
+ * `overwrite: false` (the background claim poll) leaves an existing key alone:
+ * the user may have run `cloakbrowser login` meanwhile. Returns true if saved.
+ */
+export function saveLicenseKey(key: string, { overwrite = true } = {}): boolean {
+  key = key.trim();
+  if (!KEY_RE.test(key)) throw new Error("not a CloakBrowser license key");
+  const cacheDir = getCacheDir();
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const keyFile = path.join(cacheDir, "license.key");
+  // The claim code keeps returning the key, so it must not outlive this call,
+  // saved or not: otherwise a later launch (after `logout`) would reinstall it.
+  const claimFile = path.join(cacheDir, ".free_claim");
+  if (!overwrite && fs.existsSync(keyFile)) {
+    fs.rmSync(claimFile, { force: true });
+    return false;
+  }
+  fs.renameSync(writePrivateTmp(keyFile, key + "\n"), keyFile);
+  fs.rmSync(claimFile, { force: true });
+  return true;
+}
+
+/**
+ * This install's claim code, from <cache>/.free_claim (0600, 7-day life).
+ * Workers launching at once must print the same link, so the code is written
+ * whole to a temp file and hard-linked into place: the first one wins.
+ */
+export function getClaimCode(): string {
+  const cacheDir = getCacheDir();
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const file = path.join(cacheDir, ".free_claim");
+  try {
+    if (Date.now() - fs.statSync(file).mtimeMs < CLAIM_MAX_AGE_MS) {
+      const code = fs.readFileSync(file, "utf-8").trim();
+      if (CLAIM_CODE_RE.test(code)) return code;
+    }
+    fs.rmSync(file, { force: true }); // expired or garbage: start over
+  } catch {
+    // no code yet
+  }
+  let code = randomBytes(32).toString("base64url");
+  const tmp = writePrivateTmp(file, code);
+  try {
+    fs.linkSync(tmp, file); // publish without replacing
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+      code = fs.readFileSync(file, "utf-8").trim();
+    } else {
+      // ponytail: no hard links (FAT, some network mounts) -> plain replace;
+      // a concurrent first launch there may print a different link.
+      fs.renameSync(tmp, file);
+    }
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+  return code;
+}
+
+export function claimLink(code: string): string {
+  return FREE_CLAIM_LINK + code;
+}
+
+/**
+ * One poll: the key once the claim's email is confirmed, else undefined.
+ * Throws FreeKeyAlreadyHeld (and retires the code) if that email has a key.
+ * The code goes in the body, never the URL: it is a bearer secret and URLs
+ * land in server logs.
+ */
+export async function checkClaim(code: string): Promise<string | undefined> {
+  let data: { status?: string; license_key?: unknown };
+  try {
+    const resp = await fetch(CLAIM_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    const body: unknown = resp.ok ? await resp.json() : {};
+    // Anything but a JSON object (null, array, a proxy's odd answer) = pending.
+    data = body && typeof body === "object" && !Array.isArray(body) ? (body as typeof data) : {};
+  } catch (e) {
+    if (/\bcloakbrowser\b/.test(process.env.DEBUG ?? "")) {
+      console.debug(`[cloakbrowser] Free-key claim check failed: ${e}`);
+    }
+    return undefined;
+  }
+  if (data.status === "has_key") {
+    // This code will only ever answer has_key: start fresh next time.
+    fs.rmSync(path.join(getCacheDir(), ".free_claim"), { force: true });
+    throw new FreeKeyAlreadyHeld();
+  }
+  const key = data.status === "ready" ? data.license_key : undefined;
+  return typeof key === "string" && KEY_RE.test(key.trim()) ? key.trim() : undefined;
+}
+
+/**
+ * Poll until the key arrives (saved, then returned) or `deadline` (ms epoch)
+ * passes. Returns undefined if the key arrived but was not saved (overwrite
+ * false and a key already exists). With a deadline it is a background poll: its
+ * timers are unref'd so it never keeps a script alive. Without one (someone is
+ * waiting at the terminal) the timer must hold the process open.
+ */
+export async function pollClaim(
+  code: string,
+  { intervalMs = 15_000, deadline, overwrite = false }:
+    { intervalMs?: number; deadline?: number; overwrite?: boolean } = {},
+): Promise<string | undefined> {
+  for (;;) {
+    const key = await checkClaim(code);
+    if (key) return saveLicenseKey(key, { overwrite }) ? key : undefined;
+    if (deadline !== undefined && Date.now() + intervalMs > deadline) return undefined;
+    await new Promise((r) => {
+      const t = setTimeout(r, intervalMs);
+      if (deadline !== undefined) t.unref();
+    });
+  }
 }
 
 /**

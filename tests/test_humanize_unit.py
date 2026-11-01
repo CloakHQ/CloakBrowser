@@ -1159,3 +1159,51 @@ def test_match_child_same_url_siblings_keep_attach_order_after_rename():
             {"id": "B", "name": "renamed", "url": "http://site.test/w.html"}]
     assert _match_child(a, parent, kids) == "A"
     assert _match_child(b, parent, kids) == "B"
+
+
+# --- #619: each browser call is bounded by the action's timeout ----------------
+
+def test_bounded_call_times_out_and_marks_the_action_stalled():
+    from cloakbrowser.human.world import ACTION, Action, PageStalled, bounded
+
+    async def main():
+        ACTION.set(Action(50))
+        with pytest.raises(PageStalled):
+            await bounded(asyncio.sleep(5))
+        return ACTION.get().stalled
+
+    assert asyncio.run(main()) is True
+
+
+def test_bounded_call_after_a_stall_is_sent_but_not_waited_on():
+    """Once the page stopped answering, a release (key / mouse up) still goes out
+    to the browser, but the action neither waits for its answer nor raises again,
+    so every release of a cleanup loop goes out."""
+    from cloakbrowser.human.world import ACTION, Action, bounded
+    started = []
+
+    async def call():
+        started.append(True)
+        await asyncio.sleep(5)
+
+    async def main():
+        act = Action(60000)
+        act.stalled = True
+        ACTION.set(act)
+        t = time.monotonic()
+        for _ in range(2):
+            assert await bounded(call()) is None
+        return time.monotonic() - t
+
+    assert asyncio.run(main()) < 1 and len(started) == 2
+
+
+def test_bounded_call_has_no_limit_outside_an_action_or_with_timeout_zero():
+    from cloakbrowser.human.world import ACTION, Action, bounded
+
+    async def main():
+        assert await bounded(asyncio.sleep(0.1, "out")) == "out"
+        ACTION.set(Action(0))
+        assert await bounded(asyncio.sleep(0.1, "zero")) == "zero"
+
+    asyncio.run(main())

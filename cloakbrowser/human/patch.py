@@ -26,8 +26,11 @@ import inspect
 import types
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+from playwright._impl._errors import TimeoutError
+
 from .config import HumanConfig, rand
 from .engine import CursorState, Human, RawFallback, Target
+from .world import ACTION, Action, PageStalled
 
 _PATCHED = {"sync": False, "async": False}
 # (class, method name) -> original function
@@ -264,6 +267,23 @@ def _handlers(kind: str) -> Dict[str, Handler]:
     return {**common, "scroll_into_view_if_needed": scroll_into_view_if_needed}
 
 
+def _in_action(kind: str, name: str, handler: Handler) -> Handler:
+    """Run the action with its timeout bounding every browser call it makes, so a
+    page that stops answering cannot block past ``timeout=`` (#619)."""
+    async def run(h: Human, impl: Any, a: dict) -> Any:
+        frame = impl.main_frame if kind == "Page" else impl if kind == "Frame" else impl._frame
+        timeout = h.timeout(frame, a.get("timeout"))
+        token = ACTION.set(Action(timeout))
+        try:
+            return await handler(h, impl, a)
+        except PageStalled:
+            raise TimeoutError(f"{kind}.{name}: Timeout {timeout:.0f}ms exceeded.\n"
+                               "Call log:\n  - waiting for the page to respond") from None
+        finally:
+            ACTION.reset(token)
+    return run
+
+
 async def _mouse_move(h: Human, impl: Any, a: dict) -> None:
     await h.mouse_move(a["x"], a["y"], a.get("steps"))
 
@@ -341,7 +361,7 @@ def _install(api: str) -> None:
     for kind in ("Page", "Frame", "Locator", "ElementHandle"):
         cls = getattr(g, kind)
         for name, handler in _handlers(kind).items():
-            _wrap(kind, cls, name, handler, is_async)
+            _wrap(kind, cls, name, _in_action(kind, name, handler), is_async)
     for kind, table in _INPUT_HANDLERS.items():
         cls = getattr(g, kind)
         for name, handler in table.items():

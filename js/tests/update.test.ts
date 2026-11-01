@@ -6,14 +6,12 @@ import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import { createHash, generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 import {
-  binarySupportsHeadlessNoViewport,
-  binarySupportsHttpProxyInlineAuth,
-  binarySupportsMaximizedWindow,
-  getChromiumVersion,
+  BINARY_SIGNING_PUBKEYS,
+  getArchiveName,
   getBinaryDir,
   getBinaryPath,
-  getDownloadUrl,
   getEffectiveVersion,
   getPlatformTag,
   parseVersion,
@@ -21,12 +19,9 @@ import {
 } from "../src/config.js";
 import {
   checkForProUpdate,
-  checkForUpdate,
   checkWrapperUpdate,
   clearCache,
   ensureBinary,
-  fetchChecksums,
-  getLatestChromiumVersion,
   parseChecksums,
   resetWrapperUpdateChecked,
   resetPreviewFallbackWarned,
@@ -75,111 +70,15 @@ describe("version comparison", () => {
   });
 });
 
-describe("download URL", () => {
-  it("uses chromium-v prefix and cloakbrowser repo", () => {
-    const url = getDownloadUrl();
-    expect(url).toContain("cloakbrowser.dev");
-    expect(url).toContain(`chromium-v${getChromiumVersion()}`);
-    expect(url.endsWith(".tar.gz")).toBe(true);
-  });
-
-  it("accepts custom version", () => {
-    const url = getDownloadUrl("145.0.7718.0");
-    expect(url).toContain("chromium-v145.0.7718.0");
-  });
-
-  it("does not reference old repo", () => {
-    const url = getDownloadUrl();
-    expect(url).not.toContain("chromium-stealth-builds");
-  });
-});
-
-describe("latest version (platform-aware)", () => {
-  function makeAssets(platforms: string[]) {
-    return platforms.map((p) => ({ name: `cloakbrowser-${p}.tar.gz` }));
-  }
-
-  function mockFetch(releases: Array<Record<string, unknown>>) {
-    return vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      json: async () => releases,
-    } as Response);
-  }
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("returns version when release has platform asset", async () => {
-    mockFetch([
-      {
-        tag_name: "chromium-v145.0.7718.0",
-        draft: false,
-        assets: makeAssets(["linux-x64", "darwin-arm64", "darwin-x64", "windows-x64"]),
-      },
-    ]);
-    expect(await getLatestChromiumVersion()).toBe("145.0.7718.0");
-  });
-
-  it("skips release without platform asset", async () => {
-    mockFetch([
-      {
-        tag_name: "chromium-v145.0.7718.0",
-        draft: false,
-        assets: makeAssets(["linux-x64"]), // Linux only
-      },
-      {
-        tag_name: "chromium-v142.0.7444.175",
-        draft: false,
-        assets: makeAssets(["linux-x64", "darwin-arm64", "darwin-x64", "windows-x64"]),
-      },
-    ]);
-    const result = await getLatestChromiumVersion();
-    const tag = getPlatformTag();
-    if (tag === "linux-x64") {
-      expect(result).toBe("145.0.7718.0");
-    } else {
-      expect(result).toBe("142.0.7444.175");
-    }
-  });
-
-  it("returns null when no release has platform asset", async () => {
-    mockFetch([
-      {
-        tag_name: "chromium-v145.0.7718.0",
-        draft: false,
-        assets: [{ name: "cloakbrowser-freebsd-x64.tar.gz" }],
-      },
-    ]);
-    expect(await getLatestChromiumVersion()).toBeNull();
-  });
-
-  it("skips draft releases", async () => {
-    const all = ["linux-x64", "darwin-arm64", "darwin-x64", "windows-x64"];
-    mockFetch([
-      { tag_name: "chromium-v999.0.0.0", draft: true, assets: makeAssets(all) },
-      { tag_name: "chromium-v145.0.7718.0", draft: false, assets: makeAssets(all) },
-    ]);
-    expect(await getLatestChromiumVersion()).toBe("145.0.7718.0");
-  });
-
-  it("returns null on network error", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("timeout"));
-    expect(await getLatestChromiumVersion()).toBeNull();
-  });
-});
-
 describe("wrapper update check", () => {
   beforeEach(() => {
     resetWrapperUpdateChecked();
     delete process.env.CLOAKBROWSER_AUTO_UPDATE;
-    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     delete process.env.CLOAKBROWSER_AUTO_UPDATE;
-    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
   });
 
   it("warns when newer version available", async () => {
@@ -210,15 +109,6 @@ describe("wrapper update check", () => {
 
   it("disabled by CLOAKBROWSER_AUTO_UPDATE=false", async () => {
     process.env.CLOAKBROWSER_AUTO_UPDATE = "false";
-    const spy = vi.spyOn(globalThis, "fetch");
-
-    await checkWrapperUpdate();
-
-    expect(spy).not.toHaveBeenCalled();
-  });
-
-  it("disabled by CLOAKBROWSER_DOWNLOAD_URL", async () => {
-    process.env.CLOAKBROWSER_DOWNLOAD_URL = "https://mirror.example.com";
     const spy = vi.spyOn(globalThis, "fetch");
 
     await checkWrapperUpdate();
@@ -280,81 +170,19 @@ describe("parseChecksums", () => {
   });
 });
 
-describe("download fallback", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
-  });
-
-  it("checksum fetch falls back to GitHub on primary 429", async () => {
-    const HASH =
-      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    const checksumText = `${HASH}  cloakbrowser-${getPlatformTag()}.tar.gz`;
-
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url;
-      if (url.includes("cloakbrowser.dev")) {
-        return {
-          ok: false,
-          status: 429,
-          statusText: "Too Many Requests",
-        } as Response;
-      }
-      // GitHub fallback
-      return { ok: true, text: async () => checksumText } as Response;
-    });
-
-    const result = await fetchChecksums();
-    expect(result).not.toBeNull();
-    expect(
-      result!.has(`cloakbrowser-${getPlatformTag()}.tar.gz`)
-    ).toBe(true);
-  });
-
-  it("checksum fetch returns null when both sources fail", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: false,
-      status: 429,
-      statusText: "Too Many Requests",
-    } as Response);
-
-    const result = await fetchChecksums();
-    expect(result).toBeNull();
-  });
-});
-
 describe("effective version", () => {
-  it("returns platform version when no marker exists", () => {
-    const orig = process.env.CLOAKBROWSER_CACHE_DIR;
-    process.env.CLOAKBROWSER_CACHE_DIR = `/tmp/cloakbrowser-test-${Date.now()}`;
-    try {
-      expect(getEffectiveVersion()).toBe(getChromiumVersion());
-    } finally {
-      if (orig) process.env.CLOAKBROWSER_CACHE_DIR = orig;
-      else delete process.env.CLOAKBROWSER_CACHE_DIR;
-    }
-  });
-
-  // A valid Pro license must NEVER fall back to the free binary.
-  it("returns null for Pro when nothing is cached (never the free base)", () => {
+  it("returns null when nothing is cached", () => {
     const orig = process.env.CLOAKBROWSER_CACHE_DIR;
     process.env.CLOAKBROWSER_CACHE_DIR = `/tmp/cloakbrowser-test-${Date.now()}-pro`;
     try {
-      expect(getEffectiveVersion(true)).toBeNull();
-      // Free tier still resolves to a concrete version.
-      expect(getEffectiveVersion(false)).toBe(getChromiumVersion());
+      expect(getEffectiveVersion()).toBeNull();
     } finally {
       if (orig) process.env.CLOAKBROWSER_CACHE_DIR = orig;
       else delete process.env.CLOAKBROWSER_CACHE_DIR;
     }
   });
 
-  it("returns null for Pro when the marker's binary is missing", () => {
+  it("returns null when the marker's binary is missing", () => {
     const orig = process.env.CLOAKBROWSER_CACHE_DIR;
     const dir = `/tmp/cloakbrowser-test-${Date.now()}-promarker`;
     process.env.CLOAKBROWSER_CACHE_DIR = dir;
@@ -364,8 +192,8 @@ describe("effective version", () => {
         path.join(dir, `latest_pro_version_${getPlatformTag()}`),
         "148.0.7778.215.5"
       );
-      // Marker present, but no binary on disk → null, not the free base.
-      expect(getEffectiveVersion(true)).toBeNull();
+      // Marker present, but no binary on disk → null.
+      expect(getEffectiveVersion()).toBeNull();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
       if (orig) process.env.CLOAKBROWSER_CACHE_DIR = orig;
@@ -379,7 +207,7 @@ describe("preview Pro selection", () => {
   let originalCacheDir: string | undefined;
 
   function createProBinary(version: string): string {
-    const binaryPath = getBinaryPath(version, true);
+    const binaryPath = getBinaryPath(version);
     fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
     fs.writeFileSync(binaryPath, "fake");
     fs.chmodSync(binaryPath, 0o755);
@@ -400,27 +228,6 @@ describe("preview Pro selection", () => {
     if (originalCacheDir === undefined) delete process.env.CLOAKBROWSER_CACHE_DIR;
     else process.env.CLOAKBROWSER_CACHE_DIR = originalCacheDir;
     delete process.env.CLOAKBROWSER_RELEASE_CHANNEL;
-  });
-
-  it("uses the selected channel for binary capability gates", () => {
-    const stable = "145.0.1000.1";
-    const preview = "148.0.7778.215.4";
-    createProBinary(stable);
-    createProBinary(preview);
-    fs.writeFileSync(
-      path.join(cacheDir, `latest_pro_version_${getPlatformTag()}`),
-      stable,
-    );
-    fs.writeFileSync(
-      path.join(cacheDir, `latest_pro_version_preview_${getPlatformTag()}`),
-      preview,
-    );
-
-    expect(binarySupportsHeadlessNoViewport("cb_test", undefined, "stable")).toBe(false);
-    expect(binarySupportsHeadlessNoViewport("cb_test", undefined, "preview")).toBe(true);
-    expect(binarySupportsMaximizedWindow("cb_test", undefined, "preview")).toBe(true);
-    expect(binarySupportsHttpProxyInlineAuth("cb_test", undefined, "stable")).toBe(false);
-    expect(binarySupportsHttpProxyInlineAuth("cb_test", undefined, "preview")).toBe(true);
   });
 
   it("keeps a pinned preview launch isolated from latest markers", async () => {
@@ -553,8 +360,7 @@ describe("preview Pro selection", () => {
     ).toBe(false);
   });
 
-  it("aborts (never free) when the server rejects the key", async () => {
-    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
+  it("aborts when the server rejects the key", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,
       json: async () => ({ valid: false, plan: "solo", expires: null }),
@@ -563,8 +369,7 @@ describe("preview Pro selection", () => {
     await expect(ensureBinary("cb_bad")).rejects.toThrow(/invalid or expired/);
   });
 
-  it("aborts (never free) when the key cannot be validated (server down, no cache)", async () => {
-    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
+  it("aborts when the key cannot be validated (server down, no cache)", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
 
     await expect(ensureBinary("cb_test")).rejects.toThrow(/could not be validated/);
@@ -599,25 +404,6 @@ describe("clearCache", () => {
     } else {
       delete process.env.CLOAKBROWSER_CACHE_DIR;
     }
-  });
-});
-
-describe("checkForUpdate", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("returns null when no newer version", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      json: async () => [],
-    } as Response);
-    expect(await checkForUpdate()).toBeNull();
-  });
-
-  it("returns null on network error", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("timeout"));
-    expect(await checkForUpdate()).toBeNull();
   });
 });
 
@@ -669,9 +455,16 @@ describe("concurrent first-run download", () => {
   const CALLERS = 4;
   const FILLER_FILES = 300;
   const PARTIAL_INSTALL_FILES = 2000;
+  const VERSION = "155.0.8059.39.2";
   const binaryBytes = Buffer.from("#!/bin/sh\necho fake-chrome\n");
+  // A throwaway signing key, pinned for these tests: the keyed download path
+  // always verifies the signed manifest (nothing can skip it).
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const testPubB64 = Buffer.from(publicKey.export({ format: "jwk" }).x!, "base64url").toString("base64");
   let cacheDir: string;
   let archiveBytes: Buffer;
+  let manifest: Buffer;
+  let manifestSig: Buffer;
   let originalCacheDir: string | undefined;
 
   beforeEach(async () => {
@@ -679,15 +472,14 @@ describe("concurrent first-run download", () => {
     originalCacheDir = process.env.CLOAKBROWSER_CACHE_DIR;
     cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloakbrowser-concurrent-"));
     process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
-    process.env.CLOAKBROWSER_DOWNLOAD_URL = "https://mirror.invalid";
-    process.env.CLOAKBROWSER_SKIP_CHECKSUM = "true";
     delete process.env.CLOAKBROWSER_BINARY_PATH;
     delete process.env.CLOAKBROWSER_VERSION;
+    BINARY_SIGNING_PUBKEYS.push(testPubB64);
 
     // A small archive with the platform's binary layout plus enough filler
     // files that concurrent extractions overlap in time.
     const staging = fs.mkdtempSync(path.join(os.tmpdir(), "cloakbrowser-archive-"));
-    const binaryRelPath = path.relative(getBinaryDir(), getBinaryPath());
+    const binaryRelPath = path.relative(getBinaryDir(VERSION), getBinaryPath(VERSION));
     fs.mkdirSync(path.join(staging, path.dirname(binaryRelPath)), { recursive: true });
     fs.writeFileSync(path.join(staging, binaryRelPath), binaryBytes, { mode: 0o755 });
     fs.mkdirSync(path.join(staging, "lib"));
@@ -699,29 +491,54 @@ describe("concurrent first-run download", () => {
     archiveBytes = fs.readFileSync(archivePath);
     fs.rmSync(staging, { recursive: true, force: true });
     fs.rmSync(archivePath, { force: true });
+    const hash = createHash("sha256").update(archiveBytes).digest("hex");
+    manifest = Buffer.from(`version=${VERSION}\n${hash}  ${getArchiveName()}\n`);
+    manifestSig = Buffer.from(cryptoSign(null, manifest, privateKey).toString("base64"));
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    BINARY_SIGNING_PUBKEYS.splice(BINARY_SIGNING_PUBKEYS.indexOf(testPubB64), 1);
     fs.rmSync(cacheDir, { recursive: true, force: true });
     if (originalCacheDir === undefined) delete process.env.CLOAKBROWSER_CACHE_DIR;
     else process.env.CLOAKBROWSER_CACHE_DIR = originalCacheDir;
-    delete process.env.CLOAKBROWSER_DOWNLOAD_URL;
-    delete process.env.CLOAKBROWSER_SKIP_CHECKSUM;
   });
+
+  /** The server, by path: license check, latest version, signed manifest, archive. */
+  async function serve(pathname: string, downloadHold?: () => Promise<void>): Promise<Response> {
+    if (pathname.endsWith("/api/license/validate")) {
+      return Response.json({ valid: true, plan: "business", expires: null });
+    }
+    if (pathname.endsWith("/api/download/version")) return Response.json({ version: VERSION });
+    if (pathname.endsWith("/SHA256SUMS")) return new Response(manifest);
+    if (pathname.endsWith("/SHA256SUMS.sig")) return new Response(manifestSig);
+    if (pathname.endsWith(`/api/download/${VERSION}`)) {
+      await downloadHold?.();
+      return new Response(archiveBytes);
+    }
+    return new Response("not found", { status: 404 }); // e.g. the npm update check
+  }
+
+  const urlPath = (input: unknown) =>
+    new URL(input instanceof Request ? input.url : String(input)).pathname;
 
   // Reads the install the way a launch would. Returns what is wrong with it, or "complete".
   function inspectInstall(): string {
     try {
-      const binaryPath = getBinaryPath();
+      const binaryPath = getBinaryPath(VERSION);
       if (!fs.readFileSync(binaryPath).equals(binaryBytes)) return "binary content differs";
       if ((fs.statSync(binaryPath).mode & 0o111) === 0) return "binary not executable";
-      const fillerCount = fs.readdirSync(path.join(getBinaryDir(), "lib")).length;
+      const fillerCount = fs.readdirSync(path.join(getBinaryDir(VERSION), "lib")).length;
       return fillerCount === FILLER_FILES ? "complete" : `lib has ${fillerCount} files`;
     } catch (err) {
       return (err as NodeJS.ErrnoException).code ?? String(err);
     }
   }
+
+  const cacheEntries = () =>
+    fs.readdirSync(cacheDir).filter((name) => !name.startsWith(".")).sort();
+  const expectedEntries = () =>
+    [path.basename(getBinaryDir(VERSION)), `latest_pro_version_${getPlatformTag()}`].sort();
 
   it.skipIf(process.platform === "win32")(
     "an install stays complete while other first-run callers finish",
@@ -731,17 +548,18 @@ describe("concurrent first-run download", () => {
       // is the state a batch of simultaneous cold launches ends up in.
       let releaseHeldDownloads!: () => void;
       const heldDownloads = new Promise<void>((resolve) => (releaseHeldDownloads = resolve));
-      let fetchCount = 0;
-      vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-        if (fetchCount++ > 0) await heldDownloads;
-        return new Response(archiveBytes);
-      });
+      let downloadCount = 0;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+        serve(urlPath(input), async () => {
+          if (downloadCount++ > 0) await heldDownloads;
+        }),
+      );
       vi.spyOn(console, "log").mockImplementation(() => {});
       vi.spyOn(console, "error").mockImplementation(() => {});
 
-      const callers = Array.from({ length: CALLERS }, () => ensureBinary());
+      const callers = Array.from({ length: CALLERS }, () => ensureBinary("cb_test"));
       const firstBinaryPath = await callers[0];
-      expect(firstBinaryPath).toBe(getBinaryPath());
+      expect(firstBinaryPath).toBe(getBinaryPath(VERSION));
 
       // Caller 0 would now exec its binary. Keep reading the install while
       // the held callers download and extract.
@@ -757,24 +575,22 @@ describe("concurrent first-run download", () => {
       observedStates.add(inspectInstall());
 
       for (const outcome of await otherCallers) {
-        expect(outcome).toEqual({ status: "fulfilled", value: getBinaryPath() });
+        expect(outcome).toEqual({ status: "fulfilled", value: getBinaryPath(VERSION) });
       }
       expect([...observedStates]).toEqual(["complete"]);
-      expect(fs.readdirSync(cacheDir).filter((name) => !name.startsWith("."))).toEqual([
-        path.basename(getBinaryDir()),
-      ]);
+      expect(cacheEntries()).toEqual(expectedEntries());
     },
   );
 
   it.skipIf(process.platform === "win32")(
     "replaces a partial install left by an interrupted extraction",
     async () => {
-      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(archiveBytes));
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => serve(urlPath(input)));
       vi.spyOn(console, "error").mockImplementation(() => {});
-      fs.mkdirSync(path.join(getBinaryDir(), "lib"), { recursive: true });
-      fs.writeFileSync(path.join(getBinaryDir(), "lib", "part-0.bin"), "truncated");
+      fs.mkdirSync(path.join(getBinaryDir(VERSION), "lib"), { recursive: true });
+      fs.writeFileSync(path.join(getBinaryDir(VERSION), "lib", "part-0.bin"), "truncated");
 
-      expect(await ensureBinary()).toBe(getBinaryPath());
+      expect(await ensureBinary("cb_test")).toBe(getBinaryPath(VERSION));
       expect(inspectInstall()).toBe("complete");
     },
   );
@@ -783,12 +599,12 @@ describe("concurrent first-run download", () => {
   it.skipIf(process.platform === "win32")(
     "first-run download writes nothing to stdout",
     async () => {
-      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(archiveBytes));
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => serve(urlPath(input)));
       vi.spyOn(console, "error").mockImplementation(() => {});
       const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
       const stdoutWrite = vi.spyOn(process.stdout, "write");
 
-      expect(await ensureBinary()).toBe(getBinaryPath());
+      expect(await ensureBinary("cb_test")).toBe(getBinaryPath(VERSION));
       expect(inspectInstall()).toBe("complete");
       expect(consoleLog).not.toHaveBeenCalled();
       expect(stdoutWrite).not.toHaveBeenCalled();
@@ -799,35 +615,46 @@ describe("concurrent first-run download", () => {
     "concurrent processes replace a partial install left by an interrupted extraction",
     async () => {
       // Enough files that deleting the partial install overlaps other callers.
-      fs.mkdirSync(path.join(getBinaryDir(), "lib"), { recursive: true });
+      fs.mkdirSync(path.join(getBinaryDir(VERSION), "lib"), { recursive: true });
       for (let i = 0; i < PARTIAL_INSTALL_FILES; i++) {
-        fs.writeFileSync(path.join(getBinaryDir(), "lib", `part-${i}.bin`), "truncated");
+        fs.writeFileSync(path.join(getBinaryDir(VERSION), "lib", `part-${i}.bin`), "truncated");
       }
 
-      // Answer only once every caller is downloading, so all of them find the
-      // partial install in the way when they move their extraction into place.
-      const heldResponses: http.ServerResponse[] = [];
-      const mirror = http.createServer((_request, response) => {
-        heldResponses.push(response);
-        if (heldResponses.length === CALLERS) {
-          for (const heldResponse of heldResponses) heldResponse.end(archiveBytes);
-        }
+      // A local stand-in for the server. The archive is answered only once every
+      // caller is downloading, so all of them find the partial install in the
+      // way when they move their extraction into place.
+      const heldDownloads: Array<() => void> = [];
+      const mirror = http.createServer(async (request, response) => {
+        const reply = await serve(new URL(request.url!, "http://x").pathname, () =>
+          new Promise<void>((resolve) => {
+            heldDownloads.push(resolve);
+            if (heldDownloads.length === CALLERS) heldDownloads.forEach((release) => release());
+          }),
+        );
+        response.writeHead(reply.status, { "content-type": reply.headers.get("content-type") ?? "" });
+        response.end(Buffer.from(await reply.arrayBuffer()));
       });
       await new Promise<void>((resolve) => mirror.listen(0, "127.0.0.1", resolve));
       const mirrorUrl = `http://127.0.0.1:${(mirror.address() as AddressInfo).port}`;
 
       // Callers in one process cannot interleave inside extractArchive's
       // synchronous rename and cleanup, so each caller is a separate process
-      // running the built dist/ (npm run build first, as CI does).
-      const downloadModuleUrl = new URL("../dist/download.js", import.meta.url).href;
+      // running the built dist/ (npm run build first, as CI does). Each pins
+      // the test key and sends every request to the local server.
+      const distUrl = (name: string) => new URL(`../dist/${name}`, import.meta.url).href;
       const callerScript =
-        `const { ensureBinary } = await import(${JSON.stringify(downloadModuleUrl)});` +
-        `console.log("BINARY_PATH=" + (await ensureBinary()));`;
+        `const cfg = await import(${JSON.stringify(distUrl("config.js"))});` +
+        `cfg.BINARY_SIGNING_PUBKEYS.push(${JSON.stringify(testPubB64)});` +
+        `const realFetch = globalThis.fetch;` +
+        `globalThis.fetch = (input, init) => { const u = new URL(String(input));` +
+        ` return realFetch(${JSON.stringify(mirrorUrl)} + u.pathname + u.search, init); };` +
+        `const { ensureBinary } = await import(${JSON.stringify(distUrl("download.js"))});` +
+        `console.log("BINARY_PATH=" + (await ensureBinary("cb_test")));`;
       try {
         const callers = await Promise.allSettled(
           Array.from({ length: CALLERS }, () =>
             promisify(execFile)(process.execPath, ["--input-type=module", "-e", callerScript], {
-              env: { ...process.env, CLOAKBROWSER_DOWNLOAD_URL: mirrorUrl },
+              env: process.env,
             }),
           ),
         );
@@ -836,14 +663,12 @@ describe("concurrent first-run download", () => {
             ? caller.value.stdout.trim().split("\n").at(-1)
             : String(caller.reason),
         );
-        expect(outcomes).toEqual(Array(CALLERS).fill(`BINARY_PATH=${getBinaryPath()}`));
+        expect(outcomes).toEqual(Array(CALLERS).fill(`BINARY_PATH=${getBinaryPath(VERSION)}`));
       } finally {
         mirror.close();
       }
       expect(inspectInstall()).toBe("complete");
-      expect(fs.readdirSync(cacheDir).filter((name) => !name.startsWith("."))).toEqual([
-        path.basename(getBinaryDir()),
-      ]);
+      expect(cacheEntries()).toEqual(expectedEntries());
     },
   );
 });

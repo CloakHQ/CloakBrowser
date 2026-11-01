@@ -28,7 +28,6 @@ public class LicenseTests : IDisposable
     private readonly string _tmp;
     private readonly string? _prevCacheDir;
     private readonly string? _prevLicenseEnv;
-    private readonly string? _prevDownloadUrl;
     private readonly string? _prevReleaseChannel;
 
     public LicenseTests()
@@ -37,11 +36,9 @@ public class LicenseTests : IDisposable
         Directory.CreateDirectory(_tmp);
         _prevCacheDir = Environment.GetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR");
         _prevLicenseEnv = Environment.GetEnvironmentVariable("CLOAKBROWSER_LICENSE_KEY");
-        _prevDownloadUrl = Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL");
         _prevReleaseChannel = Environment.GetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL");
         Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", _tmp);
         Environment.SetEnvironmentVariable("CLOAKBROWSER_LICENSE_KEY", null);
-        Environment.SetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL", null);
         Environment.SetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL", null);
     }
 
@@ -49,7 +46,6 @@ public class LicenseTests : IDisposable
     {
         Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", _prevCacheDir);
         Environment.SetEnvironmentVariable("CLOAKBROWSER_LICENSE_KEY", _prevLicenseEnv);
-        Environment.SetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL", _prevDownloadUrl);
         Environment.SetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL", _prevReleaseChannel);
         License.ValidateLicenseOverride = null;
         License.ProLatestVersionOverride = null;
@@ -209,15 +205,15 @@ public class LicenseTests : IDisposable
     }
 
     // =======================================================================
-    // EnsureBinary Pro routing - a supplied key that isn't valid aborts,
-    // never silently downgrades to the free binary.
+    // EnsureBinary routing - a supplied key that isn't valid aborts and
+    // never falls into the no-key claim flow.
     // =======================================================================
 
     [Fact]
     public async Task InvalidKey_aborts_not_free()
     {
         License.ValidateLicenseOverride = key => new LicenseInfo(false, "solo", null);
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<CloakBrowserLicenseError>(
             () => Download.EnsureBinaryAsync("cb_bad"));
         Assert.Contains("invalid or expired", ex.Message);
     }
@@ -227,7 +223,7 @@ public class LicenseTests : IDisposable
     {
         // validate returns null (server unreachable, no cache) -> abort.
         License.ValidateLicenseOverride = key => null;
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<CloakBrowserLicenseError>(
             () => Download.EnsureBinaryAsync("cb_x"));
         Assert.Contains("could not be validated", ex.Message);
     }
@@ -250,7 +246,7 @@ public class LicenseTests : IDisposable
         var completedOnReturn = task.IsCompleted;
         gate.Set();
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => task);
+        await Assert.ThrowsAsync<CloakBrowserLicenseError>(() => task);
         Assert.False(completedOnReturn);
         Assert.True(returnedAfter < TimeSpan.FromSeconds(1), $"caller blocked {returnedAfter}");
     }
@@ -749,40 +745,30 @@ public class LicenseTests : IDisposable
     [Fact]
     public void BinaryDir_pro_suffix()
     {
-        var dir = Config.GetBinaryDir("148.0.7778.215.2", pro: true);
+        // Kept as "-pro": existing caches stay valid across the upgrade.
+        var dir = Config.GetBinaryDir("148.0.7778.215.2");
         Assert.EndsWith("chromium-148.0.7778.215.2-pro", dir);
     }
 
     [Fact]
-    public void BinaryDir_default_no_suffix()
-    {
-        var dir = Config.GetBinaryDir("146.0.7680.177.5", pro: false);
-        Assert.EndsWith("chromium-146.0.7680.177.5", dir);
-        Assert.DoesNotContain("-pro", Path.GetFileName(dir));
-    }
-
-    [Fact]
-    public void EffectiveVersion_pro_marker_without_binary_returns_null()
+    public void EffectiveVersion_marker_without_binary_returns_null()
     {
         var marker = Path.Combine(_tmp, $"latest_pro_version_{Config.GetPlatformTag()}");
         File.WriteAllText(marker, "148.0.7778.215.2");
-        // Marker present but no Pro binary on disk -> null, NOT the
-        // free base. A valid Pro license must never fall back to the free binary.
-        Assert.Null(Config.GetEffectiveVersion(pro: true));
+        // Marker present but no binary on disk -> null (resolve latest from the server).
+        Assert.Null(Config.GetEffectiveVersion());
     }
 
     [Fact]
-    public void EffectiveVersion_pro_no_marker_returns_null_free_returns_base()
+    public void EffectiveVersion_no_marker_returns_null()
     {
-        // No Pro marker at all -> null for Pro; free tier still resolves to a version.
-        Assert.Null(Config.GetEffectiveVersion(pro: true));
-        Assert.Equal(Config.GetChromiumVersion(), Config.GetEffectiveVersion(pro: false));
+        Assert.Null(Config.GetEffectiveVersion());
     }
 
-    // Create a fake cached, executable Pro binary for `version`.
+    // Create a fake cached, executable binary for `version`.
     private static void MakeProBinary(string version)
     {
-        var p = Config.GetBinaryPath(version, pro: true);
+        var p = Config.GetBinaryPath(version);
         Directory.CreateDirectory(Path.GetDirectoryName(p)!);
         File.WriteAllText(p, "binary");
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -802,32 +788,10 @@ public class LicenseTests : IDisposable
         File.WriteAllText(
             Path.Combine(_tmp, $"latest_pro_version_preview_{Config.GetPlatformTag()}"), preview);
 
-        Assert.Equal(stable, Config.GetEffectiveVersion(pro: true, releaseChannel: "stable"));
-        Assert.Equal(preview, Config.GetEffectiveVersion(pro: true, releaseChannel: "preview"));
-        Assert.False(Config.BinarySupportsHeadlessNoViewport("cb_key", releaseChannel: "stable"));
-        Assert.True(Config.BinarySupportsHeadlessNoViewport("cb_key", releaseChannel: "preview"));
-        Assert.True(Config.BinarySupportsMaximizedWindow("cb_key", releaseChannel: "preview"));
-        Assert.False(Config.BinarySupportsHttpProxyInlineAuth("cb_key", releaseChannel: "stable"));
-        Assert.True(Config.BinarySupportsHttpProxyInlineAuth("cb_key", releaseChannel: "preview"));
+        Assert.Equal(stable, Config.GetEffectiveVersion("stable"));
+        Assert.Equal(preview, Config.GetEffectiveVersion("preview"));
         Assert.Equal(preview, Download.BinaryInfo(releaseChannel: "preview").Version);
-
-        var stableProxy = ProxyResolver.Resolve(
-            "http://user:pass@host:8080", licenseKey: "cb_key", releaseChannel: "stable");
-        var previewProxy = ProxyResolver.Resolve(
-            "http://user:pass@host:8080", licenseKey: "cb_key", releaseChannel: "preview");
-        Assert.NotNull(stableProxy.PlaywrightProxy);
-        Assert.Empty(stableProxy.ExtraArgs);
-        Assert.Null(previewProxy.PlaywrightProxy);
-        Assert.Single(previewProxy.ExtraArgs);
-
-        var viewport = CloakLauncher.ResolveContextViewport(new LaunchContextOptions
-        {
-            Headless = true,
-            LicenseKey = "cb_key",
-            ReleaseChannel = "preview",
-        });
-        Assert.Equal(-1, viewport!.Width);
-        Assert.Equal(-1, viewport.Height);
+        Assert.Equal(stable, Download.BinaryInfo(releaseChannel: "stable").Version);
     }
 
     [Fact]
@@ -857,7 +821,7 @@ public class LicenseTests : IDisposable
         License.ProLatestVersionOverride = () => throw new InvalidOperationException("latest lookup must not run");
 
         Assert.Equal(
-            Config.GetBinaryPath(pinned, pro: true),
+            Config.GetBinaryPath(pinned),
             Download.EnsureBinary("cb_key", pinned, "preview"));
         Assert.False(File.Exists(Path.Combine(
             _tmp, $"latest_pro_version_preview_{Config.GetPlatformTag()}")));

@@ -123,9 +123,14 @@ def resolve_proxy_geo_with_ip(
     # a DB hiccup would let WebRTC fall back to the real IP behind a proxy while
     # the connection shows the proxy IP — a real deanonymization.
     ip = _resolve_exit_ip(proxy_url, timeout=_remaining_seconds(deadline))
-    # Hostname fallback only applies to a proxy; no proxy → echo services only
+    # Hostname fallback only applies to a proxy; no proxy → echo services only.
+    # A private address (a local forwarding proxy, a LAN gateway) is never the
+    # exit, so it would only produce a misleading lookup error.
     if ip is None and proxy_url and not _deadline_expired(deadline):
         ip = _resolve_proxy_ip(proxy_url)
+        if ip is not None and _is_private_ip(ip):
+            logger.debug("Proxy host resolves to private address %s, not using it as the exit", ip)
+            ip = None
     if ip is None or _deadline_expired(deadline):
         if deadline is not None and _deadline_expired(deadline):
             raise RuntimeError(f"GeoIP resolution timed out after {timeout:.1f}s")
@@ -192,7 +197,8 @@ def _resolve_proxy_ip(proxy_url: str) -> str | None:
 def _is_private_ip(ip: str) -> bool:
     """Check if an IP address is private/internal (not routable on the internet)."""
     try:
-        return ipaddress.ip_address(ip).is_private
+        # not is_global: is_private misses CGNAT 100.64/10 (Tailscale)
+        return not ipaddress.ip_address(ip).is_global
     except ValueError:
         return False
 

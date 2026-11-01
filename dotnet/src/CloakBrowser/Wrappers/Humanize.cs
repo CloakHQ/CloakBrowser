@@ -51,13 +51,14 @@ public static class Humanize
 
     /// <summary>
     /// Wrap a raw Playwright <see cref="IBrowser"/> so every context/page it produces
-    /// is humanized.
+    /// is humanized. <paramref name="defaultNoViewport"/> (set by CloakBrowser's own
+    /// launcher) defaults pages/contexts without an explicit viewport to no viewport.
     /// </summary>
     public static IBrowser Browser(
-        IBrowser browser, HumanConfig? config = null, bool headless = true, bool headlessNoViewport = false)
+        IBrowser browser, HumanConfig? config = null, bool defaultNoViewport = false)
     {
         if (browser is HumanizedBrowser) return browser;
-        return new HumanizedBrowser(browser, config ?? new HumanConfig(), headless, headlessNoViewport);
+        return new HumanizedBrowser(browser, config ?? new HumanConfig(), defaultNoViewport);
     }
 
     /// <summary>

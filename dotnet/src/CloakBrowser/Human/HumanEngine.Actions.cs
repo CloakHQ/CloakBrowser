@@ -9,7 +9,10 @@ internal sealed partial class HumanEngine
 {
     private static MouseButton Btn(ActOpts o) => o.Button ?? MouseButton.Left;
 
-    public async Task ClickAsync(Target t, ActOpts o, string api, int? clickCount = null)
+    public Task ClickAsync(Target t, ActOpts o, string api, int? clickCount = null) =>
+        InAction(t, o, api, () => ClickCoreAsync(t, o, api, clickCount));
+
+    private async Task ClickCoreAsync(Target t, ActOpts o, string api, int? clickCount)
     {
         int count = clickCount ?? o.ClickCount ?? 1;
         await PointerActionAsync(api, t, o, ClickStates, null, async (r, _, _, cfg) =>
@@ -19,7 +22,9 @@ internal sealed partial class HumanEngine
         }).ConfigureAwait(false);
     }
 
-    public async Task HoverAsync(Target t, ActOpts o, string api)
+    public Task HoverAsync(Target t, ActOpts o, string api) => InAction(t, o, api, () => HoverCoreAsync(t, o, api));
+
+    private async Task HoverCoreAsync(Target t, ActOpts o, string api)
     {
         // Playwright holds the modifiers while the mouse moves onto the target.
         await PointerActionAsync(api, t, o, HoverStates, false, hold: o.Modifiers).ConfigureAwait(false);
@@ -82,7 +87,9 @@ internal sealed partial class HumanEngine
         await Sleep(R(20, 60)).ConfigureAwait(false);
     }
 
-    public async Task PressAsync(Target t, string key, ActOpts o, string api)
+    public Task PressAsync(Target t, string key, ActOpts o, string api) => InAction(t, o, api, () => PressCoreAsync(t, key, o, api));
+
+    private async Task PressCoreAsync(Target t, string key, ActOpts o, string api)
     {
         var d = DeadlineFor(t, o);
         await FocusElementAsync(t, o, api, d, requireFocus: false).ConfigureAwait(false);
@@ -90,7 +97,9 @@ internal sealed partial class HumanEngine
         await PressKeyAsync(await KeysAsync(key).ConfigureAwait(false), null, o.Delay).ConfigureAwait(false);
     }
 
-    public async Task TypeAsync(Target t, string text, ActOpts o, string api)
+    public Task TypeAsync(Target t, string text, ActOpts o, string api) => InAction(t, o, api, () => TypeCoreAsync(t, text, o, api));
+
+    private async Task TypeCoreAsync(Target t, string text, ActOpts o, string api)
     {
         var cfg = CallCfg(o.HumanConfig);
         var d = DeadlineFor(t, o);
@@ -101,7 +110,9 @@ internal sealed partial class HumanEngine
         await TypeTextAsync(text, cfg, r.Frame, await InfoAsync(r).ConfigureAwait(false), o.Delay).ConfigureAwait(false);
     }
 
-    public async Task FillAsync(Target t, string value, ActOpts o, string api)
+    public Task FillAsync(Target t, string value, ActOpts o, string api) => InAction(t, o, api, () => FillCoreAsync(t, value, o, api));
+
+    private async Task FillCoreAsync(Target t, string value, ActOpts o, string api)
     {
         var cfg = CallCfg(o.HumanConfig);
         var d = DeadlineFor(t, o);
@@ -149,7 +160,10 @@ internal sealed partial class HumanEngine
         if (value.Length > 0) await TypeTextAsync(value, cfg, r.Frame, info, null).ConfigureAwait(false);
     }
 
-    public async Task SetCheckedAsync(Target t, bool want, ActOpts o, string api)
+    public Task SetCheckedAsync(Target t, bool want, ActOpts o, string api) =>
+        InAction(t, o, api, () => SetCheckedCoreAsync(t, want, o, api));
+
+    private async Task SetCheckedCoreAsync(Target t, bool want, ActOpts o, string api)
     {
         var d = DeadlineFor(t, o);
         var r = await WaitForAsync(t, ClickStates, d, api, o.Force).ConfigureAwait(false);
@@ -253,7 +267,11 @@ internal sealed partial class HumanEngine
 
     /// <summary>Pick options like a person: a dropdown is opened with a click and moved with
     /// arrow keys + Enter; a list box gets clicks on the options (Ctrl/Cmd to add).</summary>
-    public async Task<IReadOnlyList<string>> SelectOptionAsync(Target t, IReadOnlyList<object> options,
+    public Task<IReadOnlyList<string>> SelectOptionAsync(Target t, IReadOnlyList<object> options,
+        IReadOnlyList<IElementHandle> handles, ActOpts o, string api) =>
+        InAction(t, o, api, () => SelectOptionCoreAsync(t, options, handles, o, api));
+
+    private async Task<IReadOnlyList<string>> SelectOptionCoreAsync(Target t, IReadOnlyList<object> options,
         IReadOnlyList<IElementHandle> handles, ActOpts o, string api)
     {
         var cfg = CallCfg(o.HumanConfig);
@@ -270,20 +288,47 @@ internal sealed partial class HumanEngine
         }).ConfigureAwait(false);
         var targets = plan.GetProperty("targets").EnumerateArray().Select(x => x.GetInt32()).ToList();
         var values = plan.GetProperty("values").EnumerateArray().Select(x => x.GetString()!).ToList();
-        if (!plan.GetProperty("listbox").GetBoolean())
-            await SelectDropdownAsync(t, r, targets.Count > 0 ? targets[0] : null, plan, o, api, d).ConfigureAwait(false);
-        else
-            await SelectListboxAsync(t, r, targets, o, api, cfg, d).ConfigureAwait(false);
+        // A pick that navigates (a form submitted on change, here or from an iframe
+        // to the top page) leaves nothing to read back, and while that navigation is
+        // pending the read may never answer (#619): report what was chosen, as
+        // Playwright does.
+        var navigated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnRequest(object? _, IRequest req)
+        {
+            var f = r.Frame;
+            while (f != null && f != req.Frame) f = f.ParentFrame;
+            if (f != null && req.IsNavigationRequest) navigated.TrySetResult();
+        }
+        _page.Request += OnRequest;
         JsonElement state;
         try
         {
-            state = (await World.CallAsync(r.Frame, "selectState", r.Id).ConfigureAwait(false))!.Value;
+            if (!plan.GetProperty("listbox").GetBoolean())
+                await SelectDropdownAsync(t, r, targets.Count > 0 ? targets[0] : null, plan, o, api, d).ConfigureAwait(false);
+            else
+                await SelectListboxAsync(t, r, targets, o, api, cfg, d).ConfigureAwait(false);
+            var read = World.CallAsync(r.Frame, "selectState", r.Id);
+            if (await Task.WhenAny(read, navigated.Task).ConfigureAwait(false) != read)
+            {
+                // Abandoned once the frame navigated.
+                _ = read.ContinueWith(x => CloakLog.Debug($"selectState read after navigation: {x.Exception?.GetBaseException().Message}"),
+                    TaskContinuationOptions.OnlyOnFaulted);
+                return values;
+            }
+            try
+            {
+                state = (await read.ConfigureAwait(false))!.Value;
+            }
+            catch (StaleElementException)
+            {
+                // The pick navigated the page (a form submitted on change): nothing
+                // left to read back, so report what was chosen, as Playwright does.
+                return values;
+            }
         }
-        catch (StaleElementException)
+        finally
         {
-            // The pick navigated the page (a form submitted on change): nothing
-            // left to read back, so report what was chosen, as Playwright does.
-            return values;
+            _page.Request -= OnRequest;
         }
         var selected = state.GetProperty("selected").EnumerateArray().Select(x => x.GetInt32()).OrderBy(x => x).ToList();
         var got = state.GetProperty("values").EnumerateArray().Select(x => x.GetString()!).ToList();
@@ -417,7 +462,10 @@ internal sealed partial class HumanEngine
         }
     }
 
-    public async Task DragAsync(Target source, Target dest, ActOpts o, string api)
+    public Task DragAsync(Target source, Target dest, ActOpts o, string api) =>
+        InAction(source, o, api, () => DragCoreAsync(source, dest, o, api));
+
+    private async Task DragCoreAsync(Target source, Target dest, ActOpts o, string api)
     {
         var sub = new ActOpts { Deadline = DeadlineFor(source, o), Force = o.Force, HumanConfig = o.HumanConfig, Position = o.SourcePosition, Trial = o.Trial };
         await IdleAsync(CallCfg(o.HumanConfig)).ConfigureAwait(false);
@@ -440,7 +488,10 @@ internal sealed partial class HumanEngine
 
     /// <summary>Focus without a click (Playwright's focus() is itself programmatic); the
     /// ElementHandle variant moves the cursor over the element first.</summary>
-    public async Task FocusAsync(Target t, ActOpts o, string api, bool move = false)
+    public Task FocusAsync(Target t, ActOpts o, string api, bool move = false) =>
+        InAction(t, o, api, () => FocusCoreAsync(t, o, api, move));
+
+    private async Task FocusCoreAsync(Target t, ActOpts o, string api, bool move)
     {
         var d = DeadlineFor(t, o);
         if (move) await HoverAsync(t, new ActOpts { Timeout = o.Timeout, HumanConfig = o.HumanConfig }, api).ConfigureAwait(false);
@@ -448,7 +499,10 @@ internal sealed partial class HumanEngine
         await World.CallAsync(r.Frame, "focus", r.Id).ConfigureAwait(false);
     }
 
-    public async Task ScrollIntoViewIfNeededAsync(Target t, ActOpts o, string api)
+    public Task ScrollIntoViewIfNeededAsync(Target t, ActOpts o, string api) =>
+        InAction(t, o, api, () => ScrollIntoViewIfNeededCoreAsync(t, o, api));
+
+    private async Task ScrollIntoViewIfNeededCoreAsync(Target t, ActOpts o, string api)
     {
         var cfg = CallCfg(o.HumanConfig);
         var d = DeadlineFor(t, o);

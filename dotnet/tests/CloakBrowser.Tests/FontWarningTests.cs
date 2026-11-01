@@ -68,7 +68,6 @@ public class WelcomeCadenceTests
 public class WelcomeBannerAsciiTests
 {
     [Theory]
-    [InlineData("keyless")]
     [InlineData("free")]
     [InlineData("pro")]
     public void Banner_is_ascii_only(string tier)

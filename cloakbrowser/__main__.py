@@ -40,10 +40,7 @@ ARROW = _console_glyph("→", "->")
 DASH = _console_glyph("—", "-")
 
 UPGRADE_HINT = f"For more than one concurrent session {ARROW} https://cloakbrowser.dev"
-FREE_LATEST_HINT = (
-    f"Get the latest binary free {ARROW} run 'cloakbrowser login' "
-    "or https://cloakbrowser.dev/free"
-)
+NO_KEY_HINT = f"Get a free key {ARROW} run 'cloakbrowser login'"
 
 
 def _setup_logging() -> None:
@@ -120,12 +117,8 @@ def _resolve_license() -> tuple[dict, bool]:
     from .license import resolve_license_key, validate_license
 
     key = resolve_license_key(None)
-    # ensure_binary disables Pro routing when a custom download URL is set, so the
-    # diagnostic must report free too (matches download.py).
-    if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
-        key = None
     if not key:
-        return {"tier": "free"}, False
+        return {"tier": "none"}, False
     try:
         lic = validate_license(key)
     except Exception as exc:
@@ -140,13 +133,10 @@ def _resolve_license() -> tuple[dict, bool]:
 def _effective_binary(entitled_pro: bool, quick: bool = False) -> dict:
     """Describe the binary ensure_binary would actually launch (no download).
 
-    Mirrors ensure_binary's resolution (override > version pin > license tier).
-    Unlike binary_info(), a Pro binary on disk is only reported when the license
-    entitles Pro — so a keyless run correctly shows the free binary even if a
-    Pro binary is cached.
+    Mirrors ensure_binary's resolution (override > version pin > license).
+    Without a valid key nothing launches, so only the cached build is reported.
     """
     from .config import (
-        CHROMIUM_VERSION,
         _version_newer,
         get_binary_dir,
         get_binary_path,
@@ -163,7 +153,6 @@ def _effective_binary(entitled_pro: bool, quick: bool = False) -> dict:
             "latest_version": None,
             "pinned": False,
             "tier": "override",
-            "bundled_version": CHROMIUM_VERSION,
             "path": override,
             "installed": os.path.isfile(override),
             "cache_dir": None,
@@ -195,9 +184,7 @@ def _effective_binary(entitled_pro: bool, quick: bool = False) -> dict:
     elif entitled_pro:
         # Mirror ensure_binary: Preview/Stable resolution picks what the next
         # launch will run, while AUTO_UPDATE=false keeps an installed channel build.
-        installed_version = get_effective_version(
-            pro=True, release_channel=requested_channel
-        )
+        installed_version = get_effective_version(requested_channel)
         auto_update = os.environ.get("CLOAKBROWSER_AUTO_UPDATE", "true").lower()
         updates_enabled = auto_update != "false"
         if installed_version and not updates_enabled:
@@ -209,10 +196,10 @@ def _effective_binary(entitled_pro: bool, quick: bool = False) -> dict:
         else:
             version = installed_version or latest_version
     else:
-        version = get_effective_version()
+        version = get_effective_version(requested_channel)
         installed_version = version
 
-    path = get_binary_path(version, pro=entitled_pro) if version else None
+    path = get_binary_path(version) if version else None
     return {
         "version": version,
         "latest_version": latest_version,
@@ -221,11 +208,10 @@ def _effective_binary(entitled_pro: bool, quick: bool = False) -> dict:
         "channel_fallback": channel_fallback,
         "installed_version": installed_version,
         "pinned": bool(requested),
-        "tier": "pro" if entitled_pro else "free",
-        "bundled_version": CHROMIUM_VERSION,
+        "tier": "pro" if entitled_pro else "none",
         "path": str(path) if path else None,
         "installed": bool(path) and path.exists(),
-        "cache_dir": str(get_binary_dir(version, pro=entitled_pro)) if version else None,
+        "cache_dir": str(get_binary_dir(version)) if version else None,
         "override": None,
     }
 
@@ -500,14 +486,11 @@ def _print_diagnostics(diag: dict) -> None:
     lic = diag["license"]
     tier = lic["tier"]
     if tier == "free" and lic.get("valid"):
-        # Validated free-tier key (GitHub login): the latest binary, 1 session.
         print("License:   Free (latest binary, 1 concurrent session)")
         print(f"           {UPGRADE_HINT}")
-    elif tier == "free":
-        # Keyless: running the older free binary — invite the free-latest login.
-        print("License:   Free (no key)")
-        print(f"           {FREE_LATEST_HINT}")
-        print(f"           {UPGRADE_HINT}")
+    elif tier == "none":
+        print("License:   none (a launch needs a key)")
+        print(f"           {NO_KEY_HINT}")
     elif "error" in lic:
         print(f"License:   {tier} ({lic['error']})")
     else:
@@ -547,27 +530,19 @@ def cmd_info(args: argparse.Namespace) -> None:
 
 
 def cmd_update(args: argparse.Namespace) -> None:
-    from .download import check_for_pro_update, check_for_update
+    from .download import check_for_pro_update
+    from .license import resolve_license_key
 
-    logger = logging.getLogger("cloakbrowser")
-    logger.info("Checking for updates...")
+    _, entitled = _resolve_license()
+    key = resolve_license_key(None)
+    if not entitled or not key:
+        print(f"No valid license key. {NO_KEY_HINT}", file=sys.stderr)
+        sys.exit(1)
 
-    # A valid Pro license updates the Pro binary; everyone else updates free.
-    _, entitled_pro = _resolve_license()
-    if entitled_pro:
-        from .license import resolve_license_key
-
-        key = resolve_license_key(None)
-        if not key:
-            raise RuntimeError("Pro license key disappeared during update")
-        new_version = check_for_pro_update(key)
-        label = "Pro Chromium"
-    else:
-        new_version = check_for_update()
-        label = "Chromium"
-
+    logging.getLogger("cloakbrowser").info("Checking for updates...")
+    new_version = check_for_pro_update(key)
     if new_version:
-        print(f"Updated to {label} {new_version}")
+        print(f"Updated to Chromium {new_version}")
     else:
         print("Already up to date.")
 
@@ -583,61 +558,27 @@ def cmd_clear_cache(args: argparse.Namespace) -> None:
     print("Cache cleared.")
 
 
-FREE_LOGIN_URL = "https://cloakbrowser.dev/api/license/free/github/start"
-
-
-def _save_license_key(key: str) -> None:
-    """Persist a validated key to ~/.cloakbrowser/license.key (0600)."""
-    from .config import get_cache_dir
-
-    cache_dir = get_cache_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    key_file = cache_dir / "license.key"
-    key_file.write_text(key.strip() + "\n")
-    try:
-        key_file.chmod(0o600)
-    except OSError:
-        pass
-
-
-def _prompt_free_github_login() -> str:
-    """Open the GitHub free-key page and read back the emailed key."""
-    import webbrowser
-
-    print(f"Opening GitHub sign-in: {FREE_LOGIN_URL}")
-    try:
-        webbrowser.open(FREE_LOGIN_URL)
-    except Exception:
-        pass
-    print("If your browser did not open, visit the URL above and authorize with GitHub.")
-    print("We'll email your free CloakBrowser key to your GitHub email.")
-    try:
-        return input("Paste the key from that email here: ").strip()
-    except EOFError:
-        return ""
-
-
 def cmd_login(args: argparse.Namespace) -> None:
-    """Activate any key. `login <key>` saves a pasted key; bare `login` prompts
-    to paste a key or press ENTER to get a free key via GitHub."""
-    from .license import validate_license
+    """Activate any key. `login <key>` saves a pasted key; bare `login` shows the
+    same menu as a no-key launch: get a free key by email, or paste one."""
+    from .download import can_prompt, prompt_license_key
+    from .license import save_license_key, validate_license
 
     key = (getattr(args, "key", None) or "").strip()
 
     if not key:
-        if not sys.stdin.isatty():
+        # The menu goes to stderr: both ends must be a terminal, or the prompt
+        # lands somewhere invisible (`login 2>log`) and waits forever.
+        if not can_prompt():
             print(
                 "Usage: cloakbrowser login <key>  (or run it interactively for a free key).",
                 file=sys.stderr,
             )
             sys.exit(2)
         try:
-            entered = input(
-                "Paste your license key, or press ENTER to get a free key via GitHub: "
-            ).strip()
+            key = prompt_license_key()
         except EOFError:
-            entered = ""
-        key = entered or _prompt_free_github_login()
+            key = ""
 
     if not key:
         print("No key entered. Nothing saved.", file=sys.stderr)
@@ -654,7 +595,11 @@ def cmd_login(args: argparse.Namespace) -> None:
         print("That license key is invalid or expired. Nothing was saved.", file=sys.stderr)
         sys.exit(1)
 
-    _save_license_key(key)
+    try:
+        save_license_key(key)
+    except ValueError:
+        print("That is not a CloakBrowser license key (they start with cb_). Nothing was saved.", file=sys.stderr)
+        sys.exit(1)
     if info.plan == "free":
         print("Saved. Free tier active: latest binary, 1 concurrent session (one browser at a time).")
         print("Need to run more at once? See the plans at https://cloakbrowser.dev")
@@ -663,9 +608,11 @@ def cmd_login(args: argparse.Namespace) -> None:
 
 
 def cmd_logout(args: argparse.Namespace) -> None:
-    """Remove the saved license key (revert to the free v146 binary)."""
+    """Remove the saved license key."""
     from .config import get_cache_dir
 
+    # A pending claim code would otherwise hand the key back on the next launch.
+    (get_cache_dir() / ".free_claim").unlink(missing_ok=True)
     key_file = get_cache_dir() / "license.key"
     if key_file.exists():
         try:
@@ -673,7 +620,7 @@ def cmd_logout(args: argparse.Namespace) -> None:
         except OSError as e:
             print(f"Could not remove {key_file}: {e}", file=sys.stderr)
             sys.exit(1)
-        print("Logged out. Removed the saved key; launches revert to the free binary.")
+        print("Logged out. Removed the saved key; launches need a key again.")
     else:
         print("No saved license key found.")
 
@@ -711,12 +658,12 @@ def main() -> None:
     sub.add_parser("clear-cache", help="Remove all cached binaries")
 
     login_p = sub.add_parser(
-        "login", help="Save a license key (or get a free key via GitHub)"
+        "login", help="Save a license key (or get a free key by email)"
     )
     login_p.add_argument(
         "key", nargs="?", help="License key to save. Omit to enter it interactively."
     )
-    sub.add_parser("logout", help="Remove the saved license key (revert to free binary)")
+    sub.add_parser("logout", help="Remove the saved license key")
 
     args = parser.parse_args()
     if not args.command:

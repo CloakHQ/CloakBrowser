@@ -52,38 +52,22 @@ public class SignatureTests
         return Convert.ToHexString(sha.ComputeHash(data)).ToLowerInvariant();
     }
 
-    /// <summary>Run an action with overridden pinned keys / manifest, always restoring afterwards.</summary>
-    private static void WithOverrides(
-        string[]? pubkeys,
-        Func<string?, (byte[], byte[])?>? manifest,
-        Action body)
+    /// <summary>Run an action with overridden pinned keys, always restoring afterwards.</summary>
+    private static void WithOverrides(string[]? pubkeys, Action body)
     {
         var prevKeys = Download.SigningPubkeysOverride;
-        var prevManifest = Download.SignedManifestOverride;
-        var prevCustomUrl = Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL");
         try
         {
             Download.SigningPubkeysOverride = pubkeys;
-            Download.SignedManifestOverride = manifest;
-            // Force the official path (no custom mirror).
-            Environment.SetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL", null);
             body();
         }
         finally
         {
             Download.SigningPubkeysOverride = prevKeys;
-            Download.SignedManifestOverride = prevManifest;
-            Environment.SetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL", prevCustomUrl);
         }
     }
 
     private static string Tarball() => Config.GetArchiveName();
-
-    private static byte[] Manifest(string body, string? version = null)
-    {
-        var v = version ?? Config.GetChromiumVersion();
-        return Utf8($"version={v}\n{body}");
-    }
 
     // =======================================================================
     // TestSignatureVerification - the cryptographic gate over manifest bytes.
@@ -95,7 +79,7 @@ public class SignatureTests
         var (priv, pub) = MakeKey();
         var manifest = Utf8("abc  cloakbrowser-linux-x64.tar.gz\n");
         var sig = Sign(priv, manifest);
-        WithOverrides(new[] { pub }, null, () => Download.VerifySignature(manifest, sig));
+        WithOverrides(new[] { pub }, () => Download.VerifySignature(manifest, sig));
     }
 
     [Fact]
@@ -105,7 +89,7 @@ public class SignatureTests
         var manifest = Utf8("abc  cloakbrowser-linux-x64.tar.gz\n");
         var sig = Sign(priv, manifest);
         var tampered = Utf8("xyz  cloakbrowser-linux-x64.tar.gz\n");
-        WithOverrides(new[] { pub }, null, () =>
+        WithOverrides(new[] { pub }, () =>
         {
             var ex = Assert.Throws<InvalidOperationException>(() => Download.VerifySignature(tampered, sig));
             Assert.Contains("signature verification failed", ex.Message);
@@ -119,7 +103,7 @@ public class SignatureTests
         var (_, otherPub) = MakeKey();
         var manifest = Utf8("data\n");
         var sig = Sign(priv, manifest);
-        WithOverrides(new[] { otherPub }, null, () =>
+        WithOverrides(new[] { otherPub }, () =>
         {
             var ex = Assert.Throws<InvalidOperationException>(() => Download.VerifySignature(manifest, sig));
             Assert.Contains("signature verification failed", ex.Message);
@@ -130,7 +114,7 @@ public class SignatureTests
     public void MalformedSignature_fails()
     {
         var (_, pub) = MakeKey();
-        WithOverrides(new[] { pub }, null, () =>
+        WithOverrides(new[] { pub }, () =>
         {
             var ex = Assert.Throws<InvalidOperationException>(
                 () => Download.VerifySignature(Utf8("data\n"), Encoding.ASCII.GetBytes("!!!not base64!!!")));
@@ -147,7 +131,6 @@ public class SignatureTests
         var sig = Sign(priv, manifest);
         WithOverrides(
             new[] { "REPLACE_WITH_REAL_ED25519_PUBLIC_KEY_BASE64", pub },
-            null,
             () => Download.VerifySignature(manifest, sig));
     }
 
@@ -159,7 +142,7 @@ public class SignatureTests
         var (newPriv, newPub) = MakeKey();
         var manifest = Utf8("rotated\n");
         var sig = Sign(newPriv, manifest);
-        WithOverrides(new[] { oldPub, newPub }, null, () => Download.VerifySignature(manifest, sig));
+        WithOverrides(new[] { oldPub, newPub }, () => Download.VerifySignature(manifest, sig));
     }
 
     // =======================================================================
@@ -171,146 +154,6 @@ public class SignatureTests
         var path = Path.Combine(Path.GetTempPath(), $"cloak-sig-test-{Guid.NewGuid():N}");
         File.WriteAllBytes(path, bytes);
         return path;
-    }
-
-    [Fact]
-    public void ValidManifestAndHash_passes()
-    {
-        var (priv, pub) = MakeKey();
-        var binary = Utf8("the real binary");
-        var archive = WriteTemp(binary);
-        var manifest = Manifest($"{Sha256Hex(binary)}  {Tarball()}\n");
-        var sig = Sign(priv, manifest);
-        try
-        {
-            WithOverrides(new[] { pub }, _ => (manifest, sig), () =>
-                Download.VerifyDownloadChecksum(archive));
-        }
-        finally { File.Delete(archive); }
-    }
-
-    [Fact]
-    public void TamperedBinary_fails_hash()
-    {
-        var (priv, pub) = MakeKey();
-        var archive = WriteTemp(Utf8("a malicious binary"));
-        var manifest = Manifest($"{Sha256Hex(Utf8("the real binary"))}  {Tarball()}\n");
-        var sig = Sign(priv, manifest);
-        try
-        {
-            WithOverrides(new[] { pub }, _ => (manifest, sig), () =>
-            {
-                var ex = Assert.Throws<InvalidOperationException>(() =>
-                    Download.VerifyDownloadChecksum(archive));
-                Assert.Contains("Checksum verification failed", ex.Message);
-            });
-        }
-        finally { File.Delete(archive); }
-    }
-
-    [Fact]
-    public void WrongVersion_fails_downgrade()
-    {
-        var (priv, pub) = MakeKey();
-        var binary = Utf8("the real binary");
-        var archive = WriteTemp(binary);
-        // Manifest declares an old version, but we ask for the current one.
-        var manifest = Manifest($"{Sha256Hex(binary)}  {Tarball()}\n", version: "1.0.0.0");
-        var sig = Sign(priv, manifest);
-        try
-        {
-            WithOverrides(new[] { pub }, _ => (manifest, sig), () =>
-            {
-                var ex = Assert.Throws<InvalidOperationException>(() =>
-                    Download.VerifyDownloadChecksum(archive));
-                Assert.Contains("Version mismatch", ex.Message);
-            });
-        }
-        finally { File.Delete(archive); }
-    }
-
-    [Fact]
-    public void MissingVersionLine_fails()
-    {
-        var (priv, pub) = MakeKey();
-        var binary = Utf8("the real binary");
-        var archive = WriteTemp(binary);
-        var manifest = Utf8($"{Sha256Hex(binary)}  {Tarball()}\n"); // no version=
-        var sig = Sign(priv, manifest);
-        try
-        {
-            WithOverrides(new[] { pub }, _ => (manifest, sig), () =>
-            {
-                var ex = Assert.Throws<InvalidOperationException>(() =>
-                    Download.VerifyDownloadChecksum(archive));
-                Assert.Contains("Version mismatch", ex.Message);
-            });
-        }
-        finally { File.Delete(archive); }
-    }
-
-    [Fact]
-    public void MissingSignedManifest_fails_closed()
-    {
-        var archive = WriteTemp(Utf8("x"));
-        try
-        {
-            WithOverrides(null, _ => null, () =>
-            {
-                var ex = Assert.Throws<InvalidOperationException>(() =>
-                    Download.VerifyDownloadChecksum(archive));
-                Assert.Contains("signed SHA256SUMS", ex.Message);
-            });
-        }
-        finally { File.Delete(archive); }
-    }
-
-    [Fact]
-    public void ManifestWithoutEntry_fails()
-    {
-        var (priv, pub) = MakeKey();
-        var archive = WriteTemp(Utf8("x"));
-        var manifest = Manifest($"{new string('d', 64)}  some-other-file.tar.gz\n"); // no entry for our tarball
-        var sig = Sign(priv, manifest);
-        try
-        {
-            WithOverrides(new[] { pub }, _ => (manifest, sig), () =>
-            {
-                var ex = Assert.Throws<InvalidOperationException>(() =>
-                    Download.VerifyDownloadChecksum(archive));
-                Assert.Contains("no entry for", ex.Message);
-            });
-        }
-        finally { File.Delete(archive); }
-    }
-
-    [Fact]
-    public void CustomUrl_uses_plain_checksum_and_skip()
-    {
-        // Self-hosted CLOAKBROWSER_DOWNLOAD_URL keeps the legacy skippable path,
-        // and the signature path must NOT be consulted for a custom mirror.
-        var archive = WriteTemp(Utf8("x"));
-        var prevDl = Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL");
-        var prevSkip = Environment.GetEnvironmentVariable("CLOAKBROWSER_SKIP_CHECKSUM");
-        var prevManifest = Download.SignedManifestOverride;
-        bool manifestConsulted = false;
-        try
-        {
-            Environment.SetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL", "https://my-mirror.test");
-            Environment.SetEnvironmentVariable("CLOAKBROWSER_SKIP_CHECKSUM", "true");
-            Download.SignedManifestOverride = _ => { manifestConsulted = true; return null; };
-
-            // Skip honored, no throw.
-            Download.VerifyDownloadChecksum(archive);
-            Assert.False(manifestConsulted, "signature path must not be consulted for a custom mirror");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL", prevDl);
-            Environment.SetEnvironmentVariable("CLOAKBROWSER_SKIP_CHECKSUM", prevSkip);
-            Download.SignedManifestOverride = prevManifest;
-            File.Delete(archive);
-        }
     }
 
     // =======================================================================

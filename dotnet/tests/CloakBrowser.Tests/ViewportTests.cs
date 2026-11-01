@@ -11,8 +11,8 @@ namespace CloakBrowser.Tests;
 ///
 /// Headed launches must NOT layer an emulated viewport on top of the real
 /// browser window: CDP viewport emulation forces outerWidth &lt; innerWidth, a
-/// physically impossible window (= bot tell). Headless keeps a fixed, coherent
-/// (outer == inner) DEFAULT_VIEWPORT for deterministic dimensions.
+/// physically impossible window (= bot tell). Headless also defaults to no
+/// viewport: the binary reports coherent dimensions itself.
 /// </summary>
 public class ViewportTests
 {
@@ -27,13 +27,11 @@ public class ViewportTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public void Headless_unset_viewport_uses_default()
+    public void Headless_unset_viewport_uses_no_viewport()
     {
+        // Headless reports coherent dimensions natively: no emulated viewport either.
         var vp = CloakLauncher.ResolveContextViewport(new LaunchContextOptions { Headless = true });
-        Assert.NotNull(vp);
-        Assert.False(IsNoViewport(vp));
-        Assert.Equal(Config.DefaultViewportWidth, vp!.Width);
-        Assert.Equal(Config.DefaultViewportHeight, vp.Height);
+        Assert.True(IsNoViewport(vp));
     }
 
     [Fact]
@@ -97,48 +95,40 @@ public class ViewportTests
     }
 
     // -----------------------------------------------------------------------
-    // ViewportDefaults.ApplyHeadedNoViewport - the shared headed-default applied
-    // on EVERY page/context creation path (the raw handle AND the humanize
-    // wrapper), mirroring Python's _default_no_viewport which patches the browser
-    // so the default holds regardless of which path creates the page.
+    // ViewportDefaults.ApplyNoViewport - the shared default applied on EVERY
+    // page/context creation path (the raw handle AND the humanize wrapper),
+    // mirroring Python's _default_no_viewport which patches the browser so the
+    // default holds regardless of which path creates the page.
     // -----------------------------------------------------------------------
 
     [Fact]
-    public void HeadedDefault_page_unset_becomes_no_viewport()
+    public void Default_page_unset_becomes_no_viewport()
     {
-        var o = ViewportDefaults.ApplyHeadedNoViewport((BrowserNewPageOptions?)null, headless: false);
+        var o = ViewportDefaults.ApplyNoViewport((BrowserNewPageOptions?)null);
         Assert.True(IsNoViewport(o.ViewportSize));
     }
 
     [Fact]
-    public void HeadedDefault_context_unset_becomes_no_viewport()
+    public void Default_context_unset_becomes_no_viewport()
     {
-        var o = ViewportDefaults.ApplyHeadedNoViewport((BrowserNewContextOptions?)null, headless: false);
+        var o = ViewportDefaults.ApplyNoViewport((BrowserNewContextOptions?)null);
         Assert.True(IsNoViewport(o.ViewportSize));
     }
 
     [Fact]
-    public void HeadlessDefault_page_left_untouched()
-    {
-        // Headless: don't impose no_viewport - Playwright's default stays (coherent there).
-        var o = ViewportDefaults.ApplyHeadedNoViewport((BrowserNewPageOptions?)null, headless: true);
-        Assert.Null(o.ViewportSize);
-    }
-
-    [Fact]
-    public void HeadedDefault_explicit_viewport_honored()
+    public void Default_explicit_viewport_honored()
     {
         var input = new BrowserNewPageOptions { ViewportSize = new ViewportSize { Width = 1024, Height = 768 } };
-        var o = ViewportDefaults.ApplyHeadedNoViewport(input, headless: false);
+        var o = ViewportDefaults.ApplyNoViewport(input);
         Assert.Equal(1024, o.ViewportSize!.Width);
         Assert.Equal(768, o.ViewportSize.Height);
     }
 
     [Fact]
-    public void HeadedDefault_explicit_no_viewport_honored()
+    public void Default_explicit_no_viewport_honored()
     {
         var input = new BrowserNewContextOptions { ViewportSize = ViewportSize.NoViewport };
-        var o = ViewportDefaults.ApplyHeadedNoViewport(input, headless: false);
+        var o = ViewportDefaults.ApplyNoViewport(input);
         Assert.True(IsNoViewport(o.ViewportSize));
     }
 }

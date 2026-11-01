@@ -55,6 +55,16 @@ public sealed class CloakBrowserLicenseError : Exception
 }
 
 /// <summary>
+/// The claim's email already has a free key. The server never sends an existing
+/// key to a claim (anyone can type anyone's email), so the person pastes it from
+/// the email they got it in.
+/// </summary>
+public sealed class FreeKeyAlreadyHeldException : Exception
+{
+    public FreeKeyAlreadyHeldException() : base("This email already has a free key.") { }
+}
+
+/// <summary>
 /// Source of a resolved license key.  Determines whether env injection
 /// into the child browser process is needed.
 /// </summary>
@@ -349,6 +359,170 @@ public static class License
     public static string? ResolveLicenseKey(string? licenseKey = null)
     {
         return ResolveLicenseKeyWithSource(licenseKey).Key;
+    }
+
+    // -----------------------------------------------------------------------
+    // Free key by email: claim code + key save. Mirrors Python license.py.
+    // -----------------------------------------------------------------------
+
+    public const string ClaimUrl = "https://cloakbrowser.dev/api/license/free/claim";
+    // Fragment form: the code after '#' never reaches server or CDN logs.
+    public const string FreeClaimLink = "https://cloakbrowser.dev/#claim=";
+    internal static readonly Regex KeyRe = new(@"^cb_[A-Za-z0-9_-]+$", RegexOptions.Compiled);
+    internal static readonly Regex ClaimCodeRe = new(@"^[A-Za-z0-9_-]{20,128}$", RegexOptions.Compiled); // the server's format
+    internal static readonly TimeSpan ClaimMaxAge = TimeSpan.FromDays(7);
+    internal static TimeSpan ClaimPollInterval = TimeSpan.FromSeconds(15); // not readonly: test seam
+
+    private static string ClaimFile => Path.Combine(Config.GetCacheDir(), ".free_claim");
+
+    /// <summary>Create <paramref name="path"/> exclusively, readable by the owner only from the first byte.</summary>
+    private static void WritePrivateNew(string path, string text)
+    {
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        using var fs = new FileStream(path, options);
+        var bytes = Encoding.UTF8.GetBytes(text);
+        fs.Write(bytes, 0, bytes.Length);
+        fs.Flush(flushToDisk: true);
+    }
+
+    /// <summary>
+    /// Save a key to <c>&lt;cache&gt;/license.key</c> (0600) and retire the claim code.
+    /// <paramref name="overwrite"/> false (the background claim poll) leaves an existing
+    /// key alone: the user may have run <c>cloakbrowser login</c> meanwhile. Returns true if saved.
+    /// </summary>
+    public static bool SaveLicenseKey(string key, bool overwrite = true)
+    {
+        key = key.Trim();
+        if (!KeyRe.IsMatch(key))
+            throw new ArgumentException("not a CloakBrowser license key");
+        var cacheDir = Config.GetCacheDir();
+        Directory.CreateDirectory(cacheDir);
+        var keyFile = Path.Combine(cacheDir, "license.key");
+        if (!overwrite && File.Exists(keyFile))
+        {
+            // Not saved, but the claim is spent either way: left on disk it would
+            // silently reinstall this key on the launch after a logout.
+            File.Delete(ClaimFile);
+            return false;
+        }
+        var tmp = Path.Combine(cacheDir, $"license.key.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            WritePrivateNew(tmp, key + "\n");
+            File.Move(tmp, keyFile, overwrite: true);
+        }
+        finally
+        {
+            try { File.Delete(tmp); } catch (IOException) { }
+        }
+        // The claim code keeps returning the key, so it must not outlive the save.
+        File.Delete(ClaimFile);
+        return true;
+    }
+
+    /// <summary>
+    /// This install's claim code, from <c>&lt;cache&gt;/.free_claim</c> (0600, 7-day life).
+    /// Workers launching at once must print the same link, so a new code is published
+    /// without replacing and a loser of the race reads the winner's code.
+    /// </summary>
+    public static string GetClaimCode()
+    {
+        var cacheDir = Config.GetCacheDir();
+        Directory.CreateDirectory(cacheDir);
+        var path = ClaimFile;
+        try
+        {
+            if (File.Exists(path))
+            {
+                if (DateTime.UtcNow - File.GetLastWriteTimeUtc(path) < ClaimMaxAge)
+                {
+                    var existing = File.ReadAllText(path).Trim();
+                    if (ClaimCodeRe.IsMatch(existing))
+                        return existing;
+                }
+                File.Delete(path); // expired or garbage: start over
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+
+        var code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var tmp = Path.Combine(cacheDir, $".free_claim.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            WritePrivateNew(tmp, code);
+            // Publish complete, without replacing: the first code wins and a reader
+            // never sees a half-written file (same as the profile seed file).
+            Config.PublishNoReplace(tmp, path, Encoding.UTF8.GetBytes(code), ownerOnly: true);
+        }
+        finally
+        {
+            try { File.Delete(tmp); } catch (IOException) { }
+        }
+        return File.ReadAllText(path).Trim();
+    }
+
+    /// <summary>The claim link printed for <paramref name="code"/>.</summary>
+    public static string ClaimLink(string code) => FreeClaimLink + code;
+
+    /// <summary>
+    /// One poll: the key once the claim's email is confirmed, else null. Throws
+    /// <see cref="FreeKeyAlreadyHeldException"/> (and retires the code) if that email
+    /// already has a key. The code goes in the body, never the URL: it is a bearer
+    /// secret and URLs land in server logs.
+    /// </summary>
+    public static string? CheckClaim(string code)
+    {
+        string? status, key;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var body = new StringContent(JsonSerializer.Serialize(new { code }), Encoding.UTF8, "application/json");
+            using var resp = Http.PostAsync(ClaimUrl, body, cts.Token).GetAwaiter().GetResult();
+            if (!resp.IsSuccessStatusCode) return null;
+            using var doc = JsonDocument.Parse(resp.Content.ReadAsStringAsync(cts.Token).GetAwaiter().GetResult());
+            var root = doc.RootElement;
+            status = root.TryGetProperty("status", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
+            key = root.TryGetProperty("license_key", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() : null;
+        }
+        // OperationCanceledException covers TaskCanceledException and a body-read
+        // timeout; IOException a connection dropped mid-body. All mean "pending".
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException or JsonException
+                                      or InvalidOperationException or IOException)
+        {
+            CloakLog.Debug("Free-key claim check failed: {0}", e.Message);
+            return null;
+        }
+        if (status == "has_key")
+        {
+            // This code will only ever answer has_key: start fresh next time.
+            try { File.Delete(ClaimFile); } catch (IOException) { }
+            throw new FreeKeyAlreadyHeldException();
+        }
+        return status == "ready" && key != null && KeyRe.IsMatch(key.Trim()) ? key.Trim() : null;
+    }
+
+    /// <summary>Poll until the key arrives (saved, then returned) or <paramref name="deadline"/> passes.</summary>
+    public static string? PollClaim(string code, TimeSpan? interval = null, DateTime? deadline = null,
+        bool overwrite = false, CancellationToken ct = default) =>
+        PollClaimCore(code, interval, deadline, overwrite, ct).Key;
+
+    /// <summary><see cref="PollClaim"/>, also reporting whether the key was actually saved.</summary>
+    internal static (string? Key, bool Saved) PollClaimCore(string code, TimeSpan? interval = null,
+        DateTime? deadline = null, bool overwrite = false, CancellationToken ct = default)
+    {
+        var wait = interval ?? ClaimPollInterval;
+        while (true)
+        {
+            var key = CheckClaim(code);
+            if (key != null)
+                return (key, SaveLicenseKey(key, overwrite));
+            if (deadline != null && DateTime.UtcNow + wait > deadline) return (null, false);
+            if (ct.WaitHandle.WaitOne(wait)) ct.ThrowIfCancellationRequested();
+        }
     }
 
     /// <summary>

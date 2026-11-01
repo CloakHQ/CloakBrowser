@@ -15,6 +15,80 @@ internal sealed class StaleElementException : PlaywrightException
     public StaleElementException() : base("element is not attached to the DOM") { }
 }
 
+/// <summary>A browser call got no answer within the action's timeout: the page stopped
+/// answering, e.g. an onchange running a synchronous XHR (#619). Not a
+/// <see cref="PlaywrightException"/>, so the engine's Playwright fallbacks let it through;
+/// the engine's entry actions turn it into a <see cref="System.TimeoutException"/>.</summary>
+internal sealed class PageStalledException : Exception
+{
+    public PageStalledException() : base("the page stopped answering") { }
+}
+
+/// <summary>The humanized action in progress: its timeout (ms, 0 = no limit) and whether
+/// the page stopped answering. Flows with the async calls of the action.</summary>
+internal sealed class HumanAction
+{
+    private static readonly AsyncLocal<HumanAction?> CurrentAction = new();
+
+    public HumanAction(double timeoutMs) => Timeout = timeoutMs;
+    public double Timeout { get; }
+    public bool Stalled { get; private set; }
+
+    public static HumanAction? Current { get => CurrentAction.Value; set => CurrentAction.Value = value; }
+
+    /// <summary>Await one browser call, bounded by the action's timeout: pauses and typing
+    /// between calls never count, only a call the page does not answer. Once the page stopped
+    /// answering, later calls (key / mouse releases on the way out) are still sent, but not
+    /// waited on, and do not throw again.</summary>
+    public static Task Bounded(Task call) => Answered(call);
+
+    public static async Task<T> Bounded<T>(Task<T> call) =>
+        await Answered(call).ConfigureAwait(false) ? await call.ConfigureAwait(false) : default!;
+
+    /// <returns>false when the call was sent after a stall and not waited on.</returns>
+    private static async Task<bool> Answered(Task call)
+    {
+        var act = Current;
+        // Beyond int.MaxValue ms WaitAsync rejects the TimeSpan: treat it as no limit.
+        if (act == null || act.Timeout <= 0 || act.Timeout > int.MaxValue) { await call.ConfigureAwait(false); return true; }
+        try
+        {
+            await call.WaitAsync(TimeSpan.FromMilliseconds(act.Stalled ? 0 : act.Timeout)).ConfigureAwait(false);
+            return true;
+        }
+        catch (System.TimeoutException) when (call.IsCompleted)
+        {
+            // The answer came the instant the time ran out: its own outcome counts.
+            await call.ConfigureAwait(false);
+            return true;
+        }
+        catch (System.TimeoutException) when (!call.IsCompleted)
+        {
+            // Abandoned: an answer that still comes arrives after the action gave up.
+            _ = call.ContinueWith(c => CloakLog.Debug($"browser call failed after the page stalled: {c.Exception?.GetBaseException().Message}"),
+                TaskContinuationOptions.OnlyOnFaulted);
+            // The action already failed and is unwinding: this cleanup call was sent;
+            // nothing waits for it, and every release in a cleanup loop still goes out.
+            if (act.Stalled) return false;
+            act.Stalled = true;
+            throw new PageStalledException();
+        }
+    }
+}
+
+/// <summary>A CDP session whose calls are bounded by the action's timeout.</summary>
+internal sealed class BoundedCdpSession : ICDPSession
+{
+    private readonly ICDPSession _s;
+    public BoundedCdpSession(ICDPSession session) => _s = session;
+    public event EventHandler<ICDPSession> Close { add => _s.Close += value; remove => _s.Close -= value; }
+    public Task DetachAsync() => HumanAction.Bounded(_s.DetachAsync());
+    public ICDPSessionEvent Event(string eventName) => _s.Event(eventName);
+    public ValueTask DisposeAsync() => _s.DisposeAsync();
+    public Task<JsonElement?> SendAsync(string method, Dictionary<string, object>? args = null) =>
+        HumanAction.Bounded(_s.SendAsync(method, args));
+}
+
 internal readonly record struct Rect(double X, double Y, double Width, double Height)
 {
     public static Rect Intersect(Rect a, Rect b)
@@ -78,7 +152,7 @@ internal sealed class HumanWorld
 
     public async Task<ICDPSession> SessionAsync()
     {
-        _session ??= await _page.Context.NewCDPSessionAsync(_page).ConfigureAwait(false);
+        _session ??= new BoundedCdpSession(await HumanAction.Bounded(_page.Context.NewCDPSessionAsync(_page)).ConfigureAwait(false));
         return _session;
     }
 
@@ -127,8 +201,8 @@ internal sealed class HumanWorld
     private async Task<FrameRec> LocateChildAsync(IFrame frame, IFrame parent)
     {
         ICDPSession? own = null;
-        try { own = await _page.Context.NewCDPSessionAsync(frame).ConfigureAwait(false); } // OOPIF: own target
-        catch (Exception) { own = null; }
+        try { own = new BoundedCdpSession(await HumanAction.Bounded(_page.Context.NewCDPSessionAsync(frame)).ConfigureAwait(false)); } // OOPIF: own target
+        catch (Exception e) when (e is not PageStalledException) { own = null; }
         if (own != null)
         {
             var t = await own.SendAsync("Page.getFrameTree").ConfigureAwait(false);
@@ -275,7 +349,7 @@ internal sealed class HumanWorld
     private static async Task ReleaseAsync(ICDPSession session, string objectId)
     {
         try { await session.SendAsync("Runtime.releaseObject", new() { ["objectId"] = objectId }).ConfigureAwait(false); }
-        catch (Exception) { }
+        catch (Exception e) when (e is not PageStalledException) { }
     }
 
     /// <summary>Segments of a native date/time editor in visual order, with centres relative

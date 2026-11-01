@@ -15,7 +15,7 @@ Drop-in Playwright/Puppeteer replacement. Same API, same code — just swap the 
 - **0.9 reCAPTCHA v3 score** — human-level, server-verified
 - **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — tested against 50+ detection sites
 - **`npm install cloakbrowser`** — binary auto-downloads, auto-updates, zero config
-- **Free and open source** — no subscriptions, no usage limits
+- **Latest binary, free to try** — [get a free key with your email](https://cloakbrowser.dev/free) (or just launch: the first run asks), scale to thousands of sessions on Pro
 - **Works with any framework** — tested with browser-use, Crawl4AI, Scrapling, Stagehand ([example](examples/stagehand.ts)), LangChain, Selenium, and more
 
 ## Install
@@ -29,6 +29,8 @@ npm install cloakbrowser puppeteer-core
 ```
 
 On first launch, the stealth Chromium binary auto-downloads (~200MB, cached at `~/.cloakbrowser/`).
+
+**License key:** every launch needs one, and a free key takes one email. The first launch in a terminal asks: get a free key (opens the signup page and continues once you confirm your email) or paste a key you have. In CI, Docker, or any run without a terminal, set `CLOAKBROWSER_LICENSE_KEY` (get one with `npx cloakbrowser login` or at [cloakbrowser.dev/free](https://cloakbrowser.dev/free)).
 
 ## Usage
 
@@ -55,7 +57,7 @@ const browser = await launch({
 });
 ```
 
-See the [main README](https://github.com/CloakHQ/CloakBrowser#troubleshooting) for site-specific troubleshooting (FingerprintJS, Kasada, reCAPTCHA).
+See the [main README](https://github.com/CloakHQ/CloakBrowser#troubleshooting) for site-specific troubleshooting (Kasada, Akamai, reCAPTCHA).
 
 ### Puppeteer
 
@@ -64,7 +66,12 @@ See the [main README](https://github.com/CloakHQ/CloakBrowser#troubleshooting) f
 ```javascript
 import { launch } from 'cloakbrowser/puppeteer';
 
-const browser = await launch();
+const browser = await launch({
+  proxy: 'http://user:pass@residential-proxy:port',
+  geoip: true,
+  headless: false,
+  humanize: true,
+});
 const page = await browser.newPage();
 await page.goto('https://example.com');
 console.log(await page.title());
@@ -98,13 +105,7 @@ const browser = await launch({ headless: false });
 
 // Extra Chrome args
 const browser = await launch({
-  args: ['--fingerprint=12345'],
-});
-
-// With timezone and locale
-const browser = await launch({
-  timezone: 'America/New_York',
-  locale: 'en-US',
+  args: ['--disable-gpu'],
 });
 
 // Pin an exact Chromium version (paid Pro key only)
@@ -122,15 +123,15 @@ const browser = await launch({
   geoip: true,
 });
 
-// Browser + context in one call (timezone/locale set via binary flags)
+// Browser + context in one call
 const context = await launchContext({
-  userAgent: 'Custom UA',
-  viewport: { width: 1920, height: 1080 },
-  locale: 'en-US',
-  timezone: 'America/New_York',
+  proxy: 'http://user:pass@residential-proxy:port',
+  geoip: true,
+  headless: false,
+  humanize: true,
 });
 
-// Persistent profile — stay logged in, bypass incognito detection, load extensions
+// Persistent profile — stay logged in, load extensions
 const ctx = await launchPersistentContext({
   userDataDir: './chrome-profile',
   headless: false,
@@ -155,34 +156,29 @@ const browser = await launch({ proxy: 'http://proxy:8080', geoip: true });
 
 // Works with launchContext too
 const context = await launchContext({ proxy: 'http://proxy:8080', geoip: true });
-
-// Explicit values always win over auto-detection
-const browser = await launch({ proxy: 'http://proxy:8080', geoip: true, timezone: 'Europe/London' });
 ```
-
-> **Note:** For rotating residential proxies, the DNS-resolved IP may differ from the exit IP. Pass explicit `timezone`/`locale` in those cases.
 
 ### CLI
 
 Pre-download the binary or check installation status from the command line:
 
 ```bash
-npx cloakbrowser login        # Get a free key via GitHub, or save a paid key
-npx cloakbrowser logout        # Remove the saved key (revert to the free binary)
+npx cloakbrowser login        # Get a free key by email, or save a key you have
+npx cloakbrowser logout       # Remove the saved key
 npx cloakbrowser install      # Download binary with progress output
 npx cloakbrowser info         # Show version, path, platform
 npx cloakbrowser update       # Check for and download newer binary
 npx cloakbrowser clear-cache  # Remove cached binaries
 ```
 
-`login` with no argument prompts you to paste a license key or press Enter to get a free key via a GitHub sign-in; `login <key>` saves a key directly. Both validate the key, then store it at `~/.cloakbrowser/license.key` so every launch picks it up.
+`login` with no argument shows the same menu as a first launch without a key: **1)** get a free key (opens the signup page in your browser, then waits until you confirm your email) or **2)** paste a key you have. `login <key>` saves a key directly. Keys are validated, then stored at `~/.cloakbrowser/license.key` (readable by you only) so every launch picks them up.
 
 ### Utilities
 
 ```javascript
-import { ensureBinary, clearCache, binaryInfo, checkForUpdate } from 'cloakbrowser';
+import { ensureBinary, clearCache, binaryInfo } from 'cloakbrowser';
 
-// Pre-download binary (e.g., during Docker build)
+// Pre-download binary (e.g., during Docker build; needs CLOAKBROWSER_LICENSE_KEY set)
 await ensureBinary();
 
 // Check installation
@@ -190,10 +186,6 @@ console.log(binaryInfo());
 
 // Force re-download
 clearCache();
-
-// Manually check for newer Chromium version
-const newVersion = await checkForUpdate();
-if (newVersion) console.log(`Updated to ${newVersion}`);
 ```
 
 ## Test Results
@@ -214,25 +206,12 @@ if (newVersion) console.log(`Updated to ${newVersion}`);
 
 | Env Variable | Default | Description |
 |---|---|---|
+| `CLOAKBROWSER_LICENSE_KEY` | — | Your license key (free or paid). Overrides `~/.cloakbrowser/license.key`. Required wherever there is no terminal to ask (CI, Docker) |
 | `CLOAKBROWSER_BINARY_PATH` | — | Skip download, use a local Chromium binary |
 | `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
-| `CLOAKBROWSER_DOWNLOAD_URL` | `cloakbrowser.dev` | Custom download URL |
-| `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to disable background update checks |
-| `CLOAKBROWSER_SKIP_CHECKSUM` | `false` | Set to `true` to skip SHA-256 verification after download |
-| `CLOAKBROWSER_WIDEVINE_CDM` | — | Path to a sideloaded `WidevineCdm` directory (overrides auto-detection next to the binary) |
-| `CLOAKBROWSER_WIDEVINE` | `1` | Set to `0` to disable automatic Widevine hint-file seeding for persistent contexts |
+| `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to keep the cached build and skip update checks |
 | `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `154.0.8037.57.1`). Paid Pro key only |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | `stable` | Set to `preview` to opt into the Pro Preview binary channel |
-
-### Widevine / DRM
-
-The binary supports Widevine, but the CDM is proprietary and can't be redistributed. Sideload it once by copying a `WidevineCdm/` directory from a real Chrome install next to the binary (full steps in [#96](https://github.com/CloakHQ/CloakBrowser/issues/96)):
-
-```bash
-cp -r /opt/google/chrome/WidevineCdm ~/.cloakbrowser/chromium-<version>/WidevineCdm
-```
-
-With the CDM in place, `launchPersistentContext()` enables Widevine on the **first** launch — the wrapper auto-seeds the CDM hint file into the profile. This plays DRM-protected video (Netflix, Spotify Web) and makes a persistent profile present as a regular Chrome install to detection services that probe for DRM/EME support. **Linux only.** A sideloaded CDM is the opt-in (no flag); set `CLOAKBROWSER_WIDEVINE_CDM` for a custom path or `CLOAKBROWSER_WIDEVINE=0` to disable. See the [main README](https://github.com/CloakHQ/CloakBrowser#widevine--drm) for details.
 
 ## Migrate From Playwright
 
@@ -248,13 +227,15 @@ const page = await browser.newPage();
 
 ## Platforms
 
-| Platform | Free | Pro | Status |
-|---|---|---|---|
-| Linux x86_64 | Chromium 146 (58 patches) | Chromium 155 (87 patches) | ✅ |
-| Linux arm64 (RPi, Graviton) | Chromium 146 (58 patches) | Chromium 155 (87 patches) | ✅ |
-| macOS arm64 (Apple Silicon) | Chromium 145 (26 patches) | Chromium 155 (87 patches) | ✅ |
-| macOS x86_64 (Intel) | Chromium 145 (26 patches) | Chromium 155 (87 patches) | ✅ |
-| Windows x86_64 | Chromium 146 (58 patches) | Chromium 155 (87 patches) | ✅ |
+| Platform | Binary | Status |
+|---|---|---|
+| Linux x86_64 | Chromium 155 (87 patches) | ✅ |
+| Linux arm64 (RPi, Graviton) | Chromium 155 (87 patches) | ✅ |
+| macOS arm64 (Apple Silicon) | Chromium 155 (87 patches) | ✅ |
+| macOS x86_64 (Intel) | Chromium 155 (87 patches) | ✅ |
+| Windows x86_64 | Chromium 155 (87 patches) | ✅ |
+
+Free and Pro keys get the same build; Pro raises the number of concurrent sessions.
 
 ## CloakBrowser Pro
 
@@ -262,14 +243,13 @@ The wrappers (Python, JS, .NET) are MIT, free forever. The latest binary is **fr
 
 Anti-bot systems change every week and an older binary quietly degrades. The latest build is the one that keeps passing. **Try it free, then upgrade when you're running for real.**
 
-- **Free, latest build (Chromium 155)** — the newest binary, the exact one that stays [green against live detection](#test-results). Free with a GitHub sign-in, one concurrent session. [Grab your key](https://cloakbrowser.dev/free) or run `cloakbrowser login`, then point it at the site that's been blocking you.
+- **Free, latest build (Chromium 156)** — the newest binary, the exact one that stays [green against live detection](#test-results). Free with your email, one concurrent session. Just launch (the first run asks), run `npx cloakbrowser login`, or [grab your key](https://cloakbrowser.dev/free), then point it at the site that's been blocking you.
 - **Pro** — when it's part of production scraping, QA, monitoring, or automation: scale to **5, 20, 200, 2,000, or more concurrent sessions**, always first on the newest patches, with hands-on support. Linux, Windows, macOS. **[See plans and pricing →](https://cloakbrowser.dev)**
-- **v146** — the older build stays free on [GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases). A quick first look, but it ages fast as detection evolves.
 
 Get a key and activate it:
 
 ```bash
-cloakbrowser login          # GitHub sign-in for a free key, or paste a paid key
+npx cloakbrowser login      # get a free key by email, or paste a key you have
 # ...or set it directly (env var, licenseKey option, or ~/.cloakbrowser/license.key):
 export CLOAKBROWSER_LICENSE_KEY=cb_xxxxxxxx
 ```
@@ -283,9 +263,9 @@ Try the latest free → **[cloakbrowser.dev/free](https://cloakbrowser.dev/free)
 
 ## Troubleshooting
 
-**Site detects incognito / private browsing mode**
+**Sites challenge every visit**
 
-By default, `launch()` opens an incognito context. Some sites (like BrowserScan) detect this. Use `launchPersistentContext()` instead — it runs with a real user profile:
+`launch()` starts with an empty profile each time, so every visit looks like a new visitor. Use `launchPersistentContext()` so cookies and storage carry over and you come back as a returning visitor:
 
 ```javascript
 import { launchPersistentContext } from 'cloakbrowser';
@@ -323,7 +303,6 @@ Other tips for maximizing reCAPTCHA scores:
 - **Use residential proxies** — datacenter IPs are flagged by IP reputation, not browser fingerprint
 - **Spend 15+ seconds on the page** before triggering reCAPTCHA — short visits score lower
 - **Space out requests** — back-to-back `grecaptcha.execute()` calls from the same session get penalized. Wait 30+ seconds between pages with reCAPTCHA
-- **Use a fixed fingerprint seed** (`--fingerprint=12345`) for consistent device identity across sessions
 - **Use `page.type()` instead of `page.fill()`** for form filling — `fill()` sets values directly without keyboard events, which reCAPTCHA's behavioral analysis flags. `type()` with a delay simulates real keystrokes:
 
   ```javascript
@@ -347,7 +326,7 @@ Or set `CLOAKBROWSER_RELEASE_CHANNEL=preview` for all launches and CLI commands.
 
 **New update broke something? Roll back to the previous version**
 
-Pin to an exact binary version (keep current wrapper, use older Chromium). Paid Pro key only. A free GitHub key cannot pin: it ignores the pin and always gets the latest build.
+Pin to an exact binary version (keep current wrapper, use older Chromium). Paid Pro key only. A free key cannot pin: it ignores the pin and always gets the latest build.
 
 ```bash
 export CLOAKBROWSER_VERSION=154.0.8037.57.1   # env var for all launches
@@ -359,18 +338,15 @@ const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '154.0
 
 The pin is never sticky — unpinned launches always use the latest available version.
 
-Or point directly to a cached older binary on disk:
+Or downgrade the wrapper (if a new wrapper release broke something). With a license key you still get the latest binary; pin it as above to roll that back too:
 
 ```bash
-# Linux
-export CLOAKBROWSER_BINARY_PATH=~/.cloakbrowser/chromium-146.0.7680.177.4/chrome
-
-# macOS
-export CLOAKBROWSER_BINARY_PATH=~/.cloakbrowser/chromium-145.0.7632.109.2/Chromium.app/Contents/MacOS/Chromium
-
-# Windows
-set CLOAKBROWSER_BINARY_PATH=%USERPROFILE%\.cloakbrowser\chromium-146.0.7680.177.4\chrome.exe
+npm install cloakbrowser@0.6.3
 ```
+
+**Can I still use the old keyless v146 build?**
+
+Yes, through the last wrapper release that runs without a key: `npm install cloakbrowser@0.6`. It downloads the old v146 build (v145 on macOS) from [GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases), with no key. It is no longer updated and ages fast as detection evolves, so the free key on the latest build is the better choice.
 
 ## Links
 
@@ -383,6 +359,6 @@ set CLOAKBROWSER_BINARY_PATH=%USERPROFILE%\.cloakbrowser\chromium-146.0.7680.177
 ## License
 
 - **Wrapper code** (this repository) — MIT. See [LICENSE](https://github.com/CloakHQ/CloakBrowser/blob/main/LICENSE).
-- **CloakBrowser binary** (compiled Chromium) — free to use, no redistribution. See [BINARY-LICENSE.md](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md).
+- **CloakBrowser binary** (compiled Chromium) — requires a license key: free with your email (one concurrent session), or a paid [CloakBrowser Pro](https://cloakbrowser.dev) subscription. Free for personal and commercial use, no redistribution. See [BINARY-LICENSE.md](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md).
 
 Use against financial, banking, healthcare, or government authentication systems without authorization is expressly prohibited.

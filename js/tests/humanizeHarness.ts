@@ -277,13 +277,18 @@ const PAGES: Record<string, string> = { '/index.html': INDEX_HTML, '/frame.html'
 
 export async function startServer(): Promise<{ url: string; close: () => Promise<void> }> {
   const srv = http.createServer((req, res) => {
+    if ((req.url ?? '').startsWith('/hang')) return; // a server that never answers
+    if ((req.url ?? '').startsWith('/slow')) { setTimeout(() => { res.writeHead(204); res.end(); }, 3000); return; } // answers, late
     const body = PAGES[(req.url ?? '/').split('?')[0]];
     res.writeHead(body ? 200 : 404, { 'content-type': 'text/html; charset=utf-8' });
     res.end(body ?? '');
   });
   await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
   const { port } = srv.address() as AddressInfo;
-  return { url: `http://127.0.0.1:${port}/`, close: () => new Promise((r) => srv.close(() => r())) };
+  return {
+    url: `http://127.0.0.1:${port}/`,
+    close: () => new Promise((r) => { srv.closeAllConnections(); srv.close(() => r()); }),
+  };
 }
 
 /** Recorded input events, optionally filtered by type. */

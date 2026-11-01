@@ -6,7 +6,7 @@ Chromium that passes bot-detection tests, built on top of
 [`Microsoft.Playwright`](https://playwright.dev/dotnet/).
 
 CloakBrowser is a thin wrapper around a closed-source, source-level patched
-Chromium binary (71 C++ fingerprint patches). This port reproduces **all** of the
+Chromium binary (87 C++ fingerprint patches). This port reproduces **all** of the
 wrapper functionality with identical behavior - same launch flags, same proxy /
 GeoIP / WebRTC logic, and a humanize layer whose curves, timings, and stealth
 paths match the Python and JavaScript clients exactly.
@@ -75,7 +75,6 @@ your code ──> HumanizedPage ──┬─ intercepted member ─> humanize en
 | **Proxy** - HTTP/HTTPS + SOCKS5, inline URL-encoded credentials | ✅ | `ProxyResolver.cs` |
 | **GeoIP** timezone/locale from proxy exit IP (MaxMind GeoLite2) | ✅ | `GeoIp.cs` |
 | **WebRTC** IP spoofing (`--fingerprint-webrtc-ip=auto`) | ✅ | `CloakLauncher.cs` |
-| **Widevine** CDM hint seeding (Linux) | ✅ | `Widevine.cs` |
 | **Persistent contexts** (profile reuse) | ✅ | `CloakLauncher.cs` |
 | **Humanize** - Bezier mouse, human typing, scrolling, actionability | ✅ | `Human/`, `Wrappers/` |
 | Transparent humanize via **source generator** | ✅ | `CloakBrowser.Generators/` |
@@ -88,7 +87,7 @@ your code ──> HumanizedPage ──┬─ intercepted member ─> humanize en
 | Dependency | Version | Why |
 | --- | --- | --- |
 | .NET SDK | **8.0** | target framework `net8.0` |
-| `Microsoft.Playwright` | **1.49.0** | underlying browser automation |
+| `Microsoft.Playwright` | **1.64.1** | underlying browser automation |
 | `MaxMind.GeoIP2` | **5.2.0** | GeoIP timezone/locale resolution |
 
 ---
@@ -102,6 +101,13 @@ dotnet add package CloakBrowser
 The patched Chromium binary downloads automatically on first launch, cached under
 `~/.cloakbrowser` (override with `CLOAKBROWSER_CACHE_DIR`).
 
+**License key:** every launch needs one, and a free key takes one email. The first launch
+in a console asks: get a free key (opens the signup page and continues once you confirm
+your email) or paste a key you have. In CI, Docker, or any run with redirected
+stdin/stderr, set `CLOAKBROWSER_LICENSE_KEY` (free key at
+[cloakbrowser.dev/free](https://cloakbrowser.dev/free)); a missing key then throws
+`CloakBrowserLicenseError` with the signup link.
+
 ---
 
 ## Project layout
@@ -114,7 +120,6 @@ dotnet/
 │   │   ├── Config.cs                    # <- cloakbrowser/config.py
 │   │   ├── Download.cs                  # <- cloakbrowser/download.py (+ zip-slip guard)
 │   │   ├── GeoIp.cs                     # <- cloakbrowser/geoip.py
-│   │   ├── Widevine.cs                  # <- cloakbrowser/widevine.py
 │   │   ├── CloakLauncher.cs             # <- cloakbrowser/browser.py (launch funcs, build_args)
 │   │   ├── ProxyResolver.cs             # <- cloakbrowser/browser.py (proxy URL helpers)
 │   │   ├── ProxySettings.cs             # <- ProxySettings TypedDict
@@ -164,7 +169,10 @@ using CloakBrowser;
 
 await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 {
-    Headless = true,
+    Proxy    = "http://user:pass@residential-proxy:port",
+    GeoIp    = true,     // match timezone + locale to proxy IP
+    Headless = false,
+    Humanize = true,
 });
 
 var page = await browser.NewPageAsync();
@@ -318,24 +326,20 @@ All entry points live on the static `CloakLauncher` class and return an
 | `LaunchPersistentContextAsync(userDataDir, LaunchContextOptions)` | `CloakContextHandle` | reuse a profile directory (cookies/localStorage persist) |
 
 ```csharp
-// emulated context
+// browser + context in one call
 await using var ctx = await CloakLauncher.LaunchContextAsync(new LaunchContextOptions
 {
-    Locale      = "en-US",
-    Timezone    = "America/New_York",
-    Viewport    = (1280, 800),
-    ColorScheme = "dark",
+    Proxy    = "http://user:pass@residential-proxy:port",
+    GeoIp    = true,
+    Headless = false,
+    Humanize = true,
 });
 var page = await ctx.NewPageAsync();
 ```
 
-> Locale and timezone are applied via **binary flags** (`--lang`,
-> `--fingerprint-locale`, `--fingerprint-timezone`) - *not* detectable CDP
-> emulation - matching the Python wrapper.
-
 ```csharp
 // persistent profile - cookies / localStorage survive across runs, so the
-// browser looks like a returning user instead of a fresh incognito session
+// browser looks like a returning user instead of a new visitor
 await using var ctx = await CloakLauncher.LaunchPersistentContextAsync("./profile",
     new LaunchContextOptions { Headless = false });
 var page = await ctx.NewPageAsync();
@@ -358,10 +362,10 @@ var page = await ctx.NewPageAsync();
 | `Args` | `List<string>` | `[]` | extra Chromium flags (e.g. `--fingerprint-webrtc-ip=auto`) |
 | `Locale` | `string` | `null` | BCP 47 locale -> `--lang`, `--fingerprint-locale` |
 | `Timezone` | `string` | `null` | IANA timezone -> `--fingerprint-timezone` |
-| `Viewport` | `(int,int)` | - | window size |
+| `Viewport` | `(int,int)` | - | fixed viewport size; unset = no emulated viewport (tracks the real window) |
 | `NoViewport` | `bool` | `false` | disable viewport emulation (track the real window) |
 | `ColorScheme` | `string` | - | `light` / `dark` |
-| `LicenseKey` | `string` | `null` | CloakBrowser Pro key (or `CLOAKBROWSER_LICENSE_KEY` env / `~/.cloakbrowser/license.key`) |
+| `LicenseKey` | `string` | `null` | License key, free or paid (or `CLOAKBROWSER_LICENSE_KEY` env / `~/.cloakbrowser/license.key`) |
 | `BrowserVersion` | `string` | `null` | Pin an exact Chromium version (e.g. `"154.0.8037.57.1"`). Also reads from `CLOAKBROWSER_VERSION` env var. Paid Pro key only. |
 | `ReleaseChannel` | `string` | `null` (`stable`) | Set to `"preview"` to opt into the Pro Preview binary channel. Also reads from `CLOAKBROWSER_RELEASE_CHANNEL`. |
 
@@ -369,13 +373,12 @@ var page = await ctx.NewPageAsync();
 
 The wrappers are MIT, free forever. The latest binary is **free to try**:
 
-- **Free, latest build (Chromium 155)** — the newest binary. Free with a GitHub sign-in, one concurrent session. Run `cloakbrowser login` or [grab your key](https://cloakbrowser.dev/free).
+- **Free, latest build (Chromium 156)** — the newest binary. Free with your email, one concurrent session. Just launch (the first run asks), run `cloakbrowser login`, or [grab your key](https://cloakbrowser.dev/free).
 - **Pro** — scale to **5, 20, 200, 2,000, or more concurrent sessions**, always first on the newest patches, with hands-on support. Linux, Windows, macOS. **[See plans and pricing →](https://cloakbrowser.dev)**
-- **v146** — the older build stays free on [GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases). A quick first look, but it ages fast as detection evolves.
 
 Try the latest free → **[cloakbrowser.dev/free](https://cloakbrowser.dev/free)**  ·  Scale up on Pro → **[cloakbrowser.dev](https://cloakbrowser.dev)**
 
-Get a key: run `cloakbrowser login` (GitHub sign-in for a free key, or paste a paid key), or set it directly via the `LicenseKey` option, the `CLOAKBROWSER_LICENSE_KEY` env var, or `~/.cloakbrowser/license.key`:
+Get a key: run `cloakbrowser login` (free key by email, or paste a key you have), or set it directly via the `LicenseKey` option, the `CLOAKBROWSER_LICENSE_KEY` env var, or `~/.cloakbrowser/license.key`:
 
 ```csharp
 await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
@@ -384,13 +387,11 @@ await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 });
 ```
 
-A valid key downloads the latest Pro binary from cloakbrowser.dev; without one, the
-free binary downloads from GitHub Releases. Validation is cached locally for 24h, and
-the Pro binary is authenticated with the **same pinned Ed25519 signature** as the free
-binary — a key whose Pro download or signature check fails surfaces a clear error
-rather than silently downgrading. `Download.BinaryInfo()` exposes a `Tier` field
-(`"pro"` / `"free"`); `License.ValidateLicense` / `License.LicenseInfo` mirror the
-Python `validate_license` / `LicenseInfo` exports.
+A valid key downloads the latest binary from cloakbrowser.dev. Validation is cached
+locally for 24h, and every download is authenticated with a **pinned Ed25519
+signature**: a failed download or signature check surfaces a clear error. An invalid or
+expired key throws `CloakBrowserLicenseError`. `License.ValidateLicense` /
+`License.LicenseInfo` mirror the Python `validate_license` / `LicenseInfo` exports.
 
 ### Preview release channel
 
@@ -408,7 +409,7 @@ Or set `CLOAKBROWSER_RELEASE_CHANNEL=preview` for all launches and CLI commands.
 
 ### Rolling back to a previous binary version
 
-Pin an exact Chromium version without downgrading the wrapper — paid Pro key only. A free GitHub key cannot pin: it ignores the pin and always gets the latest build.
+Pin an exact Chromium version without downgrading the wrapper — paid Pro key only. A free key cannot pin: it ignores the pin and always gets the latest build.
 
 ```csharp
 await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
@@ -420,6 +421,19 @@ await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 
 The pin is **never sticky** — unpinned launches always use the latest available version.
 You can also set it globally via the `CLOAKBROWSER_VERSION` env var (see [Environment variables](#environment-variables)).
+
+Or downgrade the wrapper (if a new wrapper release broke something). With a license key you still get the latest binary; pin it as above to roll that back too:
+
+```bash
+dotnet add package CloakBrowser --version 0.6.3
+```
+
+**Can I still use the old keyless v146 build?** Yes, through the last wrapper release
+that runs without a key: `dotnet add package CloakBrowser --version 0.6.5`. It downloads
+the old v146 build (v145 on macOS) from
+[GitHub Releases](https://github.com/CloakHQ/cloakbrowser/releases), with no key. It is no
+longer updated and ages fast as detection evolves, so the free key on the latest build is
+the better choice.
 
 ---
 
@@ -575,9 +589,10 @@ programmatic value is acceptable.
 ```csharp
 await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 {
-    Proxy = "http://user:pass@proxy.example.com:8080",   // or a ProxySettings
-    GeoIp = true,                                         // tz/locale from exit IP
-    Args  = new List<string> { "--fingerprint-webrtc-ip=auto" },
+    Proxy    = "http://user:pass@proxy.example.com:8080",   // or a ProxySettings
+    GeoIp    = true,      // tz/locale from exit IP; WebRTC spoofing added automatically
+    Headless = false,
+    Humanize = true,
 });
 ```
 
@@ -598,12 +613,14 @@ await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 ## CLI
 
 Installed via NuGet you don't need a CLI — the binary auto-downloads on first launch
-and updates in the background, and `Download.BinaryInfo()` reports the installed
-version, path, and tier (`Download.EnsureBinary()` pre-fetches it on demand).
+and updates on launch, and `Download.BinaryInfo()` reports the installed
+version and path (`Download.EnsureBinary()` pre-fetches it on demand).
 
 When running from a clone of the repo, a small CLI does the same:
 
 ```bash
+dotnet run --project src/CloakBrowser.Cli -- login        # free key by email, or paste a key
+dotnet run --project src/CloakBrowser.Cli -- logout       # remove the saved key
 dotnet run --project src/CloakBrowser.Cli -- install      # download the binary
 dotnet run --project src/CloakBrowser.Cli -- info         # version / path / platform
 dotnet run --project src/CloakBrowser.Cli -- update       # check + download newer
@@ -618,15 +635,13 @@ Same set as the Python wrapper:
 
 | Variable | Purpose |
 | --- | --- |
+| `CLOAKBROWSER_LICENSE_KEY` | Your license key (free or paid). Required wherever there is no console to ask (CI, Docker) |
 | `CLOAKBROWSER_BINARY_PATH` | Use a local binary, skip download |
 | `CLOAKBROWSER_CACHE_DIR` | Override the cache directory |
-| `CLOAKBROWSER_DOWNLOAD_URL` | Override the download URL |
-| `CLOAKBROWSER_AUTO_UPDATE` | Enable/disable background auto-update |
-| `CLOAKBROWSER_SKIP_CHECKSUM` | Skip SHA-256 verification |
+| `CLOAKBROWSER_AUTO_UPDATE` | Set to `false` to keep the cached build and skip update checks |
 | `CLOAKBROWSER_VERSION` | Pin to an exact Chromium version for rollback (e.g. `154.0.8037.57.1`). Paid Pro key only |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | Set to `preview` to opt into the Pro Preview binary channel (default: `stable`) |
 | `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | GeoIP HTTP timeout |
-| `CLOAKBROWSER_WIDEVINE_CDM` / `CLOAKBROWSER_WIDEVINE` | Widevine seeding control |
 
 ---
 
@@ -678,7 +693,6 @@ classes share one serial xunit collection (`RealBrowser`).
 | `Config.cs` | `cloakbrowser/config.py` |
 | `Download.cs` | `cloakbrowser/download.py` |
 | `GeoIp.cs` | `cloakbrowser/geoip.py` |
-| `Widevine.cs` | `cloakbrowser/widevine.py` |
 | `CloakLauncher.cs` / `ProxyResolver.cs` | `cloakbrowser/browser.py` |
 | `Human/HumanConfig.cs` | `cloakbrowser/human/config.py` |
 | `Human/HumanMouse.cs` | `cloakbrowser/human/mouse.py` |
@@ -694,4 +708,5 @@ classes share one serial xunit collection (`RealBrowser`).
 
 ## License
 
-MIT - same as the upstream CloakBrowser project.
+- **Wrapper code** — MIT, same as the upstream CloakBrowser project.
+- **CloakBrowser binary** (compiled Chromium) — requires a license key: free with your email (one concurrent session), or a paid [CloakBrowser Pro](https://cloakbrowser.dev) subscription. Free for personal and commercial use, no redistribution. See [BINARY-LICENSE.md](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md).

@@ -6,16 +6,11 @@
 
 import type { Browser } from "puppeteer-core";
 import type { LaunchOptions } from "./types.js";
-import {
-  DEFAULT_VIEWPORT,
-  IGNORE_DEFAULT_ARGS,
-  binarySupportsHeadlessNoViewport,
-  binarySupportsHttpProxyInlineAuth,
-} from "./config.js";
+import { IGNORE_DEFAULT_ARGS } from "./config.js";
 import { buildArgs } from "./args.js";
 import { maybeWarnWindowsFonts } from "./fonts.js";
 import { ensureBinary } from "./download.js";
-import { isSocksProxy, normalizeHttpStringUrl, parseProxyUrl, reconstructHttpUrl, resolveProxyConfig } from "./proxy.js";
+import { isSocksProxy, normalizeHttpStringUrl, reconstructHttpUrl, resolveProxyConfig } from "./proxy.js";
 import { maybeResolveGeoip, resolveWebrtcArgs, appendWebrtcExitIp } from "./geoip.js";
 import {
   buildLaunchEnv,
@@ -30,34 +25,19 @@ import { persistentSeedArgs } from "./profile-seed.js";
 export { CloakBrowserLicenseError } from "./license.js";
 
 /**
- * Resolve Puppeteer's defaultViewport. Headed -> null (track the real window so
- * outerWidth >= innerWidth stays coherent; Puppeteer otherwise forces an 800x600
- * emulated viewport = a physically impossible window = bot tell). Headless has no
- * window chrome (outer == inner), so a fixed viewport stays coherent and keeps
- * dimensions deterministic. A user-supplied launchOptions.defaultViewport wins.
+ * Resolve Puppeteer's defaultViewport: null (no emulation) unless the user
+ * supplied one. Headed, the page tracks the real window (Puppeteer otherwise
+ * forces an 800x600 viewport = outerWidth < innerWidth = bot tell); headless,
+ * the binary reports coherent dimensions itself.
  */
 function resolveDefaultViewport(options: LaunchOptions): { width: number; height: number } | null {
   const launchOpts = (options.launchOptions ?? {}) as Record<string, unknown>;
   // A user-supplied defaultViewport wins (incl. explicit null). undefined is NOT
-  // "supplied" — fall through to our default. Puppeteer sets `headless` AFTER the
-  // launchOptions spread, so the top-level field wins at launch — match it here.
+  // "supplied" — fall through to our default.
   if (launchOpts.defaultViewport !== undefined) {
     return launchOpts.defaultViewport as { width: number; height: number } | null;
   }
-  const headless = options.headless ?? true;
-  // Headed and newer headless binaries: null (no emulation, coherent dimensions).
-  // Older headless binaries: a fixed viewport keeps dimensions coherent.
-  if (
-    !headless ||
-    binarySupportsHeadlessNoViewport(
-      options.licenseKey,
-      options.browserVersion,
-      options.releaseChannel,
-    )
-  ) {
-    return null;
-  }
-  return DEFAULT_VIEWPORT;
+  return null;
 }
 
 /** Resolve binary path, geoip, webrtc, and build final Chrome args. */
@@ -83,81 +63,31 @@ async function resolveArgs(
 }
 
 /**
- * Resolve proxy into Chrome CLI args and optional HTTP auth credentials.
- * SOCKS5: Chrome handles inline credentials natively (RFC 1929 auth).
- * HTTP on binaries with inline proxy auth: inline credentials via --proxy-server.
- * HTTP on older binaries (free macOS/linux-arm64): strip credentials, use
- * page.authenticate() fallback.
+ * Resolve proxy into Chrome CLI args. Credentials go inline via --proxy-server:
+ * SOCKS5 natively (RFC 1929), HTTP through the binary's inline proxy auth.
  */
-function resolveProxy(options: LaunchOptions, args: string[]): { username: string; password: string } | undefined {
-  if (!options.proxy) return undefined;
+function resolveProxy(options: LaunchOptions, args: string[]): void {
+  if (!options.proxy) return;
 
   if (isSocksProxy(options.proxy)) {
-    const { proxyArgs } = resolveProxyConfig(
-      options.proxy,
-      options.browserVersion,
-      options.licenseKey,
-      options.releaseChannel,
-    );
-    args.push(...proxyArgs);
-    return undefined;
+    args.push(...resolveProxyConfig(options.proxy).proxyArgs);
+    return;
   }
-
-  // On binaries that ship inline proxy auth: pass full URL with inline creds.
-  if (
-    binarySupportsHttpProxyInlineAuth(
-      options.licenseKey,
-      options.browserVersion,
-      options.releaseChannel,
-    )
-  ) {
-    if (typeof options.proxy === "string") {
-      args.push(`--proxy-server=${normalizeHttpStringUrl(options.proxy)}`);
-      return undefined;
-    }
-    const url = options.proxy.username
-      ? reconstructHttpUrl(options.proxy)
-      : options.proxy.server;
-    args.push(`--proxy-server=${url}`);
-    if (options.proxy.bypass) {
-      args.push(`--proxy-bypass-list=${options.proxy.bypass}`);
-    }
-    return undefined;
-  }
-
-  // Older binary: strip credentials, fall back to page.authenticate()
   if (typeof options.proxy === "string") {
-    const { server, username, password } = parseProxyUrl(options.proxy);
-    args.push(`--proxy-server=${server}`);
-    return username ? { username, password: password ?? "" } : undefined;
+    args.push(`--proxy-server=${normalizeHttpStringUrl(options.proxy)}`);
+    return;
   }
-
-  const parsed = parseProxyUrl(options.proxy.server);
-  args.push(`--proxy-server=${parsed.server}`);
+  const url = options.proxy.username
+    ? reconstructHttpUrl(options.proxy)
+    : options.proxy.server;
+  args.push(`--proxy-server=${url}`);
   if (options.proxy.bypass) {
     args.push(`--proxy-bypass-list=${options.proxy.bypass}`);
   }
-  const username = options.proxy.username ?? parsed.username;
-  const password = options.proxy.password ?? parsed.password;
-  return username ? { username, password: password ?? "" } : undefined;
 }
 
-/** Apply proxy auth fallback (older binaries) and humanize patching. */
-async function applyPostLaunch(
-  browser: Browser,
-  options: LaunchOptions,
-  proxyAuth?: { username: string; password: string },
-): Promise<void> {
-  if (proxyAuth) {
-    const origNewPage = browser.newPage.bind(browser);
-    const auth = proxyAuth;
-    browser.newPage = async (...pageArgs: Parameters<typeof origNewPage>) => {
-      const page = await origNewPage(...pageArgs);
-      await page.authenticate(auth);
-      return page;
-    };
-  }
-
+/** Apply humanize patching. */
+async function applyPostLaunch(browser: Browser, options: LaunchOptions): Promise<void> {
   if (options.humanize) {
     const { patchBrowser } = await import('./human-puppeteer/index.js');
     const { resolveConfig } = await import('./human/config.js');
@@ -186,7 +116,7 @@ async function applyPostLaunch(
 export async function launch(options: LaunchOptions = {}): Promise<Browser> {
   const puppeteer = await import("puppeteer-core");
   const { binaryPath, args } = await resolveArgs(options);
-  const proxyAuth = resolveProxy(options, args);
+  resolveProxy(options, args);
 
   // Resolve env for the browser process (license key injection, if needed).
   const denialPath = resolveLicenseKey(options.licenseKey) ? mintDenialFile() : undefined;
@@ -223,7 +153,7 @@ export async function launch(options: LaunchOptions = {}): Promise<Browser> {
     // who creates their own context is covered too.
     installLicenseGuard(browser, denialPath);
   }
-  await applyPostLaunch(browser, options, proxyAuth);
+  await applyPostLaunch(browser, options);
   return browser;
 }
 
@@ -250,7 +180,7 @@ export async function launchPersistentContext(
 ): Promise<Browser> {
   const puppeteer = await import("puppeteer-core");
   const { binaryPath, args } = await resolveArgs(options);
-  const proxyAuth = resolveProxy(options, args);
+  resolveProxy(options, args);
 
   seedWidevineHint(options.userDataDir, binaryPath);
 
@@ -292,6 +222,6 @@ export async function launchPersistentContext(
       installLicenseGuard(pg, denialPath);
     }
   }
-  await applyPostLaunch(browser, options, proxyAuth);
+  await applyPostLaunch(browser, options);
   return browser;
 }

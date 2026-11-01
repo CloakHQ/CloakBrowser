@@ -107,7 +107,7 @@ describe("launchers use the stored seed", () => {
   it("playwright launchPersistentContext reuses the seed, launch() stays random", async () => {
     const chromium = {
       launchPersistentContext: vi.fn().mockResolvedValue({ close: vi.fn(), pages: () => [] }),
-      launch: vi.fn().mockResolvedValue({ close: vi.fn(), on: vi.fn(), contexts: () => [] }),
+      launch: vi.fn().mockResolvedValue({ close: vi.fn(), on: vi.fn(), contexts: () => [], newContext: vi.fn(), newPage: vi.fn() }),
     };
     vi.doMock("playwright-core", () => ({ chromium }));
     const { launchPersistentContext, launch } = await import("../src/playwright.js");
@@ -153,7 +153,7 @@ describe("launchers use the stored seed", () => {
   it("playwright launchContext stays random and writes nothing", async () => {
     const context = { close: vi.fn(), pages: () => [], on: vi.fn() };
     const chromium = {
-      launch: vi.fn().mockResolvedValue({ close: vi.fn(), on: vi.fn(), contexts: () => [], newContext: vi.fn().mockResolvedValue(context) }),
+      launch: vi.fn().mockResolvedValue({ close: vi.fn(), on: vi.fn(), contexts: () => [], newContext: vi.fn().mockResolvedValue(context), newPage: vi.fn() }),
     };
     vi.doMock("playwright-core", () => ({ chromium }));
     const cwd = process.cwd();

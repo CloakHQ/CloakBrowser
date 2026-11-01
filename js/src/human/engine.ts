@@ -20,7 +20,7 @@ import { type HumanConfig, mergeConfig, rand, randLog, randRange, randIntRange, 
 import { NEARBY_KEYS, keyGap, keyHold, Typist, type TypistKeys } from './keyboard.js';
 import { clickTarget, planMove } from './mouse.js';
 import * as fields from './fields.js';
-import { HELPERS, StaleElement, Worlds, intersect, type Rect } from './world.js';
+import { DEBUG, HELPERS, PageStalled, StaleElement, Worlds, bounded, boundedCalls, intersect, type Rect } from './world.js';
 
 const ENTER_FRAME_SPLIT = /\s*>>\s*internal:control=enter-frame\s*>>\s*/;
 
@@ -138,8 +138,11 @@ export class Human {
   private _platform: string | null = null;
   private handleIds = new Map<string, [Frame, number, number]>();
 
-  constructor(readonly page: Page, public cfg: HumanConfig, public cursor: CursorState, readonly raw: RawInput) {
+  readonly raw: RawInput;
+
+  constructor(readonly page: Page, public cfg: HumanConfig, public cursor: CursorState, raw: RawInput) {
     this.worlds = new Worlds(page);
+    this.raw = boundedCalls(raw);
   }
 
   // -- configuration ------------------------------------------------------
@@ -162,7 +165,7 @@ export class Human {
   async platform(): Promise<string> {
     if (this._platform === null) {
       try { this._platform = String(await this.worlds.call(this.page.mainFrame(), 'platform')); }
-      catch { this._platform = ''; }
+      catch (e) { if (e instanceof PageStalled) throw e; this._platform = ''; }
     }
     return this._platform;
   }
@@ -248,7 +251,7 @@ export class Human {
     if (!exact && cached && cached[0] === frame && cached[1] === rec.ctx) return new Resolved(frame, cached[2]);
     // An ElementHandle carries no identity our context can read, so find
     // the element with exactly its border box.
-    const box = await handle.boundingBox();
+    const box = await bounded(handle.boundingBox());
     if (!box) {
       if (exact) throw new RawFallback();
       // Resolved in an earlier document of this frame and gone now
@@ -330,7 +333,7 @@ export class Human {
       try {
         return await attempt();
       } catch (e: any) {
-        if (e instanceof RawFallback) throw e;
+        if (e instanceof RawFallback || e instanceof PageStalled) throw e;
         if (e instanceof StaleElement) {
           if (target.handle) throw err(`${api}: Element is not attached to the DOM`);
           note('element was detached from the DOM, retrying');
@@ -599,11 +602,12 @@ export class Human {
       if (trial) return r;
       const keys: string[] = [];
       for (const m of hold ?? []) keys.push(await this.modifier(m));
-      for (const k of keys) await this.raw.keyDown(k);
+      const held: string[] = [];
       try {
+        for (const k of keys) { held.push(k); await this.raw.keyDown(k); }
         await this.moveTo(x, y, cfg);
       } finally {
-        for (const k of [...keys].reverse()) await this.raw.keyUp(k);
+        for (const k of held.reverse()) await this.raw.keyUp(k);
       }
       // The page may replace or remove the target while the cursor travels;
       // never press on whatever is under it now (even with force). Locators
@@ -621,18 +625,23 @@ export class Human {
     const mods: string[] = [];
     for (const m of modifiers ?? []) mods.push(await this.modifier(m));
     await sleepMs(randRange(isInput ? cfg.click_aim_delay_input : cfg.click_aim_delay_button));
-    for (const m of mods) await this.raw.keyDown(m);
+    const held: string[] = [];
     try {
+      for (const m of mods) { held.push(m); await this.raw.keyDown(m); }
       const count = Math.max(1, Math.trunc(clickCount));
       for (let n = 1; n <= count; n++) {
         const hold = delay ?? randRange(isInput ? cfg.click_hold_input : cfg.click_hold_button);
-        await this.raw.down({ button, clickCount: n });
-        await sleepMs(hold);
-        await this.raw.up({ button, clickCount: n });
+        try {
+          await this.raw.down({ button, clickCount: n });
+          await sleepMs(hold);
+        } finally {
+          // Never leave the button down, also when the page stopped answering.
+          await this.raw.up({ button, clickCount: n });
+        }
         if (n < count) await sleepMs(delay ?? rand(60, 140));
       }
     } finally {
-      for (const m of [...mods].reverse()) await this.raw.keyUp(m);
+      for (const m of held.reverse()) await this.raw.keyUp(m);
     }
   }
 
@@ -888,16 +897,38 @@ export class Human {
       if (res.retry) throw new Retry(res.retry);
       return [rr, res];
     });
-    if (!p.listbox) await this.selectDropdown(target, r, p.targets.length ? p.targets[0] : null, p, opts, api, deadline);
-    else await this.selectListbox(target, r, p, opts, api, cfg, deadline);
+    // A pick that navigates (a form submitted on change, here or from an iframe
+    // to the top page) leaves nothing to read back, and while that navigation is
+    // pending the read may never answer (#619): report what was chosen, as
+    // Playwright does.
+    const NAVIGATED = Symbol('navigated');
+    let onRequest!: (req: any) => void;
+    const navigated = new Promise<typeof NAVIGATED>((resolve) => {
+      onRequest = (req) => {
+        let f: Frame | null = r.frame;
+        while (f && f !== req.frame()) f = f.parentFrame();
+        if (f && req.isNavigationRequest()) resolve(NAVIGATED);
+      };
+    });
+    this.page.on('request', onRequest);
     let state;
     try {
-      state = await this.worlds.call(r.frame, 'selectState', r.id);
-    } catch (e) {
-      // The pick navigated the page (a form submitted on change): nothing
-      // left to read back, so report what was chosen, as Playwright does.
-      if (e instanceof StaleElement) return p.values;
-      throw e;
+      if (!p.listbox) await this.selectDropdown(target, r, p.targets.length ? p.targets[0] : null, p, opts, api, deadline);
+      else await this.selectListbox(target, r, p, opts, api, cfg, deadline);
+      const read = this.worlds.call(r.frame, 'selectState', r.id);
+      // Settled below, or abandoned once the frame navigated.
+      read.catch((e) => { if (DEBUG) console.debug(`[cloakbrowser] selectState read after navigation: ${e}`); });
+      try {
+        state = await Promise.race([read, navigated]);
+      } catch (e) {
+        // The pick navigated the page (a form submitted on change): nothing
+        // left to read back, so report what was chosen, as Playwright does.
+        if (e instanceof StaleElement) return p.values;
+        throw e;
+      }
+      if (state === NAVIGATED) return p.values;
+    } finally {
+      this.page.off('request', onRequest);
     }
     const sorted = (a: number[]) => JSON.stringify([...a].sort((x, y) => x - y));
     if (sorted(state.selected) !== sorted(p.targets)) {
@@ -1088,7 +1119,7 @@ export class Human {
   }
 
   private async activeValue(frame: Frame): Promise<string | null> {
-    try { return (await this.worlds.call(frame, 'activeValue'))?.value ?? null; } catch { return null; }
+    try { return (await this.worlds.call(frame, 'activeValue'))?.value ?? null; } catch (e) { if (e instanceof PageStalled) throw e; return null; }
   }
 
   /** One key on its own (date editors, type-ahead). */
@@ -1123,7 +1154,7 @@ export class Human {
   async keyboardType(text: string, delay?: number): Promise<void> {
     const frame = this.page.mainFrame();
     let info: any = null;
-    try { info = await this.worlds.call(frame, 'activeValue'); } catch { info = null; }
+    try { info = await this.worlds.call(frame, 'activeValue'); } catch (e) { if (e instanceof PageStalled) throw e; info = null; }
     if (info?.tag === 'iframe') info = null; // focus inside a child frame: value checks impossible
     await this.typeText(text, this.cfg, frame, info?.tag ? info : null, delay);
   }

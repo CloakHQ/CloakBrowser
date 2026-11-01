@@ -32,7 +32,7 @@ from . import fields
 from .config import HumanConfig, merge_config, rand, rand_int_range, rand_log, rand_range
 from .keyboard import NEARBY_KEYS, SHIFT_SYMBOLS, _SHIFT_SYMBOL_CODES, _SHIFT_SYMBOL_KEYCODES, key_gap, key_hold, physical_key
 from .mouse import click_target, plan_move
-from .world import HELPERS, StaleElement, Worlds, intersect
+from .world import HELPERS, BoundedCalls, StaleElement, Worlds, bounded, intersect
 
 _ENTER_FRAME_SPLIT = re.compile(r"\s*>>\s*internal:control=enter-frame\s*>>\s*")
 
@@ -282,8 +282,8 @@ class Human:
         self.cursor = cursor
         self.worlds = Worlds(page)
         self._typeahead_until = 0.0  # monotonic time until which the browser joins typed letters
-        self.mouse = page.mouse
-        self.keyboard = page.keyboard
+        self.mouse = BoundedCalls(page.mouse)
+        self.keyboard = BoundedCalls(page.keyboard)
         self._platform: Optional[str] = None
         self._handle_ids: Dict[str, Tuple[Any, int, int]] = {}
 
@@ -395,7 +395,7 @@ class Human:
             return Resolved(frame, cached[2])
         # An ElementHandle carries no identity our context can read, so find
         # the element with exactly its border box.
-        box = await handle.bounding_box()
+        box = await bounded(handle.bounding_box())
         if box is None:
             if exact:
                 raise RawFallback()
@@ -768,12 +768,14 @@ class Human:
             if trial:
                 return r
             keys = [await self._modifier(m) for m in (hold or [])]
-            for k in keys:
-                await self.keyboard.down(k)
+            held: List[str] = []
             try:
+                for k in keys:
+                    held.append(k)
+                    await self.keyboard.down(k)
                 await self.move_to(x, y, cfg)
             finally:
-                for k in reversed(keys):
+                for k in reversed(held):
                     await self.keyboard.up(k)
             # The page may replace or remove the target while the cursor
             # travels; never press on whatever is under it now (even with
@@ -794,18 +796,23 @@ class Human:
                           modifiers: Optional[Sequence[str]] = None) -> None:
         mods = [await self._modifier(m) for m in (modifiers or [])]
         await sleep_ms(rand_range(cfg.click_aim_delay_input if is_input else cfg.click_aim_delay_button))
-        for m in mods:
-            await self.keyboard.down(m)
+        held: List[str] = []
         try:
+            for m in mods:
+                held.append(m)
+                await self.keyboard.down(m)
             for n in range(1, max(1, int(click_count)) + 1):
                 hold = delay if delay is not None else rand_range(cfg.click_hold_input if is_input else cfg.click_hold_button)
-                await self.mouse.down(button=button, clickCount=n)
-                await sleep_ms(hold)
-                await self.mouse.up(button=button, clickCount=n)
+                try:
+                    await self.mouse.down(button=button, clickCount=n)
+                    await sleep_ms(hold)
+                finally:
+                    # Never leave the button down, also when the page stopped answering.
+                    await self.mouse.up(button=button, clickCount=n)
                 if n < click_count:
                     await sleep_ms(delay if delay is not None else rand(60, 140))
         finally:
-            for m in reversed(mods):
+            for m in reversed(held):
                 await self.keyboard.up(m)
 
     # -- public actions -----------------------------------------------------
@@ -1074,17 +1081,42 @@ class Human:
             return r, res
 
         r, p = await self.retry(api, target, deadline, plan)
-        if not p["listbox"]:
-            await self._select_dropdown(target, r, p["targets"][0] if p["targets"] else None, p, opts, api,
-                                        cfg, deadline)
-        else:
-            await self._select_listbox(target, r, p, opts, api, cfg, deadline)
+        # A pick that navigates (a form submitted on change, here or from an
+        # iframe to the top page) leaves nothing to read back, and while that
+        # navigation is pending the read may never answer (#619): report what
+        # was chosen, as Playwright does.
+        navigated = asyncio.get_running_loop().create_future()
+
+        def on_request(req: Any) -> None:
+            f = r.frame
+            while f is not None and f is not req.frame:
+                f = f.parent_frame
+            if f is not None and req.is_navigation_request() and not navigated.done():
+                navigated.set_result(None)
+
+        self.page.on("request", on_request)
         try:
-            state = await self.worlds.call(r.frame, "selectState", r.id)
-        except StaleElement:
-            # The pick navigated the page (a form submitted on change): nothing
-            # left to read back, so report what was chosen, as Playwright does.
-            return p["values"]
+            if not p["listbox"]:
+                await self._select_dropdown(target, r, p["targets"][0] if p["targets"] else None, p, opts, api,
+                                            cfg, deadline)
+            else:
+                await self._select_listbox(target, r, p, opts, api, cfg, deadline)
+            read = asyncio.ensure_future(self.worlds.call(r.frame, "selectState", r.id))
+            try:
+                await asyncio.wait({read, navigated}, return_when=asyncio.FIRST_COMPLETED)
+                if not read.done():
+                    return p["values"]
+                try:
+                    state = read.result()
+                except StaleElement:
+                    # The pick navigated the page (a form submitted on change): nothing
+                    # left to read back, so report what was chosen, as Playwright does.
+                    return p["values"]
+            finally:
+                if not read.done():
+                    read.cancel()
+        finally:
+            self.page.remove_listener("request", on_request)
         if sorted(state["selected"]) != sorted(p["targets"]):
             raise Error(f"{api}: Error: selection ended as {state['values']} instead of {p['values']}")
         return state["values"]

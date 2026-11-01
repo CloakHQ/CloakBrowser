@@ -83,15 +83,14 @@ describe("puppeteer launch", () => {
     expect(callArgs.args.some((a: string) => a.startsWith("--fingerprint="))).toBe(false);
   });
 
-  it("headless (default) uses a fixed defaultViewport; headed uses null", async () => {
-    const { DEFAULT_VIEWPORT } = await import("../src/config.js");
+  it("uses a null defaultViewport, headless (default) or headed", async () => {
     const { launch } = await import("../src/puppeteer.js");
 
-    // Headless (default): deterministic viewport.
+    // Headless (default): the binary reports coherent dimensions itself.
     await launch();
     expect(
       vi.mocked(puppeteerMock.default.launch).mock.calls[0][0].defaultViewport
-    ).toEqual(DEFAULT_VIEWPORT);
+    ).toBeNull();
 
     // Headed: null so the page tracks the real window (else Puppeteer forces 800x600).
     vi.mocked(puppeteerMock.default.launch).mockClear();
@@ -110,7 +109,7 @@ describe("puppeteer launch", () => {
       vi.mocked(puppeteerMock.default.launch).mock.calls[0][0].defaultViewport
     ).toEqual(custom);
 
-    // Explicit null honored even in headless (would otherwise default to DEFAULT_VIEWPORT).
+    // Explicit null honored.
     vi.mocked(puppeteerMock.default.launch).mockClear();
     await launch({ headless: true, launchOptions: { defaultViewport: null } });
     expect(
@@ -119,15 +118,13 @@ describe("puppeteer launch", () => {
   });
 
   it("Puppeteer headless precedence: top-level headless wins over launchOptions.headless", async () => {
-    const { DEFAULT_VIEWPORT } = await import("../src/config.js");
     const { launch } = await import("../src/puppeteer.js");
 
-    // Puppeteer sets headless AFTER the launchOptions spread, so top-level wins at
-    // launch — the viewport decision must follow the same (top-level) value.
+    // Puppeteer sets headless AFTER the launchOptions spread, so top-level wins.
     await launch({ headless: true, launchOptions: { headless: false } });
     const opts = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
     expect(opts.headless).toBe(true);
-    expect(opts.defaultViewport).toEqual(DEFAULT_VIEWPORT);
+    expect(opts.defaultViewport).toBeNull();
   });
 
   it("adds --proxy-server for string proxy", async () => {
@@ -149,9 +146,7 @@ describe("puppeteer launch", () => {
     expect(callArgs.args).toContain("--proxy-bypass-list=.google.com,localhost");
   });
 
-  it("uses page.authenticate fallback for http proxy on free macOS", async () => {
-    // Free macOS lacks inline proxy auth → strip creds, use page.authenticate.
-    // getPlatformTag reads process.platform/arch at call time.
+  it("passes inline creds via --proxy-server on every platform (no page.authenticate)", async () => {
     const origPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
     const origArch = Object.getOwnPropertyDescriptor(process, "arch")!;
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
@@ -159,29 +154,6 @@ describe("puppeteer launch", () => {
     try {
       const { launch } = await import("../src/puppeteer.js");
       const browser = await launch({ proxy: "http://user:pass@proxy:8080" });
-
-      const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
-      expect(callArgs.args).toContain("--proxy-server=http://proxy:8080");
-      const page = await browser.newPage();
-      expect(page.authenticate).toHaveBeenCalledWith({ username: "user", password: "pass" });
-    } finally {
-      Object.defineProperty(process, "platform", origPlatform);
-      Object.defineProperty(process, "arch", origArch);
-      vi.restoreAllMocks();
-    }
-  });
-
-  it("passes inline creds via --proxy-server on supported platform (no page.authenticate)", async () => {
-    const origPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
-    const origArch = Object.getOwnPropertyDescriptor(process, "arch")!;
-    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-    Object.defineProperty(process, "arch", { value: "x64", configurable: true });
-    try {
-      const { launch } = await import("../src/puppeteer.js");
-      const browser = await launch({
-        proxy: "http://user:pass@proxy:8080",
-        browserVersion: "146.0.7680.177.5",
-      });
 
       const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
       expect(callArgs.args).toContain("--proxy-server=http://user:pass@proxy:8080");
@@ -317,8 +289,7 @@ describe("puppeteer launchPersistentContext", () => {
     expect(callArgs.args.some((a: string) => a.startsWith("--fingerprint="))).toBe(true);
   });
 
-  it("headed persistent context uses null defaultViewport (tracks real window)", async () => {
-    const { DEFAULT_VIEWPORT } = await import("../src/config.js");
+  it("persistent context uses null defaultViewport, headed or headless", async () => {
     const { launchPersistentContext } = await import("../src/puppeteer.js");
 
     await launchPersistentContext({ userDataDir: "./my-profile", headless: false });
@@ -330,10 +301,10 @@ describe("puppeteer launchPersistentContext", () => {
     await launchPersistentContext({ userDataDir: "./my-profile", headless: true });
     expect(
       vi.mocked(puppeteerMock.default.launch).mock.calls[0][0].defaultViewport
-    ).toEqual(DEFAULT_VIEWPORT);
+    ).toBeNull();
   });
 
-  it("uses page.authenticate fallback in persistent context on free macOS", async () => {
+  it("passes inline http creds in a persistent context on macOS (no page.authenticate)", async () => {
     const origPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
     const origArch = Object.getOwnPropertyDescriptor(process, "arch")!;
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
@@ -346,9 +317,9 @@ describe("puppeteer launchPersistentContext", () => {
       });
 
       const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
-      expect(callArgs.args).toContain("--proxy-server=http://proxy:8080");
+      expect(callArgs.args).toContain("--proxy-server=http://user:pass@proxy:8080");
       const page = await browser.newPage();
-      expect(page.authenticate).toHaveBeenCalledWith({ username: "user", password: "pass" });
+      expect(page.authenticate).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(process, "platform", origPlatform);
       Object.defineProperty(process, "arch", origArch);

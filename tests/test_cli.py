@@ -16,14 +16,15 @@ from cloakbrowser.license import LicenseInfo, ProReleaseInfo, SessionSeats
 def _run(args, *, key=None, license_info=None, sessions=None):
     """Run cmd_info with license resolution mocked and the real downloaders patched.
 
-    key=None  -> no license -> free binary.
-    key set   -> validate_license returns license_info (entitled to Pro if valid).
+    key=None  -> no license key.
+    key set   -> validate_license returns license_info (entitled if valid).
     sessions  -> the SessionSeats the seat lookup reports (it is mocked out, so a
                  non-quick Pro run never reaches the network). None defaults to a
                  server-cannot-count result, which keeps unrelated tests offline.
 
-    Returns (download_free_mock, download_pro_mock, session_count_mock) so callers
-    can assert the command never triggers a binary download or an unwanted lookup.
+    Returns (claim_mock, download_mock, session_count_mock) so callers can assert
+    the command never starts the free-key claim, a binary download or an
+    unwanted lookup.
     """
     with (
         patch("cloakbrowser.license.resolve_license_key", return_value=key),
@@ -32,7 +33,7 @@ def _run(args, *, key=None, license_info=None, sessions=None):
             "cloakbrowser.license.get_session_seats",
             return_value=sessions if sessions is not None else SessionSeats(state="unknown"),
         ) as mock_sessions,
-        patch("cloakbrowser.download._download_and_extract") as mock_dl_free,
+        patch("cloakbrowser.download._claim_free_key") as mock_dl_free,
         patch("cloakbrowser.download._download_pro_binary") as mock_dl_pro,
     ):
         cmd_info(args)
@@ -47,7 +48,7 @@ def test_info_text_never_downloads(capsys):
     assert "CloakBrowser diagnostics" in out
     assert "Python:" in out
     assert "Platform:" in out
-    assert "License:   Free" in out
+    assert "License:   none" in out
     assert "Modules:" in out
 
 
@@ -105,12 +106,13 @@ def test_info_proxy_resolution_failure_is_reported_not_fatal(capsys):
     assert "proxy refused" in out
 
 
-def test_keyless_reports_free_binary(capsys):
-    """No license key -> the binary section reflects the FREE binary."""
-    _run(Namespace(quick=True, json=True))
+def test_no_key_reports_none(capsys):
+    """No license key -> nothing launches without one; info says so."""
+    claim, _, _ = _run(Namespace(quick=True, json=True))
+    claim.assert_not_called()  # info never starts the claim flow
     data = json.loads(capsys.readouterr().out)
-    assert data["binary"]["tier"] == "free"
-    assert data["license"]["tier"] == "free"
+    assert data["binary"]["tier"] == "none"
+    assert data["license"]["tier"] == "none"
 
 
 def test_valid_key_reports_pro_binary(capsys):
@@ -158,12 +160,12 @@ def test_info_reports_preview_stable_fallback(capsys):
     assert "Channel:   Preview → Stable fallback" in capsys.readouterr().out
 
 
-def test_invalid_key_falls_back_to_free(capsys):
-    """A key the server rejects -> not entitled -> free binary, not Pro."""
+def test_invalid_key_is_not_entitled(capsys):
+    """A key the server rejects -> not entitled."""
     invalid = LicenseInfo(valid=False, plan="solo", expires=None)
     _run(Namespace(quick=True, json=True), key="cb_bad", license_info=invalid)
     data = json.loads(capsys.readouterr().out)
-    assert data["binary"]["tier"] == "free"
+    assert data["binary"]["tier"] == "none"
     assert data["license"]["tier"] == "invalid"
 
 
@@ -270,8 +272,8 @@ def test_quick_skips_the_seat_lookup(capsys):
     assert "sessions" not in data["license"]
 
 
-def test_free_tier_never_looks_up_seats(capsys):
-    """A free tier holds no seats — don't ask the server about it."""
+def test_no_key_never_looks_up_seats(capsys):
+    """No key holds no seats — don't ask the server about it."""
     _, _, mock_sessions = _run(Namespace(quick=False, json=True))
     data = json.loads(capsys.readouterr().out)
     mock_sessions.assert_not_called()
@@ -296,14 +298,19 @@ def test_info_json_is_valid(capsys):
     assert "cloakbrowser.dev" not in out
 
 
-def test_free_license_shows_upgrade_hint(capsys):
+def test_no_key_shows_login_hint(capsys):
     _run(Namespace(quick=True, json=False))
     out = capsys.readouterr().out
-    # Keyless free: invite the free-latest login + point at paid for more sessions.
-    assert "License:   Free (no key)" in out
+    assert "License:   none" in out
     assert "cloakbrowser login" in out
+
+
+def test_free_key_shows_upgrade_hint(capsys):
+    free = LicenseInfo(valid=True, plan="free", expires=None)
+    _run(Namespace(quick=True, json=False), key="cb_free", license_info=free)
+    out = capsys.readouterr().out
+    assert "License:   Free (latest binary, 1 concurrent session)" in out
     assert "For more than one concurrent session" in out
-    assert "cloakbrowser.dev" in out
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +467,7 @@ def test_launch_section_runs_binary_without_downloading(tmp_path, capsys):
     with (
         patch("cloakbrowser.license.resolve_license_key", return_value=None),
         patch("cloakbrowser.__main__._effective_binary", return_value=fake_binary),
-        patch("cloakbrowser.download._download_and_extract") as mock_dl_free,
+        patch("cloakbrowser.download._claim_free_key") as mock_dl_free,
         patch("cloakbrowser.download._download_pro_binary") as mock_dl_pro,
     ):
         cmd_info(Namespace(quick=False, json=True))

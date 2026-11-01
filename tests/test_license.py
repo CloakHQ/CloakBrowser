@@ -682,22 +682,11 @@ class TestGetSessionSeats:
 
 class TestConfigPro:
     def test_binary_dir_pro_suffix(self, tmp_path):
+        # Kept as "-pro": existing caches stay valid across the upgrade.
         from cloakbrowser.config import get_binary_dir
 
         with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}):
-            normal = get_binary_dir("147.0.0.0")
-            pro = get_binary_dir("147.0.0.0", pro=True)
-
-        assert str(normal).endswith("chromium-147.0.0.0")
-        assert str(pro).endswith("chromium-147.0.0.0-pro")
-
-    def test_binary_dir_default_no_suffix(self, tmp_path):
-        from cloakbrowser.config import get_binary_dir
-
-        with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}):
-            normal = get_binary_dir("147.0.0.0")
-
-        assert not str(normal).endswith("-pro")
+            assert str(get_binary_dir("147.0.0.0")).endswith("chromium-147.0.0.0-pro")
 
     def test_effective_version_pro_marker(self, tmp_path):
         from cloakbrowser.config import get_effective_version, get_platform_tag
@@ -709,12 +698,12 @@ class TestConfigPro:
 
             # Create the binary so effective version returns it
             from cloakbrowser.config import get_binary_path
-            bp = get_binary_path("147.0.5555.1", pro=True)
+            bp = get_binary_path("147.0.5555.1")
             bp.parent.mkdir(parents=True, exist_ok=True)
             bp.write_text("fake")
-            bp.chmod(0o755)  # get_effective_version(pro) requires an executable binary
+            bp.chmod(0o755)  # get_effective_version requires an executable binary
 
-            version = get_effective_version(pro=True)
+            version = get_effective_version()
 
         assert version == "147.0.5555.1"
 
@@ -723,10 +712,10 @@ class TestConfigPro:
 
 
 class TestBinaryInfoTier:
-    """binary_info() reports tier from the binary actually on disk — NOT from a
-    cached license, which can disagree with what's installed or the active key."""
+    """binary_info() reports the build actually on disk — NOT a cached license,
+    which can disagree with what's installed."""
 
-    def test_free_when_no_pro_binary_even_if_license_cached(self, tmp_path):
+    def test_nothing_installed_even_if_license_cached(self, tmp_path):
         from cloakbrowser.download import binary_info
 
         with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}, clear=False):
@@ -736,25 +725,26 @@ class TestBinaryInfoTier:
                 "valid": True, "plan": "solo", "expires": None,
                 "validated_at": time.time(),
             }))
-            # ...but no Pro binary is on disk → must report free, not pro.
+            # ...but no binary is on disk.
             info = binary_info()
 
-        assert info["tier"] == "free"
+        assert info["installed"] is False
+        assert info["version"] is None
 
-    def test_pro_when_pro_binary_installed(self, tmp_path):
+    def test_reports_installed_binary(self, tmp_path):
         from cloakbrowser.config import get_binary_path, get_platform_tag
         from cloakbrowser.download import binary_info
 
         with patch.dict(os.environ, {"CLOAKBROWSER_CACHE_DIR": str(tmp_path)}, clear=False):
             tag = get_platform_tag()
             (tmp_path / f"latest_pro_version_{tag}").write_text("147.0.5555.1")
-            bp = get_binary_path("147.0.5555.1", pro=True)
+            bp = get_binary_path("147.0.5555.1")
             bp.parent.mkdir(parents=True, exist_ok=True)
             bp.write_text("fake")
             bp.chmod(0o755)
             info = binary_info()
 
-        assert info["tier"] == "pro"
+        assert info["installed"] is True
         assert info["version"] == "147.0.5555.1"
 
     def test_preview_pro_download_url_carries_channel(self, tmp_path):
@@ -767,7 +757,7 @@ class TestBinaryInfoTier:
             # only the reported download URL should differ by channel.
             (tmp_path / f"latest_pro_version_preview_{tag}").write_text("151.0.7900.10.1")
             (tmp_path / f"latest_pro_version_{tag}").write_text("151.0.7900.10.1")
-            bp = get_binary_path("151.0.7900.10.1", pro=True)
+            bp = get_binary_path("151.0.7900.10.1")
             bp.parent.mkdir(parents=True, exist_ok=True)
             bp.write_text("fake")
             bp.chmod(0o755)
@@ -783,89 +773,84 @@ class TestBinaryInfoTier:
 
 
 class TestEnsureBinaryProRouting:
-    """A valid-license user is NEVER silently downgraded to the free binary. Both
-    a tampering signal (verification failure) and a transient failure
-    (network/server) surface a clear error — they differ only in the message:
-    tampering is re-raised verbatim (security, no 'retry'); transient is rewrapped
-    as an actionable 'Pro binary unavailable, retry' error carrying the cause."""
+    """A supplied key never falls into the no-key claim flow. Both a tampering
+    signal (verification failure) and a transient failure (network/server)
+    surface a clear error — they differ only in the message: tampering is
+    re-raised verbatim (security, no 'retry'); transient is rewrapped as an
+    actionable 'binary unavailable, retry' error carrying the cause."""
 
     def test_verification_failure_propagates_verbatim(self):
         """A BinaryVerificationError must surface verbatim — never reach free."""
-        with patch.dict(os.environ, {"CLOAKBROWSER_DOWNLOAD_URL": ""}, clear=False), \
-             patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
+        with patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
              patch("cloakbrowser.license.resolve_license_key", return_value="cb_x"), \
              patch("cloakbrowser.license.validate_license",
                    return_value=LicenseInfo(valid=True, plan="solo", expires=None)), \
              patch("cloakbrowser.download._ensure_pro_binary",
                    side_effect=BinaryVerificationError("bad signature")), \
-             patch("cloakbrowser.download.check_platform_available",
-                   side_effect=AssertionError("MUST NOT reach the free-tier path")):
+             patch("cloakbrowser.download._claim_free_key",
+                   side_effect=AssertionError("MUST NOT reach the no-key path")):
             with pytest.raises(BinaryVerificationError, match="bad signature"):
                 ensure_binary("cb_x")
 
-    def test_transient_failure_hard_errors_not_free(self):
+    def test_transient_failure_hard_errors(self):
         """A transient Pro failure must surface a clear, actionable error carrying
-        the underlying cause — NOT silently download the free binary."""
-        with patch.dict(os.environ, {"CLOAKBROWSER_DOWNLOAD_URL": ""}, clear=False), \
-             patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
+        the underlying cause."""
+        with patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
              patch("cloakbrowser.license.resolve_license_key", return_value="cb_x"), \
              patch("cloakbrowser.license.validate_license",
                    return_value=LicenseInfo(valid=True, plan="solo", expires=None)), \
              patch("cloakbrowser.download._ensure_pro_binary",
                    side_effect=RuntimeError("network blip")), \
-             patch("cloakbrowser.download.check_platform_available",
-                   side_effect=AssertionError("MUST NOT reach the free-tier path")):
-            with pytest.raises(RuntimeError, match="Pro binary unavailable: network blip"):
+             patch("cloakbrowser.download._claim_free_key",
+                   side_effect=AssertionError("MUST NOT reach the no-key path")):
+            with pytest.raises(RuntimeError, match="binary unavailable: network blip"):
                 ensure_binary("cb_x")
 
-    def test_macos_pro_404_hard_errors_not_free(self):
+    def test_macos_pro_404_hard_errors(self):
         """macOS now has a Pro binary, so a 404 on the Pro download is a real error
-        and must hard-fail like every other platform — NOT silently fall back to the
-        free binary (the v0.4.2 darwin-404→free stopgap was reverted in v0.4.3)."""
+        and must hard-fail like every other platform (the v0.4.2 darwin-404 stopgap
+        was reverted in v0.4.3)."""
         import httpx
 
         req = httpx.Request("GET", "https://example.com/download")
         not_found = httpx.HTTPStatusError(
             "404 Not Found", request=req, response=httpx.Response(404, request=req)
         )
-        with patch.dict(os.environ, {"CLOAKBROWSER_DOWNLOAD_URL": ""}, clear=False), \
-             patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
+        with patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
              patch("cloakbrowser.download.get_platform_tag", return_value="darwin-x64"), \
              patch("cloakbrowser.license.resolve_license_key", return_value="cb_x"), \
              patch("cloakbrowser.license.validate_license",
                    return_value=LicenseInfo(valid=True, plan="solo", expires=None)), \
              patch("cloakbrowser.download._ensure_pro_binary", side_effect=not_found), \
-             patch("cloakbrowser.download.check_platform_available",
-                   side_effect=AssertionError("MUST NOT reach the free-tier path on macOS")):
-            with pytest.raises(RuntimeError, match="Pro binary unavailable"):
+             patch("cloakbrowser.download._claim_free_key",
+                   side_effect=AssertionError("MUST NOT reach the no-key path")):
+            with pytest.raises(RuntimeError, match="binary unavailable"):
                 ensure_binary("cb_x")
 
-    def test_invalid_key_aborts_not_free(self):
+    def test_invalid_key_aborts(self):
         """A supplied key the server rejects (valid=False) must abort with a clear
-        license error — NOT silently downgrade to the free binary."""
-        with patch.dict(os.environ, {"CLOAKBROWSER_DOWNLOAD_URL": ""}, clear=False), \
-             patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
+        license error."""
+        with patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
              patch("cloakbrowser.license.resolve_license_key", return_value="cb_bad"), \
              patch("cloakbrowser.license.validate_license",
                    return_value=LicenseInfo(valid=False, plan="solo", expires=None)), \
              patch("cloakbrowser.download._ensure_pro_binary",
                    side_effect=AssertionError("MUST NOT reach the Pro path")), \
-             patch("cloakbrowser.download.check_platform_available",
-                   side_effect=AssertionError("MUST NOT reach the free-tier path")):
+             patch("cloakbrowser.download._claim_free_key",
+                   side_effect=AssertionError("MUST NOT reach the no-key path")):
             with pytest.raises(CloakBrowserLicenseError, match="invalid or expired"):
                 ensure_binary("cb_bad")
 
-    def test_unvalidatable_key_aborts_not_free(self):
+    def test_unvalidatable_key_aborts(self):
         """A supplied key that can't be validated (server unreachable, no cache →
         validate_license returns None) must abort — NOT silently downgrade."""
-        with patch.dict(os.environ, {"CLOAKBROWSER_DOWNLOAD_URL": ""}, clear=False), \
-             patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
+        with patch("cloakbrowser.download.get_local_binary_override", return_value=None), \
              patch("cloakbrowser.license.resolve_license_key", return_value="cb_x"), \
              patch("cloakbrowser.license.validate_license", return_value=None), \
              patch("cloakbrowser.download._ensure_pro_binary",
                    side_effect=AssertionError("MUST NOT reach the Pro path")), \
-             patch("cloakbrowser.download.check_platform_available",
-                   side_effect=AssertionError("MUST NOT reach the free-tier path")):
+             patch("cloakbrowser.download._claim_free_key",
+                   side_effect=AssertionError("MUST NOT reach the no-key path")):
             with pytest.raises(CloakBrowserLicenseError, match="could not be validated"):
                 ensure_binary("cb_x")
 

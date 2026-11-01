@@ -42,7 +42,7 @@ public class LicenseGuardCompositionTests
     }
 
     [Fact]
-    public void Keyless_context_is_humanized_and_not_guarded()
+    public void Context_without_denial_path_is_humanized_and_not_guarded()
     {
         var (playwright, _) = Fake.Of<IPlaywright>();
         var (ctx, _) = Fake.Of<IBrowserContext>();

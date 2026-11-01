@@ -5,15 +5,16 @@ import os
 import platform
 import queue
 import shutil
-import stat
 import tarfile
 import threading
 import zipfile
+from pathlib import Path
 
 import pytest
 
 import cloakbrowser.download as download
-from cloakbrowser.config import get_binary_dir, get_binary_path
+import cloakbrowser.license as license_mod
+from cloakbrowser.config import get_binary_dir, get_binary_path, get_platform_tag
 from cloakbrowser.download import (
     _extract_tar,
     _extract_zip,
@@ -182,11 +183,13 @@ class TestConcurrentFirstRun:
     CALLERS = 4
     FILLER_FILES = 300
     BINARY_BYTES = b"#!/bin/sh\necho fake-chrome\n"
+    VERSION = "155.0.8059.39.2"
+    KEY = "cb_test"
 
     def _create_platform_archive(self, tmp_path):
         """An archive with this platform's binary layout plus enough filler
         files that an extraction spans many thread switches."""
-        binary_rel_path = get_binary_path().relative_to(get_binary_dir()).as_posix()
+        binary_rel_path = get_binary_path(self.VERSION).relative_to(get_binary_dir(self.VERSION)).as_posix()
         members = {binary_rel_path: self.BINARY_BYTES}
         for i in range(self.FILLER_FILES):
             members[f"lib/part-{i}.bin"] = bytes([i % 256]) * 16 * 1024
@@ -203,30 +206,48 @@ class TestConcurrentFirstRun:
         """Reads the install the way a launch would. Returns what is wrong
         with it, or "complete"."""
         try:
-            binary_path = get_binary_path()
+            binary_path = get_binary_path(self.VERSION)
             if binary_path.read_bytes() != self.BINARY_BYTES:
                 return "binary content differs"
             if not _is_executable(binary_path):
                 return "binary not executable"
-            filler_count = len(os.listdir(get_binary_dir() / "lib"))
+            filler_count = len(os.listdir(get_binary_dir(self.VERSION) / "lib"))
             if filler_count != self.FILLER_FILES:
                 return f"lib has {filler_count} files"
             return "complete"
         except OSError as err:
             return type(err).__name__
 
-    def _use_local_mirror(self, cache_dir, monkeypatch):
+    def _use_keyed_install(self, cache_dir, monkeypatch):
+        """Route ensure_binary(KEY) through the real keyed download + extraction,
+        with only the network edges stubbed (license check, latest lookup,
+        signature fetch, wrapper update check)."""
         monkeypatch.setenv("CLOAKBROWSER_CACHE_DIR", str(cache_dir))
-        monkeypatch.setenv("CLOAKBROWSER_DOWNLOAD_URL", "https://mirror.invalid")
-        monkeypatch.setenv("CLOAKBROWSER_SKIP_CHECKSUM", "true")
-        for name in ("CLOAKBROWSER_LICENSE_KEY", "CLOAKBROWSER_BINARY_PATH", "CLOAKBROWSER_VERSION"):
+        for name in (
+            "CLOAKBROWSER_LICENSE_KEY",
+            "CLOAKBROWSER_BINARY_PATH",
+            "CLOAKBROWSER_VERSION",
+            "CLOAKBROWSER_RELEASE_CHANNEL",
+            "CLOAKBROWSER_AUTO_UPDATE",
+        ):
             monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(
+            license_mod,
+            "validate_license",
+            lambda key: license_mod.LicenseInfo(valid=True, plan="business", expires=None),
+        )
+        monkeypatch.setattr(license_mod, "get_pro_latest_version", lambda channel=None: self.VERSION)
+        monkeypatch.setattr(download, "_verify_pro_download", lambda path, version: None)
+        monkeypatch.setattr(download, "_maybe_trigger_update_check", lambda: None)
+
+    def _expected_cache_entries(self):
+        return sorted([get_binary_dir(self.VERSION).name, f"latest_pro_version_{get_platform_tag()}"])
 
     @pytest.mark.skipif(platform.system() == "Windows", reason="POSIX exec semantics")
     def test_install_stays_complete_while_other_callers_finish(self, tmp_path, monkeypatch):
         archive = self._create_platform_archive(tmp_path)
         cache_dir = tmp_path / "cache"
-        self._use_local_mirror(cache_dir, monkeypatch)
+        self._use_keyed_install(cache_dir, monkeypatch)
 
         # One caller downloads at once. The others have already seen an empty
         # cache but their downloads are held until the first has returned,
@@ -245,7 +266,7 @@ class TestConcurrentFirstRun:
 
         def run_caller():
             try:
-                caller_outcomes.put(("returned", download.ensure_binary()))
+                caller_outcomes.put(("returned", download.ensure_binary(license_key=self.KEY)))
             except Exception as err:
                 caller_outcomes.put(("raised", repr(err)))
 
@@ -254,7 +275,7 @@ class TestConcurrentFirstRun:
             caller.start()
 
         outcomes = [caller_outcomes.get(timeout=60)]
-        assert outcomes[0] == ("returned", str(get_binary_path()))
+        assert outcomes[0] == ("returned", str(get_binary_path(self.VERSION)))
 
         # The first caller would now exec its binary. Keep reading the install
         # while the held callers download and extract.
@@ -266,30 +287,30 @@ class TestConcurrentFirstRun:
 
         while not caller_outcomes.empty():
             outcomes.append(caller_outcomes.get())
-        assert outcomes == [("returned", str(get_binary_path()))] * self.CALLERS
+        assert outcomes == [("returned", str(get_binary_path(self.VERSION)))] * self.CALLERS
         assert observed_states == {"complete"}
-        assert [p.name for p in cache_dir.iterdir() if not p.name.startswith(".")] == [
-            get_binary_dir().name
-        ]
+        assert sorted(
+            p.name for p in cache_dir.iterdir() if not p.name.startswith(".")
+        ) == self._expected_cache_entries()
 
     @pytest.mark.skipif(platform.system() == "Windows", reason="POSIX exec semantics")
     def test_replaces_partial_install_left_by_interrupted_extraction(self, tmp_path, monkeypatch):
         archive = self._create_platform_archive(tmp_path)
-        self._use_local_mirror(tmp_path / "cache", monkeypatch)
+        self._use_keyed_install(tmp_path / "cache", monkeypatch)
         monkeypatch.setattr(
             download, "_download_file", lambda url, dest, headers=None: shutil.copyfile(archive, dest)
         )
-        (get_binary_dir() / "lib").mkdir(parents=True)
-        (get_binary_dir() / "lib" / "part-0.bin").write_bytes(b"truncated")
+        (get_binary_dir(self.VERSION) / "lib").mkdir(parents=True)
+        (get_binary_dir(self.VERSION) / "lib" / "part-0.bin").write_bytes(b"truncated")
 
-        assert download.ensure_binary() == str(get_binary_path())
+        assert download.ensure_binary(license_key=self.KEY) == str(get_binary_path(self.VERSION))
         assert self._inspect_install() == "complete"
 
     @pytest.mark.skipif(platform.system() == "Windows", reason="POSIX exec semantics")
     def test_concurrent_callers_replace_partial_install(self, tmp_path, monkeypatch):
         archive = self._create_platform_archive(tmp_path)
         cache_dir = tmp_path / "cache"
-        self._use_local_mirror(cache_dir, monkeypatch)
+        self._use_keyed_install(cache_dir, monkeypatch)
 
         # Every caller downloads at the same moment, so all of them find the
         # partial install in the way when they move their extraction into place.
@@ -300,15 +321,15 @@ class TestConcurrentFirstRun:
             shutil.copyfile(archive, dest)
 
         monkeypatch.setattr(download, "_download_file", fake_download_file)
-        (get_binary_dir() / "lib").mkdir(parents=True)
+        (get_binary_dir(self.VERSION) / "lib").mkdir(parents=True)
         for i in range(self.FILLER_FILES):
-            (get_binary_dir() / "lib" / f"part-{i}.bin").write_bytes(b"truncated")
+            (get_binary_dir(self.VERSION) / "lib" / f"part-{i}.bin").write_bytes(b"truncated")
 
         caller_outcomes: queue.Queue = queue.Queue()
 
         def run_caller():
             try:
-                caller_outcomes.put(("returned", download.ensure_binary()))
+                caller_outcomes.put(("returned", download.ensure_binary(license_key=self.KEY)))
             except Exception as err:
                 caller_outcomes.put(("raised", repr(err)))
 
@@ -319,8 +340,8 @@ class TestConcurrentFirstRun:
             caller.join(timeout=60)
 
         outcomes = [caller_outcomes.get_nowait() for _ in range(caller_outcomes.qsize())]
-        assert outcomes == [("returned", str(get_binary_path()))] * self.CALLERS
+        assert outcomes == [("returned", str(get_binary_path(self.VERSION)))] * self.CALLERS
         assert self._inspect_install() == "complete"
-        assert [p.name for p in cache_dir.iterdir() if not p.name.startswith(".")] == [
-            get_binary_dir().name
-        ]
+        assert sorted(
+            p.name for p in cache_dir.iterdir() if not p.name.startswith(".")
+        ) == self._expected_cache_entries()

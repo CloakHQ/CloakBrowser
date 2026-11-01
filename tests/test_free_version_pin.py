@@ -7,7 +7,6 @@ from cloakbrowser.license import LicenseInfo
 
 
 def _run(monkeypatch, plan):
-    monkeypatch.delenv("CLOAKBROWSER_DOWNLOAD_URL", raising=False)
     monkeypatch.setattr(dl, "get_local_binary_override", lambda: None)
     monkeypatch.setattr(dl, "normalize_requested_version", lambda v: v)
     captured = {}

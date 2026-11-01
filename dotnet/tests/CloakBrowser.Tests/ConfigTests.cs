@@ -6,19 +6,6 @@ namespace CloakBrowser.Tests;
 public class ConfigTests
 {
     [Fact]
-    public void ChromiumVersion_IsPinned()
-    {
-        Assert.Equal("146.0.7680.177.5", Config.ChromiumVersion);
-    }
-
-    [Fact]
-    public void DefaultViewport_Matches_Python()
-    {
-        Assert.Equal(1920, Config.DefaultViewportWidth);
-        Assert.Equal(947, Config.DefaultViewportHeight);
-    }
-
-    [Fact]
     public void IgnoreDefaultArgs_IsNonEmpty()
     {
         Assert.NotEmpty(Config.IgnoreDefaultArgs);
@@ -220,89 +207,5 @@ public class ReleaseChannelConfigTests
         {
             Environment.SetEnvironmentVariable("CLOAKBROWSER_RELEASE_CHANNEL", previous);
         }
-    }
-}
-
-/// <summary>
-/// Config.BinarySupportsHeadlessNoViewport() — parity-critical: Python and JS mirror
-/// this gate. Threshold is an unshipped version, so the resolved-version path is a
-/// no-op today; the declared-version path is what these tests pin. In env-serial
-/// because the override tests mutate CLOAKBROWSER_BINARY_PATH.
-/// </summary>
-[Collection("env-serial")]
-public class HeadlessNoViewportGateTests
-{
-    [Fact]
-    public void DeclaredBelowThreshold_Off()
-    {
-        // Current live Pro version — one build below the threshold => feature OFF.
-        Assert.False(Config.BinarySupportsHeadlessNoViewport(browserVersion: "148.0.7778.215.3"));
-    }
-
-    [Fact]
-    public void DeclaredAtThreshold_On()
-    {
-        Assert.True(Config.BinarySupportsHeadlessNoViewport(browserVersion: "148.0.7778.215.4"));
-    }
-
-    [Fact]
-    public void DeclaredAboveThreshold_On()
-    {
-        Assert.True(Config.BinarySupportsHeadlessNoViewport(browserVersion: "149.0.0.0"));
-    }
-
-    [Fact]
-    public void DeclaredWinsOverLocalOverride()
-    {
-        var prev = Environment.GetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH");
-        try
-        {
-            Environment.SetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH", "/fake/chrome");
-            Assert.True(Config.BinarySupportsHeadlessNoViewport(browserVersion: "149.0.0.0"));
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH", prev);
-        }
-    }
-
-    [Fact]
-    public void LocalOverrideWithoutDeclared_Off()
-    {
-        var prev = Environment.GetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH");
-        try
-        {
-            Environment.SetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH", "/fake/chrome");
-            Assert.False(Config.BinarySupportsHeadlessNoViewport());
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH", prev);
-        }
-    }
-}
-
-/// <summary>
-/// BinarySupportsMaximizedWindow() — parity-critical: Python and JS mirror this gate.
-/// Shares the no_viewport threshold today.
-/// </summary>
-public class MaximizedWindowGateTests
-{
-    [Fact]
-    public void DeclaredBelowThreshold_Off()
-    {
-        Assert.False(Config.BinarySupportsMaximizedWindow(browserVersion: "148.0.7778.215.3"));
-    }
-
-    [Fact]
-    public void DeclaredAtThreshold_On()
-    {
-        Assert.True(Config.BinarySupportsMaximizedWindow(browserVersion: "148.0.7778.215.4"));
-    }
-
-    [Fact]
-    public void DeclaredAboveThreshold_On()
-    {
-        Assert.True(Config.BinarySupportsMaximizedWindow(browserVersion: "149.0.0.0"));
     }
 }

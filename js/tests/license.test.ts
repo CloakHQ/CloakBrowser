@@ -486,17 +486,9 @@ describe("getProLatestVersion", () => {
 
 // ── Config pro parameter ──────────────────────────────
 
-describe("config pro parameter", () => {
-  it("getBinaryDir adds -pro suffix", () => {
-    const normal = config.getBinaryDir("147.0.0.0");
-    const pro = config.getBinaryDir("147.0.0.0", true);
-    expect(normal).toMatch(/chromium-147\.0\.0\.0$/);
-    expect(pro).toMatch(/chromium-147\.0\.0\.0-pro$/);
-  });
-
-  it("getBinaryDir default has no suffix", () => {
-    const normal = config.getBinaryDir("147.0.0.0");
-    expect(normal).not.toMatch(/-pro$/);
+describe("config cache dir", () => {
+  it("getBinaryDir keeps the -pro suffix (existing caches stay valid)", () => {
+    expect(config.getBinaryDir("147.0.0.0")).toMatch(/chromium-147\.0\.0\.0-pro$/);
   });
 });
 

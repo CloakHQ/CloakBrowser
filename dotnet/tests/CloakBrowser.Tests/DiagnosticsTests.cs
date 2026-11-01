@@ -17,7 +17,7 @@ namespace CloakBrowser.Tests;
 public class DiagnosticsTests
 {
     [Fact]
-    public void Quick_skips_launch_and_reports_free_license()
+    public void Quick_skips_launch_and_reports_no_license()
     {
         var tmp = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         Directory.CreateDirectory(tmp);
@@ -38,7 +38,7 @@ public class DiagnosticsTests
             Assert.Contains("--quick", (string)launch["reason"]!);
 
             var license = Assert.IsType<Dictionary<string, object?>>(diag["license"]);
-            Assert.Equal("free", license["tier"]);
+            Assert.Equal("none", license["tier"]);
 
             Assert.True(diag.ContainsKey("binary"));
             Assert.True(diag.ContainsKey("geoip"));

@@ -2,7 +2,6 @@ using System.Formats.Tar;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
-using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 using CloakBrowser;
@@ -31,7 +30,8 @@ public class ConfigVersionTests
 
     [Fact]
     public void PlatformTag_is_known_value()
-        => Assert.Contains(Config.GetPlatformTag(), Config.AvailablePlatforms);
+        => Assert.Contains(Config.GetPlatformTag(),
+            new[] { "linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64", "windows-x64" });
 
     [Fact]
     public void ArchiveName_uses_tag_and_ext()
@@ -42,12 +42,8 @@ public class ConfigVersionTests
     }
 
     [Fact]
-    public void DownloadUrl_contains_base_and_archive()
-    {
-        var url = Config.GetDownloadUrl();
-        Assert.StartsWith(Config.DownloadBaseUrl, url);
-        Assert.Contains("cloakbrowser-", url);
-    }
+    public void ProDownloadUrl_pins_version_on_base()
+        => Assert.Equal($"{Config.DownloadBaseUrl}/api/download/155.0.1.1", Config.GetProDownloadUrl("155.0.1.1"));
 }
 
 public class ChecksumParseTests
@@ -120,22 +116,82 @@ public class WrapperVersionNewerTests
 
 /// <summary>
 /// Concurrent first-run callers of <see cref="Download.EnsureBinaryAsync"/> against one
-/// empty cache, with the archive served by a local HttpListener acting as a custom
-/// mirror. In env-serial because it sets CLOAKBROWSER_CACHE_DIR and
-/// CLOAKBROWSER_DOWNLOAD_URL.
+/// empty cache, on the keyed download path: the license and latest version are mocked
+/// and the archive is served by a fake <see cref="Download.Http"/> handler, verified
+/// against a test-signed manifest. In env-serial because it sets CLOAKBROWSER_CACHE_DIR.
 /// </summary>
 [Collection("env-serial")]
 public class ConcurrentFirstRunTests
 {
     private const int Callers = 4;
     private const int FillerFiles = 300;
+    private const string Version = "155.0.8059.39.2";
     private static readonly byte[] BinaryBytes = Encoding.ASCII.GetBytes("#!/bin/sh\necho fake-chrome\n");
 
     private static readonly string[] IsolatedEnvNames =
     {
-        "CLOAKBROWSER_CACHE_DIR", "CLOAKBROWSER_DOWNLOAD_URL", "CLOAKBROWSER_SKIP_CHECKSUM",
-        "CLOAKBROWSER_LICENSE_KEY", "CLOAKBROWSER_BINARY_PATH", "CLOAKBROWSER_VERSION",
+        "CLOAKBROWSER_CACHE_DIR", "CLOAKBROWSER_LICENSE_KEY", "CLOAKBROWSER_BINARY_PATH",
+        "CLOAKBROWSER_VERSION", "CLOAKBROWSER_RELEASE_CHANNEL", "CLOAKBROWSER_AUTO_UPDATE",
     };
+
+    private sealed class FakeHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> serve) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => serve(request);
+    }
+
+    private static Task<HttpResponseMessage> Archive(byte[] bytes) =>
+        Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) });
+
+    /// <summary>
+    /// Run <paramref name="body"/> with an isolated cache, a valid license, a fixed latest
+    /// version and archive downloads answered by <paramref name="serveArchive"/>.
+    /// </summary>
+    private static async Task WithKeyedDownloads(
+        byte[] archiveBytes, Func<HttpRequestMessage, Task<HttpResponseMessage>> serveArchive, Func<string, Task> body)
+    {
+        var previousEnv = IsolatedEnvNames.ToDictionary(name => name, Environment.GetEnvironmentVariable);
+        var cacheDir = Directory.CreateTempSubdirectory("cloakbrowser-concurrent-").FullName;
+        var previousHttp = Download.Http;
+        var gen = new Org.BouncyCastle.Crypto.Generators.Ed25519KeyPairGenerator();
+        gen.Init(new Org.BouncyCastle.Crypto.Parameters.Ed25519KeyGenerationParameters(
+            new Org.BouncyCastle.Security.SecureRandom()));
+        var pair = gen.GenerateKeyPair();
+        var manifest = Encoding.UTF8.GetBytes(
+            $"version={Version}\n{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(archiveBytes)).ToLowerInvariant()}  {Config.GetArchiveName()}\n");
+        var signer = new Org.BouncyCastle.Crypto.Signers.Ed25519Signer();
+        signer.Init(true, pair.Private);
+        signer.BlockUpdate(manifest, 0, manifest.Length);
+        var sig = Encoding.ASCII.GetBytes(Convert.ToBase64String(signer.GenerateSignature()));
+        try
+        {
+            foreach (var name in IsolatedEnvNames) Environment.SetEnvironmentVariable(name, null);
+            Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", cacheDir);
+            License.ValidateLicenseOverride = _ => new LicenseInfo(true, "business", null);
+            License.ProLatestVersionOverride = () => Version;
+            Download.SigningPubkeysOverride = new[]
+            {
+                Convert.ToBase64String(((Org.BouncyCastle.Crypto.Parameters.Ed25519PublicKeyParameters)pair.Public).GetEncoded()),
+            };
+            Download.ProSignedManifestOverride = _ => (manifest, sig);
+            // Only the archive route is served; anything else (the NuGet update check) is a 404.
+            Download.Http = new HttpClient(new FakeHandler(request =>
+                request.RequestUri!.AbsolutePath.StartsWith("/api/download/", StringComparison.Ordinal)
+                    ? serveArchive(request)
+                    : Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound))));
+            await body(cacheDir);
+        }
+        finally
+        {
+            Download.Http = previousHttp;
+            License.ValidateLicenseOverride = null;
+            License.ProLatestVersionOverride = null;
+            Download.SigningPubkeysOverride = null;
+            Download.ProSignedManifestOverride = null;
+            foreach (var (name, value) in previousEnv) Environment.SetEnvironmentVariable(name, value);
+            Directory.Delete(cacheDir, recursive: true);
+        }
+    }
 
     /// <summary>
     /// An archive with this platform's binary layout plus enough filler files that an
@@ -143,7 +199,7 @@ public class ConcurrentFirstRunTests
     /// </summary>
     private static byte[] CreatePlatformArchive()
     {
-        var binaryRelPath = Path.GetRelativePath(Config.GetBinaryDir(), Config.GetBinaryPath());
+        var binaryRelPath = Path.GetRelativePath(Config.GetBinaryDir(Version), Config.GetBinaryPath(Version));
         using var archive = new MemoryStream();
         using (var gzip = new GZipStream(archive, CompressionLevel.Fastest, leaveOpen: true))
         using (var tar = new TarWriter(gzip))
@@ -173,10 +229,10 @@ public class ConcurrentFirstRunTests
     {
         try
         {
-            var binaryPath = Config.GetBinaryPath();
+            var binaryPath = Config.GetBinaryPath(Version);
             if (!File.ReadAllBytes(binaryPath).AsSpan().SequenceEqual(BinaryBytes)) return "binary content differs";
             if (!Config.IsExecutableFile(binaryPath)) return "binary not executable";
-            var fillerCount = Directory.GetFiles(Path.Combine(Config.GetBinaryDir(), "lib")).Length;
+            var fillerCount = Directory.GetFiles(Path.Combine(Config.GetBinaryDir(Version), "lib")).Length;
             return fillerCount == FillerFiles ? "complete" : $"lib has {fillerCount} files";
         }
         catch (IOException err)
@@ -185,49 +241,35 @@ public class ConcurrentFirstRunTests
         }
     }
 
-    private static int FindFreeTcpPort()
-    {
-        var probe = new TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
-        return port;
-    }
+    /// <summary>What a keyed first install leaves in the cache (besides dot files).</summary>
+    private static string[] ExpectedCacheEntries() =>
+        new[] { Path.GetFileName(Config.GetBinaryDir(Version)), $"latest_pro_version_{Config.GetPlatformTag()}" };
+
+    private static IEnumerable<string?> CacheEntries(string cacheDir) =>
+        Directory.GetFileSystemEntries(cacheDir).Select(Path.GetFileName)
+            .Where(name => !name!.StartsWith('.')).OrderBy(n => n, StringComparer.Ordinal);
 
     [Fact]
     public async Task Install_stays_complete_while_other_callers_finish()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+        var archiveBytes = CreatePlatformArchive();
 
-        var previousEnv = IsolatedEnvNames.ToDictionary(name => name, Environment.GetEnvironmentVariable);
-        var cacheDir = Directory.CreateTempSubdirectory("cloakbrowser-concurrent-").FullName;
-        var mirrorPort = FindFreeTcpPort();
-        using var mirror = new HttpListener();
-        mirror.Prefixes.Add($"http://127.0.0.1:{mirrorPort}/");
-        mirror.Start();
-        try
+        // One caller downloads at once. The others have already seen an empty
+        // cache but their downloads are held until the first has returned,
+        // which is the state a batch of simultaneous cold launches ends up in.
+        var releaseHeldDownloads = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestCount = 0;
+        async Task<HttpResponseMessage> ServeArchiveAsync(HttpRequestMessage _)
         {
-            UseLocalMirror(cacheDir, mirrorPort);
-            var archiveBytes = CreatePlatformArchive();
+            if (Interlocked.Increment(ref requestCount) > 1) await releaseHeldDownloads.Task;
+            return await Archive(archiveBytes);
+        }
 
-            // One caller downloads at once. The others have already seen an empty
-            // cache but their downloads are held until the first has returned,
-            // which is the state a batch of simultaneous cold launches ends up in.
-            var releaseHeldDownloads = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var requestCount = 0;
-            async Task ServeArchiveAsync(HttpListenerContext request)
-            {
-                if (Interlocked.Increment(ref requestCount) > 1) await releaseHeldDownloads.Task;
-                await RespondWithArchiveAsync(request, archiveBytes);
-            }
-            _ = Task.Run(async () =>
-            {
-                for (var i = 0; i < Callers; i++)
-                    _ = ServeArchiveAsync(await mirror.GetContextAsync());
-            });
-
-            var callers = Enumerable.Range(0, Callers).Select(_ => Download.EnsureBinaryAsync()).ToArray();
-            Assert.Equal(Config.GetBinaryPath(), await await Task.WhenAny(callers));
+        await WithKeyedDownloads(archiveBytes, ServeArchiveAsync, async cacheDir =>
+        {
+            var callers = Enumerable.Range(0, Callers).Select(_ => Download.EnsureBinaryAsync("cb_test")).ToArray();
+            Assert.Equal(Config.GetBinaryPath(Version), await await Task.WhenAny(callers));
 
             // The first caller would now exec its binary. Keep reading the install
             // while the held callers download and extract.
@@ -238,81 +280,52 @@ public class ConcurrentFirstRunTests
             observedStates.Add(InspectInstall());
 
             foreach (var caller in callers)
-                Assert.Equal(Config.GetBinaryPath(), await caller);
+                Assert.Equal(Config.GetBinaryPath(Version), await caller);
             Assert.Equal(new[] { "complete" }, observedStates);
-            Assert.Equal(
-                new[] { Path.GetFileName(Config.GetBinaryDir()) },
-                Directory.GetFileSystemEntries(cacheDir).Select(Path.GetFileName).Where(name => !name!.StartsWith('.')));
-        }
-        finally
-        {
-            mirror.Stop();
-            foreach (var (name, value) in previousEnv) Environment.SetEnvironmentVariable(name, value);
-            Directory.Delete(cacheDir, recursive: true);
-        }
+            Assert.Equal(ExpectedCacheEntries().OrderBy(n => n, StringComparer.Ordinal), CacheEntries(cacheDir));
+        });
     }
 
     [Fact]
     public async Task Replaces_partial_install_left_by_interrupted_extraction()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+        var archiveBytes = CreatePlatformArchive();
 
-        var previousEnv = IsolatedEnvNames.ToDictionary(name => name, Environment.GetEnvironmentVariable);
-        var cacheDir = Directory.CreateTempSubdirectory("cloakbrowser-concurrent-").FullName;
-        var mirrorPort = FindFreeTcpPort();
-        using var mirror = new HttpListener();
-        mirror.Prefixes.Add($"http://127.0.0.1:{mirrorPort}/");
-        mirror.Start();
-        try
+        await WithKeyedDownloads(archiveBytes, _ => Archive(archiveBytes), async _ =>
         {
-            UseLocalMirror(cacheDir, mirrorPort);
-            var archiveBytes = CreatePlatformArchive();
-            _ = Task.Run(async () => await RespondWithArchiveAsync(await mirror.GetContextAsync(), archiveBytes));
-            Directory.CreateDirectory(Path.Combine(Config.GetBinaryDir(), "lib"));
-            File.WriteAllText(Path.Combine(Config.GetBinaryDir(), "lib", "part-0.bin"), "truncated");
+            Directory.CreateDirectory(Path.Combine(Config.GetBinaryDir(Version), "lib"));
+            File.WriteAllText(Path.Combine(Config.GetBinaryDir(Version), "lib", "part-0.bin"), "truncated");
 
-            Assert.Equal(Config.GetBinaryPath(), await Download.EnsureBinaryAsync());
+            Assert.Equal(Config.GetBinaryPath(Version), await Download.EnsureBinaryAsync("cb_test"));
             Assert.Equal("complete", InspectInstall());
-        }
-        finally
-        {
-            mirror.Stop();
-            foreach (var (name, value) in previousEnv) Environment.SetEnvironmentVariable(name, value);
-            Directory.Delete(cacheDir, recursive: true);
-        }
+        });
     }
 
     [Fact]
     public async Task Concurrent_callers_replace_partial_install()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+        var archiveBytes = CreatePlatformArchive();
 
-        var previousEnv = IsolatedEnvNames.ToDictionary(name => name, Environment.GetEnvironmentVariable);
-        var cacheDir = Directory.CreateTempSubdirectory("cloakbrowser-concurrent-").FullName;
-        var mirrorPort = FindFreeTcpPort();
-        using var mirror = new HttpListener();
-        mirror.Prefixes.Add($"http://127.0.0.1:{mirrorPort}/");
-        mirror.Start();
-        try
+        // Answer only once every caller is downloading, so all of them find the
+        // partial install in the way when they move their extraction into place.
+        var allDownloading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestCount = 0;
+        async Task<HttpResponseMessage> ServeArchiveAsync(HttpRequestMessage _)
         {
-            UseLocalMirror(cacheDir, mirrorPort);
-            var archiveBytes = CreatePlatformArchive();
+            if (Interlocked.Increment(ref requestCount) == Callers) allDownloading.SetResult();
+            await allDownloading.Task;
+            return await Archive(archiveBytes);
+        }
 
-            // Answer only once every caller is downloading, so all of them find the
-            // partial install in the way when they move their extraction into place.
-            _ = Task.Run(async () =>
-            {
-                var heldRequests = new List<HttpListenerContext>();
-                for (var i = 0; i < Callers; i++)
-                    heldRequests.Add(await mirror.GetContextAsync());
-                foreach (var heldRequest in heldRequests)
-                    _ = RespondWithArchiveAsync(heldRequest, archiveBytes);
-            });
-            Directory.CreateDirectory(Path.Combine(Config.GetBinaryDir(), "lib"));
+        await WithKeyedDownloads(archiveBytes, ServeArchiveAsync, async cacheDir =>
+        {
+            Directory.CreateDirectory(Path.Combine(Config.GetBinaryDir(Version), "lib"));
             for (var i = 0; i < FillerFiles; i++)
-                File.WriteAllText(Path.Combine(Config.GetBinaryDir(), "lib", $"part-{i}.bin"), "truncated");
+                File.WriteAllText(Path.Combine(Config.GetBinaryDir(Version), "lib", $"part-{i}.bin"), "truncated");
 
-            var callers = Enumerable.Range(0, Callers).Select(_ => Download.EnsureBinaryAsync()).ToArray();
+            var callers = Enumerable.Range(0, Callers).Select(_ => Download.EnsureBinaryAsync("cb_test")).ToArray();
             var outcomes = new List<string>();
             foreach (var caller in callers)
             {
@@ -320,32 +333,9 @@ public class ConcurrentFirstRunTests
                 catch (Exception err) { outcomes.Add($"{err.GetType().Name}: {err.Message}"); }
             }
 
-            Assert.Equal(Enumerable.Repeat(Config.GetBinaryPath(), Callers), outcomes);
+            Assert.Equal(Enumerable.Repeat(Config.GetBinaryPath(Version), Callers), outcomes);
             Assert.Equal("complete", InspectInstall());
-            Assert.Equal(
-                new[] { Path.GetFileName(Config.GetBinaryDir()) },
-                Directory.GetFileSystemEntries(cacheDir).Select(Path.GetFileName).Where(name => !name!.StartsWith('.')));
-        }
-        finally
-        {
-            mirror.Stop();
-            foreach (var (name, value) in previousEnv) Environment.SetEnvironmentVariable(name, value);
-            Directory.Delete(cacheDir, recursive: true);
-        }
-    }
-
-    private static void UseLocalMirror(string cacheDir, int mirrorPort)
-    {
-        foreach (var name in IsolatedEnvNames) Environment.SetEnvironmentVariable(name, null);
-        Environment.SetEnvironmentVariable("CLOAKBROWSER_CACHE_DIR", cacheDir);
-        Environment.SetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL", $"http://127.0.0.1:{mirrorPort}");
-        Environment.SetEnvironmentVariable("CLOAKBROWSER_SKIP_CHECKSUM", "true");
-    }
-
-    private static async Task RespondWithArchiveAsync(HttpListenerContext request, byte[] archiveBytes)
-    {
-        request.Response.ContentLength64 = archiveBytes.Length;
-        await request.Response.OutputStream.WriteAsync(archiveBytes);
-        request.Response.Close();
+            Assert.Equal(ExpectedCacheEntries().OrderBy(n => n, StringComparer.Ordinal), CacheEntries(cacheDir));
+        });
     }
 }

@@ -12,6 +12,8 @@ public class GeoIpTests
     [InlineData("192.168.1.1", true)]
     [InlineData("172.16.0.1", true)]
     [InlineData("127.0.0.1", true)]
+    [InlineData("100.100.1.1", true)]
+    [InlineData("fd00::1", true)]
     [InlineData("8.8.8.8", false)]
     [InlineData("1.1.1.1", false)]
     public void IsPrivateIp_Classifies(string ip, bool isPrivate)

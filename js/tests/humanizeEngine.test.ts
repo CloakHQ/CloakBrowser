@@ -538,6 +538,91 @@ describe.skipIf(!process.env.CLOAKBROWSER_BINARY_PATH)('humanize engine (real br
     await p.waitForURL('**city=b');
   });
 
+  const SYNC_XHR = "var x = new XMLHttpRequest(); x.open('GET', '/hang', false); x.send();";
+  const stallingSelect = (p: Page | Frame, onchange: string) => p.evaluate((js) => {
+    const s = document.createElement('select'); s.id = 'stall';
+    for (const [l, v] of [['-', ''], ['Alfa', 'a'], ['Bravo', 'b']]) s.add(new Option(l, v));
+    s.setAttribute('onchange', js); document.body.prepend(s);
+  }, onchange);
+
+  it('selectOption times out when the page stops answering (#619)', async () => {
+    const p = await open();
+    await stallingSelect(p, SYNC_XHR);
+    const started = Date.now();
+    await expect(p.selectOption('#stall', 'b', { timeout: 2000 })).rejects.toThrow(/Timeout 2000ms exceeded/);
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  it('selectOption returns when its navigation never commits (#619)', async () => {
+    const p = await open();
+    await stallingSelect(p, "location.href = '/hang'");
+    const started = Date.now();
+    expect(await p.selectOption('#stall', 'b', { timeout: 5000 })).toEqual(['b']);
+    expect(Date.now() - started).toBeLessThan(4500); // returned, did not wait out the timeout
+  });
+
+  it('selectOption in an iframe that navigates the top page returns (#619)', async () => {
+    const p = await open();
+    const f = await frame(p);
+    await stallingSelect(f, "top.location.href = '/hang'");
+    const started = Date.now();
+    expect(await f.selectOption('#stall', 'b', { timeout: 5000 })).toEqual(['b']);
+    expect(Date.now() - started).toBeLessThan(4500);
+  });
+
+  it('click times out when the page stops answering, without waiting again to release modifiers (#619)', async () => {
+    const p = await open();
+    await p.evaluate((js) => {
+      const b = document.createElement('button'); b.id = 'stallbtn'; b.textContent = 'stall';
+      b.setAttribute('onclick', js); document.body.prepend(b);
+    }, SYNC_XHR);
+    const started = Date.now();
+    await expect(p.click('#stallbtn', { modifiers: ['Shift', 'Alt'], timeout: 2000 })).rejects.toThrow(/waiting for the page to respond/);
+    expect(Date.now() - started).toBeLessThan(3500); // one wait of 2s, not one more per held modifier
+  });
+
+  it('a stall leaves no modifier key held (#619)', async () => {
+    // A click with modifiers on a page that stalls still releases every modifier
+    // (the page gets the releases once it answers again).
+    const p = await open();
+    await p.evaluate((js) => {
+      const b = document.createElement('button'); b.id = 'stallbtn'; b.textContent = 'stall';
+      b.setAttribute('onclick', js); document.body.prepend(b);
+    }, "var x = new XMLHttpRequest(); x.open('GET', '/slow', false); x.send();");
+    await expect(p.click('#stallbtn', { modifiers: ['Shift', 'Alt'], timeout: 1000 })).rejects.toThrow(/waiting for the page to respond/);
+    await p.evaluate('1'); // returns once the page answers again
+    await reset(p);
+    await p.click('#btn');
+    const down = (await events(p, 'mousedown')).at(-1);
+    expect([down.shift, down.alt]).toEqual([false, false]);
+  });
+
+  it('typing times out when the page stops answering (#619)', async () => {
+    const p = await open();
+    await p.evaluate((js) => {
+      const i = document.createElement('input'); i.id = 'stallin';
+      i.setAttribute('oninput', js); document.body.prepend(i);
+    }, SYNC_XHR);
+    const started = Date.now();
+    await expect(p.fill('#stallin', 'abcdef', { timeout: 2000 })).rejects.toThrow(/waiting for the page to respond/);
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  it('human pauses do not count against the timeout (#619)', async () => {
+    // Only a browser call that gets no answer times out, not the deliberate pauses.
+    const p = await open();
+    await p.fill('#name', 'ab', { timeout: 1000, human_config: { field_switch_delay: [2500, 2500] } } as any);
+    expect(await value(p, '#name')).toBe('ab');
+  });
+
+  it('a long fill is not cut off by the timeout (#619)', async () => {
+    // Typing is slow by design; each key answers in time, so a long fill finishes.
+    const p = await open();
+    const text = 'x'.repeat(40);
+    await p.fill('#name', text, { timeout: 1000, human_config: { typing_delay: 60 } } as any);
+    expect(await value(p, '#name')).toBe(text);
+  });
+
   // --- frames and handles ---------------------------------------------------
 
   it('frame actions', async () => {

@@ -1,25 +1,15 @@
 import { describe, it, expect } from "vitest";
 import {
-  CHROMIUM_VERSION,
   getArchiveExt,
-  getChromiumVersion,
   getDefaultStealthArgs,
   getCacheDir,
   getBinaryDir,
-  getDownloadUrl,
-  getFallbackDownloadUrl,
   normalizeReleaseChannel,
   normalizeRequestedVersion,
-  binarySupportsHeadlessNoViewport,
-  binarySupportsMaximizedWindow,
 } from "../src/config.js";
 import { _buildArgsForTest, resolveTimezone } from "../src/playwright.js";
 
 describe("config", () => {
-  it("CHROMIUM_VERSION matches expected format", () => {
-    expect(CHROMIUM_VERSION).toMatch(/^\d+\.\d+\.\d+\.\d+(\.\d+)?$/);
-  });
-
   it("getDefaultStealthArgs returns expected flags", () => {
     const args = getDefaultStealthArgs();
     const isMac = process.platform === "darwin";
@@ -68,17 +58,8 @@ describe("config", () => {
     }
   });
 
-  it("getBinaryDir includes platform version", () => {
-    const dir = getBinaryDir();
-    expect(dir).toContain(`chromium-${getChromiumVersion()}`);
-  });
-
-  it("getDownloadUrl contains platform version and platform tag", () => {
-    const url = getDownloadUrl();
-    expect(url).toContain(getChromiumVersion());
-    expect(url).toContain("cloakbrowser-");
-    expect(url).toContain(".tar.gz");
-    expect(url).toContain("cloakbrowser.dev");
+  it("getBinaryDir keeps the -pro suffix so existing caches stay valid", () => {
+    expect(getBinaryDir("155.0.8059.39.2")).toMatch(/chromium-155\.0\.8059\.39\.2-pro$/);
   });
 });
 
@@ -154,16 +135,6 @@ describe("archive helpers", () => {
     }
   });
 
-  it("getFallbackDownloadUrl uses GitHub Releases", () => {
-    const url = getFallbackDownloadUrl("145.0.0.0");
-    expect(url).toContain("github.com/CloakHQ/cloakbrowser/releases/download");
-    expect(url).toContain("chromium-v145.0.0.0");
-  });
-
-  it("getFallbackDownloadUrl uses default version", () => {
-    const url = getFallbackDownloadUrl();
-    expect(url).toContain(`chromium-v${getChromiumVersion()}`);
-  });
 });
 
 describe("buildArgs timezone/locale", () => {
@@ -296,76 +267,20 @@ describe("resolveTimezone alias", () => {
   });
 });
 
-describe("binarySupportsHeadlessNoViewport", () => {
-  // Parity-critical: Python and .NET mirror this gate. Threshold is an unshipped
-  // version, so the resolved-version path is a no-op today; the declared-version
-  // path is what these tests pin.
-  it("is OFF one build below the threshold (current live Pro version)", () => {
-    expect(binarySupportsHeadlessNoViewport(undefined, "148.0.7778.215.3")).toBe(false);
-  });
-
-  it("is ON at the threshold", () => {
-    expect(binarySupportsHeadlessNoViewport(undefined, "148.0.7778.215.4")).toBe(true);
-  });
-
-  it("is ON above the threshold", () => {
-    expect(binarySupportsHeadlessNoViewport(undefined, "149.0.0.0")).toBe(true);
-  });
-
-  it("declared version wins over a local override", () => {
-    const prev = process.env.CLOAKBROWSER_BINARY_PATH;
-    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
-    try {
-      expect(binarySupportsHeadlessNoViewport(undefined, "149.0.0.0")).toBe(true);
-    } finally {
-      if (prev === undefined) delete process.env.CLOAKBROWSER_BINARY_PATH;
-      else process.env.CLOAKBROWSER_BINARY_PATH = prev;
-    }
-  });
-
-  it("is OFF for a local override with no declared version", () => {
-    const prev = process.env.CLOAKBROWSER_BINARY_PATH;
-    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
-    try {
-      expect(binarySupportsHeadlessNoViewport()).toBe(false);
-    } finally {
-      if (prev === undefined) delete process.env.CLOAKBROWSER_BINARY_PATH;
-      else process.env.CLOAKBROWSER_BINARY_PATH = prev;
-    }
-  });
-
-  it("fails OFF on a malformed declared version", () => {
-    // parseVersion yields NaN rather than throwing — the gate must still fail safe.
-    expect(binarySupportsHeadlessNoViewport(undefined, "not.a.version")).toBe(false);
-  });
-});
-
-describe("binarySupportsMaximizedWindow", () => {
-  // Parity-critical: Python and .NET mirror this gate. Shares the no_viewport
-  // threshold today.
-  it("is OFF one build below the threshold", () => {
-    expect(binarySupportsMaximizedWindow(undefined, "148.0.7778.215.3")).toBe(false);
-  });
-  it("is ON at the threshold", () => {
-    expect(binarySupportsMaximizedWindow(undefined, "148.0.7778.215.4")).toBe(true);
-  });
-  it("is ON above the threshold", () => {
-    expect(binarySupportsMaximizedWindow(undefined, "149.0.0.0")).toBe(true);
-  });
-});
-
 describe("buildArgs --start-maximized", () => {
-  it("adds --start-maximized when the binary is gated ON", () => {
-    const args = _buildArgsForTest({ browserVersion: "148.0.7778.215.4" });
-    expect(args).toContain("--start-maximized");
-  });
-  it("does not add it below the gate", () => {
-    const args = _buildArgsForTest({ browserVersion: "148.0.7778.215.3" });
-    expect(args).not.toContain("--start-maximized");
+  it("adds --start-maximized by default (an unversioned override too)", () => {
+    expect(_buildArgsForTest({})).toContain("--start-maximized");
+    const prev = process.env.CLOAKBROWSER_BINARY_PATH;
+    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
+    try {
+      expect(_buildArgsForTest({})).toContain("--start-maximized");
+    } finally {
+      if (prev === undefined) delete process.env.CLOAKBROWSER_BINARY_PATH;
+      else process.env.CLOAKBROWSER_BINARY_PATH = prev;
+    }
   });
   it("is suppressed by a user --window-size", () => {
     const args = _buildArgsForTest({
-      browserVersion: "148.0.7778.215.4",
       args: ["--window-size=1000,800"],
     });
     expect(args).not.toContain("--start-maximized");
@@ -373,14 +288,12 @@ describe("buildArgs --start-maximized", () => {
   });
   it("is suppressed by an explicit viewport", () => {
     const args = _buildArgsForTest({
-      browserVersion: "148.0.7778.215.4",
       viewport: { width: 800, height: 600 },
     } as Parameters<typeof _buildArgsForTest>[0]);
     expect(args).not.toContain("--start-maximized");
   });
   it("does not double a user-supplied --start-maximized", () => {
     const args = _buildArgsForTest({
-      browserVersion: "148.0.7778.215.4",
       args: ["--start-maximized"],
     });
     expect(args.filter(a => a === "--start-maximized")).toHaveLength(1);

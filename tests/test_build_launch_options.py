@@ -26,7 +26,6 @@ def test_build_launch_options_preserves_current_launch_behaviour():
             "cloakbrowser.browser._resolve_proxy_config",
             return_value=({"proxy": proxy_option}, ["--proxy-server=http://proxy:8080"]),
         ) as mock_proxy,
-        patch("cloakbrowser.browser.binary_supports_maximized_window", return_value=True) as mock_maximized,
         patch("cloakbrowser.browser.build_launch_env", return_value=launch_env) as mock_env,
         patch("cloakbrowser.browser._maybe_warn_windows_fonts") as mock_font_warning,
     ):
@@ -65,19 +64,17 @@ def test_build_launch_options_preserves_current_launch_behaviour():
         release_channel=None,
     )
     mock_geoip.assert_called_once_with(True, "http://proxy:8080", "America/New_York", "en-US", ANY)
-    mock_proxy.assert_called_once_with("http://proxy:8080", "148.0.7778.215.4", "cb_key", None)
-    mock_maximized.assert_called_once_with("cb_key", "148.0.7778.215.4", None)
+    mock_proxy.assert_called_once_with("http://proxy:8080")
     mock_env.assert_called_once_with("cb_key", user_env={"CUSTOM": "1"}, status_file=ANY)
     mock_font_warning.assert_called_once_with(opts["args"])
 
 
 def test_build_launch_options_threads_suppress_maximize():
-    """_suppress_maximize disables --start-maximized even on supporting binaries."""
+    """_suppress_maximize disables --start-maximized."""
     from cloakbrowser.browser import build_launch_options
 
     with (
         patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome"),
-        patch("cloakbrowser.browser.binary_supports_maximized_window", return_value=True),
         patch("cloakbrowser.browser.build_launch_env", return_value=None),
         patch("cloakbrowser.browser._maybe_warn_windows_fonts"),
     ):
@@ -155,7 +152,6 @@ def test_launch_delegates_to_build_launch_options_and_humanize_browser():
     with (
         patch.dict(sys.modules, {"playwright": playwright, "playwright.sync_api": sync_api}),
         patch("cloakbrowser.browser.build_launch_options", return_value=launch_opts) as mock_build,
-        patch("cloakbrowser.browser.binary_supports_headless_no_viewport", return_value=False),
         patch("cloakbrowser.browser.humanize_browser") as mock_humanize,
     ):
         result = launch(
@@ -223,7 +219,6 @@ async def test_launch_async_delegates_to_build_launch_options():
     with (
         patch.dict(sys.modules, {"playwright": playwright, "playwright.async_api": async_api}),
         patch("cloakbrowser.browser.build_launch_options", return_value=launch_opts) as mock_build,
-        patch("cloakbrowser.browser.binary_supports_headless_no_viewport", return_value=False),
     ):
         result = await launch_async(
             headless=True,

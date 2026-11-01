@@ -150,12 +150,8 @@ internal static class Diagnostics
     private static (Dictionary<string, object?> license, bool entitledPro) ResolveLicense()
     {
         string? key = License.ResolveLicenseKey();
-        // EnsureBinary disables Pro routing when a custom download URL is set, so the
-        // diagnostic must report free too (matches Download.cs).
-        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL")))
-            key = null;
         if (string.IsNullOrEmpty(key))
-            return (new Dictionary<string, object?> { ["tier"] = "free" }, false);
+            return (new Dictionary<string, object?> { ["tier"] = "none" }, false);
         try
         {
             LicenseInfo? lic = License.ValidateLicense(key!);
@@ -178,8 +174,7 @@ internal static class Diagnostics
     }
 
     // Describe the binary EnsureBinary would actually launch (no download).
-    // Unlike Download.BinaryInfo(), a Pro binary on disk is only reported when
-    // the license entitles Pro — so a keyless run shows the free binary.
+    // Without a valid key nothing launches, so only the cached build is reported.
     private static Dictionary<string, object?> EffectiveBinary(bool entitledPro, bool quick = false)
     {
         string? over = Config.GetLocalBinaryOverride();
@@ -191,7 +186,6 @@ internal static class Diagnostics
                 ["latest_version"] = null,
                 ["pinned"] = false,
                 ["tier"] = "override",
-                ["bundled_version"] = Config.ChromiumVersion,
                 ["path"] = over,
                 ["installed"] = File.Exists(over),
                 ["cache_dir"] = null,
@@ -218,7 +212,7 @@ internal static class Diagnostics
         {
             // Mirror EnsureBinary: report what the next launch resolves to, while
             // CLOAKBROWSER_AUTO_UPDATE=false retains an installed channel build.
-            installedVersion = Config.GetEffectiveVersion(true, requestedChannel);
+            installedVersion = Config.GetEffectiveVersion(requestedChannel);
             var autoUpdate = (Environment.GetEnvironmentVariable("CLOAKBROWSER_AUTO_UPDATE") ?? "true").ToLowerInvariant();
             bool updatesEnabled = autoUpdate != "false";
             if (installedVersion != null && !updatesEnabled)
@@ -230,10 +224,10 @@ internal static class Diagnostics
         }
         else
         {
-            version = Config.GetEffectiveVersion(false);
+            version = Config.GetEffectiveVersion(requestedChannel);
             installedVersion = version;
         }
-        string? path = version != null ? Config.GetBinaryPath(version, entitledPro) : null;
+        string? path = version != null ? Config.GetBinaryPath(version) : null;
         return new Dictionary<string, object?>
         {
             ["version"] = version,
@@ -243,11 +237,10 @@ internal static class Diagnostics
             ["channel_fallback"] = latestRelease?.Fallback ?? false,
             ["installed_version"] = installedVersion,
             ["pinned"] = !string.IsNullOrEmpty(requested),
-            ["tier"] = entitledPro ? "pro" : "free",
-            ["bundled_version"] = Config.ChromiumVersion,
+            ["tier"] = entitledPro ? "pro" : "none",
             ["path"] = path,
             ["installed"] = path != null && File.Exists(path),
-            ["cache_dir"] = version != null ? Config.GetBinaryDir(version, entitledPro) : null,
+            ["cache_dir"] = version != null ? Config.GetBinaryDir(version) : null,
             ["override"] = null,
         };
     }

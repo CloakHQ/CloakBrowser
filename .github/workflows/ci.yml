@@ -9,15 +9,22 @@ on:
 jobs:
   python:
     runs-on: ubuntu-latest
+    # real_browser tests launch the binary, which needs a key (see javascript-browser).
+    env:
+      CLOAKBROWSER_LICENSE_KEY: ${{ secrets.CLOAKBROWSER_CI_KEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install -e ".[dev]" pytest pytest-asyncio
       - name: Run tests
-        run: pytest tests/ -v -m "not slow"
+        # Fork PRs get no secrets: run everything except the real-browser tests there.
+        run: |
+          if [ -n "$CLOAKBROWSER_LICENSE_KEY" ]; then pytest tests/ -v -m "not slow"
+          else echo "::notice::Real-browser tests skipped: no license key (PRs from forks get no secrets)."
+            pytest tests/ -v -m "not slow and not real_browser"; fi
 
   javascript:
     runs-on: ubuntu-latest
@@ -36,14 +43,26 @@ jobs:
   javascript-browser:
     # Humanize engine + Puppeteer tests against the real CloakBrowser binary.
     runs-on: ubuntu-latest
+    # A launch needs a key: it downloads the binary and the binary checks it at start.
+    env:
+      CLOAKBROWSER_LICENSE_KEY: ${{ secrets.CLOAKBROWSER_CI_KEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 22
+      - name: Check for a license key
+        id: key
+        # GitHub never gives secrets to PRs from forks (a PR's code could read
+        # and leak them), so the key is empty there: skip instead of failing.
+        run: |
+          if [ -n "$CLOAKBROWSER_LICENSE_KEY" ]; then echo "present=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::Real-browser tests skipped: no license key (PRs from forks get no secrets)."; fi
       - name: Install and build
+        if: steps.key.outputs.present == 'true'
         run: cd js && npm install && npm run build
       - name: Download the binary
+        if: steps.key.outputs.present == 'true'
         run: |
           set -o pipefail
           cd js
@@ -52,8 +71,11 @@ jobs:
           test -x "$path" || { echo "::error::binary download failed (got: '$path')"; exit 1; }
           echo "CLOAKBROWSER_BINARY_PATH=$path" >> "$GITHUB_ENV"
       - name: Install browser system deps
+        if: steps.key.outputs.present == 'true'
         run: cd js && npx playwright-core install-deps chromium
       - name: Run real-browser tests
+        if: steps.key.outputs.present == 'true'
+        # Up to 4 browsers at once (2 files, 2 each): the key needs that many sessions.
         run: cd js && xvfb-run -a npx vitest run tests/humanizeEngine.test.ts tests/humanizePuppeteer.test.ts
 
   dotnet:

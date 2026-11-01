@@ -7,13 +7,13 @@ Usage:
     python examples/stealth_test.py
     python examples/stealth_test.py --headed     # watch in real-time
     python examples/stealth_test.py --no-screenshots
-    python examples/stealth_test.py --proxy http://10.50.96.5:8888
+    python examples/stealth_test.py --proxy http://user:pass@proxy:port
 """
 
 import sys
 import time
 
-from cloakbrowser import launch
+from cloakbrowser import CloakBrowserLicenseError, launch
 
 HEADED = "--headed" in sys.argv
 SCREENSHOTS = "--no-screenshots" not in sys.argv
@@ -133,17 +133,49 @@ def test_deviceandbrowserinfo(page):
     return results
 
 
-def test_creepjs_noise_off(page):
-    """CreepJS — lie detection with fingerprint noise disabled."""
+def test_creepjs(page):
+    """CreepJS — lies plus like-headless, headless and stealth scores."""
     page.goto("https://abrahamjuliot.github.io/creepjs/", wait_until="domcontentloaded", timeout=30000)
     time.sleep(15)
 
     return page.evaluate("""() => {
         const fp = window.Fingerprint;
-        if (!fp) return {error: 'Fingerprint not ready', totalLies: null};
-        const lies = fp.lies || {};
-        return {totalLies: lies.totalLies || 0};
+        const text = document.body.innerText;
+        const pct = re => { const m = text.match(re); return m ? parseInt(m[1]) : null; };
+        return {
+            totalLies: fp ? (fp.lies || {}).totalLies || 0 : null,
+            likeHeadless: pct(/(\\d+)%\\s*like headless/i),
+            headless: pct(/(\\d+)%\\s*headless:/i),
+            stealth: pct(/(\\d+)%\\s*stealth:/i),
+        };
     }""")
+
+
+def test_recaptcha(page):
+    """recaptcha-demo.appspot.com — Google's official reCAPTCHA v3 score."""
+    page.goto(
+        "https://recaptcha-demo.appspot.com/recaptcha-v3-request-scores.php",
+        wait_until="domcontentloaded",
+        timeout=30000,
+    )
+    score = None
+    for _ in range(15):
+        time.sleep(2)
+        score = page.evaluate("""() => {
+            const match = document.body.innerText.match(/"score":\\s*(\\d+\\.\\d+)/);
+            return match ? parseFloat(match[1]) : null;
+        }""")
+        if score is not None:
+            break
+    return {"score": score}
+
+
+def recaptcha_verdict(r):
+    verdict = f"Score: {r.get('score', 'N/A')}"
+    # The score is mostly IP reputation, so a datacenter IP can fail a clean browser.
+    if (r.get("score") or 0) < 0.7 and not PROXY:
+        verdict += " (low scores usually mean a flagged IP, retry with --proxy <residential proxy>)"
+    return verdict
 
 
 TESTS = [
@@ -163,6 +195,8 @@ TESTS = [
             + (
                 " — ALL GREEN"
                 if r.get("failed", 0) == 0
+                else " (FAILED: WEBDRIVER — false positive, stock Chrome fails it too)"
+                if r.get("failedTests") == ["WEBDRIVER"]
                 else f" (FAILED: {', '.join(r.get('failedTests', []))} — known false positives)"
                 if set(r.get("failedTests", [])) <= {"WEBDRIVER", "connectionRTT"}
                 else f" (FAILED: {', '.join(r.get('failedTests', []))})"
@@ -196,12 +230,21 @@ TESTS = [
         "pass": lambda r: r.get("abnormal", 1) == 0,
     },
     {
-        "name": "CreepJS lies (noise=false)",
+        "name": "CreepJS",
         "url": "https://abrahamjuliot.github.io/creepjs/",
-        "runner": test_creepjs_noise_off,
-        "verdict": lambda r: f"lies: {r.get('totalLies', 'N/A')}",
-        "pass": lambda r: r.get("totalLies") == 0,
-        "args": ["--fingerprint-noise=false"],
+        "runner": test_creepjs,
+        "verdict": lambda r: f"lies: {r['totalLies']}, like-headless: {r['likeHeadless']}%, "
+            f"headless: {r['headless']}%, stealth: {r['stealth']}%",
+        "pass": lambda r: r["totalLies"] == 0
+            and r["headless"] is not None and r["headless"] <= 30
+            and r["stealth"] is not None and r["stealth"] <= 30,
+    },
+    {
+        "name": "reCAPTCHA v3 (Google)",
+        "url": "https://recaptcha-demo.appspot.com/recaptcha-v3-request-scores.php",
+        "runner": test_recaptcha,
+        "verdict": recaptcha_verdict,
+        "pass": lambda r: (r.get("score") or 0) >= 0.7,
     },
 ]
 
@@ -216,8 +259,16 @@ def main():
     print()
     print("Launching stealth browser...", flush=True)
 
-    browser = launch(headless=not HEADED, proxy=PROXY, geoip=True)
-    shared_browser_closed = False
+    try:
+        browser = launch(headless=not HEADED, proxy=PROXY, geoip=True, release_channel="preview")
+    except CloakBrowserLicenseError as e:
+        # No terminal to ask in (e.g. plain `docker run`): a clear message, not a traceback.
+        # With no key at all, the claim link is already printed just above.
+        if not str(e).startswith("No CloakBrowser license key"):
+            print(f"\n{e}")
+        print("\nRun it in a terminal to be asked for a key (Docker: add -it),")
+        print("or set CLOAKBROWSER_LICENSE_KEY (Docker: -e CLOAKBROWSER_LICENSE_KEY).")
+        sys.exit(1)
     page = browser.new_page()
 
     # Show browser fingerprint details
@@ -270,16 +321,9 @@ def main():
         print(f"--- {name} ---")
         print(f"URL: {test['url']}")
 
-        test_browser = browser
         test_context = None
-        test_page = page
         try:
-            if test.get("args"):
-                browser.close()
-                shared_browser_closed = True
-                test_browser = launch(headless=not HEADED, proxy=PROXY, geoip=True, args=test["args"])
-
-            test_context = test_browser.new_context(viewport={"width": 1920, "height": 1080})
+            test_context = browser.new_context()
             test_page = test_context.new_page()
 
             result = test["runner"](test_page)
@@ -301,13 +345,10 @@ def main():
         finally:
             if test_context is not None:
                 test_context.close()
-            if test_browser is not browser:
-                test_browser.close()
 
         print()
 
-    if not shared_browser_closed:
-        browser.close()
+    browser.close()
 
     # Summary table
     print("=" * 60)

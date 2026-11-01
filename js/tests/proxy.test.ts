@@ -1,54 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
-import { parseProxyUrl, isSocksProxy, resolveProxyConfig } from "../src/proxy.js";
-import * as config from "../src/config.js";
+import { isSocksProxy, resolveProxyConfig } from "../src/proxy.js";
 import type { LaunchOptions } from "../src/types.js";
 
-describe("parseProxyUrl", () => {
-  it("passes through URL without credentials", () => {
-    expect(parseProxyUrl("http://proxy:8080")).toEqual({
-      server: "http://proxy:8080",
+describe("proxy without credentials", () => {
+  it("passes the string through as the Playwright server", () => {
+    expect(resolveProxyConfig("http://proxy:8080")).toEqual({
+      proxyOption: { server: "http://proxy:8080" },
+      proxyArgs: [],
     });
   });
 
-  it("extracts credentials from URL", () => {
-    expect(parseProxyUrl("http://user:pass@proxy:8080")).toEqual({
-      server: "http://proxy:8080",
-      username: "user",
-      password: "pass",
-    });
-  });
-
-  it("decodes URL-encoded special chars", () => {
-    const result = parseProxyUrl("http://user:p%40ss%3Aword@proxy:8080");
-    expect(result.password).toBe("p@ss:word");
-    expect(result.username).toBe("user");
-    expect(result.server).toBe("http://proxy:8080");
-  });
-
-  it("handles socks5 protocol", () => {
-    const result = parseProxyUrl("socks5://user:pass@proxy:1080");
-    expect(result.server).toBe("socks5://proxy:1080");
-    expect(result.username).toBe("user");
-    expect(result.password).toBe("pass");
-  });
-
-  it("handles URL without port", () => {
-    const result = parseProxyUrl("http://user:pass@proxy");
-    expect(result.server).toBe("http://proxy");
-    expect(result.username).toBe("user");
-  });
-
-  it("handles username only (no password)", () => {
-    const result = parseProxyUrl("http://user@proxy:8080");
-    expect(result.server).toBe("http://proxy:8080");
-    expect(result.username).toBe("user");
-    expect(result.password).toBeUndefined();
-  });
-
-  it("passes through unparseable string", () => {
-    expect(parseProxyUrl("not-a-url")).toEqual({ server: "not-a-url" });
+  it("passes an unparseable string through", () => {
+    expect(resolveProxyConfig("not-a-url").proxyOption).toEqual({ server: "not-a-url" });
   });
 });
 
@@ -86,36 +49,9 @@ describe("proxy dict type", () => {
   });
 });
 
-describe("bare proxy format (user:pass@host:port)", () => {
-  it("extracts credentials from bare format", () => {
-    expect(parseProxyUrl("user:pass@proxy:8080")).toEqual({
-      server: "http://proxy:8080",
-      username: "user",
-      password: "pass",
-    });
-  });
-
-  it("credentials not in server", () => {
-    const r = parseProxyUrl("user:pass@proxy1.example.com:5610");
-    expect(r.server).not.toContain("user");
-    expect(r.server).not.toContain("pass");
-  });
-
-  it("bare username only", () => {
-    const r = parseProxyUrl("user@proxy:8080");
-    expect(r.username).toBe("user");
-    expect(r.password).toBeUndefined();
-    expect(r.server).toBe("http://proxy:8080");
-  });
-
-  it("bare no port", () => {
-    const r = parseProxyUrl("user:pass@proxy.example.com");
-    expect(r.username).toBe("user");
-    expect(r.server).toBe("http://proxy.example.com");
-  });
-
+describe("bare proxy format (no scheme)", () => {
   it("bare no credentials passes through unchanged", () => {
-    expect(parseProxyUrl("proxy:8080")).toEqual({ server: "proxy:8080" });
+    expect(resolveProxyConfig("proxy:8080").proxyOption).toEqual({ server: "proxy:8080" });
   });
 });
 
@@ -150,10 +86,8 @@ describe("isSocksProxy", () => {
 });
 
 describe("resolveProxyConfig", () => {
-  // binarySupportsHttpProxyInlineAuth reads getPlatformTag() intra-config, which
-  // a vi.spyOn(config, ...) can't intercept (ESM live binding). getPlatformTag
-  // derives from process.platform/arch at call time, so override those instead —
-  // this correctly drives the per-platform floor lookup and version resolution.
+  // getPlatformTag derives from process.platform/arch at call time, so override
+  // those to prove no platform falls back to Playwright's proxy dict.
   const origPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
   const origArch = Object.getOwnPropertyDescriptor(process, "arch")!;
   function setPlatform(platform: string, arch: string): void {
@@ -171,14 +105,20 @@ describe("resolveProxyConfig", () => {
     expect(proxyArgs).toEqual([]);
   });
 
-  it("falls back to playwright dict for http string on free macOS", () => {
-    setPlatform("darwin", "arm64");
+  it.each([
+    ["linux", "x64"], ["linux", "arm64"], ["darwin", "arm64"], ["darwin", "x64"], ["win32", "x64"],
+  ])("sends http creds inline on %s-%s (every served build ships inline auth)", (platform, arch) => {
+    setPlatform(platform, arch);
+    const prev = process.env.CLOAKBROWSER_BINARY_PATH;
+    process.env.CLOAKBROWSER_BINARY_PATH = "/x/chrome"; // an unversioned override too
     try {
       const { proxyOption, proxyArgs } = resolveProxyConfig("http://user:pass@proxy:8080");
-      expect(proxyOption).toEqual({ server: "http://proxy:8080", username: "user", password: "pass" });
-      expect(proxyArgs).toEqual([]);
+      expect(proxyOption).toBeUndefined();
+      expect(proxyArgs).toEqual(["--proxy-server=http://user:pass@proxy:8080"]);
     } finally {
       restorePlatform();
+      if (prev === undefined) delete process.env.CLOAKBROWSER_BINARY_PATH;
+      else process.env.CLOAKBROWSER_BINARY_PATH = prev;
     }
   });
 
@@ -345,161 +285,31 @@ describe("resolveProxyConfig", () => {
     }
   });
 
-  // --- HTTP with credentials → --proxy-server (supported platform + version) ---
+  // --- HTTP with credentials → always inline via --proxy-server ---
 
-  // Supported cases pass the version via the browserVersion param (declared-pin
-  // path) so resolution is deterministic; setPlatform drives the floor lookup.
-  it("routes http string with creds through --proxy-server on linux-x64 v177.5", () => {
-    setPlatform("linux", "x64");
-    try {
-      const { proxyOption, proxyArgs } = resolveProxyConfig(
-        "http://user:pass@proxy:8080",
-        "146.0.7680.177.5",
-      );
-      expect(proxyOption).toBeUndefined();
-      expect(proxyArgs).toEqual(["--proxy-server=http://user:pass@proxy:8080"]);
-    } finally {
-      restorePlatform();
-    }
+  it("sends an http dict with creds inline", () => {
+    const { proxyOption, proxyArgs } = resolveProxyConfig({
+      server: "http://proxy:8080",
+      username: "user",
+      password: "pass",
+    });
+    expect(proxyOption).toBeUndefined();
+    expect(proxyArgs).toEqual(["--proxy-server=http://user:pass@proxy:8080"]);
   });
 
-  it("routes http dict with creds through --proxy-server on linux-x64 v177.5", () => {
-    setPlatform("linux", "x64");
-    try {
-      const { proxyOption, proxyArgs } = resolveProxyConfig(
-        {
-          server: "http://proxy:8080",
-          username: "user",
-          password: "pass",
-        },
-        "146.0.7680.177.5",
-      );
-      expect(proxyOption).toBeUndefined();
-      expect(proxyArgs).toEqual(["--proxy-server=http://user:pass@proxy:8080"]);
-    } finally {
-      restorePlatform();
-    }
+  it("keeps the bypass list for an http dict with creds", () => {
+    const { proxyArgs } = resolveProxyConfig({
+      server: "http://proxy:8080",
+      username: "user",
+      password: "pass",
+      bypass: ".google.com",
+    });
+    expect(proxyArgs).toContain("--proxy-server=http://user:pass@proxy:8080");
+    expect(proxyArgs).toContain("--proxy-bypass-list=.google.com");
   });
 
-  it("includes bypass for http dict with creds on windows-x64 v177.5", () => {
-    setPlatform("win32", "x64");
-    try {
-      const { proxyArgs } = resolveProxyConfig(
-        {
-          server: "http://proxy:8080",
-          username: "user",
-          password: "pass",
-          bypass: ".google.com",
-        },
-        "146.0.7680.177.5",
-      );
-      expect(proxyArgs).toContain("--proxy-server=http://user:pass@proxy:8080");
-      expect(proxyArgs).toContain("--proxy-bypass-list=.google.com");
-    } finally {
-      restorePlatform();
-    }
-  });
-
-  it("encodes special chars in http proxy password on supported platform v177.5", () => {
-    setPlatform("linux", "x64");
-    try {
-      const { proxyArgs } = resolveProxyConfig(
-        "http://user:pass=123@proxy:8080",
-        "146.0.7680.177.5",
-      );
-      expect(proxyArgs).toEqual(["--proxy-server=http://user:pass%3D123@proxy:8080"]);
-    } finally {
-      restorePlatform();
-    }
-  });
-
-  it("falls back to playwright dict with an old pinned version", () => {
-    setPlatform("linux", "x64");
-    try {
-      const { proxyOption, proxyArgs } = resolveProxyConfig(
-        "http://user:pass@proxy:8080",
-        "146.0.7680.177.3",
-      );
-      expect(proxyOption).toEqual({ server: "http://proxy:8080", username: "user", password: "pass" });
-      expect(proxyArgs).toEqual([]);
-    } finally {
-      restorePlatform();
-    }
-  });
-
-  it("inline auth for http with creds on a new pinned darwin-arm64 build", () => {
-    setPlatform("darwin", "arm64");
-    try {
-      const { proxyOption, proxyArgs } = resolveProxyConfig(
-        "http://user:pass@proxy:8080",
-        "148.0.7778.215.3",
-      );
-      expect(proxyOption).toBeUndefined();
-      expect(proxyArgs).toEqual(["--proxy-server=http://user:pass@proxy:8080"]);
-    } finally {
-      restorePlatform();
-    }
-  });
-
-  it("falls back to playwright dict for http with creds on free linux-arm64", () => {
-    setPlatform("linux", "arm64");
-    try {
-      const { proxyOption, proxyArgs } = resolveProxyConfig(
-        "http://user:pass@proxy:8080",
-        "146.0.7680.177.3",
-      );
-      expect(proxyOption).toBeDefined();
-      expect(proxyArgs).toEqual([]);
-    } finally {
-      restorePlatform();
-    }
-  });
-
-  it("uses the selected release channel for inline-auth gating", () => {
-    const originalCacheDir = process.env.CLOAKBROWSER_CACHE_DIR;
-    const cacheDir = `/tmp/cloakbrowser-proxy-preview-${Date.now()}`;
-    process.env.CLOAKBROWSER_CACHE_DIR = cacheDir;
-    try {
-      for (const [channel, version] of [
-        ["stable", "145.0.1000.1"],
-        ["preview", "148.0.7778.215.4"],
-      ] as const) {
-        const binaryPath = config.getBinaryPath(version, true);
-        fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
-        fs.writeFileSync(binaryPath, "fake");
-        fs.chmodSync(binaryPath, 0o755);
-        const markerPrefix = channel === "preview"
-          ? "latest_pro_version_preview"
-          : "latest_pro_version";
-        fs.writeFileSync(
-          path.join(cacheDir, `${markerPrefix}_${config.getPlatformTag()}`),
-          version,
-        );
-      }
-
-      const stable = resolveProxyConfig(
-        "http://user:pass@proxy:8080",
-        undefined,
-        "cb_test",
-        "stable",
-      );
-      const preview = resolveProxyConfig(
-        "http://user:pass@proxy:8080",
-        undefined,
-        "cb_test",
-        "preview",
-      );
-
-      expect(stable.proxyOption).toBeDefined();
-      expect(stable.proxyArgs).toEqual([]);
-      expect(preview.proxyOption).toBeUndefined();
-      expect(preview.proxyArgs).toEqual([
-        "--proxy-server=http://user:pass@proxy:8080",
-      ]);
-    } finally {
-      fs.rmSync(cacheDir, { recursive: true, force: true });
-      if (originalCacheDir === undefined) delete process.env.CLOAKBROWSER_CACHE_DIR;
-      else process.env.CLOAKBROWSER_CACHE_DIR = originalCacheDir;
-    }
+  it("encodes special chars in an inline http proxy password", () => {
+    const { proxyArgs } = resolveProxyConfig("http://user:pass=123@proxy:8080");
+    expect(proxyArgs).toEqual(["--proxy-server=http://user:pass%3D123@proxy:8080"]);
   });
 });

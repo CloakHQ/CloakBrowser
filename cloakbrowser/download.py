@@ -26,21 +26,14 @@ import httpx
 from ._version import __version__ as _wrapper_version
 from .config import (
     BINARY_SIGNING_PUBKEYS,
-    CHROMIUM_VERSION,
     DOWNLOAD_BASE_URL,
-    GITHUB_API_URL,
-    GITHUB_DOWNLOAD_BASE_URL,
     _version_newer,
-    check_platform_available,
     get_archive_ext,
     get_archive_name,
     get_binary_dir,
     get_binary_path,
     get_cache_dir,
-    get_chromium_version,
-    get_download_url,
     get_effective_version,
-    get_fallback_download_url,
     get_local_binary_override,
     get_platform_tag,
     normalize_release_channel,
@@ -56,26 +49,18 @@ class BinaryVerificationError(RuntimeError):
 
     Distinct from transient download/network errors: a verification failure is
     a tampering signal and MUST surface, never silently fall back to another
-    binary. The Pro routing in ensure_binary re-raises this rather than
-    downgrading to the free tier.
+    binary. The routing in ensure_binary re-raises this rather than falling
+    back to a cached build.
     """
 
 
 # Timeout for download (large binary, allow 10 min)
 DOWNLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
 
-# Auto-update check interval (1 hour)
-UPDATE_CHECK_INTERVAL = 3600
-
-# Free-tier welcome banner re-show interval (1 day). Free users see the
-# "get the latest free" invite again after this gap; Pro users see it only once
+# Free-key welcome banner re-show interval (1 day). Free users see the
+# "more sessions" invite again after this gap; Pro users see it only once
 # (see _show_welcome).
 WELCOME_FREE_INTERVAL = 24 * 3600
-
-# Pro Chromium major shown in the free-tier welcome banner. Bump at each Pro
-# major release (there is no local constant to derive it from — the live Pro
-# version comes from the network, which we don't call just to print a banner).
-PRO_MAJOR = "155"
 
 # Attempts to rename an extraction into place while concurrent callers are
 # replacing the same partial install (see _extract_archive).
@@ -137,15 +122,13 @@ def _emit(text: str) -> None:
         pass
 
 
-def _show_welcome(tier: str = "keyless") -> None:
+def _show_welcome(tier: str) -> None:
     """Show welcome message on launch. A marker file gates the cadence: a paid
-    (Pro) key shows once ever; free (keyless or a free GitHub key) re-shows every
-    WELCOME_FREE_INTERVAL.
+    (Pro) key shows once ever; a free key re-shows every WELCOME_FREE_INTERVAL.
 
     tier:
-      "pro"     — a paid license key (Pro banner + support address)
-      "free"    — a free GitHub key (latest binary, one concurrent session)
-      "keyless" — no key, running the older free binary (invite the free login)
+      "pro"  — a paid license key (Pro banner + support address)
+      "free" — a free key (latest binary, one concurrent session)
     """
     marker = get_cache_dir() / ".welcome_shown"
     if not _welcome_due(marker, pro=(tier == "pro")):
@@ -156,34 +139,21 @@ def _show_welcome(tier: str = "keyless") -> None:
     # cosmetic banner must never be able to kill a launch.
     _emit("\n")
     _emit("  CloakBrowser - stealth Chromium for automation\n")
-    _emit("  https://github.com/CloakHQ/CloakBrowser\n")
-    _emit("\n")
     if tier == "pro":
-        _emit(
-            f"  CloakBrowser Pro active (v{PRO_MAJOR}) - latest binary, newest patches.\n"
-        )
+        _emit("  CloakBrowser Pro active.\n\n")
         _emit("  Pro support -> support@cloakbrowser.dev\n")
-    elif tier == "free":
-        _emit(
-            f"  CloakBrowser free (v{PRO_MAJOR}): the latest binary, 1 concurrent session.\n"
-        )
-        _emit(
-            "  For more than one concurrent session -> https://cloakbrowser.dev\n"
-        )
+        _emit("  Site -> https://cloakbrowser.dev\n")
     else:
-        free_major = CHROMIUM_VERSION.split(".")[0]
-        _emit(
-            f"  Running the free binary (v{free_major}). "
-            f"The latest binary (v{PRO_MAJOR}) is free too, with 1 concurrent session.\n"
-        )
-        _emit(
-            "  Get your key: run  cloakbrowser login  or visit https://cloakbrowser.dev/free\n"
-        )
-        _emit(
-            "  For more than one concurrent session -> https://cloakbrowser.dev\n"
-        )
+        _emit("  CloakBrowser free: 1 concurrent session.\n\n")
+        _emit("  For more than one concurrent session -> https://cloakbrowser.dev\n")
+    _emit("  Docs -> https://github.com/CloakHQ/CloakBrowser\n")
     _emit("  Star us if CloakBrowser helps your project!\n")
     _emit("\n")
+    _mark_welcome_shown()
+
+
+def _mark_welcome_shown() -> None:
+    marker = get_cache_dir() / ".welcome_shown"
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(str(int(time.time())))
@@ -220,183 +190,249 @@ def ensure_binary(
 
     requested_version = normalize_requested_version(browser_version)
 
-    # Pro license key check (custom download URL overrides Pro path)
+    from .license import CloakBrowserLicenseError, resolve_license_key, validate_license
+
+    # No key anywhere (param, env, license.key) -> get a free one first.
+    key = resolve_license_key(license_key) or _claim_free_key()
+    info = validate_license(key)
+    if info and info.valid:
+        _maybe_trigger_update_check()
+        # A free key always gets the latest build. Drop any version pin: the
+        # server force-serves latest to free keys, so fetching a pinned
+        # version's signed manifest would mismatch the served bytes and fail
+        # checksum verification. Paid keys keep pinning/rollback.
+        if info.plan == "free":
+            requested_version = None
+        # (A blip during a routine update never reaches the error below:
+        # _ensure_pro_binary returns the cached build and retries next launch.)
+        try:
+            return _ensure_pro_binary(
+                key,
+                requested_version=requested_version,
+                plan=info.plan,
+                release_channel=release_channel,
+            )
+        except BinaryVerificationError:
+            # Authenticity could not be confirmed — surface verbatim.
+            raise
+        except Exception as e:
+            raise RuntimeError(
+                f"CloakBrowser binary unavailable: {e}. Your license is valid but "
+                f"the binary could not be downloaded right now. Retry in a moment."
+            ) from e
+    if info:
+        raise CloakBrowserLicenseError(
+            f"CloakBrowser: license key is invalid or expired (plan={info.plan}). "
+            f"Check CLOAKBROWSER_LICENSE_KEY or ~/.cloakbrowser/license.key, or get "
+            f"a free key with: cloakbrowser login"
+        )
+    raise CloakBrowserLicenseError(
+        "CloakBrowser: license could not be validated (server unreachable and "
+        "no cached validation). Retry in a moment."
+    )
+
+
+# How long a background claim poll keeps checking for the key (see _claim_free_key).
+CLAIM_POLL_WINDOW = 600
+_claim_poll_started = False
+
+
+def _isatty(stream) -> bool:
+    try:
+        return stream.isatty()
+    except (AttributeError, ValueError, OSError):  # None (pythonw) or closed
+        return False
+
+
+def can_prompt() -> bool:
+    """A person is at this terminal and Ctrl+C reaches us (main thread)."""
+    return (
+        threading.current_thread() is threading.main_thread()
+        and _isatty(sys.stdin)
+        and _isatty(sys.stderr)
+    )
+
+
+def _ask(prompt: str) -> str:
+    # Prompt on stderr: a script's stdout may be its data.
+    _emit(prompt)
+    return input().strip()
+
+
+def _emit_welcome() -> None:
+    _emit("\n  Welcome to CloakBrowser - stealth Chromium for automation\n")
+    _emit("  https://github.com/CloakHQ/CloakBrowser\n\n")
+    _emit("  CloakBrowser needs a license key.\n\n")
+
+
+def prompt_license_key() -> str:
+    """Terminal menu shared by a no-key launch and `cloakbrowser login`: get a
+    free key by email or paste one. Returns a valid key, already saved.
+
+    Raises EOFError if stdin closes, KeyboardInterrupt on Ctrl+C."""
+    _emit_welcome()
+    _emit("    1) Get a free key (by email: the latest build, 1 concurrent session)\n")
+    _emit("    2) Paste a key I already have\n\n")
+    while True:
+        choice = _ask("  Choose 1 or 2 [1]: ")
+        if choice in ("", "1"):
+            key = _get_free_key()
+            if key:
+                return key
+            _emit(f"\n  {HAS_KEY_MSG}\n")
+        elif choice != "2":
+            _emit("  Please type 1 or 2.\n")
+            continue
+        key = _paste_key()
+        if key:
+            return key
+
+
+HAS_KEY_MSG = (
+    "This email already has a free key. It's in the email we sent when you "
+    "first got it (search your mail for CloakBrowser)."
+)
+
+
+def _paste_key() -> str | None:
+    """Ask until a valid key is pasted (saved, returned) or the answer is empty."""
+    from .license import _KEY_RE, save_license_key, validate_license
+
+    while True:
+        key = _ask("  Paste your key (empty to go back): ")
+        if not key:
+            return None
+        if not _KEY_RE.fullmatch(key):
+            _emit("  That is not a CloakBrowser key (they start with cb_).\n")
+            continue
+        info = validate_license(key)
+        if info is None:
+            _emit("  Could not reach the license server. Check your connection and retry.\n")
+        elif not info.valid:
+            _emit("  That key is invalid or expired.\n")
+        else:
+            save_license_key(key)
+            _emit("  Key saved.\n\n")
+            if info.plan == "free":
+                _mark_welcome_shown()  # the menu was the welcome; a paid key keeps its Pro banner
+            return key
+
+
+def _get_free_key() -> str | None:
+    """Open the claim link and wait for the key (saved, returned). None if the
+    email already has a key, which the server never sends to a claim."""
+    from .license import FreeKeyAlreadyHeld, claim_link, get_claim_code, poll_claim
+
+    code = get_claim_code()
+    link = claim_link(code)
+    _emit(f"\n  Open this link and enter your email:\n  {link}\n")
+    if _has_display():
+        import webbrowser
+
+        try:
+            if webbrowser.open(link):
+                _emit("  (opened in your browser)\n")
+        except (webbrowser.Error, OSError) as e:
+            logger.debug("Could not open a browser: %s", e)
+    _emit("\n  Waiting for you to confirm your email... (Ctrl+C to stop)\n")
+    try:
+        key = poll_claim(code, overwrite=True)
+    except FreeKeyAlreadyHeld:
+        return None
+    _emit("  Free key saved.\n\n")
+    _mark_welcome_shown()  # the menu was the welcome: no second banner this launch
+    return key
+
+
+def _claim_free_key() -> str:
+    """No key anywhere: get one before launching.
+
+    A person at a terminal (main thread) gets the menu (prompt_license_key).
+    Anything else (CI, Docker, an MCP server, launch_async's worker thread, where
+    Ctrl+C can't reach) raises with the claim link and keeps polling in the
+    background, so a long-lived process picks the key up and its next launch works."""
     from .license import (
         CloakBrowserLicenseError,
-        resolve_license_key,
-        validate_license,
+        FreeKeyAlreadyHeld,
+        check_claim,
+        claim_link,
+        get_claim_code,
+        save_license_key,
     )
 
-    key = resolve_license_key(license_key)
-    if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
-        key = None
-
-    if key:
-        info = validate_license(key)
-        if info and info.valid:
-            # Free tier always gets the latest build. Drop any version pin: the
-            # server force-serves latest to free keys, so fetching a pinned
-            # version's signed manifest would mismatch the served bytes and fail
-            # checksum verification. Paid keys keep pinning/rollback.
-            if info.plan == "free":
-                requested_version = None
-            # A valid license is entitled to Pro, so Pro failures surface loudly
-            # rather than silently substituting the older free binary. (A blip
-            # during a routine update never reaches here: _ensure_pro_binary
-            # returns the cached Pro binary and updates in the background.)
-            try:
-                return _ensure_pro_binary(
-                    key,
-                    requested_version=requested_version,
-                    plan=info.plan,
-                    release_channel=release_channel,
-                )
-            except BinaryVerificationError:
-                # Authenticity could not be confirmed — surface verbatim.
-                raise
-            except Exception as e:
-                # Transient failure with no cached Pro binary to use — surface a
-                # clear error rather than silently downloading the free binary.
-                raise RuntimeError(
-                    f"Pro binary unavailable: {e}. Your license is valid but the "
-                    f"Pro binary could not be downloaded right now. Retry in a "
-                    f"moment. To use the free binary instead, unset "
-                    f"CLOAKBROWSER_LICENSE_KEY."
-                ) from e
-        elif info:
-            # Key supplied but rejected — abort, never downgrade to free.
-            raise CloakBrowserLicenseError(
-                f"CloakBrowser Pro: license key is invalid or expired "
-                f"(plan={info.plan}). Check CLOAKBROWSER_LICENSE_KEY, or unset it "
-                f"to use the free binary."
-            )
-        else:
-            # Key supplied but unvalidatable (server down, no cache) — abort.
-            raise CloakBrowserLicenseError(
-                "CloakBrowser Pro: license could not be validated (server "
-                "unreachable and no cached validation). Retry in a moment, or "
-                "unset CLOAKBROWSER_LICENSE_KEY to use the free binary."
-            )
-
-    # Fail fast if no binary available for this platform
-    check_platform_available()
-
-    if requested_version:
-        binary_path = get_binary_path(requested_version)
-        if binary_path.exists() and _is_executable(binary_path):
-            logger.debug(
-                "Pinned binary found in cache: %s (version %s)",
-                binary_path,
-                requested_version,
-            )
-            _show_welcome()
-            return str(binary_path)
-
-        logger.info(
-            "Stealth Chromium %s not found. Downloading for %s...",
-            requested_version,
-            get_platform_tag(),
-        )
-        _download_and_extract(requested_version)
-
-        if not (binary_path.exists() and _is_executable(binary_path)):
-            raise RuntimeError(
-                f"Pinned download completed but binary not found at expected path: {binary_path}. "
-                f"This may indicate a packaging issue. Please report at "
-                f"https://github.com/CloakHQ/cloakbrowser/issues"
-            )
-        _show_welcome()
-        return str(binary_path)
-
-    # Check for auto-updated version first, then fall back to hardcoded
-    effective = get_effective_version()
-    binary_path = get_binary_path(effective)
-
-    if binary_path.exists() and _is_executable(binary_path):
-        logger.debug("Binary found in cache: %s (version %s)", binary_path, effective)
-        _show_welcome()
-        _maybe_trigger_update_check()
-        return str(binary_path)
-
-    # Fall back to platform's hardcoded version if effective version binary doesn't exist
-    platform_version = get_chromium_version()
-    if effective != platform_version:
-        fallback_path = get_binary_path()
-        if fallback_path.exists() and _is_executable(fallback_path):
-            logger.debug("Binary found in cache: %s", fallback_path)
-            _maybe_trigger_update_check()
-            return str(fallback_path)
-
-    # Download platform's hardcoded version
-    logger.info(
-        "Stealth Chromium %s not found. Downloading for %s...",
-        platform_version,
-        get_platform_tag(),
-    )
-    _download_and_extract()
-
-    binary_path = get_binary_path()
-    if not binary_path.exists():
-        raise RuntimeError(
-            f"Download completed but binary not found at expected path: {binary_path}. "
-            f"This may indicate a packaging issue. Please report at "
-            f"https://github.com/CloakHQ/cloakbrowser/issues"
-        )
-
-    _maybe_trigger_update_check()
-    return str(binary_path)
-
-
-def _download_and_extract(version: str | None = None) -> None:
-    """Download the binary archive and extract to cache directory.
-
-    Tries the primary server (cloakbrowser.dev) first, falls back to
-    GitHub Releases if the primary is unreachable or returns an error.
-    Verifies SHA-256 checksum before extraction when available.
-    """
-    primary_url = get_download_url(version)
-    fallback_url = get_fallback_download_url(version)
-    binary_dir = get_binary_dir(version)
-    binary_path = get_binary_path(version)
-
-    # Create cache dir
-    binary_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    # Download to temp file first (atomic — no partial downloads in cache)
-    with tempfile.NamedTemporaryFile(suffix=get_archive_ext(), delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-
+    code = get_claim_code()
     try:
-        # Try primary, fall back to GitHub Releases (skip fallback if custom URL)
+        key = check_claim(code)
+    except FreeKeyAlreadyHeld:
+        if not can_prompt():
+            raise CloakBrowserLicenseError(
+                f"{HAS_KEY_MSG} Set CLOAKBROWSER_LICENSE_KEY or run: cloakbrowser login"
+            ) from None
+        key = None  # the menu below starts over with a fresh code
+    if key:  # confirmed since an earlier launch printed the link
+        save_license_key(key, overwrite=False)
+        return key
+    if can_prompt():
         try:
-            _download_file(primary_url, tmp_path)
-        except Exception as primary_err:
-            if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
-                raise
-            logger.warning(
-                "Primary download failed (%s), trying GitHub Releases...",
-                primary_err,
-            )
-            _download_file(fallback_url, tmp_path)
+            return prompt_license_key()
+        except EOFError:
+            pass  # stdin closed mid-menu: fall through to the link + error
+        except KeyboardInterrupt:
+            # The person at the menu chose to stop: exit quietly like the JS and
+            # .NET wrappers (130 = Ctrl+C), not with a traceback.
+            _emit("\n")
+            raise SystemExit(130) from None
+    code = get_claim_code()  # fresh if the old one was retired
+    link = claim_link(code)
+    _emit_welcome()
+    _emit(f"  Get one free (the latest build, 1 concurrent session):\n  {link}\n"
+          "  After you confirm, the key is also emailed to you.\n\n")
+    _start_claim_poll(code)
+    raise CloakBrowserLicenseError(
+        f"No CloakBrowser license key. Get one free: {link} "
+        "(or run: cloakbrowser login), then launch again."
+    )
 
-        # Verify the download before extraction. On the official path this is a
-        # mandatory, non-bypassable Ed25519 signature check (see
-        # _verify_download_checksum); the skip flag only applies to custom
-        # self-hosted CLOAKBROWSER_DOWNLOAD_URL setups.
-        _verify_download_checksum(tmp_path, version)
 
-        _extract_archive(tmp_path, binary_dir, binary_path)
-        _show_welcome()
-    finally:
-        # Clean up temp file
-        tmp_path.unlink(missing_ok=True)
+def _has_display() -> bool:
+    """Whether opening a browser can show a window. On Linux/BSD without a
+    display (typically SSH), webbrowser falls back to a text browser (lynx,
+    w3m) that takes over this terminal, so skip it: the link is printed anyway.
+    The same reason gh and gcloud print the URL instead on remote hosts."""
+    if sys.platform in ("darwin", "win32"):
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+_claim_poll_lock = threading.Lock()
+
+
+def _start_claim_poll(code: str) -> None:
+    """Poll for the claimed key in a daemon thread, once per process."""
+    global _claim_poll_started
+    with _claim_poll_lock:  # concurrent launch_async calls: one poller only
+        if _claim_poll_started:
+            return
+        _claim_poll_started = True
+    from .license import FreeKeyAlreadyHeld, poll_claim
+
+    def run() -> None:
+        try:
+            if poll_claim(code, deadline=time.time() + CLAIM_POLL_WINDOW):
+                _emit("\n  CloakBrowser: free key saved. The next launch uses it.\n")
+        except FreeKeyAlreadyHeld:
+            _emit(f"\n  CloakBrowser: {HAS_KEY_MSG}\n  Set CLOAKBROWSER_LICENSE_KEY or run: cloakbrowser login\n")
+        except (OSError, ValueError) as e:
+            logger.warning("Could not save the claimed free key: %s", e)
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _pro_binary_ready(version: str | None) -> bool:
     """True when a cached, executable Pro binary exists for ``version``."""
     if not version:
         return False
-    path = get_binary_path(version, pro=True)
+    path = get_binary_path(version)
     return path.exists() and _is_executable(path)
 
 
@@ -408,21 +444,20 @@ def _ensure_pro_binary(
 ) -> str:
     """Ensure the latest (keyed) binary is downloaded and cached. Returns its path.
 
-    Used for both free-tier GitHub keys (plan="free") and paid keys — both fetch
-    the same latest build; the server enforces the concurrency cap. A valid key
-    NEVER falls back to the older free binary: if the latest build cannot be
-    resolved or downloaded and none is cached, the error is raised.
+    Used for both free keys (plan="free") and paid keys — both fetch the same
+    latest build; the server enforces the concurrency cap. If the latest build
+    cannot be resolved or downloaded and none is cached, the error is raised.
     """
     from .license import get_pro_latest_release, get_pro_latest_version
 
-    # Banner tier: a free GitHub key gets the free banner, paid keys the Pro one.
+    # Banner tier: a free key gets the free banner, paid keys the Pro one.
     welcome_tier = "free" if plan == "free" else "pro"
 
     # --- Pinned: launch the exact requested version, no server cross-check, no
     # marker write (a rollback pin must not stick future unpinned launches). ---
     if requested_version:
         if _pro_binary_ready(requested_version):
-            binary_path = get_binary_path(requested_version, pro=True)
+            binary_path = get_binary_path(requested_version)
             logger.debug(
                 "Pinned Pro binary found in cache: %s (version %s)",
                 binary_path,
@@ -434,7 +469,7 @@ def _ensure_pro_binary(
             "Downloading Pro Chromium %s for %s...", requested_version, get_platform_tag()
         )
         _download_pro_binary(requested_version, license_key)
-        binary_path = get_binary_path(requested_version, pro=True)
+        binary_path = get_binary_path(requested_version)
         if not binary_path.exists():
             raise RuntimeError(
                 f"Pro download completed but binary not found at: {binary_path}"
@@ -443,17 +478,16 @@ def _ensure_pro_binary(
         return str(binary_path)
 
     # --- Unpinned: track the server's latest selected channel. ---
-    effective = get_effective_version(pro=True, release_channel=release_channel)
+    effective = get_effective_version(release_channel)
 
-    # Honor CLOAKBROWSER_AUTO_UPDATE=false the way the free path does: if the user
-    # froze updates AND a Pro build is already cached, keep it and skip the server
-    # check. With no cached build we must still fetch one — a valid Pro license can
-    # never launch the free binary. (The `update` CLI ignores this and always acts.)
+    # Honor CLOAKBROWSER_AUTO_UPDATE=false: if the user froze updates AND a build
+    # is already cached, keep it and skip the server check. With no cached build
+    # we must still fetch one. (The `update` CLI ignores this and always acts.)
     frozen = os.environ.get("CLOAKBROWSER_AUTO_UPDATE", "").lower() == "false"
     if frozen and _pro_binary_ready(effective):
         logger.debug("Pro auto-update disabled; using cached %s", effective)
         _show_welcome(welcome_tier)
-        return str(get_binary_path(effective, pro=True))
+        return str(get_binary_path(effective))
 
     # get_pro_latest_version() is rate-limited to one network call per hour and
     # returns a cached string in between, so this foreground check stays cheap on
@@ -482,11 +516,11 @@ def _ensure_pro_binary(
 
     if version is None:
         # Valid Pro license but nothing resolvable (server unreachable AND no
-        # cached Pro build). Never downgrade to the free binary — fail loudly.
+        # cached build) — fail loudly.
         raise RuntimeError("Could not determine latest Pro version from server")
 
     if _pro_binary_ready(version):
-        binary_path = get_binary_path(version, pro=True)
+        binary_path = get_binary_path(version)
         # Advance the marker if this cached build is newer than what the marker names,
         # so `info` (and a later server-outage launch) reflect the build we actually
         # launch — never a stale marker.
@@ -500,7 +534,7 @@ def _ensure_pro_binary(
         return str(binary_path)
 
     # `version` (the server latest) needs downloading. On failure, fall back to a
-    # cached Pro build if we have one — never the free binary.
+    # cached build if we have one.
     try:
         logger.info(
             "Downloading Pro Chromium %s for %s...", version, get_platform_tag()
@@ -518,10 +552,10 @@ def _ensure_pro_binary(
                 effective,
             )
             _show_welcome(welcome_tier)
-            return str(get_binary_path(effective, pro=True))
+            return str(get_binary_path(effective))
         raise
 
-    binary_path = get_binary_path(version, pro=True)
+    binary_path = get_binary_path(version)
     if not binary_path.exists():
         raise RuntimeError(
             f"Pro download completed but binary not found at: {binary_path}"
@@ -544,8 +578,8 @@ def _download_pro_binary(version: str, license_key: str) -> None:
     manifest verified in _verify_pro_download.
     """
     download_url = f"{DOWNLOAD_BASE_URL}/api/download/{version}"
-    binary_dir = get_binary_dir(version, pro=True)
-    binary_path = get_binary_path(version, pro=True)
+    binary_dir = get_binary_dir(version)
+    binary_path = get_binary_path(version)
     platform_tag = get_platform_tag()
 
     binary_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -563,11 +597,7 @@ def _download_pro_binary(version: str, license_key: str) -> None:
             },
         )
 
-        # Pro binaries come from cloakbrowser.dev — the same origin as free
-        # downloads — so the M1 attack the Ed25519 signature defends against
-        # applies equally. Verify with the same non-bypassable signature check;
-        # CLOAKBROWSER_SKIP_CHECKSUM does NOT bypass it (parity with the
-        # official free path).
+        # Non-bypassable Ed25519 signature check (M1 defense); no env var skips it.
         _verify_pro_download(tmp_path, version)
 
         _extract_archive(tmp_path, binary_dir, binary_path)
@@ -576,20 +606,17 @@ def _download_pro_binary(version: str, license_key: str) -> None:
 
 
 def _verify_pro_download(file_path: Path, version: str) -> None:
-    """Verify a Pro archive with the same non-bypassable Ed25519 signature check
-    as official free downloads.
+    """Verify a downloaded archive with a non-bypassable Ed25519 signature check.
 
-    Pro binaries are served from cloakbrowser.dev (same origin as the free
-    tier), so a tampered same-origin SHA256SUMS could otherwise certify a
-    tampered binary (M1, #308). Fetch the Pro SHA256SUMS + detached
+    A tampered same-origin SHA256SUMS could otherwise certify a tampered
+    binary (M1, #308). Fetch the Pro SHA256SUMS + detached
     SHA256SUMS.sig, verify the signature against the pinned keys FIRST, bind the
     manifest to the requested version, then verify the archive's SHA-256.
 
     An invalid signature, checksum, or version mismatch raises
     BinaryVerificationError (a tampering signal the router surfaces verbatim);
-    CLOAKBROWSER_SKIP_CHECKSUM cannot bypass it. A failed manifest FETCH is
-    transient — nothing was validated — and raises a plain RuntimeError. A
-    valid-license user is never silently downgraded to the free binary.
+    Nothing can bypass it. A failed manifest FETCH is
+    transient — nothing was validated — and raises a plain RuntimeError.
     """
     base = f"{DOWNLOAD_BASE_URL}/releases/pro/chromium-v{version}"
     try:
@@ -611,15 +638,17 @@ def _verify_pro_download(file_path: Path, version: str) -> None:
 
     manifest_bytes = manifest_resp.content
     # _verify_signature / _verify_checksum raise plain RuntimeError; convert to
-    # BinaryVerificationError so the Pro router treats them as tampering signals
-    # (re-raise) rather than transient failures (fall back to free).
+    # BinaryVerificationError so the router treats them as tampering signals
+    # (re-raise) rather than transient failures (fall back to a cached build).
     try:
         _verify_signature(manifest_bytes, sig_resp.content)
     except RuntimeError as exc:
         raise BinaryVerificationError(str(exc)) from exc
     manifest_text = manifest_bytes.decode("utf-8")
 
-    # Version binding: same forced-downgrade defense as the official path.
+    # Version binding: the signature proves "we made this manifest", not "this
+    # is the version you asked for" — without this a genuinely-signed older
+    # release could be served in place of the requested one (forced downgrade).
     declared = _parse_manifest_version(manifest_text)
     if declared != version:
         raise BinaryVerificationError(
@@ -640,79 +669,6 @@ def _verify_pro_download(file_path: Path, version: str) -> None:
         raise BinaryVerificationError(str(exc)) from exc
 
 
-def _verify_download_checksum(file_path: Path, version: str | None = None) -> None:
-    """Verify the downloaded archive's integrity and authenticity.
-
-    Official path (cloakbrowser.dev / GitHub Releases): fetch SHA256SUMS plus
-    its detached Ed25519 signature SHA256SUMS.sig, verify the signature against
-    the pinned public keys FIRST, then verify the archive's SHA-256 against the
-    now-authenticated manifest. Mandatory and non-bypassable — a same-origin
-    manifest can no longer certify a tampered binary (#308).
-
-    Custom self-hosted path (CLOAKBROWSER_DOWNLOAD_URL set): the pinned keys do
-    not apply to a third-party server, so fall back to the plain same-origin
-    SHA256SUMS check, which CLOAKBROWSER_SKIP_CHECKSUM may bypass.
-    """
-    tarball_name = get_archive_name()
-
-    if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
-        # Self-hosted mirror: signature scheme does not apply. Preserve the
-        # legacy same-origin checksum behavior, skippable as before.
-        if os.environ.get("CLOAKBROWSER_SKIP_CHECKSUM", "").lower() == "true":
-            logger.warning(
-                "CLOAKBROWSER_SKIP_CHECKSUM set — skipping verification for custom download URL"
-            )
-            return
-        checksums = _fetch_checksums(version)
-        if checksums is None:
-            logger.warning(
-                "SHA256SUMS not available from custom URL — skipping checksum verification"
-            )
-            return
-        expected = checksums.get(tarball_name)
-        if expected is None:
-            logger.warning(
-                "SHA256SUMS found but no entry for %s — skipping verification",
-                tarball_name,
-            )
-            return
-        _verify_checksum(file_path, expected)
-        return
-
-    # Official path: signature is the trust root and is non-bypassable.
-    manifest = _fetch_signed_manifest(version)
-    if manifest is None:
-        raise RuntimeError(
-            "Could not fetch a signed SHA256SUMS (SHA256SUMS + SHA256SUMS.sig) "
-            "for this release — refusing to use an unverified binary. "
-            "Retry, or report at https://github.com/CloakHQ/cloakbrowser/issues"
-        )
-    manifest_bytes, sig_bytes = manifest
-    _verify_signature(manifest_bytes, sig_bytes)
-    manifest_text = manifest_bytes.decode("utf-8")
-
-    # Version binding: the signed manifest must declare the version we asked for.
-    # The signature proves "we made this manifest", not "this is the version you
-    # requested" — without this check a mirror could serve a genuinely-signed
-    # older release in place of the requested one (forced downgrade).
-    requested = version or get_chromium_version()
-    declared = _parse_manifest_version(manifest_text)
-    if declared != requested:
-        raise RuntimeError(
-            f"Version mismatch in signed SHA256SUMS: requested {requested}, "
-            f"manifest declares {declared or 'none'}. Refusing (possible downgrade)."
-        )
-
-    checksums = _parse_checksums(manifest_text)
-    expected = checksums.get(tarball_name)
-    if expected is None:
-        raise RuntimeError(
-            f"Signature-verified SHA256SUMS has no entry for {tarball_name} — "
-            f"cannot confirm binary integrity."
-        )
-    _verify_checksum(file_path, expected)
-
-
 def _parse_manifest_version(text: str) -> str | None:
     """Read the 'version=<v>' line from a signed manifest. None if absent.
 
@@ -723,35 +679,6 @@ def _parse_manifest_version(text: str) -> str | None:
         line = line.strip()
         if line.startswith("version="):
             return line[len("version=") :].strip()
-    return None
-
-
-def _fetch_signed_manifest(version: str | None = None) -> tuple[bytes, bytes] | None:
-    """Fetch (SHA256SUMS, SHA256SUMS.sig) raw bytes for a version, or None.
-
-    Both files are fetched from the SAME origin so the signature always matches
-    the exact manifest bytes it certifies. The primary origin is tried first,
-    then the GitHub Releases mirror. follow_redirects mirrors _fetch_checksums:
-    cloakbrowser.dev 301-redirects /chromium-v* to GitHub Releases.
-    """
-    v = version or get_chromium_version()
-    bases = [
-        f"{DOWNLOAD_BASE_URL}/chromium-v{v}",
-        f"{GITHUB_DOWNLOAD_BASE_URL}/chromium-v{v}",
-    ]
-    for base in bases:
-        try:
-            manifest_resp = httpx.get(
-                f"{base}/SHA256SUMS", follow_redirects=True, timeout=10.0
-            )
-            manifest_resp.raise_for_status()
-            sig_resp = httpx.get(
-                f"{base}/SHA256SUMS.sig", follow_redirects=True, timeout=10.0
-            )
-            sig_resp.raise_for_status()
-            return manifest_resp.content, sig_resp.content
-        except Exception:
-            continue
     return None
 
 
@@ -795,26 +722,6 @@ def _verify_signature(manifest_bytes: bytes, sig_b64: bytes) -> None:
         "manifest. The binary's authenticity could not be confirmed. "
         "Report at https://github.com/CloakHQ/cloakbrowser/issues"
     )
-
-
-def _fetch_checksums(version: str | None = None) -> dict[str, str] | None:
-    """Fetch SHA256SUMS file for a version. Returns {filename: hash} or None."""
-    v = version or get_chromium_version()
-    has_custom_url = os.environ.get("CLOAKBROWSER_DOWNLOAD_URL")
-
-    # Build URL list — respect custom URL contract (no GitHub fallback)
-    urls = [f"{DOWNLOAD_BASE_URL}/chromium-v{v}/SHA256SUMS"]
-    if not has_custom_url:
-        urls.append(f"{GITHUB_DOWNLOAD_BASE_URL}/chromium-v{v}/SHA256SUMS")
-
-    for url in urls:
-        try:
-            resp = httpx.get(url, follow_redirects=True, timeout=10.0)
-            resp.raise_for_status()
-            return _parse_checksums(resp.text)
-        except Exception:
-            continue
-    return None
 
 
 def _parse_checksums(text: str) -> dict[str, str]:
@@ -903,12 +810,10 @@ def _download_file(url: str, dest: Path, headers: dict[str, str] | None = None) 
     logger.info("Download complete: %d MB", dest.stat().st_size // (1024 * 1024))
 
 
-def _extract_archive(
-    archive_path: Path, dest_dir: Path, binary_path: Path | None = None
-) -> None:
+def _extract_archive(archive_path: Path, dest_dir: Path, binary_path: Path) -> None:
     """Extract tar.gz or zip archive to destination directory."""
     logger.info("Extracting to %s", dest_dir)
-    bp = binary_path or get_binary_path()
+    bp = binary_path
 
     # Extract into a private sibling dir, then rename it into place. Concurrent
     # first runs (in this process or others) each get their own staging dir, so
@@ -1073,44 +978,24 @@ def binary_info(
     browser_version: str | None = None,
     release_channel: str | None = None,
 ) -> dict:
-    """Return info about the current binary installation.
-
-    tier reflects what is actually installed on disk, not merely whether a
-    license is cached — a cached license with no Pro binary downloaded yet is
-    still effectively running the free binary, and the active key may differ
-    from the cached one.
+    """Return info about the cached binary installation.
 
     browser_version (or CLOAKBROWSER_VERSION) pins the reported version so the
-    info matches what a pinned launch actually runs, instead of latest.
+    info matches what a pinned launch actually runs, instead of latest. version
+    is None until a build has been downloaded.
     """
-    requested = normalize_requested_version(browser_version)
-    # Prefer Pro only if a Pro binary actually exists on disk. get_effective_version
-    # returns None for Pro when nothing is cached (it never falls back to free).
-    pro_version = requested or get_effective_version(
-        pro=True, release_channel=release_channel
+    version = normalize_requested_version(browser_version) or get_effective_version(
+        release_channel
     )
-    pro = _pro_binary_ready(pro_version)  # already false for a None version
-
-    if pro:
-        effective = pro_version
-        binary_path = get_binary_path(pro_version, pro=True)
-    else:
-        effective = requested or get_effective_version()
-        binary_path = get_binary_path(effective)
-    if pro:
-        download_url = f"{DOWNLOAD_BASE_URL}/api/download/latest"
-        if normalize_release_channel(release_channel) == "preview":
-            download_url += "?channel=preview"
-    else:
-        download_url = get_download_url(effective)
+    download_url = f"{DOWNLOAD_BASE_URL}/api/download/latest"
+    if normalize_release_channel(release_channel) == "preview":
+        download_url += "?channel=preview"
     return {
-        "version": effective,
-        "tier": "pro" if pro else "free",
-        "bundled_version": CHROMIUM_VERSION,
+        "version": version,
         "platform": get_platform_tag(),
-        "binary_path": str(binary_path),
-        "installed": binary_path.exists(),
-        "cache_dir": str(get_binary_dir(effective, pro=pro)),
+        "binary_path": str(get_binary_path(version)) if version else None,
+        "installed": _pro_binary_ready(version),
+        "cache_dir": str(get_binary_dir(version)) if version else None,
         "download_url": download_url,
     }
 
@@ -1118,30 +1003,6 @@ def binary_info(
 # ---------------------------------------------------------------------------
 # Auto-update
 # ---------------------------------------------------------------------------
-
-
-def check_for_update() -> str | None:
-    """Manually check for a newer Chromium version. Returns new version or None.
-
-    This is the public API for triggering an update check. Unlike the
-    background check in ensure_binary(), this blocks until complete.
-    """
-    latest = _get_latest_chromium_version()
-    if latest is None:
-        return None
-    if not _version_newer(latest, get_chromium_version()):
-        return None
-
-    binary_dir = get_binary_dir(latest)
-    if binary_dir.exists():
-        # Already downloaded
-        _write_version_marker(latest)
-        return latest
-
-    logger.info("Downloading Chromium %s...", latest)
-    _download_and_extract(version=latest)
-    _write_version_marker(latest)
-    return latest
 
 
 def check_for_pro_update(
@@ -1159,7 +1020,7 @@ def check_for_pro_update(
     if not latest:
         return None
 
-    effective = get_effective_version(pro=True, release_channel=release_channel)
+    effective = get_effective_version(release_channel)
     if effective and not _version_newer(latest, effective) and _pro_binary_ready(
         effective
     ):
@@ -1169,7 +1030,7 @@ def check_for_pro_update(
     if not _pro_binary_ready(latest):
         logger.info("Downloading Pro Chromium %s...", latest)
         _download_pro_binary(latest, license_key)
-        binary_path = get_binary_path(latest, pro=True)
+        binary_path = get_binary_path(latest)
         if not binary_path.exists():
             raise RuntimeError(
                 f"Pro download completed but binary not found at: {binary_path}"
@@ -1177,59 +1038,6 @@ def check_for_pro_update(
 
     _write_pro_version_marker(latest, release_channel)
     return latest
-
-
-def _should_check_for_update() -> bool:
-    """Check if auto-update is enabled and rate limit hasn't been hit."""
-    if os.environ.get("CLOAKBROWSER_AUTO_UPDATE", "").lower() == "false":
-        return False
-    if get_local_binary_override():
-        return False
-    if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
-        return False
-
-    check_file = get_cache_dir() / ".last_update_check"
-    if check_file.exists():
-        try:
-            last_check = float(check_file.read_text().strip())
-            if time.time() - last_check < UPDATE_CHECK_INTERVAL:
-                return False
-        except (ValueError, OSError):
-            pass
-    return True
-
-
-def _get_latest_chromium_version() -> str | None:
-    """Hit GitHub Releases API, return latest chromium-v* version for this platform.
-
-    Checks that the release has a binary asset for the current platform,
-    so Linux-only releases won't be offered to macOS users.
-    """
-    try:
-        resp = httpx.get(GITHUB_API_URL, params={"per_page": 10}, timeout=10.0)
-        resp.raise_for_status()
-        platform_tarball = get_archive_name()
-        for release in resp.json():
-            tag = release.get("tag_name", "")
-            if tag.startswith("chromium-v") and not release.get("draft"):
-                asset_names = {a["name"] for a in release.get("assets", [])}
-                if platform_tarball in asset_names:
-                    return tag.removeprefix("chromium-v")
-        return None
-    except Exception:
-        logger.debug("Auto-update check failed", exc_info=True)
-        return None
-
-
-def _write_version_marker(version: str) -> None:
-    """Write the latest version marker for this platform to cache dir."""
-    cache_dir = get_cache_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    marker = cache_dir / f"latest_version_{get_platform_tag()}"
-    # Write to temp file then rename for atomicity
-    tmp = marker.with_suffix(".tmp")
-    tmp.write_text(version)
-    tmp.rename(marker)
 
 
 def _write_pro_version_marker(
@@ -1261,8 +1069,6 @@ def _check_wrapper_update() -> None:
     _wrapper_update_checked = True
     if os.environ.get("CLOAKBROWSER_AUTO_UPDATE", "").lower() == "false":
         return
-    if os.environ.get("CLOAKBROWSER_DOWNLOAD_URL"):
-        return
     try:
         resp = httpx.get(
             "https://pypi.org/pypi/cloakbrowser/json",
@@ -1281,50 +1087,9 @@ def _check_wrapper_update() -> None:
         logger.debug("Wrapper update check failed", exc_info=True)
 
 
-def _check_and_download_update() -> None:
-    """Background task: check for newer binary, download if available."""
-    try:
-        # Record check timestamp first (rate limiting)
-        check_file = get_cache_dir() / ".last_update_check"
-        check_file.parent.mkdir(parents=True, exist_ok=True)
-        check_file.write_text(str(time.time()))
-
-        platform_version = get_chromium_version()
-        latest = _get_latest_chromium_version()
-        if latest is None:
-            return
-        if not _version_newer(latest, platform_version):
-            return
-
-        # Already downloaded?
-        if get_binary_dir(latest).exists():
-            _write_version_marker(latest)
-            return
-
-        logger.info(
-            "Newer Chromium available: %s (current: %s). Downloading in background...",
-            latest,
-            platform_version,
-        )
-        _download_and_extract(version=latest)
-        _write_version_marker(latest)
-        logger.info(
-            "Background update complete: Chromium %s ready. Will use on next launch.",
-            latest,
-        )
-    except Exception:
-        logger.debug("Background update failed", exc_info=True)
-
-
 def _maybe_trigger_update_check() -> None:
-    """Fire-and-forget update check in a daemon thread."""
-    # Wrapper update: once per process, not rate-limited
-    if not _wrapper_update_checked:
-        t = threading.Thread(target=_check_wrapper_update, daemon=True)
-        t.start()
+    """Fire-and-forget wrapper update check (once per process) in a daemon thread.
 
-    # Binary update: rate-limited to once per hour
-    if not _should_check_for_update():
-        return
-    t = threading.Thread(target=_check_and_download_update, daemon=True)
-    t.start()
+    The binary itself updates on the launch path (_ensure_pro_binary)."""
+    if not _wrapper_update_checked:
+        threading.Thread(target=_check_wrapper_update, daemon=True).start()

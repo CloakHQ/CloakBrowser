@@ -15,16 +15,20 @@ public sealed partial class HumanizedBrowser : IBrowser
 {
     private readonly IBrowser _inner;
     private readonly HumanConfig _cfg;
-    private readonly bool _headless;
-    private readonly bool _headlessNoViewport;
+    private readonly bool _defaultNoViewport;
 
-    internal HumanizedBrowser(IBrowser inner, HumanConfig cfg, bool headless = true, bool headlessNoViewport = false)
+    internal HumanizedBrowser(IBrowser inner, HumanConfig cfg, bool defaultNoViewport = false)
     {
         _inner = inner;
         _cfg = cfg;
-        _headless = headless;
-        _headlessNoViewport = headlessNoViewport;
+        _defaultNoViewport = defaultNoViewport;
     }
+
+    private BrowserNewPageOptions? Viewport(BrowserNewPageOptions? o) =>
+        _defaultNoViewport ? ViewportDefaults.ApplyNoViewport(o) : o;
+
+    private BrowserNewContextOptions? Viewport(BrowserNewContextOptions? o) =>
+        _defaultNoViewport ? ViewportDefaults.ApplyNoViewport(o) : o;
 
     /// <summary>The original, un-humanized Playwright browser (escape hatch).</summary>
     public IBrowser Original => _inner;
@@ -34,12 +38,12 @@ public sealed partial class HumanizedBrowser : IBrowser
 
     public async Task<IPage> NewPageAsync(BrowserNewPageOptions? options = null) =>
         await Humanize.WrapPageAsync(
-            await _inner.NewPageAsync(ViewportDefaults.ApplyHeadedNoViewport(options, _headless, _headlessNoViewport)).ConfigureAwait(false),
+            await _inner.NewPageAsync(Viewport(options)).ConfigureAwait(false),
             _cfg).ConfigureAwait(false);
 
     public async Task<IBrowserContext> NewContextAsync(BrowserNewContextOptions? options = null) =>
         Humanize.Context(
-            await _inner.NewContextAsync(ViewportDefaults.ApplyHeadedNoViewport(options, _headless, _headlessNoViewport)).ConfigureAwait(false),
+            await _inner.NewContextAsync(Viewport(options)).ConfigureAwait(false),
             _cfg);
 
     public IReadOnlyList<IBrowserContext> Contexts =>

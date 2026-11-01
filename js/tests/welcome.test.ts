@@ -26,7 +26,7 @@ describe("welcome banner", () => {
     fs.rmSync(cacheDir, { recursive: true, force: true });
   });
 
-  for (const tier of ["keyless", "free", "pro"]) {
+  for (const tier of ["free", "pro"] as const) {
     it(`${tier} banner is ASCII-only`, () => {
       showWelcome(tier);
       const out = errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n");

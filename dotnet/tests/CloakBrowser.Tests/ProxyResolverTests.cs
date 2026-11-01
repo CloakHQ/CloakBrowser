@@ -66,24 +66,12 @@ public class ProxyResolverTests
     }
 
     [Fact]
-    public void Http_With_Creds_Uses_InlineAuth_On_Binary_With_Patch()
+    public void Http_With_Creds_Uses_InlineAuth()
     {
-        // Pin a version at/above every platform floor → inline on any host.
-        var r = ProxyResolver.Resolve("http://user:pass@host:8080", "148.0.7778.215.3");
+        // Every served build ships inline proxy auth: never Playwright's CDP proxy.
+        var r = ProxyResolver.Resolve("http://user:pass@host:8080");
         Assert.Null(r.PlaywrightProxy);
         Assert.Equal("--proxy-server=http://user:pass@host:8080", Assert.Single(r.ExtraArgs));
-    }
-
-    [Fact]
-    public void Http_With_Creds_Falls_Back_On_Binary_Without_Patch()
-    {
-        // Pin a version below every platform floor → Playwright proxy on any host.
-        var r = ProxyResolver.Resolve("http://user:pass@host:8080", "146.0.7680.177.3");
-        Assert.Empty(r.ExtraArgs);
-        Assert.NotNull(r.PlaywrightProxy);
-        Assert.Equal("http://host:8080", r.PlaywrightProxy!.Server);
-        Assert.Equal("user", r.PlaywrightProxy.Username);
-        Assert.Equal("pass", r.PlaywrightProxy.Password);
     }
 
     [Fact]

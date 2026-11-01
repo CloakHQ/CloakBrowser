@@ -7,9 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cloakbrowser.config import DEFAULT_VIEWPORT
-
-
 @pytest.fixture(autouse=True)
 def _no_seed_file():
     """These tests use fixed fake profile paths; keep the seed file off disk.
@@ -52,7 +49,7 @@ def test_persistent_context_args_built(_mock_geoip, _mock_bin):
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
 def test_persistent_context_default_viewport(_mock_geoip, _mock_bin):
-    """DEFAULT_VIEWPORT applied when no viewport given."""
+    """Headless default: no emulated viewport (the binary reports coherent dimensions)."""
     pw_cm, pw, context = _make_mock_pw_and_context()
 
     with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):
@@ -60,14 +57,15 @@ def test_persistent_context_default_viewport(_mock_geoip, _mock_bin):
         launch_persistent_context("/tmp/profile")
 
     call_kwargs = pw.chromium.launch_persistent_context.call_args[1]
-    assert call_kwargs["viewport"] == DEFAULT_VIEWPORT
+    assert call_kwargs.get("no_viewport") is True
+    assert "viewport" not in call_kwargs
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
 def test_persistent_context_headed_no_viewport(_mock_geoip, _mock_bin):
-    """Headed (headless=False): no_viewport=True instead of DEFAULT_VIEWPORT so the
-    page tracks the real window (avoids the outerWidth < innerWidth tell)."""
+    """Headed (headless=False): no_viewport=True so the page tracks the real
+    window (avoids the outerWidth < innerWidth tell)."""
     pw_cm, pw, context = _make_mock_pw_and_context()
 
     with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):
@@ -82,7 +80,7 @@ def test_persistent_context_headed_no_viewport(_mock_geoip, _mock_bin):
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
 def test_persistent_context_custom_viewport(_mock_geoip, _mock_bin):
-    """Custom viewport overrides DEFAULT_VIEWPORT."""
+    """Custom viewport is honored."""
     pw_cm, pw, context = _make_mock_pw_and_context()
     custom = {"width": 1280, "height": 720}
 
@@ -189,11 +187,10 @@ def test_persistent_context_close_stops_pw(_mock_geoip, _mock_bin):
     pw.stop.assert_called_once()
 
 
-@patch("cloakbrowser.config.get_platform_tag", return_value="darwin-arm64")
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")
 @patch("cloakbrowser.browser.maybe_resolve_geoip", return_value=(None, None, None))
-def test_persistent_context_proxy_string(_mock_geoip, _mock_bin, _mock_platform):
-    """Proxy string parsed and passed (unsupported platform → Playwright dict)."""
+def test_persistent_context_proxy_string(_mock_geoip, _mock_bin):
+    """Credentialed proxy string goes inline via --proxy-server, not Playwright's dict."""
     pw_cm, pw, context = _make_mock_pw_and_context()
 
     with patch("playwright.sync_api.sync_playwright", return_value=pw_cm):
@@ -201,9 +198,8 @@ def test_persistent_context_proxy_string(_mock_geoip, _mock_bin, _mock_platform)
         launch_persistent_context("/tmp/profile", proxy="http://user:pass@proxy:8080")
 
     call_kwargs = pw.chromium.launch_persistent_context.call_args[1]
-    assert call_kwargs["proxy"]["server"] == "http://proxy:8080"
-    assert call_kwargs["proxy"]["username"] == "user"
-    assert call_kwargs["proxy"]["password"] == "pass"
+    assert "proxy" not in call_kwargs
+    assert "--proxy-server=http://user:pass@proxy:8080" in call_kwargs["args"]
 
 
 @patch("cloakbrowser.browser.ensure_binary", return_value="/fake/chrome")

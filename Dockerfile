@@ -32,10 +32,8 @@ RUN cd js && npm install && npm run build
 # Examples
 COPY examples/ examples/
 
-# Pre-download stealth Chromium binary during build (not at runtime)
-# Remove welcome marker so users see it on first container run
-RUN python -c "from cloakbrowser import ensure_binary; ensure_binary()" \
-    && rm -f ~/.cloakbrowser/.welcome_shown
+# No binary in the image: it downloads on first launch with your license key
+# (docker run -e CLOAKBROWSER_LICENSE_KEY=cb_...). Free key: cloakbrowser login.
 
 # CLI shortcuts
 COPY bin/cloaktest /usr/local/bin/cloaktest

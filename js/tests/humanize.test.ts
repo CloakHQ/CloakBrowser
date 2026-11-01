@@ -619,3 +619,11 @@ describe("matchChild", () => {
   });
 });
 
+
+describe("bounded browser calls (#619)", () => {
+  it("a timeout beyond setTimeout's range means no limit, not an instant stall", async () => {
+    const { ACTION, bounded } = await import("../src/human/world.js");
+    const call = new Promise((r) => setTimeout(() => r("ok"), 50));
+    expect(await ACTION.run({ timeout: 1e10, stalled: false }, () => bounded(call))).toBe("ok");
+  });
+});

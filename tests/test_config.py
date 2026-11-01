@@ -6,15 +6,11 @@ from unittest.mock import patch
 import pytest
 
 from cloakbrowser.config import (
-    binary_supports_headless_no_viewport,
-    binary_supports_maximized_window,
     get_archive_ext,
     get_archive_name,
     get_binary_path,
     get_cache_dir,
-    get_chromium_version,
     get_default_stealth_args,
-    get_fallback_download_url,
     get_platform_tag,
     normalize_requested_version,
 )
@@ -29,19 +25,19 @@ class TestGetBinaryPath:
     def test_linux(self):
         with patch("cloakbrowser.config.platform.system", return_value="Linux"):
             path = get_binary_path("145.0.0.0")
-            assert str(path).endswith("chromium-145.0.0.0/chrome")
+            assert str(path).endswith("chromium-145.0.0.0-pro/chrome")
 
     def test_darwin(self):
         with patch("cloakbrowser.config.platform.system", return_value="Darwin"):
             path = get_binary_path("145.0.0.0")
             assert str(path).endswith(
-                "chromium-145.0.0.0/Chromium.app/Contents/MacOS/Chromium"
+                "chromium-145.0.0.0-pro/Chromium.app/Contents/MacOS/Chromium"
             )
 
     def test_windows(self):
         with patch("cloakbrowser.config.platform.system", return_value="Windows"):
             path = get_binary_path("145.0.0.0")
-            assert str(path).endswith("chromium-145.0.0.0/chrome.exe")
+            assert str(path).endswith("chromium-145.0.0.0-pro/chrome.exe")
 
 
 # ---------------------------------------------------------------------------
@@ -67,23 +63,6 @@ class TestArchive:
     def test_archive_name_custom_tag(self):
         name = get_archive_name("linux-x64")
         assert "cloakbrowser-linux-x64" in name
-
-
-# ---------------------------------------------------------------------------
-# Download URLs
-# ---------------------------------------------------------------------------
-
-
-class TestFallbackUrl:
-    def test_github_releases_format(self):
-        url = get_fallback_download_url("145.0.0.0")
-        assert "github.com/CloakHQ/cloakbrowser/releases/download" in url
-        assert "chromium-v145.0.0.0" in url
-
-    def test_default_version(self):
-        url = get_fallback_download_url()
-        version = get_chromium_version()
-        assert f"chromium-v{version}" in url
 
 
 # ---------------------------------------------------------------------------
@@ -174,67 +153,3 @@ class TestStealthArgs:
             # GPU flags removed — binary auto-generates from seed + platform
             assert not any("fingerprint-gpu-vendor" in a for a in args)
             assert not any("fingerprint-gpu-renderer" in a for a in args)
-
-
-# ---------------------------------------------------------------------------
-# Headless no_viewport version gate
-# ---------------------------------------------------------------------------
-
-
-class TestHeadlessNoViewportGate:
-    """binary_supports_headless_no_viewport() — parity-critical: JS and .NET mirror this.
-
-    Threshold is HEADLESS_NO_VIEWPORT_MIN_VERSION (an unshipped version), so the
-    resolved-version path is a no-op today; the declared-version path is what these
-    tests pin.
-    """
-
-    def test_declared_below_threshold_off(self):
-        # Current live Pro version — one build below the threshold => feature OFF.
-        assert binary_supports_headless_no_viewport(browser_version="148.0.7778.215.3") is False
-
-    def test_declared_at_threshold_on(self):
-        assert binary_supports_headless_no_viewport(browser_version="148.0.7778.215.4") is True
-
-    def test_declared_above_threshold_on(self):
-        assert binary_supports_headless_no_viewport(browser_version="149.0.0.0") is True
-
-    def test_declared_wins_over_local_override(self):
-        # An explicit version asserts the binary even under CLOAKBROWSER_BINARY_PATH.
-        with patch.dict(os.environ, {"CLOAKBROWSER_BINARY_PATH": "/fake/chrome"}):
-            assert binary_supports_headless_no_viewport(browser_version="149.0.0.0") is True
-
-    def test_local_override_without_declared_off(self):
-        # Unknown-version override => stay on the safe fixed-viewport path.
-        with patch.dict(os.environ, {"CLOAKBROWSER_BINARY_PATH": "/fake/chrome"}):
-            assert binary_supports_headless_no_viewport() is False
-
-    def test_resolved_free_version_off(self):
-        # No key, no override, no declared version => free version, below threshold.
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("CLOAKBROWSER_BINARY_PATH", None)
-            os.environ.pop("CLOAKBROWSER_LICENSE_KEY", None)
-            os.environ.pop("CLOAKBROWSER_VERSION", None)
-            assert binary_supports_headless_no_viewport() is False
-
-
-class TestMaximizedWindowGate:
-    """binary_supports_maximized_window() — parity-critical: JS and .NET mirror this.
-
-    Shares HEADLESS_NO_VIEWPORT_MIN_VERSION today, so it tracks the same threshold
-    as the no_viewport gate: below it, auto --start-maximized would make headless
-    report outerWidth < innerWidth (a bot tell), so the flag must stay off.
-    """
-
-    def test_declared_below_threshold_off(self):
-        assert binary_supports_maximized_window(browser_version="148.0.7778.215.3") is False
-
-    def test_declared_at_threshold_on(self):
-        assert binary_supports_maximized_window(browser_version="148.0.7778.215.4") is True
-
-    def test_declared_above_threshold_on(self):
-        assert binary_supports_maximized_window(browser_version="149.0.0.0") is True
-
-    def test_local_override_without_declared_off(self):
-        with patch.dict(os.environ, {"CLOAKBROWSER_BINARY_PATH": "/fake/chrome"}):
-            assert binary_supports_maximized_window() is False

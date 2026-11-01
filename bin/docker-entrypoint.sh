@@ -7,8 +7,10 @@
 # returning 502 forever. See CloakHQ/CloakBrowser#283.
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
-# Start Xvfb for headed mode (Turnstile, CAPTCHAs), then run user command
-Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+# Start Xvfb for headed mode (Turnstile, CAPTCHAs), then run user command.
+# setsid: its own session, so Ctrl+C in `docker run -it` reaches only the user's
+# command, not the X server (which otherwise dies printing "XIO: fatal IO error").
+setsid Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
 
 # Wait for the X server to actually accept connections before starting the WM.
 # A blind `sleep 1` races under a CPU-starved start: openbox can come up before
@@ -22,7 +24,7 @@ done
 
 # Window manager so headed --start-maximized is honored (bare Xvfb has no WM;
 # without one the flag is a silent no-op and the window stays un-maximized).
-DISPLAY=:99 openbox &
+DISPLAY=:99 setsid openbox &
 
 # Opt-in: fetch the Widevine CDM so persistent contexts present as a real
 # Chrome (a DRM/EME probe is used by some bot detectors). Off by default — only
@@ -40,7 +42,7 @@ case "${_fetch_widevine,,}" in
       # ~/.cloakbrowser/WidevineCdm). The wrapper's auto-detection
       # (cloakbrowser/widevine.py, js/src/widevine.ts) falls back to this path
       # after the per-binary dir, so the CDM is discoverable by ANY process (CMD
-      # or `docker exec`) and ANY binary (free or Pro, any version) with no env
+      # or `docker exec`) and ANY binary version with no env
       # var. Best-effort: a failure must never block launch.
       python /usr/local/bin/fetch-widevine.py --quiet \
         || echo "[cloakbrowser] Widevine fetch failed; continuing without it" >&2
