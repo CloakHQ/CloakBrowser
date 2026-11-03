@@ -152,11 +152,11 @@ page.goto("https://example.com")
 
 ---
 
-## Latest: v0.7.0 — 87 source-level stealth patches (Chromium 155.0.8059.39.1)
+## Latest: v0.7.0 — 87 source-level stealth patches (Chromium 156.0.8078.47.1)
 
-- **CloakBrowser Pro Stable** — Chromium `155.0.8059.39.1` on Linux x64, Linux ARM64, Windows x64, and macOS (Apple Silicon and Intel). Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest Stable build for your platform automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
+- **CloakBrowser Pro Stable** — Chromium `156.0.8078.47.1` on Linux x64, Linux ARM64, Windows x64, and macOS (Apple Silicon and Intel). Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest Stable build for your platform automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
 - **.NET 8 / C# client** — CloakBrowser now ships as a NuGet package (`CloakBrowser`), mirroring the Python and JS wrappers.
-- **Chromium 155 upgrade** — rebased the full patch set onto Chromium 155 on every platform
+- **Chromium 156 upgrade** — rebased the full patch set onto Chromium 156 on every platform
 - **87 fingerprint patches** — rendering consistency improvements across Linux and Windows, corrected GPU/display/graphics parameters to match stock Chrome profiles
 - **Windows native GPU passthrough** — real hardware values pass through directly instead of being spoofed, matching real browser behavior
 - **HTTP proxy inline credentials** — new network-layer support for proxies with inline authentication
@@ -217,7 +217,7 @@ It's also the fastest way to try the browser without writing any code: download,
 
 ## Test Results
 
-All tests verified against live detection services. Results below are for the latest Pro/current build unless noted. Last tested: Oct 2026 (Chromium 156).
+All tests verified against live detection services. Results below are for the latest Pro/current build unless noted. Last tested: Nov 2026 (Chromium 156).
 
 | Detection Service | Stock Playwright | CloakBrowser | Notes |
 |---|---|---|---|
@@ -471,7 +471,7 @@ from cloakbrowser import binary_info, clear_cache, ensure_binary
 
 # Check binary installation status
 print(binary_info())
-# {'version': '155.0.8059.39.2', 'platform': 'linux-x64', 'installed': True, ...}
+# {'version': '156.0.8078.47.1', 'platform': 'linux-x64', 'installed': True, ...}
 # ('version' is None until a build has been downloaded)
 
 # Force re-download
@@ -649,7 +649,7 @@ For an arbitrary expression, `page._stealth_world.evaluate("…")` evaluates it 
 | `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
 | `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to keep the cached build and skip update checks |
 | `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | `5` | Max seconds for GeoIP resolution before continuing without it |
-| `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `154.0.8037.57.1`). Paid Pro key only |
+| `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `155.0.8059.39.1`). Paid Pro key only |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | `stable` | Set to `preview` to opt into the Preview binary channel |
 
 ## Fingerprint Management
@@ -710,6 +710,8 @@ Supported by the binary but **not set by default** — pass via `args` to custom
 | `--fingerprint=off` | Pass-through debug mode — turns spoofing off and presents the machine's **real native fingerprint** (keeps only the baseline any Chrome needs). The binary strips the injected seed *and* `--fingerprint-platform`, so there's no mixed OS profile. Most useful on a genuine Windows machine to check whether an issue is our spoofing or the environment. Accepts `off`/`false`/`0`/`disable`/`disabled`. For a *pure* pass-through don't combine it with `geoip=True` / explicit timezone / locale — those stay applied. |
 | `--fingerprint-allow-3p-cookies` | Re-enable third-party cookies for embedded flows that need them (reCAPTCHA v3, SSO, some payment challenges). Off by default; turn on only where a login/payment/embedded challenge loads but never finishes. |
 | `--fingerprint-sapi-voices=false` | Opt out of the Windows speech-voice tables when spoofing Windows. On by default (the voice set matches a real Chrome install); turn off only if a target reacts badly to the Windows voice list. |
+| `--fingerprint-max-touch-points=<N>` | Report a touch screen with `N` touch points, like a Windows touch laptop. Default `0` (no touch). 156+ |
+| `--fingerprint-search-engine=google\|bing\|duckduckgo\|none` | Default search engine when you use the browser directly. Default `google`; you can also pass your own search URL. 155.0.8059.39.2+ on Linux, 156+ on all platforms |
 | `--license-route=auto\|direct\|proxy` | How the Pro license and session calls leave the browser. `auto` (default): direct to cloakbrowser.dev first, and one retry through your `--proxy-server` if direct can't reach it. `direct`: never through the proxy. `proxy`: only through the proxy (needs `--proxy-server`). |
 | `--license-through-proxy` | Older spelling of `--license-route=proxy`: route the Pro license/session calls through your `--proxy-server` instead of direct to cloakbrowser.dev. Still works; prefer `--license-route=proxy`. |
 | `--fingerprint-transparent-proxy` | A stronger way of connecting through your `--proxy-server`, for sites and providers that block every proxy you try. Off by default; enable it alongside `--proxy-server`. |
@@ -850,11 +852,11 @@ browser = await launch_async(args=["--remote-debugging-port=9242"])
 
 | Platform | Binary | Status |
 |---|---|---|
-| Linux x86_64 | Chromium 155 (87 patches) | ✅ |
-| Linux arm64 (RPi, Graviton) | Chromium 155 (87 patches) | ✅ |
-| macOS arm64 (Apple Silicon) | Chromium 155 (87 patches) | ✅ |
-| macOS x86_64 (Intel) | Chromium 155 (87 patches) | ✅ |
-| Windows x86_64 | Chromium 155 (87 patches) | ✅ |
+| Linux x86_64 | Chromium 156 (87 patches) | ✅ |
+| Linux arm64 (RPi, Graviton) | Chromium 156 (87 patches) | ✅ |
+| macOS arm64 (Apple Silicon) | Chromium 156 (87 patches) | ✅ |
+| macOS x86_64 (Intel) | Chromium 156 (87 patches) | ✅ |
+| Windows x86_64 | Chromium 156 (87 patches) | ✅ |
 
 The wrapper auto-downloads the correct binary for your platform. Free and Pro keys get the same build; Pro raises the number of concurrent sessions.
 
@@ -1209,15 +1211,15 @@ Two ways to go back to a working version:
 **Pin the binary** (keep current wrapper, just use an older Chromium) — paid Pro key only. A free key cannot pin: it ignores the pin and always gets the latest build.
 
 ```python
-browser = launch(license_key="cb_xxxxxxxx", browser_version="154.0.8037.57.1")
+browser = launch(license_key="cb_xxxxxxxx", browser_version="155.0.8059.39.1")
 ```
 
 ```bash
-export CLOAKBROWSER_VERSION=154.0.8037.57.1   # env var for all launches
+export CLOAKBROWSER_VERSION=155.0.8059.39.1   # env var for all launches
 ```
 
 ```javascript
-const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '154.0.8037.57.1' });
+const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '155.0.8059.39.1' });
 ```
 
 The pin is never sticky — unpinned launches always use the latest available version.
@@ -1343,7 +1345,7 @@ The wrapper automatically verifies every binary download against a pinned Ed2551
 ```bash
 # Verify GPG signature (binary release tag)
 gpg --keyserver keyserver.ubuntu.com --recv-keys C60C0DDC9D0DE2DD
-git verify-tag chromium-v155.0.8059.39.2-pro
+git verify-tag chromium-v156.0.8078.47.1-pro
 
 # Verify GitHub binary attestation (Sigstore)
 gh attestation verify cloakbrowser-linux-x64.tar.gz --repo CloakHQ/cloakbrowser

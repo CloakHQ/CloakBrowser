@@ -366,7 +366,7 @@ var page = await ctx.NewPageAsync();
 | `NoViewport` | `bool` | `false` | disable viewport emulation (track the real window) |
 | `ColorScheme` | `string` | - | `light` / `dark` |
 | `LicenseKey` | `string` | `null` | License key, free or paid (or `CLOAKBROWSER_LICENSE_KEY` env / `~/.cloakbrowser/license.key`) |
-| `BrowserVersion` | `string` | `null` | Pin an exact Chromium version (e.g. `"154.0.8037.57.1"`). Also reads from `CLOAKBROWSER_VERSION` env var. Paid Pro key only. |
+| `BrowserVersion` | `string` | `null` | Pin an exact Chromium version (e.g. `"155.0.8059.39.1"`). Also reads from `CLOAKBROWSER_VERSION` env var. Paid Pro key only. |
 | `ReleaseChannel` | `string` | `null` (`stable`) | Set to `"preview"` to opt into the Pro Preview binary channel. Also reads from `CLOAKBROWSER_RELEASE_CHANNEL`. |
 
 ### CloakBrowser Pro
@@ -415,7 +415,7 @@ Pin an exact Chromium version without downgrading the wrapper — paid Pro key o
 await using var browser = await CloakLauncher.LaunchAsync(new LaunchOptions
 {
     LicenseKey = "cb_xxxxxxxx",
-    BrowserVersion = "154.0.8037.57.1",
+    BrowserVersion = "155.0.8059.39.1",
 });
 ```
 
@@ -639,7 +639,7 @@ Same set as the Python wrapper:
 | `CLOAKBROWSER_BINARY_PATH` | Use a local binary, skip download |
 | `CLOAKBROWSER_CACHE_DIR` | Override the cache directory |
 | `CLOAKBROWSER_AUTO_UPDATE` | Set to `false` to keep the cached build and skip update checks |
-| `CLOAKBROWSER_VERSION` | Pin to an exact Chromium version for rollback (e.g. `154.0.8037.57.1`). Paid Pro key only |
+| `CLOAKBROWSER_VERSION` | Pin to an exact Chromium version for rollback (e.g. `155.0.8059.39.1`). Paid Pro key only |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | Set to `preview` to opt into the Pro Preview binary channel (default: `stable`) |
 | `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | GeoIP HTTP timeout |
 
