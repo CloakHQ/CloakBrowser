@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#8f1d1d" />
+    <title>本机浏览器工作台 · {{ app_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='control.css') }}" />
+  </head>
+  <body class="portal-page">
+    <div class="portal-shell">
+      <aside class="portal-sidebar">
+        <a class="brand brand-light" href="{{ url_for('user_dashboard') }}"><span class="brand-seal">發</span><span><strong>{{ app_name }}</strong><small>本机授权测试</small></span></a>
+        <nav class="portal-nav" aria-label="本机浏览器导航"><a href="{{ url_for('user_dashboard') }}">返回账户</a><a href="#session">浏览器会话</a><a href="#safety">运行边界</a></nav>
+        <div class="portal-aside-note"><span>本</span><p>仅限本机<br /><small>外部网络已阻断</small></p></div>
+      </aside>
+      <main class="portal-main">
+        <header class="portal-topbar"><div><span class="breadcrumb">账户服务 / <strong>本机浏览器工作台</strong></span></div><div class="account-identity"><span class="avatar">{{ current_user['display_name'][:1] }}</span><span>{{ current_user['display_name'] }}<small>个人账户</small></span></div></header>
+        {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="notice {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}
+        <section class="portal-welcome browser-welcome"><div><span class="section-kicker">LOCAL BROWSER LAB</span><h1>本机授权测试</h1><p>使用 CloakBrowser 打开你本机正在运行的开发站点。</p></div><span class="welcome-seal">測</span></section>
+        <section id="safety" class="runtime-notice browser-boundary"><div class="runtime-icon">!</div><div><span class="section-kicker">NETWORK BOUNDARY</span><h2>仅允许 localhost 与 loopback IP</h2><p>浏览器页面请求、重定向、子资源和 WebSocket 均经过限制；公网、局域网其他主机和凭据嵌入 URL 都会被拒绝。该功能只用于本机自有或获准测试站点。</p></div></section>
+        <section id="session" class="portal-section browser-section">
+          <div class="section-title"><div><span class="section-kicker">BROWSER SESSION</span><h2>浏览器会话</h2><p>当前账号最多一个会话，15 分钟无操作后自动关闭。</p></div><span class="status {{ 'status-active' if browser_session else '' }}">{{ '运行中' if browser_session else '未启动' }}</span></div>
+          {% if browser_session %}
+            <div class="surface browser-session-panel">
+              <div class="browser-toolbar"><div><strong>{{ browser_session['title'] or '本机页面' }}</strong><small>{{ browser_session['url'] }}</small></div><form method="post" action="{{ url_for('stop_local_browser') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><button class="button button-small button-danger" type="submit">停止会话</button></form></div>
+              <form method="post" action="{{ url_for('navigate_local_browser') }}" class="browser-navigate-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><label for="browser-url">本机地址</label><div><input id="browser-url" name="url" type="url" value="{{ browser_session['url'] }}" required /><button class="button button-red" type="submit">打开地址</button><a class="button" href="{{ url_for('local_browser_screenshot') }}" target="_blank" rel="noopener">查看截图</a></div></form>
+              <img class="browser-screenshot" src="{{ url_for('local_browser_screenshot') }}" alt="当前本机浏览器页面截图" />
+              <p class="browser-meta">语言：{{ browser_session['locale'] }} · 时区：{{ browser_session['timezone'] }}</p>
+            </div>
+          {% else %}
+            <div class="surface browser-launch-panel"><div class="launch-intro"><span class="launch-glyph">瀏覽</span><div><h3>启动隔离浏览器</h3><p>会话默认无头运行，不开放 CDP 端口，也不会连接外部代理。</p></div></div>
+              <form method="post" action="{{ url_for('start_local_browser') }}" class="browser-launch-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><label for="target-url">本机测试地址</label><input id="target-url" name="url" type="url" placeholder="http://127.0.0.1:3000" required pattern="https?://(localhost|127(?:\\.[0-9]{1,3}){3}|\\[::1\\])(:[0-9]{1,5})?(/.*)?" /><div class="browser-options"><div><label for="browser-locale">语言</label><select id="browser-locale" name="locale"><option value="zh-CN" selected>简体中文（zh-CN）</option><option value="zh-TW">繁體中文（zh-TW）</option><option value="en-US">English（en-US）</option><option value="ja-JP">日本語（ja-JP）</option></select></div><div><label for="browser-timezone">时区</label><select id="browser-timezone" name="timezone"><option value="Asia/Shanghai" selected>中国标准时间</option><option value="Asia/Taipei">台北时间</option><option value="Asia/Tokyo">日本标准时间</option><option value="UTC">UTC</option><option value="America/Los_Angeles">洛杉矶时间</option></select></div></div><button class="button button-red" type="submit">启动本机测试会话</button></form>
+            </div>
+          {% endif %}
+        </section>
+        <footer class="page-footer"><span>{{ app_name }} · 本机授权测试</span><a href="{{ url_for('user_dashboard') }}">返回账户中心</a></footer>
+      </main>
+    </div>
+  </body>
+</html>

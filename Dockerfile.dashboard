@@ -1,0 +1,26 @@
+FROM python:3.12-slim-trixie
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    APP_ENV=production \
+    DATABASE_PATH=/data/control_plane.sqlite3 \
+    COOKIE_SECURE=1
+
+WORKDIR /app
+COPY requirements-dashboard.txt ./
+RUN pip install --no-cache-dir -r requirements-dashboard.txt \
+    && groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --no-create-home app \
+    && mkdir -p /data \
+    && chown app:app /data
+
+COPY bin/control-plane-entrypoint.py /usr/local/bin/control-plane-entrypoint
+RUN chmod 755 /usr/local/bin/control-plane-entrypoint
+COPY control_plane.py ./
+COPY templates/control/ templates/control/
+COPY static/control/ static/control/
+
+USER root
+ENTRYPOINT ["/usr/local/bin/control-plane-entrypoint"]
+EXPOSE 8080
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--access-logfile", "-", "--error-logfile", "-", "control_plane:app"]
