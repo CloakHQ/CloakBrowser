@@ -8,6 +8,10 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-11-10
+
+- **[wrapper]** Playwright is capped below 1.65: Playwright 1.65.0 changed internals the wrapper relies on, and `import cloakbrowser` failed with `No module named 'playwright._impl._js_handle'` on a fresh install. Python requires `playwright>=1.53,<1.65`; the JS `playwright-core` peer range is now `>=1.53.0 <1.65.0`. Python and JavaScript (#641)
+
 ## [0.7.1] — 2026-11-07
 
 - **[wrapper]** Launch with your own Playwright instance: `build_launch_options()` (JS `buildLaunchOptions()`, .NET `CloakLauncher.BuildLaunchOptionsAsync()`) returns the options `launch()` uses, so `pw.chromium.launch(**build_launch_options())` needs no copy of `launch()`. `humanize_browser()` / `humanize_browser_async()` apply the humanize layer to that browser. Python and .NET (JS had `buildLaunchOptions()` since 0.3.29) (#153, #255)
