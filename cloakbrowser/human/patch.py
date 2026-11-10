@@ -51,7 +51,8 @@ def _impl_page(kind: str, impl: Any) -> Any:
     if kind in ("Locator", "ElementHandle"):
         return impl._frame._page
     if kind in ("Mouse", "Keyboard"):
-        return impl._channel._object
+        page = getattr(impl, "_page", None)  # playwright >= 1.65
+        return page if page is not None else impl._channel._object
     return None  # pragma: no cover
 
 
@@ -89,8 +90,12 @@ def _check_playwright() -> None:
     except PackageNotFoundError:  # pragma: no cover - vendored / editable installs
         installed = "unknown"
     parts = tuple(int(x) for x in installed.split(".")[:2] if x.isdigit())
-    from playwright._impl._element_handle import ElementHandle
-    from playwright._impl._frame import Frame
+    try:  # playwright >= 1.65
+        from playwright._impl.element_handle import ElementHandle
+        from playwright._impl.frame import Frame
+    except ImportError:
+        from playwright._impl._element_handle import ElementHandle
+        from playwright._impl._frame import Frame
 
     missing = [n for n, ok in (("Frame._timeout", hasattr(Frame, "_timeout")),
                                ("ElementHandle._frame", _assigns_attr(ElementHandle.__init__, "_frame")))

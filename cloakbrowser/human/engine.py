@@ -26,7 +26,10 @@ import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 from playwright._impl._errors import Error, TimeoutError
-from playwright._impl._js_handle import JSHandle
+try:  # playwright >= 1.65
+    from playwright._impl.js_handle import JSHandle
+except ImportError:
+    from playwright._impl._js_handle import JSHandle
 
 from . import fields
 from .config import HumanConfig, merge_config, rand, rand_int_range, rand_log, rand_range
@@ -327,7 +330,7 @@ class Human:
             cfg = cfg or self.cfg
             self.cursor.x = round(rand(*cfg.initial_cursor_x))
             self.cursor.y = round(rand(*cfg.initial_cursor_y))
-            await self.mouse.move(self.cursor.x, self.cursor.y)
+            await self.mouse.move(self.cursor.x, self.cursor.y, None)
             self.cursor.initialized = True
 
     async def move_to(self, x: float, y: float, cfg: HumanConfig) -> None:
@@ -342,7 +345,7 @@ class Human:
             # comes out of the next wait instead of adding to it.
             clock += dt / 1000
             await sleep_ms((clock - time.monotonic()) * 1000)
-            await self.mouse.move(px, py)
+            await self.mouse.move(px, py, None)
         self.cursor.x, self.cursor.y = x, y
 
     async def idle(self, cfg: HumanConfig) -> None:
@@ -354,10 +357,10 @@ class Human:
         while time.monotonic() < end:
             x += (random.random() - 0.5) * 2 * cfg.idle_drift_px
             y += (random.random() - 0.5) * 2 * cfg.idle_drift_px
-            await self.mouse.move(round(x), round(y))
+            await self.mouse.move(round(x), round(y), None)
             await sleep_ms(min(rand_range(cfg.idle_pause_range), max(0.0, (end - time.monotonic()) * 1000)))
         # Drift is noise around the resting point, not a new position.
-        await self.mouse.move(self.cursor.x, self.cursor.y)
+        await self.mouse.move(self.cursor.x, self.cursor.y, None)
 
     # -- resolution ---------------------------------------------------------
 
@@ -804,11 +807,11 @@ class Human:
             for n in range(1, max(1, int(click_count)) + 1):
                 hold = delay if delay is not None else rand_range(cfg.click_hold_input if is_input else cfg.click_hold_button)
                 try:
-                    await self.mouse.down(button=button, clickCount=n)
+                    await self.mouse.down(button, n)
                     await sleep_ms(hold)
                 finally:
                     # Never leave the button down, also when the page stopped answering.
-                    await self.mouse.up(button=button, clickCount=n)
+                    await self.mouse.up(button, n)
                 if n < click_count:
                     await sleep_ms(delay if delay is not None else rand(60, 140))
         finally:
@@ -1230,14 +1233,14 @@ class Human:
             await self.hover(dest, {**sub, "position": opts.get("target_position"), "_nested": True}, api=api)
             return
         await sleep_ms(rand(100, 200))
-        await self.mouse.down()
+        await self.mouse.down(None, None)
         try:
             await sleep_ms(rand(80, 150))
             await self.hover(dest, {**sub, "position": opts.get("target_position"), "force": True, "_nested": True},
                              api=api)
             await sleep_ms(rand(80, 150))
         finally:
-            await self.mouse.up()
+            await self.mouse.up(None, None)
 
     async def focus(self, target: Target, opts: dict, api: str = "focus", move: bool = False) -> None:
         deadline = self.deadline(target, opts)
@@ -1331,7 +1334,7 @@ class Human:
     async def mouse_move(self, x: float, y: float, steps: Optional[int] = None) -> None:
         if steps is not None:
             await self.ensure_cursor()
-            await self.mouse.move(x, y, steps=steps)
+            await self.mouse.move(x, y, steps)
             self.cursor.x, self.cursor.y = x, y
             return
         await self.move_to(x, y, self.cfg)

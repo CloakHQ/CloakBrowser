@@ -59,7 +59,7 @@
   },
   "peerDependencies": {
     "mmdb-lib": ">=2.0.0",
-    "playwright-core": ">=1.53.0 <1.65.0",
+    "playwright-core": ">=1.53.0",
     "puppeteer-core": ">=21.0.0",
     "socks-proxy-agent": ">=10.0.0"
   },
@@ -83,7 +83,7 @@
   "devDependencies": {
     "@types/node": "^26.0.1",
     "mmdb-lib": "^3.0.2",
-    "playwright-core": "1.64",
+    "playwright-core": "1.65",
     "puppeteer-core": "^25.0.4",
     "socks-proxy-agent": "^10.0.0",
     "typescript": "^7.0.2",

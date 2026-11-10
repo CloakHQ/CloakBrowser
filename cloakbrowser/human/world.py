@@ -80,6 +80,10 @@ async def bounded(aw: Awaitable[Any]) -> Any:
     raise PageStalled()
 
 
+def _send_needs_timeout(fn: Any) -> bool:
+    return "timeout" in inspect.signature(fn).parameters
+
+
 class BoundedCalls:
     """``obj`` with every coroutine method going through ``bounded``."""
 
@@ -92,6 +96,8 @@ class BoundedCalls:
             return attr
 
         async def call(*args: Any, **kwargs: Any) -> Any:
+            if name == "send" and _send_needs_timeout(attr):  # CDPSession.send, playwright >= 1.65
+                args = (args + (None,))[:2] + (None,)
             return await bounded(attr(*args, **kwargs))
         return call
 

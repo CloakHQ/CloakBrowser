@@ -937,7 +937,10 @@ def test_error_classes_stay_importable():
 def test_check_playwright_accepts_a_compiled_playwright(monkeypatch):
     """A Nuitka build swaps function bytecode for a placeholder, so the
     internals probe must not report a supported Playwright as broken."""
-    from playwright._impl._element_handle import ElementHandle
+    try:
+        from playwright._impl.element_handle import ElementHandle
+    except ImportError:
+        from playwright._impl._element_handle import ElementHandle
     from cloakbrowser.human import patch
 
     class _CompiledFunction:  # stands in for Nuitka's compiled_function
@@ -948,7 +951,10 @@ def test_check_playwright_accepts_a_compiled_playwright(monkeypatch):
 
 
 def test_check_playwright_still_flags_missing_internals(monkeypatch):
-    from playwright._impl._element_handle import ElementHandle
+    try:
+        from playwright._impl.element_handle import ElementHandle
+    except ImportError:
+        from playwright._impl._element_handle import ElementHandle
     from cloakbrowser.human import patch
 
     def __init__(self, parent, type, guid, initializer):
