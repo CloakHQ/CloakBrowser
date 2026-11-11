@@ -1313,7 +1313,7 @@ Other tips for maximizing reCAPTCHA scores:
 A: CloakBrowser is a browser built on open-source Chromium. We do not condone illegal use. Automating systems without authorization, credential stuffing, and account creation abuse are expressly prohibited. See [BINARY-LICENSE.md](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md) for full terms.
 
 **Q: Is CloakBrowser free?**
-A: Yes. The wrappers (Python, JS, .NET) are MIT and free forever. For the binary: the **latest build is free** with your email at one concurrent session ([cloakbrowser.dev/free](https://cloakbrowser.dev/free)); **Pro** adds more concurrent sessions ([cloakbrowser.dev](https://cloakbrowser.dev)).
+A: Yes. The wrappers (Python, JS, .NET) are MIT and free forever. For the binary: the **latest build is free** with your email at one concurrent session ([cloakbrowser.dev/free](https://cloakbrowser.dev/free)); **Pro** adds more concurrent sessions ([cloakbrowser.dev](https://cloakbrowser.dev)). The binary has its own license: [BINARY-LICENSE.md](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md).
 
 **Q: Do I need a license key for the free version?**
 A: Yes, a free one. The first launch in a terminal asks for it and gets it for you by email (or run `cloakbrowser login`, or visit [cloakbrowser.dev/free](https://cloakbrowser.dev/free)). It gives you one concurrent session; a paid key raises the limit.
