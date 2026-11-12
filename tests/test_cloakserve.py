@@ -672,6 +672,45 @@ class TestConnectionTracking:
 
         asyncio.run(run())
 
+    def test_default_ws_with_default_seed_blocks_idle_cleanup(self):
+        # With --fingerprint=<seed>, the default path's Chrome is stored under the
+        # seed, so its connections must count there or idle cleanup kills live clients.
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async def fake_proxy(client_ws, target_url, label):
+            async for _ in client_ws:
+                pass
+
+        async def run():
+            pool = ChromePool(
+                binary="/fake/chrome", global_args=[], headless=True,
+                data_dir="/tmp/test-cloakserve", default_seed="123", idle_timeout=0.1,
+            )
+            self._track_live_process(pool, "123")
+            pool._processes["123"].cdp_port = 1
+            cleaned = []
+
+            async def fake_cleanup(seed):
+                cleaned.append(seed)
+                pool._processes.pop(seed, None)
+
+            pool._cleanup_process = fake_cleanup
+            pool._schedule_idle_cleanup("123")  # armed at launch with 0 connections
+
+            app = web.Application()
+            app["pool"] = pool
+            app.router.add_get("/devtools/{path:.+}", _mod.handle_ws_default)
+            async with TestClient(TestServer(app)) as client:
+                ws = await client.ws_connect("/devtools/browser/x")
+                await asyncio.sleep(0.3)
+                assert pool._connections.get("123") == 1
+                assert cleaned == []
+                await ws.close()
+
+        with patch.object(_mod, "proxy_cdp_websocket", fake_proxy):
+            asyncio.run(run())
+
 
 # ---------------------------------------------------------------------------
 # Seed validation (CVE fix — path traversal via fingerprint param)
@@ -794,6 +833,8 @@ class TestClientHeartbeat:
         events = []
 
         class Pool:
+            _default_seed = None
+
             async def get_or_launch(self, seed=None):
                 return SimpleNamespace(cdp_port=1)
 

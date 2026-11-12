@@ -752,16 +752,19 @@ async def handle_ws_default(request: web.Request) -> web.StreamResponse:
     path = request.match_info.get("path", "")
 
     cp = await pool.get_or_launch(seed=None)
+    # Same key get_or_launch stored the process under; with --fingerprint=<seed>
+    # that is the seed, and counting elsewhere lets idle cleanup kill live clients.
+    key = pool._default_seed or "__default__"
 
     ws = web.WebSocketResponse(heartbeat=WS_HEARTBEAT_SECONDS)
     await ws.prepare(request)
 
-    pool.connect("__default__")
+    pool.connect(key)
     try:
         target_url = f"ws://127.0.0.1:{cp.cdp_port}/devtools/{path}"
         await proxy_cdp_websocket(ws, target_url, f"CDP default [{path}]")
     finally:
-        pool.disconnect("__default__")
+        pool.disconnect(key)
     return ws
 
 
