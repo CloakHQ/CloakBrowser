@@ -1,0 +1,12 @@
+:8080 {
+	@health path /healthz
+	handle @health {
+		reverse_proxy 127.0.0.1:9222/json/version
+	}
+	handle {
+		basic_auth {
+			{$CLOAKBROWSER_AUTH_USER} {$CLOAKBROWSER_AUTH_HASH}
+		}
+		reverse_proxy 127.0.0.1:9222
+	}
+}
