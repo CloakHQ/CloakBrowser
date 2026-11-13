@@ -102,6 +102,20 @@ def gap_factor(prev: str, ch: str) -> float:
         return 1.3
     if ch == " ":
         return 0.9
+    if type(prev) is str and type(ch) is str:
+        prev_lower, ch_lower = prev.lower(), ch.lower()
+        if prev_lower == ch_lower:
+            return 1.05
+        prev_left = prev_lower in _LEFT_HAND
+        ch_left = ch_lower in _LEFT_HAND
+        # Left-hand keys are already known to be non-whitespace ASCII.
+        if not prev_left and (not prev_lower.isascii() or prev_lower.isspace()):
+            return 1.0
+        if not ch_left and (
+            not ch_lower or not ch_lower.isascii() or ch_lower.isspace()
+        ):
+            return 1.0
+        return 0.85 if prev_left != ch_left else 1.1
     if prev.lower() == ch.lower():
         return 1.05
     hp, hc = _hand(prev), _hand(ch)
@@ -114,15 +128,17 @@ def key_gap(cfg: HumanConfig, prev: str, ch: str) -> float:
     """Milliseconds from the press of ``prev`` to the press of ``ch``
     (log-normal around ``typing_delay``, plus occasional thinking pauses
     before words)."""
-    median = max(1.0, cfg.typing_delay * gap_factor(prev, ch))
-    spread = max(0.0, cfg.typing_delay_spread)
+    median = cfg.typing_delay * gap_factor(prev, ch)
+    median = median if median > 1.0 else 1.0
+    spread = cfg.typing_delay_spread
+    spread = spread if spread > 0.0 else 0.0
     sigma = math.log1p(spread / cfg.typing_delay) if cfg.typing_delay > 0 else 0.0
     gap = rand_lognormal(median, sigma)
     word_start = prev == " " or prev == ""
     chance = cfg.typing_pause_chance * (1.0 if word_start else 0.1)
     if chance > 0 and random.random() < chance:
         gap += rand_range(cfg.typing_pause_range)
-    return max(15.0, gap)
+    return gap if gap > 15.0 else 15.0
 
 
 def key_hold(cfg: HumanConfig) -> float:
