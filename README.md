@@ -1315,6 +1315,16 @@ A: CloakBrowser is a browser built on open-source Chromium. We do not condone il
 **Q: Is CloakBrowser free?**
 A: Yes. The wrappers (Python, JS, .NET) are MIT and free forever. For the binary: the **latest build is free** with your email at one concurrent session ([cloakbrowser.dev/free](https://cloakbrowser.dev/free)); **Pro** adds more concurrent sessions ([cloakbrowser.dev](https://cloakbrowser.dev)). The binary has its own license: [BINARY-LICENSE.md](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md).
 
+**Q: Why does CloakBrowser need a key now?**
+A: We understand why it can look like a cash grab.
+Keeping a stealth browser working isn't like running a regular SaaS or open-source project, where you ship features, fix the odd bug and enjoy the ride.
+It's a live product: it has to change daily just to keep working.
+Detection changes every day, so the work is constant debugging.
+Some weeks there's no rest at all, for example when a customer's production gets blocked overnight because something changed.
+A browser that stops getting updates is outdated within a month or two.
+Paid plans are what let us keep working on it full time.
+The free key still gets the same latest build as paid plans, with one session, and the wrappers stay MIT open source.
+
 **Q: Do I need a license key for the free version?**
 A: Yes, a free one. The first launch in a terminal asks for it and gets it for you by email (or run `cloakbrowser login`, or visit [cloakbrowser.dev/free](https://cloakbrowser.dev/free)). It gives you one concurrent session; a paid key raises the limit.
 
