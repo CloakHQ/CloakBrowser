@@ -1272,17 +1272,39 @@ ctx = launch_persistent_context("./my-profile", headless=False)
 
 ---
 
+### How to wait on a page (sync Python)
+
+With the sync API, one long `time.sleep()` after `page.goto()` can leave a challenge page stuck on "Verifying…".
+Wait in short steps with a light Playwright call in each step instead:
+
+```python
+import time
+
+for _ in range(15):          # ~15 s in 1 s steps
+    page.context.cookies()   # keeps Playwright processing, doesn't touch the page
+    time.sleep(1)
+```
+
+`page.title()` also works in place of `page.context.cookies()`, but it runs inside the page and counts as a user interaction.
+Short sleeps between other Playwright calls are fine, only the long blocking ones cause this.
+In async code, use `await asyncio.sleep()`, never `time.sleep()`.
+JavaScript's `await new Promise(r => setTimeout(r, ms))` is not affected.
+
+---
+
 ### reCAPTCHA v3 scores are low (0.1–0.3)
 
-Avoid `page.wait_for_timeout()` — it sends CDP protocol commands that reCAPTCHA detects. Use native sleep instead:
+Avoid `page.wait_for_timeout()` — it sends CDP protocol commands that reCAPTCHA detects. Wait in short steps instead, as shown in [How to wait on a page](#how-to-wait-on-a-page-sync-python):
 
 ```python
 # Bad — sends CDP commands, reCAPTCHA detects this
 page.wait_for_timeout(3000)
 
-# Good — invisible to the browser
+# Good — short steps, no long blocking sleep
 import time
-time.sleep(3)
+for _ in range(3):
+    page.context.cookies()
+    time.sleep(1)
 ```
 
 ```javascript
