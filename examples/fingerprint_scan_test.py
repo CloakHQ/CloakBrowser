@@ -17,6 +17,14 @@ import time
 
 from cloakbrowser import launch_context
 
+
+def wait(page, seconds):
+    """Wait in 1 s steps: one long sleep can leave a challenge page stuck."""
+    for _ in range(seconds):
+        page.context.cookies()  # keeps Playwright processing, doesn't touch the page
+        time.sleep(1)
+
+
 HEADLESS = "--headless" in sys.argv
 PROXY = None
 for i, arg in enumerate(sys.argv):
@@ -28,7 +36,7 @@ def test_fingerprint_scan(page):
     """fingerprint-scan.com — bot risk score + headless detection signals."""
     print("=== fingerprint-scan.com ===")
     page.goto("https://fingerprint-scan.com/", wait_until="domcontentloaded", timeout=30000)
-    time.sleep(20)  # Castle.js needs time to compute score
+    wait(page, 20)  # Castle.js needs time to compute score
 
     # Check bot risk score
     score = page.evaluate(
@@ -93,7 +101,7 @@ def test_creepjs(page):
         "https://abrahamjuliot.github.io/creepjs/", wait_until="domcontentloaded", timeout=30000
     )
     print("Waiting 30s for CreepJS analysis...")
-    time.sleep(30)
+    wait(page, 30)
 
     # Extract % scores from page text (matches test-infra/matrix_tests/group3_bot_detection.py)
     scores = page.evaluate("""() => {

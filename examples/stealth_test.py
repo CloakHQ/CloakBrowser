@@ -15,6 +15,14 @@ import time
 
 from cloakbrowser import CloakBrowserLicenseError, launch
 
+
+def wait(page, seconds):
+    """Wait in 1 s steps: one long sleep can leave a challenge page stuck."""
+    for _ in range(seconds):
+        page.context.cookies()  # keeps Playwright processing, doesn't touch the page
+        time.sleep(1)
+
+
 HEADED = "--headed" in sys.argv
 SCREENSHOTS = "--no-screenshots" not in sys.argv
 PROXY = None
@@ -26,7 +34,7 @@ for i, arg in enumerate(sys.argv):
 def test_bot_sannysoft(page):
     """bot.sannysoft.com — classic bot detection checks."""
     page.goto("https://bot.sannysoft.com", wait_until="networkidle", timeout=30000)
-    time.sleep(3)
+    wait(page, 3)
 
     results = page.evaluate("""() => {
         const rows = document.querySelectorAll('table tr');
@@ -56,7 +64,7 @@ def test_bot_incolumitas(page):
     last_total = 0
     results = {"passed": 0, "failed": 0, "failedTests": [], "total": 0}
     for _ in range(15):
-        time.sleep(2)
+        wait(page, 2)
         results = page.evaluate("""() => {
             const text = document.body.innerText;
             const okMatches = text.match(/"\\w+":\\s*"OK"/g) || [];
@@ -74,7 +82,7 @@ def test_bot_incolumitas(page):
 def test_rebrowser(page):
     """bot-detector.rebrowser.net — automation signal detector."""
     page.goto("https://bot-detector.rebrowser.net/", wait_until="networkidle", timeout=30000)
-    time.sleep(10)
+    wait(page, 10)
 
     return page.evaluate("""() => {
         const el = document.getElementById('detections-json');
@@ -90,7 +98,7 @@ def test_rebrowser(page):
 def test_browserscan(page):
     """browserscan.net/bot-detection — WebDriver, UA, CDP, Navigator checks."""
     page.goto("https://www.browserscan.net/bot-detection", wait_until="networkidle", timeout=30000)
-    time.sleep(5)
+    wait(page, 5)
 
     results = page.evaluate("""() => {
         const items = document.querySelectorAll('[class*="result"], [class*="item"], [class*="check"]');
@@ -111,7 +119,7 @@ def test_browserscan(page):
 def test_deviceandbrowserinfo(page):
     """deviceandbrowserinfo.com/are_you_a_bot — fingerprint + behavioral detection."""
     page.goto("https://deviceandbrowserinfo.com/are_you_a_bot", wait_until="domcontentloaded", timeout=30000)
-    time.sleep(8)
+    wait(page, 8)
 
     results = page.evaluate("""() => {
         const text = document.body.innerText;
@@ -136,7 +144,7 @@ def test_deviceandbrowserinfo(page):
 def test_creepjs(page):
     """CreepJS — lies plus like-headless, headless and stealth scores."""
     page.goto("https://abrahamjuliot.github.io/creepjs/", wait_until="domcontentloaded", timeout=30000)
-    time.sleep(15)
+    wait(page, 15)
 
     return page.evaluate("""() => {
         const fp = window.Fingerprint;
@@ -160,7 +168,7 @@ def test_recaptcha(page):
     )
     score = None
     for _ in range(15):
-        time.sleep(2)
+        wait(page, 2)
         score = page.evaluate("""() => {
             const match = document.body.innerText.match(/"score":\\s*(\\d+\\.\\d+)/);
             return match ? parseFloat(match[1]) : null;

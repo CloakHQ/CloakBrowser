@@ -142,16 +142,16 @@ static async Task BotTest()
     Console.WriteLine($"Keyboard type: {page.Keyboard.GetType().Name}");
 
     await page.GotoAsync("https://deviceandbrowserinfo.com/are_you_a_bot");
-    await page.WaitForTimeoutAsync(2000);
+    await Task.Delay(2000);
 
     // real humanized actions
     await page.Mouse.MoveAsync(300, 300);
     await page.Mouse.WheelAsync(0, 500);
-    await page.WaitForTimeoutAsync(1500);
+    await Task.Delay(1500);
 
     await page.ScreenshotAsync(new() { Path = "bot-result.png", FullPage = true });
     Console.WriteLine("Saved bot-result.png");
-    await page.WaitForTimeoutAsync(4000);  // leave time to inspect it visually
+    await Task.Delay(4000);  // leave time to inspect it visually
 }
 
 static async Task Behavioral()
@@ -165,24 +165,24 @@ static async Task Behavioral()
 
     await page.GotoAsync("https://deviceandbrowserinfo.com/are_you_a_bot_interactions",
         new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-    await page.WaitForTimeoutAsync(3000);
+    await Task.Delay(3000);
 
     var t0 = DateTime.UtcNow;
 
     await page.Locator("#email").ClickAsync();
-    await page.WaitForTimeoutAsync(300);
+    await Task.Delay(300);
     await page.Locator("#email").FillAsync("test@example.com");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
 
     await page.Locator("#password").ClickAsync();
-    await page.WaitForTimeoutAsync(300);
+    await Task.Delay(300);
     await page.Locator("#password").FillAsync("SecurePass!123");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
 
     await page.Locator("#loginForm button[type=\"submit\"]").ClickAsync();
 
     var elapsedMs = (DateTime.UtcNow - t0).TotalMilliseconds;
-    await page.WaitForTimeoutAsync(5000);
+    await Task.Delay(5000);
 
     var body = await page.Locator("body").TextContentAsync() ?? "";
 
@@ -249,7 +249,7 @@ static async Task Visual()
     async Task Inject()
     {
         try { await page.EvaluateAsync(cursorJs); } catch { }
-        await page.WaitForTimeoutAsync(300);
+        await Task.Delay(300);
     }
 
     static long Ms(DateTime t0) => (long)(DateTime.UtcNow - t0).TotalMilliseconds;
@@ -262,121 +262,121 @@ static async Task Visual()
     // SCENARIO 1: Wikipedia search
     Console.WriteLine("\n=== Wikipedia - navigation and search ===");
     await page.GotoAsync("https://www.wikipedia.org");
-    await page.WaitForTimeoutAsync(2000); await Inject(); await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(2000); await Inject(); await Task.Delay(1000);
 
     var t = DateTime.UtcNow;
     await page.Locator("#searchInput").ClickAsync();
     Check("click search input", Ms(t) > 200, $"{Ms(t)} ms");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
 
     t = DateTime.UtcNow;
     await page.Locator("#searchInput").FillAsync("Python programming language");
     var v = await page.Locator("#searchInput").InputValueAsync();
     Check("fill search box", v == "Python programming language" && Ms(t) > 2000, $"{Ms(t)} ms, '{v}'");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
 
     t = DateTime.UtcNow;
     await page.Locator("#searchInput").DblClickAsync();
     var sel = (await page.EvaluateAsync<string>("() => window.getSelection().toString().trim()")) ?? "";
     Check("dblclick selects word", sel.Length > 0 && Ms(t) > 200, $"{Ms(t)} ms, '{sel}'");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
 
     t = DateTime.UtcNow;
     await page.Locator("#searchInput").FillAsync("Artificial intelligence");
     var v2 = await page.Locator("#searchInput").InputValueAsync();
     Check("fill replaces text", v2 == "Artificial intelligence" && Ms(t) > 1500, $"{Ms(t)} ms, '{v2}'");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
 
     t = DateTime.UtcNow;
     await page.Locator("button[type=\"submit\"]").HoverAsync();
     Check("hover submit", Ms(t) > 100, $"{Ms(t)} ms");
-    await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(1000);
 
     // SCENARIO 2: Checkboxes
     Console.WriteLine("\n=== Checkboxes - check/uncheck ===");
     await page.GotoAsync("https://the-internet.herokuapp.com/checkboxes");
-    await page.WaitForTimeoutAsync(2000); await Inject(); await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(2000); await Inject(); await Task.Delay(1000);
 
     var cb1 = page.Locator("input[type=\"checkbox\"]").Nth(0);
     var cb2 = page.Locator("input[type=\"checkbox\"]").Nth(1);
-    if (await cb1.IsCheckedAsync()) { await cb1.UncheckAsync(); await page.WaitForTimeoutAsync(500); }
+    if (await cb1.IsCheckedAsync()) { await cb1.UncheckAsync(); await Task.Delay(500); }
     t = DateTime.UtcNow;
     await cb1.CheckAsync();
     Check("check checkbox 1", await cb1.IsCheckedAsync() && Ms(t) > 200, $"{Ms(t)} ms");
-    await page.WaitForTimeoutAsync(500);
-    if (!await cb2.IsCheckedAsync()) { await cb2.CheckAsync(); await page.WaitForTimeoutAsync(500); }
+    await Task.Delay(500);
+    if (!await cb2.IsCheckedAsync()) { await cb2.CheckAsync(); await Task.Delay(500); }
     t = DateTime.UtcNow;
     await cb2.UncheckAsync();
     Check("uncheck checkbox 2", !await cb2.IsCheckedAsync() && Ms(t) > 200, $"{Ms(t)} ms");
-    await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(1000);
 
     // SCENARIO 3: Dropdown
     Console.WriteLine("\n=== Dropdown - select ===");
     await page.GotoAsync("https://the-internet.herokuapp.com/dropdown");
-    await page.WaitForTimeoutAsync(2000); await Inject(); await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(2000); await Inject(); await Task.Delay(1000);
     t = DateTime.UtcNow;
     await page.Locator("#dropdown").SelectOptionAsync("1");
     Check("select option 1", await page.Locator("#dropdown").InputValueAsync() == "1" && Ms(t) > 100, $"{Ms(t)} ms");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
     t = DateTime.UtcNow;
     await page.Locator("#dropdown").SelectOptionAsync("2");
     Check("select option 2", await page.Locator("#dropdown").InputValueAsync() == "2" && Ms(t) > 100, $"{Ms(t)} ms");
-    await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(1000);
 
     // SCENARIO 4: Drag and drop
     Console.WriteLine("\n=== Drag and Drop - A -> B ===");
     await page.GotoAsync("https://the-internet.herokuapp.com/drag_and_drop");
-    await page.WaitForTimeoutAsync(2000); await Inject(); await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(2000); await Inject(); await Task.Delay(1000);
     var beforeA = (await page.Locator("#column-a header").TextContentAsync())?.Trim();
     t = DateTime.UtcNow;
     await page.Locator("#column-a").DragToAsync(page.Locator("#column-b"));
-    await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(1000);
     var afterA = (await page.Locator("#column-a header").TextContentAsync())?.Trim();
     Check("drag A to B", beforeA != afterA && Ms(t) > 300, $"{Ms(t)} ms, swapped={beforeA != afterA}");
-    await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(1000);
 
     // SCENARIO 5: Text editing
     Console.WriteLine("\n=== Text editing - type/press/clear/sequential ===");
     await page.GotoAsync("https://www.wikipedia.org");
-    await page.WaitForTimeoutAsync(2000); await Inject(); await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(2000); await Inject(); await Task.Delay(1000);
     t = DateTime.UtcNow;
     await page.Locator("#searchInput").PressSequentiallyAsync("Hello World");
     var hv = await page.Locator("#searchInput").InputValueAsync();
     Check("type 'Hello World'", hv == "Hello World" && Ms(t) > 1000, $"{Ms(t)} ms, '{hv}'");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
     t = DateTime.UtcNow;
     await page.Locator("#searchInput").PressAsync("End");
     await page.Locator("#searchInput").PressAsync("!");
     var pv = await page.Locator("#searchInput").InputValueAsync();
     Check("press '!' at end", (pv ?? "").Contains("!") && Ms(t) > 100, $"{Ms(t)} ms, '{pv}'");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
     t = DateTime.UtcNow;
     await page.Locator("#searchInput").ClearAsync();
     var cv = await page.Locator("#searchInput").InputValueAsync();
     Check("clear field", cv == "" && Ms(t) > 100, $"{Ms(t)} ms");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
     t = DateTime.UtcNow;
     await page.Locator("#searchInput").PressSequentiallyAsync("Sequential");
     var sv = await page.Locator("#searchInput").InputValueAsync();
     Check("press_sequentially", sv == "Sequential" && Ms(t) > 500, $"{Ms(t)} ms, '{sv}'");
-    await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(1000);
 
     // SCENARIO 6: Mouse precision + raw keyboard
     Console.WriteLine("\n=== Mouse precision + keyboard ===");
     t = DateTime.UtcNow;
     await page.Mouse.MoveAsync(600, 400);
     Check("mouse.move (600,400)", Ms(t) > 100, $"{Ms(t)} ms");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
     t = DateTime.UtcNow;
     await page.Mouse.ClickAsync(200, 200);
     Check("mouse.click (200,200)", Ms(t) > 100, $"{Ms(t)} ms");
-    await page.WaitForTimeoutAsync(500);
+    await Task.Delay(500);
     await page.Locator("#searchInput").ClickAsync();
-    await page.WaitForTimeoutAsync(300);
+    await Task.Delay(300);
     t = DateTime.UtcNow;
     await page.Keyboard.TypeAsync("Direct keyboard");
     Check("keyboard.type", Ms(t) > 500, $"{Ms(t)} ms");
-    await page.WaitForTimeoutAsync(1000);
+    await Task.Delay(1000);
 
     // SUMMARY
     Console.WriteLine("\n" + new string('=', 70));
@@ -477,7 +477,7 @@ static async Task WebRtcTest()
     var page = await browser.NewPageAsync();
 
     await page.GotoAsync("https://browserleaks.com/webrtc");
-    await page.WaitForTimeoutAsync(6000);   // give WebRTC time to run
+    await Task.Delay(6000);   // give WebRTC time to run
 
     var text = await page.InnerTextAsync("body");
     Console.WriteLine("--- browserleaks WebRTC (looking for IPs) ---");
@@ -497,7 +497,7 @@ static async Task TrustedTest()
     });
     var page = await browser.NewPageAsync();
     await page.GotoAsync("https://www.wikipedia.org");
-    await page.WaitForTimeoutAsync(1500);
+    await Task.Delay(1500);
 
     // detector: catch untrusted keydown + querySelector from the evaluate context
     await page.EvaluateAsync(@"() => {
@@ -519,9 +519,9 @@ static async Task TrustedTest()
     }");
 
     await page.Locator("#searchInput").ClickAsync();
-    await page.WaitForTimeoutAsync(300);
+    await Task.Delay(300);
     await page.Keyboard.TypeAsync("Hello!@#$%^&*()");
-    await page.WaitForTimeoutAsync(800);
+    await Task.Delay(800);
 
     var untrusted = await page.EvaluateAsync<string[]>("() => window.__untrusted");
     var leaks = await page.EvaluateAsync<string[]>("() => window.__evalLeaks");

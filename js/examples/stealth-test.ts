@@ -38,7 +38,7 @@ async function testSannysoft() {
     waitUntil: "networkidle",
     timeout: 30000,
   });
-  await page.waitForTimeout(3000);
+  await new Promise((r) => setTimeout(r, 3000));
 
   const result = await page.evaluate(() => {
     const rows = document.querySelectorAll("table tr");
@@ -79,7 +79,7 @@ async function testIncolumitas() {
     waitUntil: "networkidle",
     timeout: 30000,
   });
-  await page.waitForTimeout(12000); // needs time for all detection tests
+  await new Promise((r) => setTimeout(r, 12000)); // needs time for all detection tests
 
   const result = await page.evaluate(() => {
     const text = document.body.innerText;
@@ -116,7 +116,7 @@ async function testBrowserScan() {
     waitUntil: "networkidle",
     timeout: 30000,
   });
-  await page.waitForTimeout(5000);
+  await new Promise((r) => setTimeout(r, 5000));
 
   const result = await page.evaluate(() => {
     const text = document.body.innerText;
@@ -143,7 +143,7 @@ async function testDeviceAndBrowserInfo() {
     waitUntil: "domcontentloaded",
     timeout: 30000,
   });
-  await page.waitForTimeout(8000);
+  await new Promise((r) => setTimeout(r, 8000));
 
   const result = await page.evaluate(() => {
     const text = document.body.innerText;
@@ -187,11 +187,11 @@ async function testFingerprintJS() {
     waitUntil: "networkidle",
     timeout: 30000,
   });
-  await page.waitForTimeout(5000);
+  await new Promise((r) => setTimeout(r, 5000));
 
   try {
     await page.click("button:has-text('Search')", { timeout: 5000 });
-    await page.waitForTimeout(5000);
+    await new Promise((r) => setTimeout(r, 5000));
   } catch {
     // Search button may not be present
   }
@@ -225,7 +225,7 @@ async function testRecaptcha() {
     "https://recaptcha-demo.appspot.com/recaptcha-v3-request-scores.php",
     { waitUntil: "networkidle", timeout: 30000 }
   );
-  await page.waitForTimeout(8000);
+  await new Promise((r) => setTimeout(r, 8000));
 
   const result = await page.evaluate(() => {
     const text = document.body.innerText;

@@ -34,7 +34,7 @@ Event schema (all fields except `url` are optional):
         wait_for_selector                str  CSS or XPath selector
         wait_for_selector_state          str  "attached"|"detached"|"visible"|"hidden", default "visible"
         wait_for_selector_timeout_ms     int  30000
-        wait_ms                          int  fixed pause in ms (page.wait_for_timeout)
+        wait_ms                          int  fixed pause in ms (asyncio.sleep)
 
     Capture options:
         screenshot              bool         True
@@ -205,7 +205,7 @@ async def _post_nav_waits(page, event: dict) -> None:
             timeout=event.get("wait_for_selector_timeout_ms", 30000),
         )
     if "wait_ms" in event:
-        await page.wait_for_timeout(event["wait_ms"])
+        await asyncio.sleep(event["wait_ms"] / 1000)  # native sleep, not page.wait_for_timeout
 
 
 async def _launch_with_retry(event: dict, attempts: int = 3, backoff_s: float = 0.3):
