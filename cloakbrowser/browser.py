@@ -19,6 +19,8 @@ import inspect
 import logging
 import os
 import sys
+import threading
+import time
 from typing import Any, Literal, TypedDict
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
@@ -42,6 +44,44 @@ from .human.config import HumanConfigOverrides, HumanPreset
 from .widevine import seed_widevine_hint
 
 logger = logging.getLogger("cloakbrowser")
+
+# The sync Playwright client only processes the browser's messages while one of
+# its calls is running. A long time.sleep() leaves it idle, and on Windows that
+# stalls pages: a Cloudflare challenge stays on "Verifying" until the script's
+# next Playwright call. So while a sync browser is open, time.sleep() on its
+# thread waits inside Playwright's own event loop, the same wait the async API
+# does. Shorter sleeps (humanize's keystroke and mouse pacing) keep the real one.
+_real_sleep = time.sleep
+_SLEEP_PUMP_MIN_S = 0.1
+_sleep_owners: dict[int, list[Any]] = {}  # thread id -> open sync browsers/contexts
+
+
+def _pumping_sleep(seconds: float) -> None:
+    owners = _sleep_owners.get(threading.get_ident())
+    if owners and isinstance(seconds, (int, float)) and seconds >= _SLEEP_PUMP_MIN_S:
+        owner = owners[-1]
+        try:
+            owner._sync(asyncio.sleep(seconds))
+            return
+        except Exception as exc:
+            logger.warning("time.sleep could not wait in the Playwright loop, using a plain sleep: %s", exc)
+            _untrack_sleep_owner(owner)
+    _real_sleep(seconds)
+
+
+def _track_sleep_owner(owner: Any) -> None:
+    _sleep_owners.setdefault(threading.get_ident(), []).append(owner)
+    if time.sleep is _real_sleep:
+        time.sleep = _pumping_sleep
+
+
+def _untrack_sleep_owner(owner: Any) -> None:
+    for tid, owners in list(_sleep_owners.items()):
+        owners[:] = [o for o in owners if o is not owner]
+        if not owners:
+            del _sleep_owners[tid]
+    if not _sleep_owners and time.sleep is _pumping_sleep:
+        time.sleep = _real_sleep
 
 
 def license_error_from(
@@ -560,9 +600,11 @@ def launch(
             else:
                 _original_close(reason=reason)
         finally:
+            _untrack_sleep_owner(browser)
             pw.stop()
 
     browser.close = _close_with_cleanup
+    _track_sleep_owner(browser)
 
     # Convert a post-handshake license denial into a clear error on the user's
     # first call. Installed before the wraps below so it sits closest to the
@@ -822,9 +864,11 @@ def launch_persistent_context(
             else:
                 _original_close(reason=reason)
         finally:
+            _untrack_sleep_owner(context)
             pw.stop()
 
     context.close = _close_with_cleanup
+    _track_sleep_owner(context)
 
     # Warn on first use of Playwright's request client (see launch(), #579).
     if proxy is not None and "proxy" not in launch_options:

@@ -1,6 +1,21 @@
 """Shared pytest fixtures."""
 
+import time
+
 import pytest
+
+_ORIGINAL_SLEEP = time.sleep
+
+
+@pytest.fixture(autouse=True)
+def restore_time_sleep():
+    """Mocked launches are rarely closed, which would leave time.sleep patched
+    for every later test. Drop all tracked sync browsers after each test."""
+    yield
+    from cloakbrowser import browser
+
+    browser._sleep_owners.clear()
+    time.sleep = _ORIGINAL_SLEEP
 
 
 @pytest.fixture(autouse=True)
