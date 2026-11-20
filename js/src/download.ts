@@ -45,7 +45,7 @@ import {
   getProLatestRelease,
 } from "./license.js";
 
-const DOWNLOAD_TIMEOUT_MS = 600_000; // 10 minutes
+export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 600_000; // 10 minutes
 // How long a background claim poll keeps checking for the key (see claimFreeKey).
 const CLAIM_POLL_WINDOW_MS = 600_000;
 // Free-key welcome banner re-show interval (1 day, in seconds). Free users see
@@ -611,11 +611,24 @@ async function verifyChecksum(filePath: string, expectedHash: string): Promise<v
   console.error("[cloakbrowser] Checksum verified: SHA-256 OK");
 }
 
-async function downloadFile(url: string, dest: string, headers?: Record<string, string>): Promise<void> {
+/** Limit for one whole download, which a slow connection can need more than 10 minutes for. */
+export function downloadTimeoutMs(): number {
+  const raw = process.env.CLOAKBROWSER_DOWNLOAD_TIMEOUT_SECONDS;
+  if (!raw) return DEFAULT_DOWNLOAD_TIMEOUT_MS;
+  const timeoutSeconds = Number(raw);
+  // setTimeout fires at once above 2^31-1 ms.
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds * 1000 > 2 ** 31 - 1) {
+    console.warn(`[cloakbrowser] Invalid CLOAKBROWSER_DOWNLOAD_TIMEOUT_SECONDS=${raw}; using ${DEFAULT_DOWNLOAD_TIMEOUT_MS / 1000}`);
+    return DEFAULT_DOWNLOAD_TIMEOUT_MS;
+  }
+  return timeoutSeconds * 1000;
+}
+
+export async function downloadFile(url: string, dest: string, headers?: Record<string, string>): Promise<void> {
   console.error(`[cloakbrowser] Downloading from ${url}`);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), downloadTimeoutMs());
 
   // Create file stream early so we can ensure cleanup on error
   const fileStream = createWriteStream(dest);
