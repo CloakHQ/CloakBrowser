@@ -8,6 +8,13 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-11-20
+
+- **[wrapper]** Playwright 1.65 is supported, and the cap moves to below 1.66: Python requires `playwright>=1.53,<1.66`; the JS `playwright-core` peer range is `>=1.53.0 <1.66.0`. .NET requires Microsoft.Playwright `[1.64.1,1.65)`, the version it is built and tested against. Each newer Playwright is allowed once it has been tested. Python, JavaScript, and .NET (#641)
+- **[wrapper]** A `time.sleep()` in a sync script no longer stalls the page. While a sync browser or persistent context is open, a sleep of 0.1 s or longer on its thread waits inside Playwright's event loop, so pages keep running instead of pausing until the next Playwright call (seen on Windows as a challenge page stuck on "Verifying"). Python
+- **[wrapper]** `cloakserve`: with `--fingerprint=<seed>`, clients on the default WebSocket path are counted under that seed, so `--idle-timeout` no longer closes Chrome while they are still connected (#643)
+- **[docs]** README: how to wait on a page in short steps instead of one long sleep, and a FAQ entry on why a license key is needed. The Python, JavaScript, and .NET examples wait the same way instead of using `wait_for_timeout`.
+
 ## [0.7.2] — 2026-11-10
 
 - **[wrapper]** Playwright is capped below 1.65: Playwright 1.65.0 changed internals the wrapper relies on, and `import cloakbrowser` failed with `No module named 'playwright._impl._js_handle'` on a fresh install. Python requires `playwright>=1.53,<1.65`; the JS `playwright-core` peer range is now `>=1.53.0 <1.65.0`. Python and JavaScript (#641)
