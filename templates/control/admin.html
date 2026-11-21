@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>运营控制台 · {{ app_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='control.css') }}" />
+  </head>
+  <body>
+    <div class="admin-shell">
+      <aside class="admin-sidebar">
+        <a class="brand brand-light" href="{{ url_for('admin_dashboard') }}"><span class="brand-seal">發</span><span><strong>{{ app_name }}</strong><small>运营控制台</small></span></a>
+        <nav class="admin-nav" aria-label="运营导航">
+          <a href="#overview" class="active"><span>总览</span><small>OVERVIEW</small></a>
+          <a href="#users"><span>账户管理</span><small>ACCOUNTS</small></a>
+          <a href="#recharges"><span>充值审核</span><small>RECHARGES</small></a>
+          <a href="#tickets"><span>客服工单</span><small>SUPPORT</small></a>
+          <a href="#settings"><span>服务配置</span><small>SETTINGS</small></a>
+        </nav>
+        <div class="sidebar-bottom"><span class="service-dot"></span> 控制面服务在线</div>
+      </aside>
+
+      <main class="admin-main">
+        <header class="admin-topbar">
+          <div><span class="breadcrumb">运营 / <strong>总览</strong></span><h1>运营控制台</h1></div>
+          <div class="admin-identity"><span class="avatar admin-avatar">管</span><span>{{ current_user['display_name'] }}<small>管理员</small></span><a class="text-button" href="#security">修改密码</a><form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><button class="text-button" type="submit">退出</button></form></div>
+        </header>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% for category, message in messages %}<div class="notice {{ category }}">{{ message }}</div>{% endfor %}
+        {% endwith %}
+
+        <section id="overview" class="metric-grid" aria-label="平台概况">
+          <article class="metric"><span>平台注册账户</span><strong>{{ stats.users }}</strong><small>全部普通用户</small></article>
+          <article class="metric"><span>可用账户</span><strong>{{ stats.active_users }}</strong><small>状态正常</small></article>
+          <article class="metric"><span>积分总余额</span><strong>{{ '{:,}'.format(stats.points) }}</strong><small>以账户余额实时汇总</small></article>
+          <article class="metric"><span>本月已审核充值</span><strong>¥{{ '%.2f'|format(stats.revenue_cents / 100) }}</strong><small>仅统计已审核订单</small></article>
+        </section>
+
+        <section id="users" class="admin-section">
+          <div class="section-title"><div><span class="section-kicker">CUSTOMER ACCOUNTS</span><h2>账户管理</h2><p>创建账户、停用访问，并通过带原因的积分账本调整余额。</p></div><span class="section-count">{{ users|length }} 个账户</span></div>
+          <div class="admin-grid account-grid">
+            <div class="surface table-surface">
+              <div class="surface-heading"><h3>用户账户</h3><span>余额和状态</span></div>
+              <div class="table-scroll"><table><thead><tr><th>账号</th><th>余额</th><th>状态</th><th>积分调整</th></tr></thead><tbody>
+                {% for user in users %}
+                  <tr>
+                    <td><strong>{{ user['display_name'] }}</strong><small class="table-sub">{{ user['username'] }} · {{ user['created_at'][:10] }}</small></td>
+                    <td class="balance-cell">{{ '{:,}'.format(user['points']) }}</td>
+                    <td><span class="status status-{{ user['status'] }}">{{ '正常' if user['status'] == 'active' else '已停用' }}</span></td>
+                    <td><form class="inline-form points-form" method="post" action="{{ url_for('adjust_points', user_id=user['id']) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><input name="delta" type="number" step="1" placeholder="±积分" aria-label="积分变动" required /><input name="reason" maxlength="200" placeholder="调整原因" aria-label="调整原因" required /><button class="button button-small" type="submit">记账</button></form>
+                      <form class="status-form" method="post" action="{{ url_for('set_user_status', user_id=user['id']) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><input type="hidden" name="status" value="{{ 'suspended' if user['status'] == 'active' else 'active' }}" /><button class="text-button" type="submit">{{ '停用账户' if user['status'] == 'active' else '恢复账户' }}</button></form></td>
+                  </tr>
+                {% else %}<tr><td colspan="4" class="empty-state">暂无用户账户。可在右侧创建第一个账户。</td></tr>{% endfor %}
+              </tbody></table></div>
+            </div>
+            <div class="surface form-surface">
+              <div class="surface-heading"><h3>新建用户</h3><span>管理员创建</span></div>
+              <form method="post" action="{{ url_for('create_user') }}" class="stack-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+                <label for="new-username">登录账号</label><input id="new-username" name="username" required maxlength="64" autocomplete="off" />
+                <label for="display-name">显示名称</label><input id="display-name" name="display_name" maxlength="100" />
+                <label for="new-password">初始密码</label><input id="new-password" name="password" type="password" required minlength="12" autocomplete="new-password" />
+                <button class="button button-primary" type="submit">创建账户</button>
+                <small class="form-help">密码至少 12 位。创建后请通过安全渠道交付给用户。</small>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <section id="recharges" class="admin-section">
+          <div class="section-title"><div><span class="section-kicker">MANUAL SETTLEMENT</span><h2>充值审核</h2><p>提交申请不会自动入账；确认线下收款后再批准。</p></div></div>
+          <div class="surface table-surface"><div class="table-scroll"><table><thead><tr><th>订单</th><th>用户</th><th>积分</th><th>金额</th><th>状态</th><th>审核操作</th></tr></thead><tbody>
+            {% for order in recharges %}<tr><td>{{ order['order_ref'] }}<small class="table-sub">{{ order['created_at'][:16].replace('T', ' ') }}</small></td><td>{{ order['username'] }}</td><td>{{ '{:,}'.format(order['points']) }}</td><td>¥{{ '%.2f'|format(order['amount_cents'] / 100) }}</td><td><span class="status status-{{ order['status'] }}">{{ {'pending':'待审核','approved':'已入账','rejected':'已拒绝'}[order['status']] }}</span></td><td>{% if order['status'] == 'pending' %}<div class="review-actions">{% for action, label in [('approve','确认收款并入账'),('reject','拒绝')] %}<form method="post" action="{{ url_for('review_recharge', order_id=order['id']) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><input type="hidden" name="action" value="{{ action }}" /><button class="text-button {{ 'danger-text' if action == 'reject' else '' }}" type="submit">{{ label }}</button></form>{% endfor %}</div>{% else %}<span class="muted">已完成审核</span>{% endif %}</td></tr>
+            {% else %}<tr><td colspan="6" class="empty-state">暂无充值申请。</td></tr>{% endfor %}
+          </tbody></table></div></div>
+        </section>
+
+        <section id="tickets" class="admin-section">
+          <div class="section-title"><div><span class="section-kicker">CUSTOMER SUPPORT</span><h2>客服工单</h2><p>回复内容会显示在对应用户的账户中心。</p></div></div>
+          <div class="ticket-grid">
+            {% for ticket in tickets %}<article class="surface ticket-card"><div class="ticket-heading"><div><span class="section-kicker">工单 #{{ ticket['id'] }} · {{ ticket['username'] }}</span><h3>{{ ticket['subject'] }}</h3></div><span class="status status-{{ ticket['status'] }}">{{ {'open':'待处理','in_progress':'处理中','closed':'已关闭'}[ticket['status']] }}</span></div><div class="conversation"><div class="conversation-message user-message"><strong>{{ ticket['username'] }} · {{ ticket['created_at'][:16].replace('T', ' ') }}</strong><p>{{ ticket['message'] }}</p></div>{% for message in ticket_messages[ticket['id']] %}<div class="conversation-message {{ message['author_role'] }}-message"><strong>{{ '客服' if message['author_role'] == 'admin' else ticket['username'] }} · {{ message['created_at'][:16].replace('T', ' ') }}</strong><p>{{ message['body'] }}</p></div>{% endfor %}</div><form method="post" action="{{ url_for('reply_ticket', ticket_id=ticket['id']) }}" class="stack-form ticket-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><label for="reply-{{ ticket['id'] }}">追加客服回复</label><textarea id="reply-{{ ticket['id'] }}" name="response" rows="3" maxlength="2000" placeholder="填写回复；也可以只更新工单状态"></textarea><div class="ticket-controls"><select name="status" aria-label="工单状态"><option value="open" {{ 'selected' if ticket['status'] == 'open' }}>待处理</option><option value="in_progress" {{ 'selected' if ticket['status'] == 'in_progress' }}>处理中</option><option value="closed" {{ 'selected' if ticket['status'] == 'closed' }}>已关闭</option></select><button class="button button-small" type="submit">保存回复</button></div></form></article>
+            {% else %}<div class="surface empty-state">暂无客服工单。</div>{% endfor %}
+          </div>
+        </section>
+
+        <section id="settings" class="admin-section">
+          <div class="section-title"><div><span class="section-kicker">SERVICE CONFIGURATION</span><h2>客服入口</h2><p>用户端只显示跳转入口，不会伪装成站内即时客服。</p></div></div>
+          <div class="settings-stack">
+            <div class="surface settings-surface"><form method="post" action="{{ url_for('update_support_url') }}" class="settings-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><div><label for="support-url">Telegram 客服链接</label><input id="support-url" name="telegram_support_url" type="url" value="{{ support_url }}" placeholder="https://t.me/your_support" /></div><button class="button button-primary" type="submit">保存链接</button></form><p class="form-help">仅允许 https://t.me/ 或 https://telegram.me/ 链接。留空会关闭用户端客服按钮。</p></div>
+            <div class="surface settings-surface"><form method="post" action="{{ url_for('update_recharge_packages') }}" class="stack-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><label for="packages-json">充值套餐（JSON）</label><textarea id="packages-json" name="packages_json" rows="5" spellcheck="false" aria-describedby="package-help">{{ packages_json }}</textarea><button class="button button-primary" type="submit">保存套餐设置</button></form><p id="package-help" class="form-help">对象键是套餐编号；每项包含 points（积分数量）和 amount_cents（人民币分）。例如：{"standard":{"points":100,"amount_cents":990}}。价格按你的实际收费填写。留空对象会关闭充值申请。</p></div>
+          </div>
+        </section>
+        <section id="security" class="admin-section"><div class="section-title"><div><span class="section-kicker">ADMIN SECURITY</span><h2>管理员安全</h2><p>更改密码会使其他设备的管理员会话失效。</p></div></div><div class="surface portal-form-surface password-surface"><form method="post" action="{{ url_for('change_password') }}" class="stack-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" /><label for="admin-current-password">当前密码</label><input id="admin-current-password" name="current_password" type="password" autocomplete="current-password" required /><label for="admin-new-password">新密码</label><input id="admin-new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required /><button class="button button-primary" type="submit">更新管理员密码</button></form></div></section>
+        <footer class="page-footer"><span>{{ app_name }} · 运营控制台</span><span>用户资料与账本由本地数据库管理</span></footer>
+      </main>
+    </div>
+  </body>
+</html>
