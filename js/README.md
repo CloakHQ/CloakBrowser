@@ -109,7 +109,7 @@ const browser = await launch({
 });
 
 // Pin an exact Chromium version (paid Pro key only)
-const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '155.0.8059.39.1' });
+const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '156.0.8078.47.1' });
 
 // Opt into the Pro Preview binary channel
 const browser = await launch({
@@ -210,7 +210,7 @@ clearCache();
 | `CLOAKBROWSER_BINARY_PATH` | — | Skip download, use a local Chromium binary |
 | `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
 | `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to keep the cached build and skip update checks |
-| `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `155.0.8059.39.1`). Paid Pro key only |
+| `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `156.0.8078.47.1`). Paid Pro key only |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | `stable` | Set to `preview` to opt into the Pro Preview binary channel |
 
 ## Migrate From Playwright
@@ -329,11 +329,11 @@ Or set `CLOAKBROWSER_RELEASE_CHANNEL=preview` for all launches and CLI commands.
 Pin to an exact binary version (keep current wrapper, use older Chromium). Paid Pro key only. A free key cannot pin: it ignores the pin and always gets the latest build.
 
 ```bash
-export CLOAKBROWSER_VERSION=155.0.8059.39.1   # env var for all launches
+export CLOAKBROWSER_VERSION=156.0.8078.47.1   # env var for all launches
 ```
 
 ```javascript
-const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '155.0.8059.39.1' });
+const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '156.0.8078.47.1' });
 ```
 
 The pin is never sticky — unpinned launches always use the latest available version.

@@ -152,9 +152,9 @@ page.goto("https://example.com")
 
 ---
 
-## Latest: v0.7.3 — 87 source-level stealth patches (Chromium 156.0.8078.47.1)
+## Latest: v0.7.3 — 87 source-level stealth patches (Chromium 156.0.8078.47.8)
 
-- **CloakBrowser Pro Stable** — Chromium `156.0.8078.47.1` on Linux x64, Linux ARM64, Windows x64, and macOS (Apple Silicon and Intel). Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest Stable build for your platform automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
+- **CloakBrowser Pro Stable** — Chromium `156.0.8078.47.8` on Linux x64 and Linux ARM64, `156.0.8078.47.7` on Windows x64, and `156.0.8078.47.1` on macOS (Apple Silicon and Intel). Set a `license_key` (`licenseKey` in JS) or the `CLOAKBROWSER_LICENSE_KEY` env var and the wrapper fetches the latest Stable build for your platform automatically. See [CloakBrowser Pro](#cloakbrowser-pro)
 - **.NET 8 / C# client** — CloakBrowser now ships as a NuGet package (`CloakBrowser`), mirroring the Python and JS wrappers.
 - **Chromium 156 upgrade** — rebased the full patch set onto Chromium 156 on every platform
 - **87 fingerprint patches** — rendering consistency improvements across Linux and Windows, corrected GPU/display/graphics parameters to match stock Chrome profiles
@@ -471,7 +471,7 @@ from cloakbrowser import binary_info, clear_cache, ensure_binary
 
 # Check binary installation status
 print(binary_info())
-# {'version': '156.0.8078.47.1', 'platform': 'linux-x64', 'installed': True, ...}
+# {'version': '156.0.8078.47.8', 'platform': 'linux-x64', 'installed': True, ...}
 # ('version' is None until a build has been downloaded)
 
 # Force re-download
@@ -649,7 +649,7 @@ For an arbitrary expression, `page._stealth_world.evaluate("…")` evaluates it 
 | `CLOAKBROWSER_CACHE_DIR` | `~/.cloakbrowser` | Binary cache directory |
 | `CLOAKBROWSER_AUTO_UPDATE` | `true` | Set to `false` to keep the cached build and skip update checks |
 | `CLOAKBROWSER_GEOIP_TIMEOUT_SECONDS` | `5` | Max seconds for GeoIP resolution before continuing without it |
-| `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `155.0.8059.39.1`). Paid Pro key only |
+| `CLOAKBROWSER_VERSION` | — | Pin to an exact Chromium version for rollback (e.g. `156.0.8078.47.1`). Paid Pro key only |
 | `CLOAKBROWSER_RELEASE_CHANNEL` | `stable` | Set to `preview` to opt into the Preview binary channel |
 
 ## Fingerprint Management
@@ -702,7 +702,7 @@ Supported by the binary but **not set by default** — pass via `args` to custom
 | `--fingerprint-screen-height` | Screen height (seed-derived when unset) |
 | `--fingerprint-platform-version` | Client Hints platform version |
 | `--fingerprint-timezone` | Timezone (e.g. `America/New_York`) |
-| `--fingerprint-locale` | Locale (e.g. `en-US`) |
+| `--fingerprint-locale` | Locale (e.g. `en-US`), or a language list such as `en-US,el-GR`: English pages while the browser still shows a second language. The list needs 156.0.8078.47.5+ (Linux and Windows Stable) or 158 |
 | `--fingerprint-storage-quota` | Storage headroom in MB, reported on top of current usage — affects `storage.estimate()`, `storageBuckets`, and legacy webkit APIs. Default 10 GiB, like a regular Chrome profile |
 | `--fingerprint-taskbar-height` | Override taskbar height (binary defaults: Win=48, Mac=95, Linux=0) |
 | `--fingerprint-webrtc-ip` | WebRTC ICE candidate IP replacement. Use `auto` to resolve from proxy exit IP (makes an HTTP call through the proxy), or pass an explicit IP. Auto-injected when `geoip=True` |
@@ -1211,15 +1211,15 @@ Two ways to go back to a working version:
 **Pin the binary** (keep current wrapper, just use an older Chromium) — paid Pro key only. A free key cannot pin: it ignores the pin and always gets the latest build.
 
 ```python
-browser = launch(license_key="cb_xxxxxxxx", browser_version="155.0.8059.39.1")
+browser = launch(license_key="cb_xxxxxxxx", browser_version="156.0.8078.47.1")
 ```
 
 ```bash
-export CLOAKBROWSER_VERSION=155.0.8059.39.1   # env var for all launches
+export CLOAKBROWSER_VERSION=156.0.8078.47.1   # env var for all launches
 ```
 
 ```javascript
-const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '155.0.8059.39.1' });
+const browser = await launch({ licenseKey: 'cb_xxxxxxxx', browserVersion: '156.0.8078.47.1' });
 ```
 
 The pin is never sticky — unpinned launches always use the latest available version.
@@ -1377,7 +1377,7 @@ The wrapper automatically verifies every binary download against a pinned Ed2551
 ```bash
 # Verify GPG signature (binary release tag)
 gpg --keyserver keyserver.ubuntu.com --recv-keys C60C0DDC9D0DE2DD
-git verify-tag chromium-v156.0.8078.47.1-pro
+git verify-tag chromium-v156.0.8078.47.8-pro
 
 # Verify GitHub binary attestation (Sigstore)
 gh attestation verify cloakbrowser-linux-x64.tar.gz --repo CloakHQ/cloakbrowser
