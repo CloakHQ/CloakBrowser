@@ -176,6 +176,14 @@ describe("puppeteer launch", () => {
     expect(callArgs.args).toContain("--lang=ja-JP");
   });
 
+  it("resolves timezoneId to --fingerprint-timezone", async () => {
+    const { launch } = await import("../src/puppeteer.js");
+    await launch({ timezoneId: "Asia/Tokyo" } as unknown as Parameters<typeof launch>[0]);
+
+    const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
+    expect(callArgs.args).toContain("--fingerprint-timezone=Asia/Tokyo");
+  });
+
   it("merges extra args", async () => {
     const { launch } = await import("../src/puppeteer.js");
     await launch({ args: ["--disable-gpu", "--no-first-run"] });
