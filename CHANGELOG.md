@@ -8,6 +8,8 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+- **[docker]** The Docker image ships Node.js 24 LTS instead of Node.js 20 (end of life). The JS wrapper still supports Node `^20.19.0 || >=22.12.0`.
+
 ## [0.7.3] — 2026-11-20
 
 - **[wrapper]** Playwright 1.65 is supported, and the cap moves to below 1.66: Python requires `playwright>=1.53,<1.66`; the JS `playwright-core` peer range is `>=1.53.0 <1.66.0`. .NET requires Microsoft.Playwright `[1.64.1,1.65)`, the version it is built and tested against. Each newer Playwright is allowed once it has been tested. Python, JavaScript, and .NET (#641)
