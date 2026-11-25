@@ -100,11 +100,11 @@ class TestParseCliArgs:
         config, _ = parse_cli_args(["--port=8080"])
         assert config["port"] == 8080
 
-    def test_headless_false(self):
-        config, passthrough = parse_cli_args(["--headless=false"])
+    @pytest.mark.parametrize("flag", ["--headless=false", "--headless=False"])
+    def test_headless_false(self, flag):
+        config, passthrough = parse_cli_args(["--no-sandbox", flag, "--disable-gpu"])
         assert config["headless"] is False
-        # headless flag still passed through to Chrome
-        assert "--headless=false" in passthrough
+        assert passthrough == ["--no-sandbox", "--disable-gpu"]
 
     def test_strips_remote_debugging_flags(self):
         args = ["--remote-debugging-port=9999", "--remote-debugging-address=0.0.0.0", "--no-sandbox"]
