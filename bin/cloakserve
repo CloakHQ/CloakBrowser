@@ -878,7 +878,6 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
             config["exit_after_idle"] = _parse_idle_timeout(arg.split("=", 1)[1], "--exit-after-idle")
         elif arg == "--headless=false" or arg == "--headless=False":
             config["headless"] = False
-            passthrough.append(arg)
         elif arg.startswith(consumed_prefixes):
             pass  # Strip these silently
         # Route through build_args() so companion flags are set correctly
