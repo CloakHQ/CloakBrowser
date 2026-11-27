@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 from .config import HumanConfig, rand, rand_log, rand_lognormal, rand_range, sleep_ms
 
@@ -86,13 +86,6 @@ _SHIFT_SYMBOL_KEYCODES: dict[str, int] = {
 _LEFT_HAND = frozenset("qwertasdfgzxcvb`12345~!@#$%")
 
 
-def _hand(ch: str) -> Optional[str]:
-    c = ch.lower()
-    if not c or not c.isascii() or c.isspace():
-        return None
-    return "L" if c in _LEFT_HAND else "R"
-
-
 def gap_factor(prev: str, ch: str) -> float:
     """How much slower / faster than average the press of ``ch`` follows
     ``prev`` (the previous typed character)."""
@@ -102,27 +95,31 @@ def gap_factor(prev: str, ch: str) -> float:
         return 1.3
     if ch == " ":
         return 0.9
-    if prev.lower() == ch.lower():
+    prev, ch = prev.lower(), ch.lower()
+    if prev == ch:
         return 1.05
-    hp, hc = _hand(prev), _hand(ch)
-    if hp and hc:
-        return 0.85 if hp != hc else 1.1
-    return 1.0
+    # A key has a hand only when it is non-empty, ASCII and not whitespace.
+    if (not ch or not prev.isascii() or not ch.isascii()
+            or prev.isspace() or ch.isspace()):
+        return 1.0
+    return 0.85 if (prev in _LEFT_HAND) != (ch in _LEFT_HAND) else 1.1
 
 
 def key_gap(cfg: HumanConfig, prev: str, ch: str) -> float:
     """Milliseconds from the press of ``prev`` to the press of ``ch``
     (log-normal around ``typing_delay``, plus occasional thinking pauses
     before words)."""
-    median = max(1.0, cfg.typing_delay * gap_factor(prev, ch))
-    spread = max(0.0, cfg.typing_delay_spread)
+    median = cfg.typing_delay * gap_factor(prev, ch)
+    median = median if median > 1.0 else 1.0
+    spread = cfg.typing_delay_spread
+    spread = spread if spread > 0.0 else 0.0
     sigma = math.log1p(spread / cfg.typing_delay) if cfg.typing_delay > 0 else 0.0
     gap = rand_lognormal(median, sigma)
     word_start = prev == " " or prev == ""
     chance = cfg.typing_pause_chance * (1.0 if word_start else 0.1)
     if chance > 0 and random.random() < chance:
         gap += rand_range(cfg.typing_pause_range)
-    return max(15.0, gap)
+    return gap if gap > 15.0 else 15.0
 
 
 def key_hold(cfg: HumanConfig) -> float:
