@@ -50,7 +50,7 @@ if __name__ == "__main__":
     def inject(page):
         try:
             page.evaluate(CURSOR_JS)
-        except:
+        except Exception:
             pass
         time.sleep(0.3)
 
