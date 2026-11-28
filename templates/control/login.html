@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>登录 · {{ app_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='control.css') }}" />
+  </head>
+  <body class="login-page">
+    <main class="login-layout">
+      <section class="login-aside">
+        <a class="brand brand-light" href="/"><span class="brand-seal">發</span><span><strong>{{ app_name }}</strong><small>账户与服务中心</small></span></a>
+        <div class="login-phrase"><span>ACCOUNT PORTAL</span><h1>从容管理<br />每一次连接。</h1><p>账户、积分与服务支持，集中于此。</p></div>
+        <span class="aside-caption">CLOAK BROWSER SERVICE</span>
+      </section>
+      <section class="login-content">
+        <div class="login-form-wrap">
+          <span class="section-kicker">WELCOME BACK</span>
+          <h2>登录账户</h2>
+          <p class="form-intro">使用管理员或用户账号继续。</p>
+          {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}<div class="notice {{ category }}">{{ message }}</div>{% endfor %}
+          {% endwith %}
+          <form method="post" action="{{ url_for('login') }}" class="stack-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+            <label for="username">账号</label>
+            <input id="username" name="username" autocomplete="username" required maxlength="64" autofocus />
+            <label for="password">密码</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required />
+            <button class="button button-primary" type="submit">登录</button>
+          </form>
+          <p class="form-footnote">如需开通账户，请联系服务管理员。</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
